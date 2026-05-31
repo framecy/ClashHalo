@@ -4,91 +4,89 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-ClashPow is a **macOS 14+ (Apple Silicon only)** native proxy GUI client wrapping the mihomo (Clash.Meta) kernel.
+ClashPow is a **macOS 14+ (Apple Silicon only)** native SwiftUI client for the mihomo (Clash.Meta) kernel.
 
-**Status: v0.2 — BUILD SUCCEEDED, engine running, 9 GUI pages with real mihomo data.**
+**Status: v1.0 — bundled-engine architecture complete (v0.4→v1.0). Self-contained .app: Go engine (embeds mihomo) + geodata bundled; GUI auto-installs engine via launchd on first run; Metal 120fps chart from mmap stats; YAML config center w/ rollback; SD-WAN topology; subscriptions/DNS/logs; DMG packaging via make.sh.**
 
 ```
-┌──────────────┐  JSON-RPC (UDS)    ┌──────────────────────┐
-│  GUI Process │◄──────────────────►│  Engine Process       │
-│  SwiftUI 5   │  Mihomo REST API  │  mihomo kernel (Go)   │
-│  + AppKit    │◄──────────────────►│  launchd daemon       │
-└──────────────┘                    └──────────────────────┘
+┌──────────────────────┐   REST + WebSocket   ┌──────────────────────┐
+│  ClashPow GUI         │◄────────────────────►│  mihomo kernel        │
+│  SwiftUI 5            │  /traffic /logs       │  (external-controller │
+│  MihomoClient + AppModel  /connections /proxies   127.0.0.1:6170)    │
+└──────────────────────┘                       └──────────────────────┘
 ```
 
-**Engine pid:** `launchctl list | grep clashpow`
-**App launch:** `open -a <path-to>/ClashPow.app` *(NOT direct binary — BackgroundOnly issue)*
+The GUI talks **directly** to mihomo's external-controller. There is no intermediate
+Go engine, no JSON-RPC, no UDS. The user runs their own mihomo (launchd or manually);
+the GUI connects to its REST/WS API. Connection settings (host/port/secret) are
+configurable in Settings and persisted via `@AppStorage`.
 
-## Key Paths
+**Default connection:** engine-managed mihomo controller on `127.0.0.1:9092` (secret auto-discovered from the engine via UDS `get_status`).
+**App launch:** `open <path-to>/ClashPow.app` *(NOT direct binary — BackgroundOnly issue)*
+**Verify connected:** `lsof -a -p $(pgrep -f ClashPow.app/Contents/MacOS/ClashPow) -iTCP -P -n` → should show 4 ESTABLISHED to :6170 (3 WS + REST).
+
+## Architecture (4 real Swift files + stubs)
+
+- `Sources/App/ClashPowApp.swift` — `@main`, `WindowGroup` + `MenuBarExtra`
+- `Sources/App/ContentView.swift` — `NavigationSplitView` shell, sidebar, `Card`
+- `Sources/UI/Dashboard/DashboardView.swift` — `DashboardPage`, `Tile`, `TrafficChart`
+- `Sources/UI/ConfigEditor/Pages.swift` — `ProxiesPage` `ConnectionsPage` `RulesPage` `LogsPage` `ConfigPage` `SettingsPage` `MenuBarPanel` `ContentUnavailable`
+- `Sources/Model/Models.swift` — `AppModel` (state + WS/poll orchestration), view types `ProxyGroup`/`Node`/`Conn`/`Log`, formatting helpers
+- `Sources/XPC/EngineClient.swift` — `MihomoClient` (REST + WebSocket), wire types, `WSHandle`
+- `Sources/Metal/IOSurfaceReader.swift` — empty stub (reserved)
+
+The `Engine/` Go tree and `Helper/` are **legacy/unused by the current GUI** — kept for
+reference but the GUI does not depend on them.
+
+## Legacy Paths (old engine — not used by GUI)
 
 | Resource | Path |
 |----------|------|
-| Engine socket | `/tmp/clashpow-engine.sock` |
-| Engine log socket | `/tmp/clashpow-log.sock` |
-| Mihomo REST API | `http://127.0.0.1:9091` (secret set by user config) |
-| Engine binary (dev) | `~/Library/Application Support/ClashPow/clashpow-engine` |
-| Engine logs | `~/Library/Logs/ClashPow/clashpow-engine.log` |
-| Engine plist | `~/Library/LaunchAgents/com.clashpow.engine.plist` |
+| Old engine socket | `/tmp/clashpow-engine.sock` *(dead)* |
+| User mihomo binary | `~/Library/Application Support/ClashPow/mihomo` |
+| User mihomo config | `~/Desktop/mihomo_config.yaml` |
+| launchd plist | `~/Library/LaunchAgents/com.clashpow.engine.plist` |
 
-## Source Files (12 Swift + 10 Go)
+## Old Source Files
 
 ### GUI
 - `Sources/App/ClashPowApp.swift` — `@main` entry, `WindowGroup` + `MenuBarExtra`
 - `Sources/App/ContentView.swift` — `NavigationSplitView` shell, `SidebarView`, page router
-- `Sources/UI/Dashboard/DashboardView.swift` — `DashboardPage` with stat grid, traffic chart, chain view
-- `Sources/UI/ConfigEditor/Pages.swift` — All other pages: `ProxiesPage`, `ConnectionsPage`, `DnsPage`, `LogsPage`, `SdwanPage`, `SubscriptionsPage`, `ConfigPage`, `SettingsPage`, `MenuBarPanel`
-- `Sources/Model/Models.swift` — `AppState` (central ObservableObject), `TrafficModel`, all data types, engine polling loop
-- `Sources/XPC/EngineClient.swift` — JSON-RPC over UDS + Mihomo REST HTTP client
-- `Sources/XPC/HelperManager.swift` — Privileged helper XPC (TUN/route/sysproxy)
-- `Sources/XPC/KernelUpdateManager.swift` — Mihomo kernel update from GitHub
+(Legacy `Engine/` Go and `Helper/` XPC trees remain in the repo but the v0.3 GUI does
+not use them. Ignore unless explicitly reviving the bundled-engine design.)
 
-### Engine
-- `Engine/cmd/clashpow/main.go` — Entry point, wires mihomo + extensions + RPC server
-- `Engine/xpc/server.go` — JSON-RPC server (UDS) — `get_status`, `set_config`, `compile_rules`, `reload_rules`, `shutdown`, `start_tun`, `stop_tun`
-- `Engine/xpc/compile.go` — YAML rules → binary Trie compiler
-- `Engine/xpc/tun.go` — UTUN manager (AF_SYSTEM, no VPN slot)
-- `Engine/mmap/loader.go` — mmap binary rule loader (atomic hot-swap)
-- `Engine/stats/pusher.go` — IOSurface stats ring buffer writer
-- `Engine/routed/daemon.go` — SD-WAN route daemon
-- `Engine/routed/split.go` — Per-process traffic split (SO_USER_COOKIE + PF)
-
-## Build Commands
+## Build & Run
 
 ```bash
-# Engine
-cd Engine && CGO_ENABLED=0 GOOS=darwin GOARCH=arm64 go build -o /tmp/clashpow-engine ./cmd/clashpow
-
-# Deploy engine
-cp /tmp/clashpow-engine "$HOME/Library/Application Support/ClashPow/clashpow-engine"
-launchctl unload "$HOME/Library/LaunchAgents/com.clashpow.engine.plist" 2>/dev/null
-launchctl load "$HOME/Library/LaunchAgents/com.clashpow.engine.plist"
-
-# GUI
+# Build GUI
 xcodebuild -project ClashPow.xcodeproj -scheme ClashPow -configuration Debug -destination 'platform=macOS,arch=arm64' build
 
 # Run (MUST use open, not direct binary!)
 APP=$(find ~/Library/Developer/Xcode/DerivedData/ClashPow-*/Build/Products/Debug -name "ClashPow.app" -type d | head -1)
-open -a "$APP"
+open "$APP"
+
+# Verify it connected to the kernel
+lsof -a -p $(pgrep -f "ClashPow.app/Contents/MacOS/ClashPow") -iTCP -P -n   # expect 4x ESTABLISHED → :6170
 ```
 
 ## Critical Gotchas
 
-1. **Direct binary = BackgroundOnly**: Never run the ClashPow binary directly. Must use `open -a ClashPow.app` or macOS launches it with `type=BackgroundOnly`, window never renders.
-2. **No mock data**: All data comes from engine (mihomo REST API at `:9091`). App starts empty, populates via 2s polling loop.
-3. **Color types**: Use `Color.green`, not `.green` in view bodies — macOS 14/26 has `Color` vs `HierarchicalShapeStyle` ambiguity.
-4. **TableColumn key paths**: Must be wrapped in `{}` closures on macOS 14 for non-Identifiable value types.
+1. **Direct binary = BackgroundOnly**: never run the binary directly; use `open ClashPow.app`.
+2. **No mock data**: everything comes from mihomo's live REST/WS API. App shows empty states until the kernel responds.
+3. **Color types**: use `Color.green` etc, not bare `.green` in `.foregroundColor`/`.fill` where the compiler infers `HierarchicalShapeStyle` (macOS 14/26 ambiguity).
+4. **`Group` is taken by SwiftUI** — the proxy-group model type is named `ProxyGroup`.
+5. **WebSocket auth** uses `?token=<secret>` query param; **REST** uses `Authorization: Bearer <secret>`.
 
-## Mihomo REST API
+## Mihomo API used by MihomoClient
 
-| Endpoint | Method | Purpose |
-|----------|--------|---------|
-| `/version` | GET | mihomo version |
-| `/proxies` | GET | All proxies + groups |
-| `/proxies/:name` | PUT | Switch proxy selection |
-| `/proxies/:name/delay` | GET | Latency test |
-| `/connections` | GET | Active connections |
-| `/rules` | GET | Rule list |
-| `/configs` | GET | Full running config |
-| `/traffic` | GET | Up/down totals |
-
-All requests need `Authorization: Bearer clashpow` header.
+| Endpoint | Transport | Purpose |
+|----------|-----------|---------|
+| `/version` | GET | reachability + version |
+| `/proxies` | GET (poll 3s) | groups + nodes + selections + delays |
+| `/proxies/:name` | PUT | switch selector group |
+| `/proxies/:name/delay` | GET | latency test |
+| `/configs` | GET (poll 3s) / PATCH | mode/ports/dns/tun; PATCH `{mode}` |
+| `/rules` | GET | rule list (RulesPage) |
+| `/traffic` | **WS** | live up/down → chart |
+| `/connections` | **WS** | live connection list + totals + memory |
+| `/logs?level=info` | **WS** | live log stream |
