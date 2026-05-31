@@ -1,32 +1,26 @@
-// ClashPowApp.swift — macOS mihomo GUI client
+// ClashPowApp — macOS mihomo GUI client.
 import SwiftUI
 
 @main
 struct ClashPowApp: App {
-    @StateObject private var S = AppState()
+    @StateObject private var model = AppModel()
+
     var body: some Scene {
         WindowGroup {
-            ContentView().environmentObject(S)
-                .frame(minWidth: 960, minHeight: 640)
-                .onAppear { S.traffic.start(); S.connectToEngine() }
+            ContentView()
+                .environmentObject(model)
+                .frame(minWidth: 940, minHeight: 620)
+                .preferredColorScheme(model.dark ? .dark : .light)
+                .onAppear { model.start() }
         }
-        .windowStyle(.automatic).defaultSize(width: 1200, height: 800)
-        .commands { SidebarCommands() }
+        .defaultSize(width: 1180, height: 780)
+        .windowStyle(.titleBar)
 
         MenuBarExtra {
-            MenuBarPanel().environmentObject(S)
+            MenuBarPanel().environmentObject(model)
         } label: {
-            HStack(spacing: 3) {
-                Circle().fill(S.running ? Color.green : Color.orange).frame(width: 6, height: 6)
-                Text(menuBarText).font(.system(size: 11, weight: .medium, design: .monospaced))
-            }
+            Image(systemName: model.reachable ? "bolt.fill" : "bolt.slash")
         }
-    }
-
-    var menuBarText: String {
-        let dl = S.traffic.down.last ?? 0
-        if dl >= 1_000_000 { return String(format: "%.1fM", dl / 1_000_000) }
-        if dl >= 1_000 { return String(format: "%.0fK", dl / 1_000) }
-        return "0K"
+        .menuBarExtraStyle(.window)
     }
 }

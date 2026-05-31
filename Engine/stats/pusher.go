@@ -1,120 +1,108 @@
-// Package stats pushes real-time proxy statistics to an IOSurface shared
-// memory region, allowing the GUI process to read them with zero CPU copy
-// via Metal's CVMetalTextureCache.
+// Package stats writes high-resolution (10ms) traffic statistics to a
+// memory-mapped shared file. The GUI mmaps the same file read-only and
+// samples it lock-free for a smooth 120fps Metal chart.
+//
+// Why a file (not IOSurface): the engine is a Go process; sharing an
+// IOSurface to the Swift GUI requires passing its mach-port send-right,
+// which a UDS cannot carry (UDS SCM_RIGHTS passes fds, not mach ports) and
+// which Go cannot mint without heavy CGo/Mach plumbing. A POSIX mmap'd file
+// is a genuine zero-copy shared region, trivially cross-process, and the
+// payload here is a few KB — so it is the correct, robust equivalent.
+//
+// File layout (little-endian):
+//
+//	0x00  uint32  writePtr   (atomic, monotonically incrementing)
+//	0x04  uint32  slotCount
+//	0x08  uint32  slotSize
+//	0x0C  uint32  reserved
+//	0x10  ...     ring of `slotCount` slots, each `slotSize` bytes:
+//	              int64 tsUnixNano | int64 upRateBps | int64 downRateBps |
+//	              int64 upTotal    | int64 downTotal | int32 conns | int32 _ | int64 memBytes
 package stats
 
 import (
 	"encoding/binary"
-	"math"
+	"os"
 	"sync/atomic"
-	"time"
+	"syscall"
 	"unsafe"
 )
 
-// IOSurface data layout (4096 bytes ring buffer).
-//
-// Offset  Size   Field
-// 0x00    4      Write pointer (uint32, atomic)
-// 0x04    8      Timestamp (int64, nanoseconds)
-// 0x0C    4      TCP total rate (float32, bytes/sec)
-// 0x10    4      UDP total rate (float32, bytes/sec)
-// 0x14    4      Current connection count (uint32)
-// 0x18    ...    Per-outbound array (12 bytes each: 4B ID + 4B rate + 4B conns)
 const (
-	SurfaceSize      = 4096
-	MaxOutbounds     = 128
-	OutboundSlotSize = 12
-	HeaderEnd        = 0x18 + MaxOutbounds*OutboundSlotSize
+	StatsFilePath = "/tmp/clashpow-stats.bin"
+	headerSize    = 16
+	slotSize      = 56 // 6×int64 + 2×int32
+	slotCount     = 2048
+	fileSize      = headerSize + slotSize*slotCount
 )
 
-// Snapshot is a point-in-time stats sample.
-type Snapshot struct {
-	Timestamp   time.Time
-	TcpRate     float32 // bytes/sec
-	UdpRate     float32 // bytes/sec
-	Connections uint32
-	Outbounds   []OutboundStat
-}
-
-// OutboundStat holds per-outbound proxy statistics.
-type OutboundStat struct {
-	ID   uint32
-	Rate float32 // bytes/sec
-}
-
-// Pusher manages the IOSurface shared memory region for stats.
+// Pusher owns the mmap'd shared stats file.
 type Pusher struct {
-	buf    []byte
-	bufPtr unsafe.Pointer // points to buf[0] for atomic access to header fields
+	data   []byte
+	file   *os.File
 	closed atomic.Bool
 }
 
-// NewPusher creates a new stats pusher backed by a 4096-byte buffer.
-// In production, this will be backed by an IOSurface allocated via
-// IOSurfaceCreate(); for now, we use an in-memory buffer for testing.
+// NewPusher creates/truncates the shared stats file and mmaps it RW.
 func NewPusher() *Pusher {
-	buf := make([]byte, SurfaceSize)
-	return &Pusher{
-		buf:    buf,
-		bufPtr: unsafe.Pointer(&buf[0]),
+	f, err := os.OpenFile(StatsFilePath, os.O_CREATE|os.O_RDWR|os.O_TRUNC, 0o644)
+	if err != nil {
+		return &Pusher{} // degraded: Push becomes a no-op
 	}
+	if err := f.Truncate(int64(fileSize)); err != nil {
+		f.Close()
+		return &Pusher{}
+	}
+	data, err := syscall.Mmap(int(f.Fd()), 0, fileSize, syscall.PROT_READ|syscall.PROT_WRITE, syscall.MAP_SHARED)
+	if err != nil {
+		f.Close()
+		return &Pusher{}
+	}
+	binary.LittleEndian.PutUint32(data[4:], slotCount)
+	binary.LittleEndian.PutUint32(data[8:], slotSize)
+	return &Pusher{data: data, file: f}
 }
 
-// NewPusherWithData creates a pusher wrapping an existing byte slice
-// (backed by IOSurface or shared memory).
-func NewPusherWithData(data []byte) *Pusher {
-	return &Pusher{
-		buf:    data,
-		bufPtr: unsafe.Pointer(&data[0]),
-	}
+// Sample is one high-resolution stats point.
+type Sample struct {
+	TsUnixNano  int64
+	UpRateBps   int64
+	DownRateBps int64
+	UpTotal     int64
+	DownTotal   int64
+	Conns       int32
+	MemBytes    int64
 }
 
-// Push writes a snapshot into the ring buffer and advances the write pointer.
-func (p *Pusher) Push(s Snapshot) {
-	if p.closed.Load() {
+// Push writes a sample to the next ring slot and bumps the write pointer.
+func (p *Pusher) Push(s Sample) {
+	if p.closed.Load() || p.data == nil {
 		return
 	}
-
-	// Write pointer: which slot in the ring buffer to use next
-	wp := atomic.AddUint32((*uint32)(unsafe.Add(p.bufPtr, 0x00)), 1)
-
-	// Ring buffer slots start after HeaderEnd
-	slotCount := (SurfaceSize - HeaderEnd) / slotSize()
-	slotIdx := wp % uint32(slotCount)
-	slotOffset := HeaderEnd + slotIdx*uint32(slotSize())
-
-	// Write snapshot data into the slot
-	slot := unsafe.Add(p.bufPtr, slotOffset)
-	binary.LittleEndian.PutUint64(unsafe.Slice((*byte)(unsafe.Add(slot, 0)), 8), uint64(s.Timestamp.UnixNano()))
-	binary.LittleEndian.PutUint32(unsafe.Slice((*byte)(unsafe.Add(slot, 8)), 4), math.Float32bits(s.TcpRate))
-	binary.LittleEndian.PutUint32(unsafe.Slice((*byte)(unsafe.Add(slot, 12)), 4), math.Float32bits(s.UdpRate))
-	binary.LittleEndian.PutUint32(unsafe.Slice((*byte)(unsafe.Add(slot, 16)), 4), s.Connections)
-	// Outbounds encoded in the per-outbound array at header
-	for i, ob := range s.Outbounds {
-		if i >= MaxOutbounds {
-			break
-		}
-		obOff := uint32(0x18) + uint32(i)*OutboundSlotSize
-		binary.LittleEndian.PutUint32(unsafe.Slice((*byte)(unsafe.Add(p.bufPtr, obOff)), 4), ob.ID)
-		binary.LittleEndian.PutUint32(unsafe.Slice((*byte)(unsafe.Add(p.bufPtr, obOff+4)), 4), math.Float32bits(ob.Rate))
-	}
+	wp := atomic.LoadUint32((*uint32)(unsafe.Pointer(&p.data[0])))
+	slot := headerSize + int(wp%slotCount)*slotSize
+	b := p.data[slot : slot+slotSize]
+	binary.LittleEndian.PutUint64(b[0:], uint64(s.TsUnixNano))
+	binary.LittleEndian.PutUint64(b[8:], uint64(s.UpRateBps))
+	binary.LittleEndian.PutUint64(b[16:], uint64(s.DownRateBps))
+	binary.LittleEndian.PutUint64(b[24:], uint64(s.UpTotal))
+	binary.LittleEndian.PutUint64(b[32:], uint64(s.DownTotal))
+	binary.LittleEndian.PutUint32(b[40:], uint32(s.Conns))
+	binary.LittleEndian.PutUint64(b[48:], uint64(s.MemBytes))
+	// Publish: bump write pointer last (readers see a complete slot).
+	atomic.AddUint32((*uint32)(unsafe.Pointer(&p.data[0])), 1)
 }
 
-// BasePtr returns a pointer to the underlying buffer for sharing via XPC.
-func (p *Pusher) BasePtr() unsafe.Pointer {
-	return p.bufPtr
-}
-
-// Size returns the buffer size in bytes.
-func (p *Pusher) Size() int {
-	return SurfaceSize
-}
-
-// Close marks the pusher as closed.
+// Close unmaps and removes the shared file.
 func (p *Pusher) Close() {
-	p.closed.Store(true)
-}
-
-func slotSize() int {
-	return 8 + 4 + 4 + 4 // timestamp + tcp + udp + conns
+	if p.closed.Swap(true) {
+		return
+	}
+	if p.data != nil {
+		syscall.Munmap(p.data)
+	}
+	if p.file != nil {
+		p.file.Close()
+		os.Remove(StatsFilePath)
+	}
 }

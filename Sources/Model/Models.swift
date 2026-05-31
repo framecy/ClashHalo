@@ -1,110 +1,405 @@
-// Models.swift — ClashPow data models + AppState
-import Foundation; import SwiftUI
+// AppModel — central app state. Owns the MihomoClient, manages live data.
+//
+// Data sources:
+//   - WebSocket /traffic     → live up/down (chart)
+//   - WebSocket /connections → live connection list + totals + memory
+//   - WebSocket /logs        → live log stream
+//   - Poll /proxies (3s)     → groups, nodes, selections, latencies
+//   - Poll /configs (5s)     → mode, ports, dns, tun
 
-// ── Data Types ─────────────────────────────────────────────────
-struct ProxyNode: Identifiable { let id: String; let name: String; let type: String; let latency: Int }
-struct ProxyGroup: Identifiable { let id: String; let name: String; let kind: String; var now: String; let members: [String] }
-struct ConnectionInfo: Identifiable { let id: String; let host: String; let ip: String; let port: Int; let node: String; let chain: String; let rule: String; let proc: String; let network: String; let dlSpeed: Int64; let ulSpeed: Int64; let up: Int64; let down: Int64 }
-struct LogLine: Identifiable { let id: Int; let time: String; let level: LogLevel; let msg: String; enum LogLevel: String, CaseIterable { case debug, info, warning, error } }
-struct DNSEntry: Identifiable { let id = UUID(); let host: String; let fakeIP: String; let realIP: String; let type: String; let source: String; var ttl: Int; let hits: Int; let direct: Bool }
-struct ConfigProfile: Identifiable { let id: String; let name: String; let from: String }
+import Foundation
+import SwiftUI
 
-// ── Traffic Model ──────────────────────────────────────────────
-final class TrafficModel: ObservableObject {
-    @Published var down: [Double] = Array(repeating: 0, count: 120)
-    @Published var up: [Double] = Array(repeating: 0, count: 120)
-    private var timer: Timer?
+// MARK: - View models
+
+struct ProxyGroup: Identifiable, Equatable {
+    let id: String        // group name
+    let name: String
+    let type: String      // Selector / URLTest / Fallback / LoadBalance
+    var now: String
+    let all: [String]
+    var selectable: Bool { type == "Selector" || type == "Fallback" }
+}
+
+struct Node: Identifiable, Equatable {
+    let id: String        // proxy name
+    let name: String
+    let type: String      // Shadowsocks / Vmess / Direct / ...
+    var delay: Int        // ms, 0 = untested/timeout
+}
+
+struct Conn: Identifiable {
+    let id: String
+    let host: String
+    let dstIP: String
+    let port: String
+    let network: String   // tcp / udp
+    let process: String
+    let chain: String     // "GroupA → node"
+    let node: String      // last chain element
+    let rule: String
+    var up: Int64
+    var down: Int64
+    var upRate: Int64     // bytes/s (diffed)
+    var downRate: Int64
+    let start: String
+}
+
+struct Log: Identifiable {
+    let id: Int
+    let time: String
+    let level: String     // info / warning / error / debug
+    let text: String
+}
+
+// MARK: - AppModel
+
+@MainActor
+final class AppModel: ObservableObject {
+    let api = MihomoClient.shared
+    let engine = EngineControl.shared
+
+    // Navigation + theme
+    @Published var route = "dashboard"
+    @AppStorage("ui.dark") var dark = true
+    @AppStorage("ui.accent") var accentRaw = "green"
+    var accent: Color { ["green":.green,"blue":.blue,"purple":.purple,"orange":.orange][accentRaw] ?? .green }
+
+    // Connection status
+    @Published var reachable = false
+    @Published var version = "?"
+    @Published var mode = "rule"          // rule / global / direct
+    @Published var memory: Int64 = 0
+    @Published var uploadTotal: Int64 = 0
+    @Published var downloadTotal: Int64 = 0
+
+    // Proxies
+    @Published var groups: [ProxyGroup] = []
+    @Published var nodes: [String: Node] = [:]    // name → node
+    @Published var testing: Set<String> = []
+
+    // Connections
+    @Published var conns: [Conn] = []
+    private var prevConnBytes: [String: (up: Int64, down: Int64)] = [:]
+
+    // Logs
+    @Published var logs: [Log] = []
+    private var logSeq = 0
+
+    // Traffic chart (rolling window of download bytes/s)
+    @Published var downSeries: [Double] = Array(repeating: 0, count: 120)
+    @Published var upSeries: [Double] = Array(repeating: 0, count: 120)
+    @Published var curDown: Int64 = 0
+    @Published var curUp: Int64 = 0
+
+    // Config
+    @Published var configs: [String: Any] = [:]
+
+    // Toast
+    @Published var toast: String?
+
+    private var trafficWS: WSHandle?
+    private var connWS: WSHandle?
+    private var logWS: WSHandle?
+    private var pollTask: Task<Void, Never>?
+
+    // MARK: Lifecycle
 
     func start() {
-        timer?.invalidate()
-        timer = Timer.scheduledTimer(withTimeInterval: 2, repeats: true) { [weak self] _ in
-            Task { @MainActor in
-                guard let self, let t = try? await EngineClient.shared.fetchTraffic() else { return }
-                let limit = 120; self.down.append(Double(t.down)); self.up.append(Double(t.up))
-                if self.down.count > limit { self.down.removeFirst(self.down.count - limit) }
-                if self.up.count > limit { self.up.removeFirst(self.up.count - limit) }
-            }
+        engine.ensureInstalled()   // first-run: install bundled engine + LaunchAgent
+        Task { await reconnect() }
+    }
+
+    @Published var engineManaged = false   // true when our launchd engine is hosting the kernel
+    @Published var engineUptime: Int64 = 0
+
+    func reconnect() async {
+        stopStreams()
+
+        // Prefer the ClashPow engine: discover its embedded controller endpoint.
+        if let ctl = await engine.refresh() {
+            engineManaged = true
+            engineUptime = engine.uptimeSec
+            let parts = ctl.addr.split(separator: ":")
+            if parts.count == 2 { api.host = String(parts[0]); api.port = Int(parts[1]) ?? api.port }
+            api.secret = ctl.secret
+        } else {
+            engineManaged = false
+        }
+
+        await api.probe()
+        reachable = api.reachable
+        version = api.version
+        guard reachable else {
+            Task { try? await Task.sleep(nanoseconds: 3_000_000_000); await reconnect() }
+            return
+        }
+        startStreams()
+        startPolling()
+    }
+
+    private func startStreams() {
+        trafficWS = api.stream("/traffic", type: TrafficTick.self) { [weak self] t in
+            self?.onTraffic(t)
+        }
+        connWS = api.stream("/connections", type: ConnectionsSnapshot.self) { [weak self] s in
+            self?.onConnections(s)
+        }
+        logWS = api.stream("/logs?level=info", type: LogTick.self) { [weak self] l in
+            self?.onLog(l)
         }
     }
-    func stop() { timer?.invalidate(); timer = nil }
-}
 
-// ── App State ──────────────────────────────────────────────────
-@MainActor final class AppState: ObservableObject {
-    @Published var route = "dashboard"
-    @Published var running = true; @Published var mode = "rule"
-    @Published var toastMessage: String?
-    @Published var isDark = true; @Published var accentColor = Color.green
-
-    // Live data from engine
-    @Published var nodes: [ProxyNode] = []; @Published var groups: [ProxyGroup] = []
-    @Published var selectedNodes: [String: String] = [:]; @Published var latencies: [String: Int] = [:]
-    @Published var testingNodes: Set<String> = []
-    @Published var connections: [ConnectionInfo] = []; @Published var dnsCache: [DNSEntry] = []
-    @Published var stats = (uptime: "—", connections: 0, version: "?")
-    @Published var realConfig: [String: Any] = [:]; @Published var configYAML: String = ""
-    @Published var subscriptions: [String] = []; @Published var profiles: [ConfigProfile] = []
-
-    let traffic = TrafficModel(); let engineClient = EngineClient.shared
-
-    func connectToEngine() { engineClient.connect(); startPolling() }
+    private func stopStreams() {
+        trafficWS?.cancel(); connWS?.cancel(); logWS?.cancel()
+        trafficWS = nil; connWS = nil; logWS = nil
+        pollTask?.cancel(); pollTask = nil
+    }
 
     private func startPolling() {
-        Task {
-            while !Task.isCancelled {
-                // status
-                if let s = try? await engineClient.fetchStatus() {
-                    let h = s.uptimeSec / 3600; let m = (s.uptimeSec % 3600) / 60
-                    stats.uptime = h > 0 ? "\(h)h \(m)m" : "\(m)m"
-                    stats.connections = s.connections; stats.version = s.version; running = s.running
-                }
-                // proxies
-                if let p = try? await engineClient.fetchProxies() {
-                    var ng: [ProxyGroup] = []; var nn: [ProxyNode] = []
-                    for (name, px) in p.proxies {
-                        let isG = px.all != nil || ["Selector","URLTest","Fallback","LoadBalance","Compatible","Pass"].contains(px.type)
-                        if isG { ng.append(ProxyGroup(id: name, name: name, kind: px.type, now: px.now ?? name, members: px.all ?? [])) }
-                        if (px.history?.isEmpty == false) && !["Direct","Reject","RejectDrop"].contains(px.type) {
-                            nn.append(ProxyNode(id: name, name: name, type: px.type, latency: px.history?.last?.delay ?? 0))
-                        }
-                    }
-                    nn.append(contentsOf: [ProxyNode(id: "DIRECT", name: "直连", type: "Direct", latency: 1)])
-                    var sel = selectedNodes; for g in ng { if sel[g.id] == nil { sel[g.id] = g.now } }
-                    var lat = latencies; for n in nn where lat[n.id] == nil { lat[n.id] = n.latency }
-                    nodes = nn; groups = ng; selectedNodes = sel; latencies = lat
-                }
-                // config
-                if let cfg = try? await engineClient.fetchConfig() {
-                    realConfig = cfg; mode = (cfg["mode"] as? String) ?? "rule"
-                    configYAML = configToYAML(cfg)
-                }
-                // connections
-                if let c = try? await engineClient.fetchConnections(), let raw = c.connections {
-                    connections = raw.map { x in
-                        ConnectionInfo(id: "\(x.metadata.host ?? "?")-\(x.start)", host: x.metadata.host ?? "?", ip: x.metadata.destinationIP ?? "?", port: Int(x.metadata.destinationPort ?? "0") ?? 0, node: x.chains.last ?? "?", chain: x.chains.joined(separator: " → "), rule: "\(x.rule):\(x.rulePayload)", proc: x.metadata.process ?? "?", network: x.metadata.network, dlSpeed: x.download, ulSpeed: x.upload, up: x.upload, down: x.download)
-                    }
-                }
-                try? await Task.sleep(nanoseconds: 2_000_000_000)
+        pollTask?.cancel()
+        pollTask = Task { [weak self] in
+            while let self, !Task.isCancelled, self.reachable {
+                await self.refreshProxies()
+                await self.refreshConfigs()
+                try? await Task.sleep(nanoseconds: 3_000_000_000)
             }
         }
     }
 
-    // ── Actions ─────────────────────────────────────────────────
-    func togglePause() { running.toggle(); if running { traffic.start(); Task { _ = try? await engineClient.setConfig(yaml: "mode: rule") } } else { traffic.stop(); Task { _ = try? await engineClient.setConfig(yaml: "mode: direct") } }; toast(running ? "代理已恢复" : "代理已暂停") }
-    func repairNet() { Task { _ = try? await engineClient.shutdownEngine(); try? await Task.sleep(nanoseconds: 3_000_000_000); toast("引擎已重启") } }
-    func selectNode(groupID: String, nodeID: String) { selectedNodes[groupID] = nodeID; Task { try? await engineClient.selectProxy(group: groupID, proxy: nodeID) } }
-    func testNodes(_ ids: [String]) { testingNodes.formUnion(ids); for (i, id) in ids.enumerated() { Task { try? await Task.sleep(nanoseconds: UInt64(250 + i * 90) * 1_000_000); if let r = try? await engineClient.testDelay(name: id) { latencies[id] = r.delay }; testingNodes.remove(id) } } }
-    func resolveProxy(_ id: String) -> ProxyNode? { nodes.first(where: { $0.id == id }) ?? ProxyNode(id: id, name: id, type: "?", latency: 0) }
-    func toast(_ msg: String) { toastMessage = msg; Task { try? await Task.sleep(nanoseconds: 2_600_000_000); toastMessage = nil } }
+    // MARK: Stream handlers
+
+    private func onTraffic(_ t: TrafficTick) {
+        curUp = t.up; curDown = t.down
+        downSeries.append(Double(t.down)); upSeries.append(Double(t.up))
+        if downSeries.count > 120 { downSeries = Array(downSeries.suffix(120)) }
+        if upSeries.count > 120 { upSeries = Array(upSeries.suffix(120)) }
+    }
+
+    private func onConnections(_ s: ConnectionsSnapshot) {
+        uploadTotal = s.uploadTotal; downloadTotal = s.downloadTotal
+        if let m = s.memory { memory = m }
+        let items = s.connections ?? []
+        var next: [Conn] = []
+        var bytes: [String: (up: Int64, down: Int64)] = [:]
+        for c in items {
+            let prev = prevConnBytes[c.id]
+            let upRate = prev.map { max(0, c.upload - $0.up) } ?? 0
+            let downRate = prev.map { max(0, c.download - $0.down) } ?? 0
+            bytes[c.id] = (c.upload, c.download)
+            next.append(Conn(
+                id: c.id,
+                host: c.metadata.host?.isEmpty == false ? c.metadata.host! : (c.metadata.destinationIP ?? "?"),
+                dstIP: c.metadata.destinationIP ?? "?",
+                port: c.metadata.destinationPort ?? "",
+                network: c.metadata.network.uppercased(),
+                process: c.metadata.process ?? "—",
+                chain: c.chains.reversed().joined(separator: " → "),
+                node: c.chains.first ?? "?",
+                rule: c.rulePayload.isEmpty ? c.rule : "\(c.rule),\(c.rulePayload)",
+                up: c.upload, down: c.download,
+                upRate: upRate, downRate: downRate,
+                start: c.start
+            ))
+        }
+        prevConnBytes = bytes
+        conns = next.sorted { $0.downRate + $0.upRate > $1.downRate + $1.upRate }
+    }
+
+    private func onLog(_ l: LogTick) {
+        logSeq += 1
+        let df = DateFormatter(); df.dateFormat = "HH:mm:ss"
+        logs.append(Log(id: logSeq, time: df.string(from: Date()), level: l.type, text: l.payload))
+        if logs.count > 500 { logs = Array(logs.suffix(500)) }
+    }
+
+    // MARK: Polling
+
+    func refreshProxies() async {
+        guard let p = try? await api.fetchProxies() else { return }
+        var gs: [ProxyGroup] = []
+        var ns: [String: Node] = [:]
+        for (name, e) in p.proxies {
+            if let all = e.all {
+                gs.append(ProxyGroup(id: name, name: name, type: e.type, now: e.now ?? "", all: all))
+            } else {
+                let delay = e.history?.last?.delay ?? 0
+                ns[name] = Node(id: name, name: name, type: e.type, delay: delay)
+            }
+        }
+        // Preserve existing measured delays for nodes that report 0 now
+        for (k, v) in nodes where ns[k]?.delay == 0 && v.delay > 0 { ns[k]?.delay = v.delay }
+        // Sort groups: GLOBAL last, others alphabetical-ish by original order
+        groups = gs.sorted { a, b in
+            if a.name == "GLOBAL" { return false }
+            if b.name == "GLOBAL" { return true }
+            return a.name < b.name
+        }
+        nodes = ns
+    }
+
+    func refreshConfigs() async {
+        guard let c = try? await api.fetchConfigs() else { return }
+        configs = c
+        if let m = c["mode"] as? String { mode = m }
+    }
+
+    // MARK: Actions
+
+    func select(group: String, name: String) {
+        // optimistic
+        if let i = groups.firstIndex(where: { $0.id == group }) { groups[i].now = name }
+        Task {
+            try? await api.selectProxy(group: group, name: name)
+            await refreshProxies()
+        }
+    }
+
+    func testGroup(_ group: ProxyGroup) {
+        let targets = group.all.filter { nodes[$0] != nil }
+        test(names: targets)
+    }
+
+    func testAll() {
+        test(names: Array(nodes.keys))
+    }
+
+    private func test(names: [String]) {
+        testing.formUnion(names)
+        for name in names {
+            Task {
+                if let d = try? await api.testDelay(name: name) {
+                    nodes[name]?.delay = d
+                }
+                testing.remove(name)
+            }
+        }
+    }
+
+    func setMode(_ m: String) {
+        mode = m
+        Task { try? await api.patchConfig(["mode": m]); showToast("已切换至\(modeLabel(m))模式") }
+    }
+
+    func showToast(_ s: String) {
+        toast = s
+        Task { try? await Task.sleep(nanoseconds: 2_400_000_000); toast = nil }
+    }
+
+    func currentProxyName() -> String {
+        // Follow GLOBAL or the primary selector chain to a leaf node
+        let primary = groups.first(where: { $0.name == "默认代理" || $0.name == "GLOBAL" || $0.selectable })
+        guard var cur = primary?.now else { return "—" }
+        var guard0 = 0
+        while let g = groups.first(where: { $0.id == cur }), guard0 < 6 { cur = g.now; guard0 += 1 }
+        if cur == "DIRECT" { return "直连" }
+        if cur == "REJECT" { return "拒绝" }
+        return cur
+    }
 }
 
-// ── YAML serializer ────────────────────────────────────────────
-func configToYAML(_ cfg: [String: Any], indent: Int = 0) -> String {
-    var out = ""; let pre = String(repeating: "  ", count: indent)
-    for (k, v) in cfg.sorted(by: { $0.key < $1.key }) {
-        if let d = v as? [String: Any] { out += "\(pre)\(k):\n" + configToYAML(d, indent: indent + 1) }
-        else if let a = v as? [Any] { out += "\(pre)\(k):\n"; for i in a { if let sd = i as? [String: Any] { out += "\(pre)  -\n" + configToYAML(sd, indent: indent + 2) } else { out += "\(pre)  - \(i)\n" } } }
-        else { out += "\(pre)\(k): \(v)\n" }
-    }
-    return out
+// MARK: - SD-WAN network scanning (read-only, no root)
+
+enum IfaceKind: String {
+    case physical = "物理网卡", proxyTun = "代理 TUN", tailscale = "Tailscale"
+    case zerotier = "ZeroTier", oray = "蒲公英", otherTun = "虚拟接口", loopback = "环回"
+    var sdwan: Bool { self == .tailscale || self == .zerotier || self == .oray }
 }
+
+struct NetIface: Identifiable {
+    let id: String          // interface name
+    var name: String { id }
+    let ipv4: [String]
+    let isUp: Bool
+    let kind: IfaceKind
+    var primaryIP: String { ipv4.first ?? "—" }
+}
+
+enum NetScanner {
+    /// Enumerate IPv4 interfaces via getifaddrs (no shell, no privileges).
+    static func interfaces() -> [NetIface] {
+        var head: UnsafeMutablePointer<ifaddrs>?
+        guard getifaddrs(&head) == 0, let first = head else { return [] }
+        defer { freeifaddrs(head) }
+        var ips: [String: [String]] = [:]
+        var flags: [String: Int32] = [:]
+        var order: [String] = []
+        var p: UnsafeMutablePointer<ifaddrs>? = first
+        while let cur = p {
+            let nm = String(cString: cur.pointee.ifa_name)
+            if flags[nm] == nil { flags[nm] = Int32(cur.pointee.ifa_flags); order.append(nm) }
+            if let a = cur.pointee.ifa_addr, a.pointee.sa_family == sa_family_t(AF_INET) {
+                var host = [CChar](repeating: 0, count: Int(NI_MAXHOST))
+                getnameinfo(a, socklen_t(a.pointee.sa_len), &host, socklen_t(host.count), nil, 0, NI_NUMERICHOST)
+                ips[nm, default: []].append(String(cString: host))
+            }
+            p = cur.pointee.ifa_next
+        }
+        return order.compactMap { nm -> NetIface? in
+            let f = flags[nm] ?? 0
+            let up = (f & Int32(IFF_UP)) != 0 && (f & Int32(IFF_RUNNING)) != 0
+            let addrs = ips[nm] ?? []
+            let kind = classify(name: nm, flags: f, ips: addrs)
+            // hide empty bridge/thunderbolt ports and loopback
+            if kind == .loopback { return nil }
+            if addrs.isEmpty && !nm.hasPrefix("utun") { return nil }
+            return NetIface(id: nm, ipv4: addrs, isUp: up, kind: kind)
+        }
+    }
+
+    private static func classify(name: String, flags: Int32, ips: [String]) -> IfaceKind {
+        if (flags & Int32(IFF_LOOPBACK)) != 0 { return .loopback }
+        let isTun = name.hasPrefix("utun") || (flags & Int32(IFF_POINTOPOINT)) != 0
+        if isTun {
+            for ip in ips {
+                if ip.hasPrefix("198.18.") || ip.hasPrefix("198.19.") { return .proxyTun }
+                if isCGNAT(ip) { return .tailscale }
+                if ip.hasPrefix("10.147.") { return .zerotier }
+            }
+            return .otherTun
+        }
+        if name.hasPrefix("en") || name.hasPrefix("bridge") { return .physical }
+        return .otherTun
+    }
+
+    /// 100.64.0.0/10 carrier-grade NAT (Tailscale).
+    private static func isCGNAT(_ ip: String) -> Bool {
+        let p = ip.split(separator: ".")
+        guard p.count == 4, p[0] == "100", let o2 = Int(p[1]) else { return false }
+        return o2 >= 64 && o2 <= 127
+    }
+
+    /// Routes touching utun interfaces (netstat, no root). Returns (dest, iface).
+    static func tunRoutes() -> [(dest: String, iface: String)] {
+        let task = Process(); task.executableURL = URL(fileURLWithPath: "/usr/sbin/netstat")
+        task.arguments = ["-rn", "-f", "inet"]
+        let pipe = Pipe(); task.standardOutput = pipe
+        try? task.run(); task.waitUntilExit()
+        let out = String(data: pipe.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? ""
+        var rows: [(String, String)] = []
+        for line in out.split(separator: "\n") {
+            let cols = line.split(whereSeparator: { $0 == " " || $0 == "\t" }).map(String.init)
+            guard cols.count >= 4 else { continue }
+            let iface = cols.last ?? ""
+            if iface.hasPrefix("utun") { rows.append((cols[0], iface)) }
+        }
+        return rows
+    }
+}
+
+// MARK: - Formatting helpers (single source of truth)
+
+func fmtRate(_ b: Double) -> String {
+    if b >= 1_000_000 { return String(format: "%.1f MB/s", b / 1_000_000) }
+    if b >= 1_000 { return String(format: "%.0f KB/s", b / 1_000) }
+    return String(format: "%.0f B/s", b)
+}
+func fmtBytes(_ b: Double) -> String {
+    if b >= 1_000_000_000 { return String(format: "%.2f GB", b / 1_000_000_000) }
+    if b >= 1_000_000 { return String(format: "%.1f MB", b / 1_000_000) }
+    if b >= 1_000 { return String(format: "%.0f KB", b / 1_000) }
+    return "\(Int(b)) B"
+}
+func fmtDelay(_ ms: Int) -> String { ms > 0 ? "\(ms)" : "—" }
+func delayColor(_ ms: Int) -> Color { ms <= 0 ? .secondary : ms < 100 ? .green : ms < 250 ? .orange : .red }
+func modeLabel(_ m: String) -> String { ["rule":"规则","global":"全局","direct":"直连"][m] ?? m }
