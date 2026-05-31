@@ -702,7 +702,7 @@ struct YAMLEditor: NSViewRepresentable {
 
 // MARK: - Settings
 
-struct SettingsPage: View {
+struct GeneralPage: View {
     @EnvironmentObject var M: AppModel
     @State private var host = ""
     @State private var port = ""
@@ -840,4 +840,92 @@ struct ContentUnavailable: View {
             Text(text).font(.callout).foregroundColor(.secondary)
         }.frame(maxWidth: .infinity).padding(40)
     }
+}
+
+// MARK: - Network / TUN / Sniffer (read-only in stage A; editable in C/E)
+
+private func cfgStr(_ c: [String: Any], _ k: String) -> String { c[k].map { "\($0)" } ?? "—" }
+private func cfgBool(_ c: [String: Any], _ k: String) -> Bool { (c[k] as? Bool) == true }
+
+struct NetworkPage: View {
+    @EnvironmentObject var M: AppModel
+    var body: some View {
+        ScrollView {
+            VStack(spacing: 14) {
+                Card(title: "入站端口", icon: "arrow.down.right.circle") {
+                    VStack(spacing: 9) {
+                        kvRow("HTTP 端口", cfgStr(M.configs, "port"))
+                        kvRow("SOCKS 端口", cfgStr(M.configs, "socks-port"))
+                        kvRow("混合端口", cfgStr(M.configs, "mixed-port"))
+                        kvRow("Redir 端口", cfgStr(M.configs, "redir-port"))
+                        kvRow("TProxy 端口", cfgStr(M.configs, "tproxy-port"))
+                    }
+                }
+                Card(title: "全局网络", icon: "globe") {
+                    VStack(spacing: 9) {
+                        kvRow("IPv6 支持", cfgBool(M.configs, "ipv6") ? "开" : "关")
+                        kvRow("允许局域网", cfgBool(M.configs, "allow-lan") ? "开" : "关")
+                        kvRow("绑定地址", cfgStr(M.configs, "bind-address"))
+                        kvRow("运行模式", modeLabel(M.mode))
+                    }
+                }
+                Text("可编辑表单将在网络阶段开放（端口/IPv6/TFO/MPTCP/QUIC/访问控制/系统代理）。")
+                    .font(.caption2).foregroundColor(.secondary)
+                Spacer(minLength: 0)
+            }.padding(18)
+        }
+    }
+}
+
+struct TunPage: View {
+    @EnvironmentObject var M: AppModel
+    var body: some View {
+        let tun = M.configs["tun"] as? [String: Any] ?? [:]
+        ScrollView {
+            VStack(spacing: 14) {
+                Card(title: "TUN 虚拟网卡", icon: "shield.lefthalf.filled") {
+                    VStack(spacing: 9) {
+                        HStack {
+                            Text("启用 TUN").font(.caption)
+                            Spacer()
+                            Toggle("", isOn: Binding(get: { M.tunOn }, set: { _ in M.toggleTUN() }))
+                                .toggleStyle(.switch).labelsHidden()
+                        }
+                        kvRow("协议栈", cfgStr(tun, "stack"))
+                        kvRow("自动路由", cfgBool(tun, "auto-route") ? "开" : "关")
+                        kvRow("自动检测网卡", cfgBool(tun, "auto-detect-interface") ? "开" : "关")
+                        kvRow("DNS 劫持", (tun["dns-hijack"] as? [Any]).map { "\($0.count) 条" } ?? "—")
+                    }
+                }
+                Text("用户态 UTUN (AF_SYSTEM)，不占 VPN 插槽。完整路由排除编辑在 TUN 阶段开放。")
+                    .font(.caption2).foregroundColor(.secondary)
+                Spacer(minLength: 0)
+            }.padding(18)
+        }
+    }
+}
+
+struct SnifferPage: View {
+    @EnvironmentObject var M: AppModel
+    var body: some View {
+        let sniffer = M.configs["sniffer"] as? [String: Any] ?? [:]
+        ScrollView {
+            VStack(spacing: 14) {
+                Card(title: "协议嗅探 Sniffer", icon: "scope") {
+                    VStack(spacing: 9) {
+                        kvRow("启用嗅探", cfgBool(sniffer, "enable") ? "开" : "关")
+                        kvRow("覆盖目标地址", cfgBool(sniffer, "override-destination") ? "开" : "关")
+                        kvRow("强制 DNS 映射", cfgBool(sniffer, "force-dns-mapping") ? "开" : "关")
+                    }
+                }
+                Text("从 TLS / QUIC / HTTP 握手中提取真实域名用于分流。嗅探协议编辑在嗅探阶段开放。")
+                    .font(.caption2).foregroundColor(.secondary)
+                Spacer(minLength: 0)
+            }.padding(18)
+        }
+    }
+}
+
+private func kvRow(_ l: String, _ v: String) -> some View {
+    HStack { Text(l).font(.caption); Spacer(); Text(v).font(.caption.monospaced()).foregroundColor(.secondary) }
 }

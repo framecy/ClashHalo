@@ -375,6 +375,16 @@ final class EngineControl: ObservableObject {
         return (s.controllerAddr, s.controllerSecret)
     }
 
+    /// Deep-merge config overrides into the running config (validate + rollback).
+    @discardableResult
+    func patchConfig(_ overrides: [String: Any]) async -> Bool {
+        guard let pd = try? JSONSerialization.data(withJSONObject: overrides),
+              let params = String(data: pd, encoding: .utf8),
+              let data = await call("patch_config", params: params) else { return false }
+        struct Resp: Decodable { struct R: Decodable { let ok: Bool? }; let result: R? }
+        return (try? JSONDecoder().decode(Resp.self, from: data))?.result?.ok == true
+    }
+
     func restart() async { _ = await call("shutdown") }   // launchd KeepAlive respawns
     func startTUN() async { _ = await call("start_tun") }
     func stopTUN() async { _ = await call("stop_tun") }

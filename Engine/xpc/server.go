@@ -48,6 +48,7 @@ type Server struct {
 	deps          Dependencies
 	mu            sync.Mutex
 	configApplier func([]byte) error
+	configPatcher func(map[string]any) error
 	listener      net.Listener
 	running       bool
 	sockPath      string
@@ -139,6 +140,11 @@ func (s *Server) SetConfigApplier(fn func([]byte) error) {
 	s.configApplier = fn
 }
 
+// SetConfigPatcher sets the deep-merge config patch function.
+func (s *Server) SetConfigPatcher(fn func(map[string]any) error) {
+	s.configPatcher = fn
+}
+
 // ── Lifecycle ────────────────────────────────────────────────────────
 
 // Run starts the Unix Domain Socket listener and blocks.
@@ -206,6 +212,8 @@ func (s *Server) dispatch(req jsonRPCRequest) jsonRPCResponse {
 	switch req.Method {
 	case "set_config":
 		return s.handleSetConfig(req)
+	case "patch_config":
+		return s.handlePatchConfig(req)
 	case "compile_rules":
 		return s.handleCompileRules(req)
 	case "start_tun":
@@ -243,6 +251,20 @@ func (s *Server) handleSetConfig(req jsonRPCRequest) jsonRPCResponse {
 		}
 	}
 
+	return jsonRPCResponse{JSONRPC: "2.0", ID: req.ID, Result: map[string]bool{"ok": true}}
+}
+
+func (s *Server) handlePatchConfig(req jsonRPCRequest) jsonRPCResponse {
+	var overrides map[string]any
+	if err := json.Unmarshal(req.Params, &overrides); err != nil {
+		return jsonRPCResponse{JSONRPC: "2.0", ID: req.ID, Error: &rpcError{Code: rpcCodeParseError, Message: err.Error()}}
+	}
+	if s.configPatcher == nil {
+		return jsonRPCResponse{JSONRPC: "2.0", ID: req.ID, Error: &rpcError{Code: -1, Message: "no patcher"}}
+	}
+	if err := s.configPatcher(overrides); err != nil {
+		return jsonRPCResponse{JSONRPC: "2.0", ID: req.ID, Error: &rpcError{Code: -1, Message: err.Error()}}
+	}
 	return jsonRPCResponse{JSONRPC: "2.0", ID: req.ID, Result: map[string]bool{"ok": true}}
 }
 
