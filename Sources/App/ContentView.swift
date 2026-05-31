@@ -170,9 +170,12 @@ struct Card<Content: View>: View {
                 }
                 .padding(.horizontal, 14).padding(.top, 12).padding(.bottom, 8)
             }
-            content().padding(.horizontal, 14).padding(.bottom, 12)
+            content()
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(.horizontal, 14).padding(.bottom, 12)
                 .padding(.top, title == nil ? 12 : 0)
         }
+        .frame(maxWidth: .infinity, alignment: .topLeading)   // fill column even when content is empty
         .background(RoundedRectangle(cornerRadius: 12).fill(Color(nsColor: .controlBackgroundColor)))
         .overlay(RoundedRectangle(cornerRadius: 12).stroke(Color.primary.opacity(0.06)))
     }
