@@ -100,10 +100,13 @@ final class AppModel: ObservableObject {
 
     // Connections
     @Published var conns: [Conn] = []
+    @Published var dash = DashStats()   // precomputed once per snapshot (perf)
     private var prevConnBytes: [String: (up: Int64, down: Int64)] = [:]
 
     // Logs
     @Published var logs: [Log] = []
+    private var logBuffer: [Log] = []
+    private var logFlushTimer: Timer?
     private var logSeq = 0
 
     // Traffic chart (rolling window of download bytes/s)
@@ -139,6 +142,9 @@ final class AppModel: ObservableObject {
     func start() {
         engine.ensureInstalled()   // first-run: install bundled engine + LaunchAgent
         store.load()
+        logFlushTimer = Timer.scheduledTimer(withTimeInterval: 0.5, repeats: true) { [weak self] _ in
+            Task { @MainActor in self?.flushLogs() }
+        }
         Task { await reconnect() }
     }
 
@@ -202,10 +208,10 @@ final class AppModel: ObservableObject {
     // MARK: Stream handlers
 
     private func onTraffic(_ t: TrafficTick) {
-        curUp = t.up; curDown = t.down
-        downSeries.append(Double(t.down)); upSeries.append(Double(t.up))
-        if downSeries.count > 120 { downSeries = Array(downSeries.suffix(120)) }
-        if upSeries.count > 120 { upSeries = Array(upSeries.suffix(120)) }
+        // Only publish when the rounded rate actually changes, to avoid churning
+        // the whole view tree every tick. The chart itself reads the mmap file.
+        if t.up != curUp { curUp = t.up }
+        if t.down != curDown { curDown = t.down }
     }
 
     private func onConnections(_ s: ConnectionsSnapshot) {
@@ -241,6 +247,7 @@ final class AppModel: ObservableObject {
         }
         prevConnBytes = bytes
         conns = next.sorted { $0.downRate + $0.upRate > $1.downRate + $1.upRate }
+        dash = Self.computeDash(next)   // single pass, once per snapshot
 
         // closed-connection count (this session) = seen − currently-active
         closedConns = max(0, seenConnIDs.count - activeIDs.count)
@@ -252,6 +259,41 @@ final class AppModel: ObservableObject {
         lastDownTotal = s.downloadTotal
         // app RSS
         appMemoryMB = Double(Self.residentMemoryBytes()) / 1_000_000
+    }
+
+    /// Single-pass dashboard aggregation (runs once per connections snapshot,
+    /// not per SwiftUI render — the key fix for dashboard stutter).
+    static func computeDash(_ conns: [Conn]) -> DashStats {
+        var pg = [String: Double](), hosts = [String: Double](), nodes = [String: Double]()
+        var srcs = [String: Double](), procs = [String: Double](), rules = [String: Double]()
+        var targets = [String: Double]()
+        var direct = 0.0, proxy = 0.0, reject = 0.0
+        var hostSet = Set<String>()
+        func isPrivate(_ ip: String) -> Bool {
+            ip.hasPrefix("10.") || ip.hasPrefix("192.168.") || ip.hasPrefix("172.16.") ||
+            ip.hasPrefix("198.18.") || ip.hasPrefix("127.") || ip.hasPrefix("fd") || ip == "?"
+        }
+        for c in conns {
+            let b = Double(c.up + c.down)
+            if c.group != "?" && !c.group.isEmpty { pg[c.group, default: 0] += b }
+            if c.host != "?" { hosts[c.host, default: 0] += b; hostSet.insert(c.host) }
+            if c.node != "?" { nodes[c.node, default: 0] += b }
+            if c.srcIP != "?" { srcs[c.srcIP, default: 0] += b }
+            if c.process != "—" { procs[c.process, default: 0] += b }
+            rules[c.ruleType, default: 0] += 1
+            switch c.category { case "direct": direct += b; case "reject": reject += b; default: proxy += b }
+            let tk = c.category == "reject" ? "拦截" : (isPrivate(c.dstIP) ? "内网" : "公网")
+            targets[tk, default: 0] += b
+        }
+        func top(_ m: [String: Double]) -> [Rank] {
+            m.sorted { $0.value > $1.value }.prefix(5).map { Rank(name: $0.key, value: $0.value) }
+        }
+        var d = DashStats()
+        d.policyGroups = top(pg); d.hosts = top(hosts); d.nodes = top(nodes)
+        d.sources = top(srcs); d.procs = top(procs); d.rules = top(rules); d.targets = top(targets)
+        d.directBytes = direct; d.proxyBytes = proxy; d.rejectBytes = reject
+        d.uniqueHosts = hostSet.count
+        return d
     }
 
     /// Resident set size of this process (bytes) via mach task_info.
@@ -266,10 +308,17 @@ final class AppModel: ObservableObject {
         return kr == KERN_SUCCESS ? info.resident_size : 0
     }
 
+    private static let logDF: DateFormatter = { let f = DateFormatter(); f.dateFormat = "HH:mm:ss"; return f }()
     private func onLog(_ l: LogTick) {
+        // Buffer; a 0.5s timer flushes to @Published in one batch so a chatty
+        // log stream doesn't re-render the whole UI on every line.
         logSeq += 1
-        let df = DateFormatter(); df.dateFormat = "HH:mm:ss"
-        logs.append(Log(id: logSeq, time: df.string(from: Date()), level: l.type, text: l.payload))
+        logBuffer.append(Log(id: logSeq, time: Self.logDF.string(from: Date()), level: l.type, text: l.payload))
+    }
+    private func flushLogs() {
+        guard !logBuffer.isEmpty else { return }
+        logs.append(contentsOf: logBuffer)
+        logBuffer.removeAll(keepingCapacity: true)
         if logs.count > 500 { logs = Array(logs.suffix(500)) }
     }
 

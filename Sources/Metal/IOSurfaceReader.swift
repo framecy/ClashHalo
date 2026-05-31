@@ -79,7 +79,7 @@ struct MetalTrafficView: NSViewRepresentable {
         view.colorPixelFormat = .bgra8Unorm
         view.clearColor = MTLClearColorMake(0, 0, 0, 0)
         view.layer?.isOpaque = false
-        view.preferredFramesPerSecond = 120
+        view.preferredFramesPerSecond = 60   // smooth without burning power; pauses off-active
         view.isPaused = false
         view.enableSetNeedsDisplay = false
         view.delegate = context.coordinator

@@ -65,39 +65,21 @@ struct DashboardPage: View {
         }
     }
 
-    // MARK: aggregations
+    // MARK: aggregations (read precomputed snapshot — no per-render work)
 
-    private var uniqueHosts: Int { Set(M.conns.map { $0.host }).count }
-
-    private func agg(_ key: (Conn) -> String, weight: (Conn) -> Double) -> [Rank] {
-        var m: [String: Double] = [:]
-        for c in M.conns { let k = key(c); if k.isEmpty || k == "?" { continue }; m[k, default: 0] += weight(c) }
-        return m.sorted { $0.value > $1.value }.prefix(5).map { Rank(name: $0.key, value: $0.value) }
-    }
-    private var bytesW: (Conn) -> Double { { Double($0.up + $0.down) } }
-
-    private var policyGroupRows: [Rank] { agg({ $0.group }, weight: bytesW) }
-    private var topHosts: [Rank] { agg({ $0.host }, weight: bytesW) }
-    private var topNodes: [Rank] { agg({ $0.node }, weight: bytesW) }
-    private var topSources: [Rank] { agg({ $0.srcIP }, weight: bytesW) }
-    private var topProcs: [Rank] { agg({ $0.process }, weight: bytesW) }
-    private var topRules: [Rank] { agg({ $0.ruleType }, weight: { _ in 1 }) }
-    private var targetClass: [Rank] {
-        agg({ c in
-            if c.category == "reject" { return "拦截" }
-            if isPrivate(c.dstIP) { return "内网" }
-            return "公网"
-        }, weight: bytesW)
-    }
-    private func isPrivate(_ ip: String) -> Bool {
-        ip.hasPrefix("10.") || ip.hasPrefix("192.168.") || ip.hasPrefix("172.16.") ||
-        ip.hasPrefix("198.18.") || ip.hasPrefix("127.") || ip.hasPrefix("fd") || ip == "?"
-    }
+    private var uniqueHosts: Int { M.dash.uniqueHosts }
+    private var policyGroupRows: [Rank] { M.dash.policyGroups }
+    private var topHosts: [Rank] { M.dash.hosts }
+    private var topNodes: [Rank] { M.dash.nodes }
+    private var topSources: [Rank] { M.dash.sources }
+    private var topProcs: [Rank] { M.dash.procs }
+    private var topRules: [Rank] { M.dash.rules }
+    private var targetClass: [Rank] { M.dash.targets }
 
     private var distribution: some View {
-        let direct = M.conns.filter { $0.category == "direct" }.reduce(0.0) { $0 + Double($1.up + $1.down) }
-        let proxy  = M.conns.filter { $0.category == "proxy" }.reduce(0.0) { $0 + Double($1.up + $1.down) }
-        let reject = M.conns.filter { $0.category == "reject" }.reduce(0.0) { $0 + Double($1.up + $1.down) }
+        let direct = M.dash.directBytes
+        let proxy  = M.dash.proxyBytes
+        let reject = M.dash.rejectBytes
         let total = max(direct + proxy + reject, 1)
         return VStack(alignment: .leading, spacing: 10) {
             Text(fmtBytes(direct + proxy + reject)).font(.system(size: 26, weight: .bold))
@@ -140,6 +122,18 @@ struct DashboardPage: View {
 // MARK: - Components
 
 struct Rank: Identifiable { let id = UUID(); let name: String; let value: Double }
+
+struct DashStats {
+    var policyGroups: [Rank] = []
+    var hosts: [Rank] = []
+    var nodes: [Rank] = []
+    var sources: [Rank] = []
+    var procs: [Rank] = []
+    var rules: [Rank] = []
+    var targets: [Rank] = []
+    var directBytes = 0.0, proxyBytes = 0.0, rejectBytes = 0.0
+    var uniqueHosts = 0
+}
 
 struct RankList: View {
     enum Mode { case bytes, count }
