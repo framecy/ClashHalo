@@ -631,68 +631,169 @@ struct SdwanPage: View {
 
 struct ConfigPage: View {
     @EnvironmentObject var M: AppModel
-    @State private var mode = "yaml"            // yaml | form
-    @State private var text = ""
-    @State private var dirty = false
-    @State private var validation: (ok: Bool, msg: String)? = nil
-    @State private var applying = false
-
-    static let configPath = NSHomeDirectory() + "/Library/Application Support/ClashPow/config.yaml"
+    @State private var editingID: String? = nil
+    @State private var showImportRemote = false
+    @State private var showAddLocal = false
 
     var body: some View {
-        VStack(spacing: 0) {
-            // toolbar
-            HStack(spacing: 10) {
-                Picker("", selection: $mode) {
-                    Text("YAML 源码").tag("yaml"); Text("结构化表单").tag("form")
-                }.pickerStyle(.segmented).frame(width: 220).labelsHidden()
+        ScrollView {
+            VStack(alignment: .leading, spacing: 14) {
+                HStack {
+                    Text("本地配置").font(.system(size: 13, weight: .semibold)).foregroundColor(.secondary)
+                    Text("(\(M.store.profiles.count))").font(.caption).foregroundColor(.secondary)
+                    Spacer()
+                    Menu {
+                        Button { showImportRemote = true } label: { Label("导入远程配置或订阅节点", systemImage: "icloud.and.arrow.down") }
+                        Button { showAddLocal = true } label: { Label("添加本地配置", systemImage: "doc.badge.plus") }
+                    } label: {
+                        Label("添加", systemImage: "plus")
+                    }.menuStyle(.borderlessButton).fixedSize()
+                }
+
+                if M.store.profiles.isEmpty {
+                    ContentUnavailable("暂无配置，点击右上角“+”导入", "doc.text")
+                }
+                LazyVGrid(columns: [GridItem(.adaptive(minimum: 260), spacing: 12)], spacing: 12) {
+                    ForEach(M.store.profiles) { p in profileCard(p) }
+                }
+            }
+            .padding(18)
+        }
+        .sheet(isPresented: $showImportRemote) { ImportRemoteSheet() }
+        .sheet(isPresented: $showAddLocal) { AddLocalSheet() }
+        .sheet(item: Binding(get: { editingID.map { IDBox(id: $0) } }, set: { editingID = $0?.id })) { box in
+            ProfileEditSheet(profileID: box.id)
+        }
+    }
+
+    struct IDBox: Identifiable { let id: String }
+
+    private func profileCard(_ p: Profile) -> some View {
+        let active = M.store.activeID == p.id
+        return VStack(alignment: .leading, spacing: 10) {
+            HStack(spacing: 8) {
+                Image(systemName: p.source == "remote" ? "icloud.fill" : "doc.fill")
+                    .foregroundColor(active ? M.accent : .secondary)
+                Text(p.name).font(.callout).fontWeight(.semibold).lineLimit(1)
                 Spacer()
-                if let v = validation {
-                    Label(v.ok ? "校验通过" : v.msg,
-                          systemImage: v.ok ? "checkmark.circle.fill" : "exclamationmark.triangle.fill")
-                        .font(.caption).foregroundColor(v.ok ? .green : .red).lineLimit(1)
-                }
-                Button("重新载入") { reload() }.controlSize(.small)
-                Button {
-                    apply()
-                } label: {
-                    if applying { ProgressView().controlSize(.small) }
-                    else { Label("应用并热重载", systemImage: "checkmark") }
-                }
-                .controlSize(.small).buttonStyle(.borderedProminent).tint(M.accent)
-                .disabled(applying || !dirty)
+                if active { Image(systemName: "checkmark.circle.fill").foregroundColor(M.accent) }
             }
-            .padding(.horizontal, 14).padding(.vertical, 10)
+            HStack(spacing: 6) {
+                Text(p.source == "remote" ? "远程" : "本地").font(.caption2)
+                    .padding(.horizontal, 6).padding(.vertical, 1)
+                    .background(Capsule().fill(Color.primary.opacity(0.08)))
+                Spacer()
+                Text(relTime(p.updatedAt)).font(.caption2).foregroundColor(.secondary)
+            }
+        }
+        .padding(14)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(RoundedRectangle(cornerRadius: 12).fill(Color(nsColor: .controlBackgroundColor)))
+        .overlay(RoundedRectangle(cornerRadius: 12).stroke(active ? M.accent : Color.primary.opacity(0.08), lineWidth: active ? 2 : 1))
+        .contentShape(Rectangle())
+        .onTapGesture { if !active { M.activateProfile(p.id) } }
+        .contextMenu {
+            if !active { Button { M.activateProfile(p.id) } label: { Label("设为活动", systemImage: "checkmark") } }
+            Button { editingID = p.id } label: { Label("编辑 YAML…", systemImage: "pencil") }
+            if p.source == "remote" {
+                Button { Task { _ = await M.store.updateRemote(p.id); if active { M.activateProfile(p.id) }; M.showToast("已更新订阅") } } label: { Label("更新订阅", systemImage: "arrow.clockwise") }
+            }
             Divider()
+            Button(role: .destructive) { M.store.remove(p.id) } label: { Label("删除", systemImage: "trash") }
+                .disabled(active)
+        }
+    }
 
-            if mode == "yaml" {
-                YAMLEditor(text: $text, onChange: { dirty = true; validation = nil })
-            } else {
-                FormEditor(configs: M.configs, accent: M.accent)
+    private func relTime(_ d: Date) -> String {
+        let s = Int(Date().timeIntervalSince(d))
+        if s < 60 { return "刚刚" }
+        if s < 3600 { return "\(s/60) 分钟前" }
+        if s < 86400 { return "\(s/3600) 小时前" }
+        return "\(s/86400) 天前"
+    }
+}
+
+// MARK: - Import / edit sheets
+
+struct ImportRemoteSheet: View {
+    @EnvironmentObject var M: AppModel
+    @Environment(\.dismiss) var dismiss
+    @State private var name = ""; @State private var url = ""; @State private var busy = false; @State private var err = ""
+    var body: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            Text("导入远程配置或订阅").font(.headline)
+            TextField("名称", text: $name).textFieldStyle(.roundedBorder)
+            TextField("https://…/clash 或订阅链接", text: $url).textFieldStyle(.roundedBorder).font(.callout.monospaced())
+            if !err.isEmpty { Text(err).font(.caption).foregroundColor(.red) }
+            HStack {
+                Button("取消") { dismiss() }
+                Spacer()
+                Button { Task { await go() } } label: { if busy { ProgressView().controlSize(.small) } else { Text("导入") } }
+                    .buttonStyle(.borderedProminent).disabled(url.isEmpty || busy)
             }
-        }
-        .onAppear { if text.isEmpty { reload() } }
+        }.padding(20).frame(width: 440)
     }
-
-    private func reload() {
-        text = (try? String(contentsOfFile: Self.configPath, encoding: .utf8))
-            ?? "# 配置文件未找到：\(Self.configPath)\n# 引擎首次启动会生成默认配置\n"
-        dirty = false; validation = nil
+    private func go() async {
+        busy = true; err = ""
+        let nm = name.isEmpty ? (URL(string: url)?.host ?? "远程配置") : name
+        if let id = await M.store.importRemote(name: nm, url: url) { M.activateProfile(id); dismiss() }
+        else { err = "下载或解析失败，请检查链接" }
+        busy = false
     }
+}
 
-    private func apply() {
-        applying = true
-        let yaml = text
-        Task {
-            // persist to the managed config file…
-            try? yaml.write(toFile: Self.configPath, atomically: true, encoding: .utf8)
-            // …and apply live via the engine (validates + rolls back on error)
-            let (ok, err) = await M.engine.setConfig(yaml)
-            applying = false; dirty = false
-            validation = (ok, ok ? "校验通过" : (err ?? "校验失败"))
-            M.showToast(ok ? "配置已热重载" : "配置错误，已回滚")
-            if ok { await M.reconnect() }
+struct AddLocalSheet: View {
+    @EnvironmentObject var M: AppModel
+    @Environment(\.dismiss) var dismiss
+    @State private var name = ""
+    var body: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            Text("添加本地配置").font(.headline)
+            TextField("名称", text: $name).textFieldStyle(.roundedBorder)
+            HStack {
+                Button("从文件导入…") { pickFile() }
+                Spacer()
+                Button("取消") { dismiss() }
+            }
+        }.padding(20).frame(width: 400)
+    }
+    private func pickFile() {
+        let panel = NSOpenPanel()
+        panel.allowedContentTypes = [.yaml, .plainText]
+        panel.allowsMultipleSelection = false
+        if panel.runModal() == .OK, let url = panel.url,
+           url.startAccessingSecurityScopedResource(),
+           let content = try? String(contentsOf: url, encoding: .utf8) {
+            defer { url.stopAccessingSecurityScopedResource() }
+            let nm = name.isEmpty ? url.deletingPathExtension().lastPathComponent : name
+            let id = M.store.addLocal(name: nm, content: content)
+            M.activateProfile(id); dismiss()
         }
+    }
+}
+
+struct ProfileEditSheet: View {
+    @EnvironmentObject var M: AppModel
+    @Environment(\.dismiss) var dismiss
+    let profileID: String
+    @State private var text = ""
+    var body: some View {
+        VStack(spacing: 0) {
+            HStack {
+                Text("编辑配置").font(.headline)
+                Spacer()
+                Button("取消") { dismiss() }
+                Button("保存并应用") {
+                    M.store.saveContent(profileID, text)
+                    if M.store.activeID == profileID { M.activateProfile(profileID) }
+                    dismiss()
+                }.buttonStyle(.borderedProminent)
+            }.padding(14)
+            Divider()
+            YAMLEditor(text: $text, onChange: {})
+        }
+        .frame(width: 680, height: 560)
+        .onAppear { text = M.store.content(profileID) }
     }
 }
 
