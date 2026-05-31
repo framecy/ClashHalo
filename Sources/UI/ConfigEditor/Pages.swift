@@ -14,8 +14,12 @@ struct ProxiesPage: View {
                     Text("\(M.groups.count) 组 · \(M.nodes.count) 节点")
                         .font(.caption).foregroundColor(.secondary)
                     Spacer()
-                    Button { M.testAll() } label: { Label("全部测速", systemImage: "bolt.fill") }
+                    Button {
+                        collapsed = collapsed.count == M.groups.count ? [] : Set(M.groups.map(\.id))
+                    } label: { Label(collapsed.count == M.groups.count ? "全部展开" : "全部折叠", systemImage: "rectangle.expand.vertical") }
                         .controlSize(.small)
+                    Button { M.testAll() } label: { Label("全部测速", systemImage: "bolt.fill") }
+                        .controlSize(.small).tint(M.accent)
                 }
                 if M.groups.isEmpty {
                     ContentUnavailable("正在加载代理…", "arrow.triangle.2.circlepath")
@@ -26,25 +30,46 @@ struct ProxiesPage: View {
         }
     }
 
+    private func groupIcon(_ type: String) -> String {
+        switch type {
+        case "URLTest": return "bolt.badge.automatic.fill"
+        case "Fallback": return "arrow.uturn.down.circle.fill"
+        case "LoadBalance": return "arrow.left.arrow.right.circle.fill"
+        case "Selector": return "hand.tap.fill"
+        default: return "circle.grid.2x2.fill"
+        }
+    }
+
     private func groupCard(_ g: ProxyGroup) -> some View {
         let isOpen = !collapsed.contains(g.id)
+        let cur = g.now
+        let curDelay = M.nodes[cur]?.delay ?? 0
         return Card {
             VStack(spacing: 0) {
-                // header
                 Button {
-                    if isOpen { collapsed.insert(g.id) } else { collapsed.remove(g.id) }
+                    withAnimation(.easeInOut(duration: 0.18)) {
+                        if isOpen { collapsed.insert(g.id) } else { collapsed.remove(g.id) }
+                    }
                 } label: {
-                    HStack(spacing: 9) {
-                        Image(systemName: "chevron.right")
-                            .font(.caption2).foregroundColor(.secondary)
+                    HStack(spacing: 10) {
+                        Image(systemName: "chevron.right").font(.caption2).foregroundColor(.secondary)
                             .rotationEffect(.degrees(isOpen ? 90 : 0))
+                        Image(systemName: groupIcon(g.type)).font(.callout).foregroundColor(M.accent).frame(width: 20)
                         VStack(alignment: .leading, spacing: 2) {
-                            Text(g.name).font(.callout).fontWeight(.semibold)
-                            Text("\(g.type) · \(g.now)").font(.caption).foregroundColor(.secondary).lineLimit(1)
+                            HStack(spacing: 6) {
+                                Text(g.name).font(.callout).fontWeight(.semibold)
+                                Text(g.type).font(.system(size: 9)).foregroundColor(.secondary)
+                                    .padding(.horizontal, 5).padding(.vertical, 1)
+                                    .background(Capsule().fill(Color.primary.opacity(0.08)))
+                            }
+                            HStack(spacing: 5) {
+                                Text(cur).font(.caption).foregroundColor(M.accent).lineLimit(1)
+                                if curDelay > 0 { Text("\(curDelay)ms").font(.system(size: 9, design: .monospaced)).foregroundColor(delayColor(curDelay)) }
+                            }
                         }
                         Spacer()
                         Button { M.testGroup(g) } label: { Image(systemName: "bolt") }
-                            .buttonStyle(.borderless).controlSize(.small)
+                            .buttonStyle(.borderless).controlSize(.small).help("测速")
                         Text("\(g.all.count)").font(.caption2)
                             .padding(.horizontal, 7).padding(.vertical, 2)
                             .background(Capsule().fill(Color.primary.opacity(0.08)))
@@ -55,7 +80,7 @@ struct ProxiesPage: View {
 
                 if isOpen {
                     Divider().padding(.vertical, 8)
-                    LazyVGrid(columns: [GridItem(.adaptive(minimum: 150), spacing: 8)], spacing: 8) {
+                    LazyVGrid(columns: [GridItem(.adaptive(minimum: 168), spacing: 8)], spacing: 8) {
                         ForEach(g.all, id: \.self) { name in nodeChip(group: g, name: name) }
                     }
                 }
@@ -64,7 +89,7 @@ struct ProxiesPage: View {
     }
 
     private func nodeChip(group: ProxyGroup, name: String) -> some View {
-        let on = group.now == name
+        let on = (group.now) == name
         let node = M.nodes[name]
         let isGroup = M.groups.contains { $0.id == name }
         let delay = node?.delay ?? 0
@@ -72,22 +97,29 @@ struct ProxiesPage: View {
         return Button {
             if group.selectable { M.select(group: group.id, name: name) }
         } label: {
-            HStack(spacing: 6) {
-                VStack(alignment: .leading, spacing: 1) {
+            VStack(alignment: .leading, spacing: 5) {
+                HStack(spacing: 6) {
                     Text(name).font(.caption).fontWeight(on ? .semibold : .regular)
                         .foregroundColor(on ? M.accent : .primary).lineLimit(1)
-                    Text(isGroup ? "组" : (node?.type ?? "—")).font(.system(size: 9)).foregroundColor(.secondary)
+                    Spacer(minLength: 2)
+                    if on { Image(systemName: "checkmark.circle.fill").font(.caption2).foregroundColor(M.accent) }
                 }
-                Spacer(minLength: 2)
-                if busy {
-                    ProgressView().controlSize(.mini).scaleEffect(0.6)
-                } else if !isGroup {
-                    Text(fmtDelay(delay)).font(.system(size: 10, design: .monospaced)).foregroundColor(delayColor(delay))
+                HStack(spacing: 6) {
+                    Text(isGroup ? "组" : (node?.type ?? "—")).font(.system(size: 9)).foregroundColor(.secondary)
+                    Spacer(minLength: 2)
+                    if busy {
+                        ProgressView().controlSize(.mini).scaleEffect(0.55)
+                    } else if !isGroup {
+                        Circle().fill(delayColor(delay)).frame(width: 5, height: 5)
+                        Text(fmtDelay(delay)).font(.system(size: 10, design: .monospaced)).foregroundColor(delayColor(delay))
+                    } else {
+                        Image(systemName: "chevron.right.circle").font(.system(size: 9)).foregroundColor(.secondary)
+                    }
                 }
             }
             .padding(.horizontal, 10).padding(.vertical, 7)
             .background(RoundedRectangle(cornerRadius: 8).fill(on ? M.accent.opacity(0.12) : Color.primary.opacity(0.04)))
-            .overlay(RoundedRectangle(cornerRadius: 8).stroke(on ? M.accent.opacity(0.4) : Color.clear))
+            .overlay(RoundedRectangle(cornerRadius: 8).stroke(on ? M.accent.opacity(0.45) : Color.clear, lineWidth: 1))
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
