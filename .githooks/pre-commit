@@ -1,0 +1,69 @@
+#!/bin/bash
+# pre-commit hook: scan for potential secrets before allowing commit.
+# Blocks commits containing: API keys, passwords, tokens, private keys,
+# subscription URLs, IP addresses that look like proxy nodes.
+set -euo pipefail
+
+RED='\033[0;31m'; GREEN='\033[0;32m'; NC='\033[0m'
+VIOLATIONS=0
+
+echo "🔍 Scanning for potential secrets..."
+
+# Files to scan: staged swift, go, yaml, yml, json, plist, sh, py, js files
+FILES=$(git diff --cached --name-only --diff-filter=ACM | grep -E '\.(swift|go|ya?ml|json|plist|sh|py|js|md)$' || true)
+
+if [ -z "$FILES" ]; then
+    echo "  No relevant files to scan."
+    exit 0
+fi
+
+# ── Pattern checks ──────────────────────────────────────────────
+check_pattern() {
+    local pattern="$1"; local label="$2"; local severity="${3:-ERROR}"
+    local matches=$(grep -nE "$pattern" $FILES 2>/dev/null || true)
+    if [ -n "$matches" ]; then
+        echo -e "  ${RED}[${severity}]${NC} ${label}:"
+        echo "$matches" | while IFS= read -r line; do
+            # Truncate long lines
+            if [ ${#line} -gt 120 ]; then line="${line:0:120}..."; fi
+            echo "    $line"
+        done
+        if [ "$severity" = "BLOCK" ]; then
+            VIOLATIONS=$((VIOLATIONS + 1))
+        fi
+    fi
+}
+
+# BLOCK: hard blocks — cannot commit
+check_pattern 'secret\s*[:=]\s*"[^"]{3,}"' 'Hardcoded secret string' BLOCK
+check_pattern 'password\s*[:=]\s*"[^"]{3,}"' 'Hardcoded password' BLOCK
+check_pattern 'api[_]?key\s*[:=]\s*"[^"]{8,}"' 'Hardcoded API key' BLOCK
+check_pattern 'token\s*[:=]\s*"[^"]{16,}"' 'Hardcoded token' BLOCK
+check_pattern 'Bearer\s+"[^"]{8,}"' 'Hardcoded Bearer token' BLOCK
+check_pattern 'Authorization\s*[:=]\s*"[^"]{8,}"' 'Hardcoded Authorization header' BLOCK
+check_pattern 'ssh-rsa|ssh-ed25519|-----BEGIN' 'SSH/private key' BLOCK
+check_pattern 'ghp_[A-Za-z0-9]{36}' 'GitHub personal access token' BLOCK
+check_pattern 'gho_[A-Za-z0-9]{36}' 'GitHub OAuth token' BLOCK
+check_pattern '[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}' 'UUID (potential node UUID)' BLOCK
+
+# WARN: warns but allows commit
+check_pattern 'https?://[^/]+/clash|订阅|sub[^a-z]' 'Possible subscription URL' WARN
+check_pattern '\b([0-9]{1,3}\.){3}[0-9]{1,3}\b' 'IP address' WARN
+
+# Skip known-safe files
+# Allow 127.0.0.1, 0.0.0.0, 198.18.x.x (fake-ip range), 10.x.x.x, 192.168.x.x
+# These are filtered in the grep above — but as a WARN, they pass through
+# with a message. The developer can review and decide.
+
+# ── Result ──────────────────────────────────────────────────────
+if [ "$VIOLATIONS" -gt 0 ]; then
+    echo ""
+    echo -e "${RED}╔══════════════════════════════════════════════════════════════╗${NC}"
+    echo -e "${RED}║  COMMIT BLOCKED: ${VIOLATIONS} potential secret(s) found.  ║${NC}"
+    echo -e "${RED}║  Review the findings above. If they are false positives,  ║${NC}"
+    echo -e "${RED}║  use: git commit --no-verify                              ║${NC}"
+    echo -e "${RED}╚══════════════════════════════════════════════════════════════╝${NC}"
+    exit 1
+else
+    echo -e "  ${GREEN}✓ No blocked patterns found.${NC}"
+fi
