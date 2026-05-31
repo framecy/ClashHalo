@@ -960,20 +960,8 @@ struct GeneralPage: View {
                     Text("修改下载源 URL 后会在下次更新时生效。")
                         .font(.caption2).foregroundColor(.secondary).padding(.top, 6)
                 }
-                // 内核 + 应用
-                Card(title: "内核", icon: "cpu") {
-                    HStack {
-                        Circle().fill(M.reachable ? Color.green : Color.red).frame(width: 8, height: 8)
-                        Text(statusLine).font(.caption).foregroundColor(.secondary)
-                        Spacer()
-                        if M.engineManaged {
-                            Text("引擎托管 · 运行 \(uptimeText)").font(.caption2.monospaced()).foregroundColor(.secondary)
-                            Button("重启", systemImage: "arrow.triangle.2.circlepath") {
-                                Task { await M.engine.restart(); try? await Task.sleep(nanoseconds: 3_000_000_000); await M.reconnect(); M.showToast("内核已重启") }
-                            }.buttonStyle(.bordered).tint(.orange).controlSize(.small)
-                        }
-                    }
-                }
+                // 内核管理（版本 / 升级 / Alpha 切换 / 重启）
+                KernelCard()
                 Card(title: "外观", icon: "paintbrush") {
                     VStack(spacing: 10) {
                         Toggle("深色模式", isOn: $M.dark)
@@ -1411,5 +1399,64 @@ struct RuleEditSheet: View {
                 Button("保存") { onSave(text) }.buttonStyle(.borderedProminent).disabled(text.isEmpty)
             }
         }.padding(20).frame(width: 420)
+    }
+}
+
+// MARK: - Kernel management card (version / channel / upgrade / restart)
+
+struct KernelCard: View {
+    @EnvironmentObject var M: AppModel
+    @StateObject private var km = KernelManager.shared
+    var body: some View {
+        Card(title: "内核管理", icon: "cpu") {
+            VStack(spacing: 10) {
+                HStack {
+                    Circle().fill(M.reachable ? Color.green : Color.red).frame(width: 8, height: 8)
+                    Text(M.reachable ? "运行中 · mihomo \(M.version)" : "未连接").font(.caption).foregroundColor(.secondary)
+                    Spacer()
+                    if M.engineManaged {
+                        Button("重启内核", systemImage: "arrow.triangle.2.circlepath") {
+                            Task { await M.engine.restart(); try? await Task.sleep(nanoseconds: 3_000_000_000); await M.reconnect(); M.showToast("内核已重启") }
+                        }.buttonStyle(.bordered).tint(.orange).controlSize(.small)
+                    }
+                }
+                Divider()
+                HStack {
+                    Text("更新通道").font(.caption)
+                    Spacer()
+                    Picker("", selection: $km.channel) {
+                        Text("正式版").tag("stable"); Text("Alpha").tag("alpha")
+                    }.pickerStyle(.segmented).frame(width: 160).labelsHidden()
+                }
+                HStack {
+                    if km.checking { ProgressView().controlSize(.small) }
+                    else if !km.latestTag.isEmpty {
+                        Text("最新：\(km.latestTag)").font(.caption.monospaced()).foregroundColor(.secondary)
+                    } else {
+                        Text("点击检查可用内核版本").font(.caption).foregroundColor(.secondary)
+                    }
+                    Spacer()
+                    Button("检查更新") { Task { await km.check() } }.controlSize(.small).disabled(km.checking)
+                    if !km.assetURL.isEmpty {
+                        Button {
+                            Task { await km.download() }
+                        } label: {
+                            if km.downloading { ProgressView().controlSize(.small) } else { Text("下载 \(km.channel == "alpha" ? "Alpha" : "正式版")") }
+                        }.controlSize(.small).buttonStyle(.borderedProminent).tint(M.accent).disabled(km.downloading)
+                    }
+                }
+                if !km.installedTags.isEmpty {
+                    HStack {
+                        Text("已下载内核：").font(.caption2).foregroundColor(.secondary)
+                        Text(km.installedTags.joined(separator: ", ")).font(.caption2.monospaced()).foregroundColor(.secondary)
+                        Spacer()
+                    }
+                }
+                if !km.note.isEmpty { Text(km.note).font(.caption2).foregroundColor(.secondary).frame(maxWidth: .infinity, alignment: .leading) }
+                Text("下载源 MetaCubeX/mihomo releases。当前内核内嵌于引擎；下载的内核用于切换通道（监管进程模式将于后续启用）。")
+                    .font(.caption2).foregroundColor(.secondary).frame(maxWidth: .infinity, alignment: .leading)
+            }
+        }
+        .onAppear { km.scanInstalled() }
     }
 }
