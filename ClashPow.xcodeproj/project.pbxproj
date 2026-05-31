@@ -1,0 +1,81 @@
+// !$*UTF8*$!
+{
+	archiveVersion = 1;
+	classes = {
+	};
+	objectVersion = 60;
+	objects = {
+
+/* Begin PBXBuildFile section */
+		A001 /* ClashPowApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = B001; };
+		A002 /* ContentView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B002; };
+		A004 /* DashboardView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B004; };
+		A005 /* Pages.swift in Sources */ = {isa = PBXBuildFile; fileRef = B005; };
+		A006 /* Models.swift in Sources */ = {isa = PBXBuildFile; fileRef = B006; };
+		A007 /* EngineClient.swift in Sources */ = {isa = PBXBuildFile; fileRef = B007; };
+		A008 /* IOSurfaceReader.swift in Sources */ = {isa = PBXBuildFile; fileRef = B008; };
+		A015 /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = B015; };
+/* End PBXBuildFile section */
+
+/* Begin PBXFileReference section */
+		F001 /* ClashPow.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; path = ClashPow.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		B001 /* ClashPowApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ClashPowApp.swift; sourceTree = "<group>"; };
+		B002 /* ContentView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ContentView.swift; sourceTree = "<group>"; };
+		B004 /* DashboardView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DashboardView.swift; sourceTree = "<group>"; };
+		B005 /* Pages.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Pages.swift; sourceTree = "<group>"; };
+		B006 /* Models.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Models.swift; sourceTree = "<group>"; };
+		B007 /* EngineClient.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EngineClient.swift; sourceTree = "<group>"; };
+		B008 /* IOSurfaceReader.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = IOSurfaceReader.swift; sourceTree = "<group>"; };
+		B015 /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
+		F010 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = Info.plist; sourceTree = "<group>"; };
+/* End PBXFileReference section */
+
+/* Begin PBXFrameworksBuildPhase section */
+		FRAMEWORKS = {isa = PBXFrameworksBuildPhase; buildActionMask = 2147483647; files = (); runOnlyForDeploymentPostprocessing = 0; };
+/* End PBXFrameworksBuildPhase section */
+
+/* Begin PBXGroup section */
+		G_ROOT = {isa = PBXGroup; children = (G_SOURCES, G_PRODUCTS); sourceTree = "<group>"; };
+		G_SOURCES = {isa = PBXGroup; children = (G_APP, G_UI, G_XPC, G_METAL, G_MODEL, G_RESOURCES, G_INFOPLIST); path = Sources; sourceTree = "<group>"; };
+		G_APP = {isa = PBXGroup; children = (B001, B002); name = App; path = App; sourceTree = "<group>"; };
+		G_UI = {isa = PBXGroup; children = (G_UI_DASHBOARD, G_UI_CONFIGEDITOR); name = UI; path = UI; sourceTree = "<group>"; };
+		G_UI_DASHBOARD = {isa = PBXGroup; children = (B004); name = Dashboard; path = Dashboard; sourceTree = "<group>"; };
+		G_UI_CONFIGEDITOR = {isa = PBXGroup; children = (B005); name = ConfigEditor; path = ConfigEditor; sourceTree = "<group>"; };
+		G_XPC = {isa = PBXGroup; children = (B007); name = XPC; path = XPC; sourceTree = "<group>"; };
+		G_METAL = {isa = PBXGroup; children = (B008); name = Metal; path = Metal; sourceTree = "<group>"; };
+		G_MODEL = {isa = PBXGroup; children = (B006); name = Model; path = Model; sourceTree = "<group>"; };
+		G_RESOURCES = {isa = PBXGroup; children = (B015); name = Resources; path = Resources; sourceTree = "<group>"; };
+		G_INFOPLIST = {isa = PBXGroup; children = (F010); name = "Supporting Files"; sourceTree = "<group>"; };
+		G_PRODUCTS = {isa = PBXGroup; children = (F001); name = Products; sourceTree = "<group>"; };
+/* End PBXGroup section */
+
+/* Begin PBXNativeTarget section */
+		TARGET_CLASHPOW = {isa = PBXNativeTarget; buildConfigurationList = BUILD_CONFIGS; buildPhases = (PHASE_SOURCES, PHASE_RESOURCES, FRAMEWORKS); name = ClashPow; productName = ClashPow; productReference = F001; productType = "com.apple.product-type.application"; };
+/* End PBXNativeTarget section */
+
+/* Begin PBXProject section */
+		PROJECT_ROOT = {isa = PBXProject; attributes = { BuildIndependentTargetsInParallel = 1; LastUpgradeCheck = 1740; }; buildConfigurationList = BUILD_CONFIGS_PROJECT; compatibilityVersion = "Xcode 15.0"; developmentRegion = en; mainGroup = G_ROOT; productRefGroup = G_PRODUCTS; projectDirPath = ""; targets = (TARGET_CLASHPOW); };
+/* End PBXProject section */
+
+/* Begin PBXResourcesBuildPhase section */
+		PHASE_RESOURCES = {isa = PBXResourcesBuildPhase; buildActionMask = 2147483647; files = (A015); };
+/* End PBXResourcesBuildPhase section */
+
+/* Begin PBXSourcesBuildPhase section */
+		PHASE_SOURCES = {isa = PBXSourcesBuildPhase; buildActionMask = 2147483647; files = (A001, A002, A004, A005, A006, A007, A008); };
+/* End PBXSourcesBuildPhase section */
+
+/* Begin XCBuildConfiguration section */
+		CFG_DEBUG = {isa = XCBuildConfiguration; buildSettings = { MACOSX_DEPLOYMENT_TARGET = 14.0; SDKROOT = macosx; SWIFT_OPTIMIZATION_LEVEL = "-Onone"; SWIFT_VERSION = 5.0; }; name = Debug; };
+		CFG_DEBUG_TARGET = {isa = XCBuildConfiguration; buildSettings = { ARCHS = arm64; CODE_SIGN_STYLE = Automatic; PRODUCT_BUNDLE_IDENTIFIER = com.clashpow.app; PRODUCT_NAME = ClashPow; INFOPLIST_FILE = Sources/Info.plist; GENERATE_INFOPLIST_FILE = YES; CURRENT_PROJECT_VERSION = 1; MARKETING_VERSION = 0.1.0; ENABLE_HARDENED_RUNTIME = YES; ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon; CODE_SIGN_ENTITLEMENTS = ClashPow.entitlements; LD_RUNPATH_SEARCH_PATHS = ("$(inherited)", "@executable_path/../Frameworks"); }; name = Debug; };
+		CFG_RELEASE = {isa = XCBuildConfiguration; buildSettings = { MACOSX_DEPLOYMENT_TARGET = 14.0; SDKROOT = macosx; SWIFT_OPTIMIZATION_LEVEL = "-O"; SWIFT_VERSION = 5.0; }; name = Release; };
+		CFG_RELEASE_TARGET = {isa = XCBuildConfiguration; buildSettings = { ARCHS = arm64; CODE_SIGN_STYLE = Automatic; PRODUCT_BUNDLE_IDENTIFIER = com.clashpow.app; PRODUCT_NAME = ClashPow; INFOPLIST_FILE = Sources/Info.plist; GENERATE_INFOPLIST_FILE = YES; CURRENT_PROJECT_VERSION = 1; MARKETING_VERSION = 0.1.0; ENABLE_HARDENED_RUNTIME = YES; ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon; CODE_SIGN_ENTITLEMENTS = ClashPow.entitlements; LD_RUNPATH_SEARCH_PATHS = ("$(inherited)", "@executable_path/../Frameworks"); }; name = Release; };
+/* End XCBuildConfiguration section */
+
+/* Begin XCConfigurationList section */
+		BUILD_CONFIGS = {isa = XCConfigurationList; buildConfigurations = (CFG_DEBUG_TARGET, CFG_RELEASE_TARGET); defaultConfigurationName = Release; };
+		BUILD_CONFIGS_PROJECT = {isa = XCConfigurationList; buildConfigurations = (CFG_DEBUG, CFG_RELEASE); defaultConfigurationName = Release; };
+/* End XCConfigurationList section */
+	};
+	rootObject = PROJECT_ROOT;
+}
