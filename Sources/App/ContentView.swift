@@ -4,67 +4,99 @@ import SwiftUI
 struct ContentView: View {
     @EnvironmentObject var M: AppModel
 
-    private let tabs: [(id: String, label: String, icon: String, group: String)] = [
-        ("dashboard", "仪表盘", "gauge.with.dots.needle.33percent", "概览"),
-        ("proxies", "代理", "globe.asia.australia.fill", "代理"),
-        ("connections", "连接", "point.3.connected.trianglepath.dotted", "代理"),
-        ("sdwan", "SD‑WAN", "network", "代理"),
-        ("rules", "规则", "list.bullet.rectangle", "网络"),
-        ("dns", "DNS", "server.rack", "网络"),
-        ("logs", "日志", "doc.text.magnifyingglass", "网络"),
-        ("subscriptions", "订阅", "icloud.fill", "配置"),
-        ("config", "配置", "doc.badge.gearshape", "配置"),
-        ("settings", "设置", "gearshape.fill", "配置"),
+    // grouped navigation (matches reference layout)
+    struct Tab { let id, label, icon: String }
+    private let topTabs: [Tab] = [
+        .init(id: "dashboard", label: "概览", icon: "square.grid.2x2.fill"),
+        .init(id: "connections", label: "连接", icon: "list.bullet.rectangle.fill"),
+        .init(id: "proxies", label: "策略", icon: "diamond.fill"),
+        .init(id: "rules", label: "规则", icon: "line.3.horizontal.decrease"),
+        .init(id: "config", label: "配置", icon: "doc.text.fill"),
+        .init(id: "logs", label: "日志", icon: "doc.plaintext.fill"),
     ]
-    private let titles = ["dashboard":"仪表盘","proxies":"代理","connections":"连接","sdwan":"SD‑WAN 共存","rules":"分流规则","dns":"DNS","logs":"实时日志","subscriptions":"订阅管理","config":"配置","settings":"设置"]
+    private let engineTabs: [Tab] = [
+        .init(id: "general", label: "通用", icon: "gearshape.fill"),
+        .init(id: "network", label: "网络", icon: "network"),
+        .init(id: "dns", label: "DNS", icon: "server.rack"),
+        .init(id: "tun", label: "TUN", icon: "shield.lefthalf.filled"),
+        .init(id: "sniffer", label: "嗅探", icon: "scope"),
+    ]
+    private let labTabs: [Tab] = [
+        .init(id: "map", label: "地图", icon: "map.fill"),
+    ]
+
+    private let titles: [String: String] = [
+        "dashboard":"概览","connections":"连接","proxies":"策略","rules":"分流规则",
+        "config":"配置","logs":"实时日志","general":"通用","network":"网络",
+        "dns":"DNS","tun":"TUN","sniffer":"嗅探","map":"网络地图",
+    ]
 
     var body: some View {
         NavigationSplitView {
             sidebar.navigationSplitViewColumnWidth(min: 208, ideal: 216, max: 240)
-        } detail: {
-            detail
-        }
+        } detail: { detail }
     }
 
     // MARK: Sidebar
 
     private var sidebar: some View {
-        List(selection: $M.route) {
-            Section { statusCard }
-            ForEach(["概览","代理","网络","配置"], id: \.self) { g in
-                Section(g) {
-                    ForEach(tabs.filter { $0.group == g }, id: \.id) { t in
-                        Label(t.label, systemImage: t.icon).tag(t.id)
-                    }
-                }
+        VStack(spacing: 0) {
+            appHeader
+            Divider().opacity(0.5)
+            List(selection: $M.route) {
+                Section { rows(topTabs) }
+                Section("引擎") { rows(engineTabs) }
+                Section("实验室") { rows(labTabs) }
             }
+            .listStyle(.sidebar)
+            .scrollContentBackground(.hidden)
+            Divider().opacity(0.5)
+            statusFooter
         }
-        .listStyle(.sidebar)
         .navigationTitle("ClashPow")
     }
 
-    private var statusCard: some View {
-        VStack(alignment: .leading, spacing: 6) {
-            HStack(spacing: 6) {
-                Circle().fill(M.reachable ? M.accent : Color.red).frame(width: 7, height: 7)
-                Text(M.reachable ? "已连接内核" : "内核未连接")
-                    .font(.caption).foregroundColor(.secondary)
-                Spacer()
-                Text(modeLabel(M.mode))
-                    .font(.caption2).padding(.horizontal, 6).padding(.vertical, 2)
-                    .background(Capsule().fill(Color.primary.opacity(0.08)))
+    private func rows(_ tabs: [Tab]) -> some View {
+        ForEach(tabs, id: \.id) { t in
+            Label(t.label, systemImage: t.icon).tag(t.id)
+        }
+    }
+
+    private var appHeader: some View {
+        HStack(spacing: 10) {
+            RoundedRectangle(cornerRadius: 9, style: .continuous)
+                .fill(LinearGradient(colors: [M.accent, M.accent.opacity(0.6)], startPoint: .topLeading, endPoint: .bottomTrailing))
+                .frame(width: 34, height: 34)
+                .overlay(Image(systemName: "bolt.fill").font(.system(size: 16, weight: .bold)).foregroundColor(.white))
+            VStack(alignment: .leading, spacing: 1) {
+                Text("ClashPow").font(.system(size: 15, weight: .semibold))
+                Text(M.reachable ? "mihomo \(M.version)" : "未连接")
+                    .font(.system(size: 11)).foregroundColor(.secondary)
             }
-            Text(M.currentProxyName())
-                .font(.callout).fontWeight(.semibold)
-                .foregroundColor(M.accent).lineLimit(1)
-            HStack(spacing: 10) {
-                Label(fmtRate(Double(M.curDown)), systemImage: "arrow.down")
-                    .font(.caption2.monospaced()).foregroundColor(.secondary)
-                Label(fmtRate(Double(M.curUp)), systemImage: "arrow.up")
-                    .font(.caption2.monospaced()).foregroundColor(.secondary)
+            Spacer()
+        }
+        .padding(.horizontal, 14).padding(.vertical, 12)
+    }
+
+    private var statusFooter: some View {
+        VStack(alignment: .leading, spacing: 7) {
+            footerRow("系统代理", on: M.systemProxyOn, accent: false)
+            footerRow(M.tunOn ? "TUN 模式" : "增强模式", on: M.tunOn, accent: true)
+            HStack(spacing: 6) {
+                Circle().fill(M.reachable ? Color.green : Color.secondary.opacity(0.4)).frame(width: 6, height: 6)
+                Text("核心 \(M.reachable ? M.version : "—")").font(.system(size: 11)).foregroundColor(.secondary)
+                Spacer()
             }
         }
-        .padding(.vertical, 4)
+        .padding(.horizontal, 16).padding(.vertical, 11)
+    }
+
+    private func footerRow(_ label: String, on: Bool, accent: Bool) -> some View {
+        HStack(spacing: 6) {
+            Circle().fill(on ? (accent ? M.accent : Color.green) : Color.secondary.opacity(0.35)).frame(width: 6, height: 6)
+            Text(label).font(.system(size: 11)).foregroundColor(on ? .primary : .secondary)
+            Spacer()
+        }
     }
 
     // MARK: Detail
@@ -72,35 +104,38 @@ struct ContentView: View {
     private var detail: some View {
         VStack(spacing: 0) {
             HStack(spacing: 10) {
-                Text(titles[M.route] ?? "ClashPow").font(.title3).fontWeight(.semibold)
+                Text(titles[M.route] ?? "ClashPow").font(.system(size: 17, weight: .semibold))
                 Spacer()
                 if M.route == "dashboard" || M.route == "proxies" {
                     Picker("", selection: Binding(get: { M.mode }, set: { M.setMode($0) })) {
                         Text("规则").tag("rule"); Text("全局").tag("global"); Text("直连").tag("direct")
-                    }
-                    .pickerStyle(.segmented).frame(width: 200).labelsHidden()
+                    }.pickerStyle(.segmented).frame(width: 200).labelsHidden()
                 }
-                HStack(spacing: 5) {
-                    Circle().fill(M.reachable ? Color.green : Color.red).frame(width: 6, height: 6)
-                    Text("mihomo \(M.version)").font(.caption2.monospaced()).foregroundColor(.secondary)
-                }
+                // master toggles
+                Button { M.toggleSystemProxy() } label: {
+                    Image(systemName: "globe").foregroundColor(M.systemProxyOn ? M.accent : .secondary)
+                }.help("系统代理").buttonStyle(.borderless)
+                Button { M.toggleTUN() } label: {
+                    Image(systemName: "shield.lefthalf.filled").foregroundColor(M.tunOn ? M.accent : .secondary)
+                }.help("TUN 模式").buttonStyle(.borderless)
             }
             .padding(.horizontal, 18).padding(.vertical, 12)
             .background(.bar)
-
             Divider()
 
             Group {
                 switch M.route {
-                case "proxies": ProxiesPage()
                 case "connections": ConnectionsPage()
-                case "sdwan": SdwanPage()
+                case "proxies": ProxiesPage()
                 case "rules": RulesPage()
-                case "dns": DnsPage()
-                case "logs": LogsPage()
-                case "subscriptions": SubscriptionsPage()
                 case "config": ConfigPage()
-                case "settings": SettingsPage()
+                case "logs": LogsPage()
+                case "general": GeneralPage()
+                case "network": NetworkPage()
+                case "dns": DnsPage()
+                case "tun": TunPage()
+                case "sniffer": SnifferPage()
+                case "map": SdwanPage()
                 default: DashboardPage()
                 }
             }
@@ -108,7 +143,7 @@ struct ContentView: View {
         }
         .overlay(alignment: .bottom) {
             if let t = M.toast {
-                Text(t).font(.caption).padding(.horizontal, 16).padding(.vertical, 9)
+                Text(t).font(.callout).padding(.horizontal, 16).padding(.vertical, 9)
                     .background(.ultraThinMaterial, in: Capsule())
                     .overlay(Capsule().stroke(Color.primary.opacity(0.1)))
                     .padding(.bottom, 26)
@@ -123,15 +158,15 @@ struct ContentView: View {
 
 struct Card<Content: View>: View {
     var title: String? = nil
-    var trailing: AnyView? = nil
+    var icon: String? = nil
     @ViewBuilder var content: () -> Content
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
-            if title != nil || trailing != nil {
-                HStack {
-                    if let title { Text(title).font(.subheadline).fontWeight(.semibold) }
+            if let title {
+                HStack(spacing: 6) {
+                    if let icon { Image(systemName: icon).font(.caption).foregroundColor(.secondary) }
+                    Text(title).font(.system(size: 13, weight: .semibold)).foregroundColor(.secondary)
                     Spacer()
-                    if let trailing { trailing }
                 }
                 .padding(.horizontal, 14).padding(.top, 12).padding(.bottom, 8)
             }
