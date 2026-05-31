@@ -32,17 +32,25 @@ struct Conn: Identifiable {
     let id: String
     let host: String
     let dstIP: String
+    let srcIP: String
     let port: String
     let network: String   // tcp / udp
     let process: String
     let chain: String     // "GroupA → node"
-    let node: String      // last chain element
+    let group: String     // first chain element (policy group)
+    let node: String      // last chain element (leaf proxy)
     let rule: String
+    let ruleType: String
     var up: Int64
     var down: Int64
     var upRate: Int64     // bytes/s (diffed)
     var downRate: Int64
     let start: String
+    var category: String {  // direct / proxy / reject
+        if node == "DIRECT" || chain.contains("DIRECT") { return "direct" }
+        if node == "REJECT" || chain.contains("REJECT") { return "reject" }
+        return "proxy"
+    }
 }
 
 struct Log: Identifiable {
@@ -98,6 +106,13 @@ final class AppModel: ObservableObject {
     // Master switches
     @Published var systemProxyOn = false
     @Published var tunOn = false
+
+    // Dashboard session aggregates
+    @Published var closedConns = 0
+    @Published var appMemoryMB = 0.0
+    @Published var hourly: [Double] = Array(repeating: 0, count: 24)  // download bytes per hour-of-day
+    private var seenConnIDs = Set<String>()
+    private var lastDownTotal: Int64 = 0
 
     // Toast
     @Published var toast: String?
@@ -186,7 +201,9 @@ final class AppModel: ObservableObject {
         let items = s.connections ?? []
         var next: [Conn] = []
         var bytes: [String: (up: Int64, down: Int64)] = [:]
+        var activeIDs = Set<String>()
         for c in items {
+            activeIDs.insert(c.id); seenConnIDs.insert(c.id)
             let prev = prevConnBytes[c.id]
             let upRate = prev.map { max(0, c.upload - $0.up) } ?? 0
             let downRate = prev.map { max(0, c.download - $0.down) } ?? 0
@@ -195,12 +212,15 @@ final class AppModel: ObservableObject {
                 id: c.id,
                 host: c.metadata.host?.isEmpty == false ? c.metadata.host! : (c.metadata.destinationIP ?? "?"),
                 dstIP: c.metadata.destinationIP ?? "?",
+                srcIP: c.metadata.sourceIP ?? "?",
                 port: c.metadata.destinationPort ?? "",
                 network: c.metadata.network.uppercased(),
                 process: c.metadata.process ?? "—",
                 chain: c.chains.reversed().joined(separator: " → "),
+                group: c.chains.last ?? "?",
                 node: c.chains.first ?? "?",
                 rule: c.rulePayload.isEmpty ? c.rule : "\(c.rule),\(c.rulePayload)",
+                ruleType: c.rule,
                 up: c.upload, down: c.download,
                 upRate: upRate, downRate: downRate,
                 start: c.start
@@ -208,6 +228,29 @@ final class AppModel: ObservableObject {
         }
         prevConnBytes = bytes
         conns = next.sorted { $0.downRate + $0.upRate > $1.downRate + $1.upRate }
+
+        // closed-connection count (this session) = seen − currently-active
+        closedConns = max(0, seenConnIDs.count - activeIDs.count)
+        // hourly download accumulation (delta of cumulative total into current hour bucket)
+        if lastDownTotal > 0, s.downloadTotal >= lastDownTotal {
+            let h = Calendar.current.component(.hour, from: Date())
+            hourly[h] += Double(s.downloadTotal - lastDownTotal)
+        }
+        lastDownTotal = s.downloadTotal
+        // app RSS
+        appMemoryMB = Double(Self.residentMemoryBytes()) / 1_000_000
+    }
+
+    /// Resident set size of this process (bytes) via mach task_info.
+    static func residentMemoryBytes() -> UInt64 {
+        var info = mach_task_basic_info()
+        var count = mach_msg_type_number_t(MemoryLayout<mach_task_basic_info>.size) / 4
+        let kr = withUnsafeMutablePointer(to: &info) {
+            $0.withMemoryRebound(to: integer_t.self, capacity: Int(count)) {
+                task_info(mach_task_self_, task_flavor_t(MACH_TASK_BASIC_INFO), $0, &count)
+            }
+        }
+        return kr == KERN_SUCCESS ? info.resident_size : 0
     }
 
     private func onLog(_ l: LogTick) {
