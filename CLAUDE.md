@@ -25,7 +25,7 @@ ClashPow is a **macOS 14+ (Apple Silicon only)** native proxy GUI client wrappin
 |----------|------|
 | Engine socket | `/tmp/clashpow-engine.sock` |
 | Engine log socket | `/tmp/clashpow-log.sock` |
-| Mihomo REST API | `http://127.0.0.1:9091` (secret: `clashpow`) |
+| Mihomo REST API | `http://127.0.0.1:9091` (secret set by user config) |
 | Engine binary (dev) | `~/Library/Application Support/ClashPow/clashpow-engine` |
 | Engine logs | `~/Library/Logs/ClashPow/clashpow-engine.log` |
 | Engine plist | `~/Library/LaunchAgents/com.clashpow.engine.plist` |
