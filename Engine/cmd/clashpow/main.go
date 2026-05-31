@@ -1,18 +1,21 @@
-// main.go — ClashPow Engine (v0.4 foundation)
+// main.go — ClashPow Engine (v0.4 foundation + supervisor mode)
 //
-//  1. Embeds the mihomo kernel (imported as a Go library)
-//  2. Loads a managed config with controller override + rollback
-//  3. Exposes a UDS typed-RPC control channel to the GUI
-//  4. Hosts mihomo's REST API on a private controller for the data plane
+//  Embedded mode (default): runs the embedded mihomo (hub.Parse in-process),
+//  high-res stats from the in-process statistic manager.
 //
-// Lifecycle is supervised by launchd (KeepAlive). The GUI discovers the
-// controller endpoint via the get_status RPC.
+//  Supervisor mode (kernel.json selects an external kernel): execs the
+//  downloaded mihomo binary as a supervised child, hot-reloads it via its REST
+//  controller, and samples stats by polling that controller.
+//
+//  Either way the GUI talks to the same controller (127.0.0.1:9092) + the UDS
+//  control channel; launchd supervises the engine process itself.
 
 package main
 
 import (
 	"os"
 	"os/signal"
+	"path/filepath"
 	"syscall"
 
 	"github.com/metacubex/mihomo/log"
@@ -27,13 +30,12 @@ import (
 const (
 	controllerAddr = "127.0.0.1:9092"
 	controllerKey  = "clashpow"
-	devCoexist     = true // override ports + disable TUN while a user kernel may run
+	devCoexist     = true
 )
 
 func main() {
 	log.Infoln("ClashPow Engine starting…")
 
-	// Extension modules (used by later versions; wired now for stability)
 	ruleLoader := mmap.NewLoader()
 	statsPusher := stats.NewPusher()
 	routeDaemon := routed.NewDaemon()
@@ -42,10 +44,9 @@ func main() {
 		log.Warnln("log stream socket failed: %v", err)
 	}
 
-	// Managed config (override + rollback)
 	cm := newConfigManager(controllerAddr, controllerKey, devCoexist)
+	home := filepath.Dir(cm.path)
 
-	// RPC server
 	server := xpc.NewServer(xpc.Dependencies{
 		RuleLoader:  ruleLoader,
 		StatsPusher: statsPusher,
@@ -56,17 +57,45 @@ func main() {
 	server.SetConfigPatcher(cm.patch)
 	server.SetController(controllerAddr, controllerKey)
 
-	// Initial config load (brings up mihomo + its REST controller)
-	if err := cm.loadInitial(); err != nil {
-		log.Errorln("initial config: %v", err)
-	} else {
-		log.Infoln("mihomo controller ready on %s", controllerAddr)
+	// Choose kernel: external (supervisor) if selected + present, else embedded.
+	sel := readKernelSelection(home)
+	external := false
+	if sel.External != "" {
+		if _, err := os.Stat(sel.External); err == nil {
+			external = true
+		} else {
+			log.Warnln("selected external kernel missing (%s); using embedded", sel.External)
+		}
 	}
 
-	// High-resolution stats sampler → mmap shared file for the GUI Metal chart
-	startStatsSampler(statsPusher)
+	if external {
+		// set the home dir so geodata/cache resolve consistently for the child
+		_ = os.MkdirAll(filepath.Join(home, "providers"), 0o755)
+		_ = os.MkdirAll(filepath.Join(home, "ruleset"), 0o755)
+		if err := cm.prepareRunConfig(); err != nil {
+			log.Errorln("prepare run config: %v", err)
+		}
+		sup := NewSupervisor(sel.External, home, cm.runPath, controllerAddr, controllerKey)
+		cm.setExternal(sup)
+		if err := sup.Start(); err != nil {
+			log.Errorln("supervisor start failed (%v); falling back to embedded", err)
+			cm.setExternal(nil)
+			external = false
+		} else {
+			log.Infoln("running external kernel %s (%s)", sel.Tag, sel.External)
+			startExternalStatsSampler(statsPusher, controllerAddr, controllerKey)
+		}
+	}
 
-	// Signals
+	if !external {
+		if err := cm.loadInitial(); err != nil {
+			log.Errorln("initial config: %v", err)
+		} else {
+			log.Infoln("mihomo controller ready on %s (embedded)", controllerAddr)
+		}
+		startStatsSampler(statsPusher)
+	}
+
 	sigCh := make(chan os.Signal, 1)
 	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM, syscall.SIGHUP)
 	go func() {
@@ -77,6 +106,9 @@ func main() {
 				continue
 			}
 			log.Infoln("shutting down…")
+			if cm.external != nil {
+				cm.external.Stop()
+			}
 			server.Shutdown()
 			statsPusher.Close()
 			ruleLoader.Close()
