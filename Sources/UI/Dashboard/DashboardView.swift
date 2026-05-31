@@ -141,7 +141,10 @@ struct RankList: View {
     var body: some View {
         let mx = max(rows.first?.value ?? 1, 1)
         VStack(spacing: 8) {
-            if rows.isEmpty { Text("暂无数据").font(.caption).foregroundColor(.secondary).frame(maxWidth: .infinity, alignment: .leading) }
+            if rows.isEmpty {
+                Text("暂无数据").font(.caption).foregroundColor(.secondary)
+                    .frame(maxWidth: .infinity, minHeight: 116, alignment: .center)
+            }
             ForEach(Array(rows.enumerated()), id: \.offset) { i, r in
                 VStack(spacing: 3) {
                     HStack(spacing: 8) {
