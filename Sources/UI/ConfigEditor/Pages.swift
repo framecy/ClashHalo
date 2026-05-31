@@ -1044,7 +1044,8 @@ struct ContentUnavailable: View {
         VStack(spacing: 10) {
             Image(systemName: icon).font(.system(size: 34)).foregroundColor(.secondary.opacity(0.5))
             Text(text).font(.callout).foregroundColor(.secondary)
-        }.frame(maxWidth: .infinity).padding(40)
+                .multilineTextAlignment(.center).fixedSize(horizontal: false, vertical: true)
+        }.frame(maxWidth: .infinity, minHeight: 160).padding(40)
     }
 }
 
