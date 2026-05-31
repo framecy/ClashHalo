@@ -28,6 +28,14 @@ type configManager struct {
 	secret         string
 	devMode        bool // override ports + disable TUN for coexistence
 	lastGood       []byte
+	external       *Supervisor // non-nil → run external kernel instead of embedded
+	runPath        string      // overridden config the external kernel reads
+}
+
+// setExternal switches the manager into supervisor (external-kernel) mode.
+func (c *configManager) setExternal(s *Supervisor) {
+	c.mu.Lock(); defer c.mu.Unlock()
+	c.external = s
 }
 
 func newConfigManager(controllerAddr, secret string, devMode bool) *configManager {
@@ -36,7 +44,13 @@ func newConfigManager(controllerAddr, secret string, devMode bool) *configManage
 		home, _ := os.UserHomeDir()
 		cfgPath = filepath.Join(home, "Library", "Application Support", "ClashPow", "config.yaml")
 	}
-	return &configManager{path: cfgPath, controllerAddr: controllerAddr, secret: secret, devMode: devMode}
+	return &configManager{
+		path:           cfgPath,
+		controllerAddr: controllerAddr,
+		secret:         secret,
+		devMode:        devMode,
+		runPath:        filepath.Join(filepath.Dir(cfgPath), "config.run.yaml"),
+	}
 }
 
 // override injects controller/secret (always) and, in dev mode, relocates
@@ -73,6 +87,23 @@ func (c *configManager) apply(raw []byte) error {
 	if err != nil {
 		return err
 	}
+	// External (supervisor) mode: write the run config + hot-reload the child.
+	if c.external != nil {
+		if err := os.WriteFile(c.runPath, out, 0o644); err != nil {
+			return err
+		}
+		if err := c.external.Reload(c.runPath); err != nil {
+			log.Errorln("external reload failed: %v", err)
+			if c.lastGood != nil {
+				_ = os.WriteFile(c.runPath, c.lastGood, 0o644)
+				_ = c.external.Reload(c.runPath)
+			}
+			return err
+		}
+		c.lastGood = out
+		return nil
+	}
+	// Embedded mode: parse in-process with rollback.
 	if err := hub.Parse(out); err != nil {
 		log.Errorln("config apply failed: %v", err)
 		if c.lastGood != nil {
@@ -83,6 +114,21 @@ func (c *configManager) apply(raw []byte) error {
 	}
 	c.lastGood = out
 	return nil
+}
+
+// prepareRunConfig writes the current source config (overridden) to runPath so
+// the external kernel can be launched with -f runPath before any apply call.
+func (c *configManager) prepareRunConfig() error {
+	raw, err := os.ReadFile(c.path)
+	if err != nil {
+		raw = []byte(fmt.Sprintf("mixed-port: 7892\nmode: rule\nexternal-controller: %s\nsecret: %s\n", c.controllerAddr, c.secret))
+	}
+	out, err := c.override(raw)
+	if err != nil {
+		return err
+	}
+	c.lastGood = out
+	return os.WriteFile(c.runPath, out, 0o644)
 }
 
 // patch deep-merges overrides into the source config file, persists it, and

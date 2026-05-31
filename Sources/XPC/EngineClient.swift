@@ -428,6 +428,30 @@ final class KernelManager: ObservableObject {
     @Published var note = ""
 
     private let dir = NSHomeDirectory() + "/Library/Application Support/ClashPow/kernels"
+    private var kernelJSONPath: String { NSHomeDirectory() + "/Library/Application Support/ClashPow/kernel.json" }
+    @AppStorage("kernel.active") var activeTag = ""   // "" = embedded
+
+    /// Switch to a downloaded kernel: write kernel.json + restart the engine,
+    /// which respawns in supervisor mode running the external binary.
+    func activate(_ tag: String) async {
+        let bin = dir + "/\(tag)/mihomo"
+        guard FileManager.default.fileExists(atPath: bin) else { note = "内核文件缺失"; return }
+        let obj: [String: String] = ["external": bin, "tag": tag]
+        if let d = try? JSONSerialization.data(withJSONObject: obj) {
+            try? d.write(to: URL(fileURLWithPath: kernelJSONPath))
+        }
+        activeTag = tag
+        note = "正在切换到 \(tag)…"
+        await EngineControl.shared.restart()
+    }
+
+    /// Revert to the embedded kernel: remove kernel.json + restart the engine.
+    func useEmbedded() async {
+        try? FileManager.default.removeItem(atPath: kernelJSONPath)
+        activeTag = ""
+        note = "正在切回内嵌内核…"
+        await EngineControl.shared.restart()
+    }
 
     func scanInstalled() {
         let fm = FileManager.default
