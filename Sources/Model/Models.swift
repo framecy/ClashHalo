@@ -95,6 +95,10 @@ final class AppModel: ObservableObject {
     // Config
     @Published var configs: [String: Any] = [:]
 
+    // Master switches
+    @Published var systemProxyOn = false
+    @Published var tunOn = false
+
     // Toast
     @Published var toast: String?
 
@@ -242,6 +246,25 @@ final class AppModel: ObservableObject {
         guard let c = try? await api.fetchConfigs() else { return }
         configs = c
         if let m = c["mode"] as? String { mode = m }
+        if let tun = c["tun"] as? [String: Any] { tunOn = (tun["enable"] as? Bool) == true }
+    }
+
+    // Master switches (full Helper-backed actuation lands in stage J)
+    func toggleSystemProxy() {
+        systemProxyOn.toggle()
+        showToast(systemProxyOn ? "系统代理已开启" : "系统代理已关闭")
+    }
+    func toggleTUN() {
+        tunOn.toggle()
+        Task { await patch(["tun": ["enable": tunOn]]) }
+        showToast(tunOn ? "TUN 模式已开启" : "TUN 模式已关闭")
+    }
+
+    /// Deep-merge config overrides into the running config via the engine
+    /// (validate + rollback). The primitive behind all settings forms.
+    func patch(_ overrides: [String: Any]) async {
+        let ok = await engine.patchConfig(overrides)
+        if ok { await refreshConfigs() } else { showToast("配置写入失败") }
     }
 
     // MARK: Actions

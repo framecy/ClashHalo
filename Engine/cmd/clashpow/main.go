@@ -53,6 +53,7 @@ func main() {
 		LogWriter:   logWriter,
 	})
 	server.SetConfigApplier(cm.apply)
+	server.SetConfigPatcher(cm.patch)
 	server.SetController(controllerAddr, controllerKey)
 
 	// Initial config load (brings up mihomo + its REST controller)

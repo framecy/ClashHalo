@@ -86,6 +86,43 @@ func (c *configManager) apply(raw []byte) error {
 	return nil
 }
 
+// patch deep-merges overrides into the source config file, persists it, and
+// re-applies with rollback. The primitive behind every settings form.
+func (c *configManager) patch(overrides map[string]any) error {
+	c.mu.Lock()
+	path := c.path
+	c.mu.Unlock()
+
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		raw = []byte("{}")
+	}
+	var m map[string]any
+	if err := yaml.Unmarshal(raw, &m); err != nil || m == nil {
+		m = map[string]any{}
+	}
+	deepMerge(m, overrides)
+	out, err := yaml.Marshal(m)
+	if err != nil {
+		return err
+	}
+	_ = os.WriteFile(path, out, 0o644)
+	return c.apply(out)
+}
+
+// deepMerge recursively merges src into dst (maps merge; scalars/slices replace).
+func deepMerge(dst, src map[string]any) {
+	for k, v := range src {
+		if sv, ok := v.(map[string]any); ok {
+			if dv, ok := dst[k].(map[string]any); ok {
+				deepMerge(dv, sv)
+				continue
+			}
+		}
+		dst[k] = v
+	}
+}
+
 // loadInitial reads the config file (or a minimal fallback) and applies it.
 func (c *configManager) loadInitial() error {
 	// Set mihomo's home dir so providers/cache/geo resolve under our app dir.
