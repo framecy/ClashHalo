@@ -305,10 +305,49 @@ final class AppModel: ObservableObject {
         if let tun = c["tun"] as? [String: Any] { tunOn = (tun["enable"] as? Bool) == true }
     }
 
-    // Master switches (full Helper-backed actuation lands in stage J)
+    // Master switches
     func toggleSystemProxy() {
-        systemProxyOn.toggle()
-        showToast(systemProxyOn ? "系统代理已开启" : "系统代理已关闭")
+        let on = !systemProxyOn
+        let port = (configs["mixed-port"] as? Int) ?? (configs["port"] as? Int) ?? 7890
+        Task {
+            let ok = await Self.setSystemProxy(enabled: on, port: port)
+            systemProxyOn = ok ? on : systemProxyOn
+            showToast(ok ? (on ? "系统代理已开启" : "系统代理已关闭") : "系统代理设置失败（需管理员授权）")
+        }
+    }
+
+    /// Set/clear the macOS system HTTP/HTTPS/SOCKS proxy on the primary network
+    /// service. Uses networksetup under one administrator-auth prompt (osascript),
+    /// so no separately-signed privileged Helper is required.
+    static func setSystemProxy(enabled: Bool, port: Int) async -> Bool {
+        let shell: String
+        if enabled {
+            shell = """
+            dev=$(route -n get default 2>/dev/null | awk '/interface:/{print $2}'); \
+            svc=$(networksetup -listnetworkserviceorder | grep -B1 \\"Device: $dev)\\" | head -1 | sed -E 's/^\\\\([0-9]+\\\\) //'); \
+            networksetup -setwebproxy \\"$svc\\" 127.0.0.1 \(port); \
+            networksetup -setsecurewebproxy \\"$svc\\" 127.0.0.1 \(port); \
+            networksetup -setsocksfirewallproxy \\"$svc\\" 127.0.0.1 \(port)
+            """
+        } else {
+            shell = """
+            dev=$(route -n get default 2>/dev/null | awk '/interface:/{print $2}'); \
+            svc=$(networksetup -listnetworkserviceorder | grep -B1 \\"Device: $dev)\\" | head -1 | sed -E 's/^\\\\([0-9]+\\\\) //'); \
+            networksetup -setwebproxystate \\"$svc\\" off; \
+            networksetup -setsecurewebproxystate \\"$svc\\" off; \
+            networksetup -setsocksfirewallproxystate \\"$svc\\" off
+            """
+        }
+        let script = "do shell script \"\(shell)\" with administrator privileges"
+        return await withCheckedContinuation { cont in
+            DispatchQueue.global().async {
+                let p = Process()
+                p.executableURL = URL(fileURLWithPath: "/usr/bin/osascript")
+                p.arguments = ["-e", script]
+                do { try p.run(); p.waitUntilExit(); cont.resume(returning: p.terminationStatus == 0) }
+                catch { cont.resume(returning: false) }
+            }
+        }
     }
     func toggleTUN() {
         tunOn.toggle()
