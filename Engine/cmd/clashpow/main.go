@@ -1,12 +1,12 @@
-// main.go — ClashPow Engine
+// main.go — ClashPow Engine (v0.4 foundation)
 //
-// Integrated entry point that:
-//  1. Starts extension modules (mmap loader, stats pusher, route daemon, log stream)
-//  2. Initializes mihomo kernel with full feature parity
-//  3. Exposes control via JSON-RPC over Unix Domain Socket to the GUI process
+//  1. Embeds the mihomo kernel (imported as a Go library)
+//  2. Loads a managed config with controller override + rollback
+//  3. Exposes a UDS typed-RPC control channel to the GUI
+//  4. Hosts mihomo's REST API on a private controller for the data plane
 //
-// We import mihomo as a library and call hub/executor APIs directly.
-// Extensions are injected as custom packages without modifying mihomo source.
+// Lifecycle is supervised by launchd (KeepAlive). The GUI discovers the
+// controller endpoint via the get_status RPC.
 
 package main
 
@@ -15,7 +15,6 @@ import (
 	"os/signal"
 	"syscall"
 
-	"github.com/metacubex/mihomo/hub"
 	"github.com/metacubex/mihomo/log"
 
 	"github.com/clashpow/engine/logstream"
@@ -25,18 +24,26 @@ import (
 	"github.com/clashpow/engine/xpc"
 )
 
-func main() {
-	log.Infoln("ClashPow Engine starting...")
+const (
+	controllerAddr = "127.0.0.1:9092"
+	controllerKey  = "clashpow"
+	devCoexist     = true // override ports + disable TUN while a user kernel may run
+)
 
-	// Extension modules
+func main() {
+	log.Infoln("ClashPow Engine starting…")
+
+	// Extension modules (used by later versions; wired now for stability)
 	ruleLoader := mmap.NewLoader()
 	statsPusher := stats.NewPusher()
 	routeDaemon := routed.NewDaemon()
 	logWriter := logstream.NewWriter()
-
 	if err := logWriter.Start(); err != nil {
-		log.Warnln("Log stream socket failed to start: %v", err)
+		log.Warnln("log stream socket failed: %v", err)
 	}
+
+	// Managed config (override + rollback)
+	cm := newConfigManager(controllerAddr, controllerKey, devCoexist)
 
 	// RPC server
 	server := xpc.NewServer(xpc.Dependencies{
@@ -45,28 +52,36 @@ func main() {
 		RouteDaemon: routeDaemon,
 		LogWriter:   logWriter,
 	})
-	server.SetConfigApplier(func(cfgBytes []byte) error {
-		return hub.Parse(cfgBytes)
-	})
+	server.SetConfigApplier(cm.apply)
+	server.SetController(controllerAddr, controllerKey)
 
-	// Signal handlers
+	// Initial config load (brings up mihomo + its REST controller)
+	if err := cm.loadInitial(); err != nil {
+		log.Errorln("initial config: %v", err)
+	} else {
+		log.Infoln("mihomo controller ready on %s", controllerAddr)
+	}
+
+	// High-resolution stats sampler → mmap shared file for the GUI Metal chart
+	startStatsSampler(statsPusher)
+
+	// Signals
 	sigCh := make(chan os.Signal, 1)
 	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM, syscall.SIGHUP)
-
 	go func() {
 		for sig := range sigCh {
-			switch sig {
-			case syscall.SIGHUP:
-				log.Infoln("SIGHUP received — config reload via XPC only")
-			default:
-				log.Infoln("Shutting down...")
-				server.Shutdown()
-				statsPusher.Close()
-				ruleLoader.Close()
-				routeDaemon.Close()
-				logWriter.Close()
-				os.Exit(0)
+			if sig == syscall.SIGHUP {
+				log.Infoln("SIGHUP — reload via config file")
+				_ = cm.loadInitial()
+				continue
 			}
+			log.Infoln("shutting down…")
+			server.Shutdown()
+			statsPusher.Close()
+			ruleLoader.Close()
+			routeDaemon.Close()
+			logWriter.Close()
+			os.Exit(0)
 		}
 	}()
 

@@ -54,6 +54,15 @@ type Server struct {
 	startTime     time.Time
 	tun           *TUNManager
 	pf            *routed.PFManager
+	ctlAddr       string // mihomo external-controller addr (GUI data plane)
+	ctlSecret     string
+}
+
+// SetController records the embedded mihomo controller endpoint so the GUI
+// can discover where to reach the REST/WS data plane.
+func (s *Server) SetController(addr, secret string) {
+	s.mu.Lock(); defer s.mu.Unlock()
+	s.ctlAddr = addr; s.ctlSecret = secret
 }
 
 // ── RPC types ────────────────────────────────────────────────────────
@@ -94,13 +103,15 @@ type reloadRulesParams struct {
 
 // StatusSnapshot carries point-in-time status for the GUI.
 type StatusSnapshot struct {
-	Running       bool   `json:"running"`
-	TUNEnabled    bool   `json:"tun_enabled"`
-	Connections   int    `json:"connections"`
-	UptimeSec     int64  `json:"uptime_sec"`
-	Version       string `json:"version"`
-	IOSurfaceID   int32  `json:"iosurface_id"`
-	LogSocketPath string `json:"log_socket_path"`
+	Running        bool   `json:"running"`
+	TUNEnabled     bool   `json:"tun_enabled"`
+	Connections    int    `json:"connections"`
+	UptimeSec      int64  `json:"uptime_sec"`
+	Version        string `json:"version"`
+	IOSurfaceID    int32  `json:"iosurface_id"`
+	LogSocketPath  string `json:"log_socket_path"`
+	ControllerAddr string `json:"controller_addr"`
+	ControllerKey  string `json:"controller_secret"`
 }
 
 const (
@@ -290,13 +301,16 @@ func (s *Server) handleReloadRules(req jsonRPCRequest) jsonRPCResponse {
 }
 
 func (s *Server) handleGetStatus(req jsonRPCRequest) jsonRPCResponse {
+	s.mu.Lock(); addr, key := s.ctlAddr, s.ctlSecret; s.mu.Unlock()
 	status := StatusSnapshot{
-		Running:       true,
-		TUNEnabled:    s.tun.IsRunning(),
-		Version:       engineVersion,
-		UptimeSec:     int64(time.Since(s.startTime).Seconds()),
-		IOSurfaceID:   0,
-		LogSocketPath: s.deps.LogWriter.SockPath(),
+		Running:        true,
+		TUNEnabled:     s.tun.IsRunning(),
+		Version:        engineVersion,
+		UptimeSec:      int64(time.Since(s.startTime).Seconds()),
+		IOSurfaceID:    0,
+		LogSocketPath:  s.deps.LogWriter.SockPath(),
+		ControllerAddr: addr,
+		ControllerKey:  key,
 	}
 	return jsonRPCResponse{JSONRPC: "2.0", ID: req.ID, Result: status}
 }

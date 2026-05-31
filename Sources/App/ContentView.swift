@@ -1,104 +1,144 @@
-// ContentView.swift — NavigationSplitView sidebar + content area
+// ContentView — sidebar shell + content router.
 import SwiftUI
 
 struct ContentView: View {
-    @EnvironmentObject var S: AppState
+    @EnvironmentObject var M: AppModel
+
+    private let tabs: [(id: String, label: String, icon: String, group: String)] = [
+        ("dashboard", "仪表盘", "gauge.with.dots.needle.33percent", "概览"),
+        ("proxies", "代理", "globe.asia.australia.fill", "代理"),
+        ("connections", "连接", "point.3.connected.trianglepath.dotted", "代理"),
+        ("sdwan", "SD‑WAN", "network", "代理"),
+        ("rules", "规则", "list.bullet.rectangle", "网络"),
+        ("dns", "DNS", "server.rack", "网络"),
+        ("logs", "日志", "doc.text.magnifyingglass", "网络"),
+        ("subscriptions", "订阅", "icloud.fill", "配置"),
+        ("config", "配置", "doc.badge.gearshape", "配置"),
+        ("settings", "设置", "gearshape.fill", "配置"),
+    ]
+    private let titles = ["dashboard":"仪表盘","proxies":"代理","connections":"连接","sdwan":"SD‑WAN 共存","rules":"分流规则","dns":"DNS","logs":"实时日志","subscriptions":"订阅管理","config":"配置","settings":"设置"]
+
     var body: some View {
         NavigationSplitView {
-            SidebarView().navigationSplitViewColumnWidth(220)
+            sidebar.navigationSplitViewColumnWidth(min: 208, ideal: 216, max: 240)
         } detail: {
-            VStack(spacing: 0) {
-                // Title bar
-                HStack(spacing: 8) {
-                    Text(titles[S.route] ?? "ClashPow").font(.headline).fontWeight(.semibold)
-                    Spacer()
-                    HStack(spacing: 4) {
-                        Circle().fill(S.running ? Color.green : Color.orange).frame(width: 6, height: 6)
-                        Text("v\(S.stats.version)").font(.caption2.monospaced()).foregroundColor(.secondary)
-                    }
-                    Button(action: S.togglePause) {
-                        Image(systemName: S.running ? "pause.fill" : "play.fill")
-                    }
-                    Button(action: { S.route = "settings" }) { Image(systemName: "gearshape") }
-                }
-                .padding(.horizontal, 16).padding(.vertical, 10).background(.regularMaterial)
+            detail
+        }
+    }
 
-                // Page content
-                ScrollView(showsIndicators: false) {
-                    pageContent.padding(16)
+    // MARK: Sidebar
+
+    private var sidebar: some View {
+        List(selection: $M.route) {
+            Section { statusCard }
+            ForEach(["概览","代理","网络","配置"], id: \.self) { g in
+                Section(g) {
+                    ForEach(tabs.filter { $0.group == g }, id: \.id) { t in
+                        Label(t.label, systemImage: t.icon).tag(t.id)
+                    }
                 }
-                .background(Color(nsColor: .controlBackgroundColor))
             }
         }
+        .listStyle(.sidebar)
+        .navigationTitle("ClashPow")
+    }
+
+    private var statusCard: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            HStack(spacing: 6) {
+                Circle().fill(M.reachable ? M.accent : Color.red).frame(width: 7, height: 7)
+                Text(M.reachable ? "已连接内核" : "内核未连接")
+                    .font(.caption).foregroundColor(.secondary)
+                Spacer()
+                Text(modeLabel(M.mode))
+                    .font(.caption2).padding(.horizontal, 6).padding(.vertical, 2)
+                    .background(Capsule().fill(Color.primary.opacity(0.08)))
+            }
+            Text(M.currentProxyName())
+                .font(.callout).fontWeight(.semibold)
+                .foregroundColor(M.accent).lineLimit(1)
+            HStack(spacing: 10) {
+                Label(fmtRate(Double(M.curDown)), systemImage: "arrow.down")
+                    .font(.caption2.monospaced()).foregroundColor(.secondary)
+                Label(fmtRate(Double(M.curUp)), systemImage: "arrow.up")
+                    .font(.caption2.monospaced()).foregroundColor(.secondary)
+            }
+        }
+        .padding(.vertical, 4)
+    }
+
+    // MARK: Detail
+
+    private var detail: some View {
+        VStack(spacing: 0) {
+            HStack(spacing: 10) {
+                Text(titles[M.route] ?? "ClashPow").font(.title3).fontWeight(.semibold)
+                Spacer()
+                if M.route == "dashboard" || M.route == "proxies" {
+                    Picker("", selection: Binding(get: { M.mode }, set: { M.setMode($0) })) {
+                        Text("规则").tag("rule"); Text("全局").tag("global"); Text("直连").tag("direct")
+                    }
+                    .pickerStyle(.segmented).frame(width: 200).labelsHidden()
+                }
+                HStack(spacing: 5) {
+                    Circle().fill(M.reachable ? Color.green : Color.red).frame(width: 6, height: 6)
+                    Text("mihomo \(M.version)").font(.caption2.monospaced()).foregroundColor(.secondary)
+                }
+            }
+            .padding(.horizontal, 18).padding(.vertical, 12)
+            .background(.bar)
+
+            Divider()
+
+            Group {
+                switch M.route {
+                case "proxies": ProxiesPage()
+                case "connections": ConnectionsPage()
+                case "sdwan": SdwanPage()
+                case "rules": RulesPage()
+                case "dns": DnsPage()
+                case "logs": LogsPage()
+                case "subscriptions": SubscriptionsPage()
+                case "config": ConfigPage()
+                case "settings": SettingsPage()
+                default: DashboardPage()
+                }
+            }
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+        }
         .overlay(alignment: .bottom) {
-            if let m = S.toastMessage {
-                Text(m).font(.caption).padding(.horizontal, 14).padding(.vertical, 8)
-                    .background(.ultraThinMaterial, in: Capsule()).padding(.bottom, 24)
+            if let t = M.toast {
+                Text(t).font(.caption).padding(.horizontal, 16).padding(.vertical, 9)
+                    .background(.ultraThinMaterial, in: Capsule())
+                    .overlay(Capsule().stroke(Color.primary.opacity(0.1)))
+                    .padding(.bottom, 26)
                     .transition(.move(edge: .bottom).combined(with: .opacity))
             }
         }
-    }
-
-    let titles = ["dashboard":"仪表盘","proxies":"代理","connections":"连接","dns":"DNS 缓存","logs":"日志","config":"配置编辑","settings":"设置"]
-
-    @ViewBuilder var pageContent: some View {
-        switch S.route {
-        case "proxies": ProxiesPage().environmentObject(S)
-        case "connections": ConnectionsPage().environmentObject(S)
-        case "dns": DnsPage()
-        case "logs": LogsPage()
-        case "config": ConfigPage().environmentObject(S)
-        case "settings": SettingsPage().environmentObject(S)
-        default: DashboardPage().environmentObject(S)
-        }
+        .animation(.spring(duration: 0.3), value: M.toast)
     }
 }
 
-// ── Sidebar ────────────────────────────────────────────────────
-struct SidebarView: View {
-    @EnvironmentObject var S: AppState
-    struct Item: Identifiable { let id: String; let label: String; let icon: String; let group: String }
-    let items: [Item] = [
-        .init(id:"dashboard",label:"仪表盘",icon:"gauge.with.dots.needle.33percent",group:"概览"),
-        .init(id:"proxies",label:"代理",icon:"paperplane.fill",group:"代理"),
-        .init(id:"connections",label:"连接",icon:"point.3.connected.trianglepath.dotted",group:"代理"),
-        .init(id:"dns",label:"DNS 缓存",icon:"server.rack",group:"网络"),
-        .init(id:"logs",label:"日志",icon:"doc.text.magnifyingglass",group:"网络"),
-        .init(id:"config",label:"配置编辑",icon:"slider.horizontal.3",group:"配置"),
-        .init(id:"settings",label:"设置",icon:"gearshape.fill",group:"配置"),
-    ]
+// MARK: - Reusable card container
+
+struct Card<Content: View>: View {
+    var title: String? = nil
+    var trailing: AnyView? = nil
+    @ViewBuilder var content: () -> Content
     var body: some View {
-        List(selection: $S.route) {
-            Section {
-                VStack(alignment:.leading,spacing:4) {
-                    HStack(spacing:6) {
-                        Circle().fill(S.running ? Color.green : Color.orange).frame(width:6,height:6)
-                        Text(S.running ? "运行中" : "已暂停").font(.caption)
-                        Spacer()
-                        Text(S.mode).font(.caption2).padding(.horizontal,6).padding(.vertical,2).background(Capsule().fill(Color.primary.opacity(0.08)))
-                    }
-                    Text(S.selectedNodes.first?.value ?? "代理").font(.callout).fontWeight(.semibold).foregroundColor(S.accentColor)
-                    Text(frate(S.traffic.down.last ?? 0)).font(.caption).monospaced().foregroundColor(.secondary)
-                }.padding(.vertical,4)
+        VStack(alignment: .leading, spacing: 0) {
+            if title != nil || trailing != nil {
+                HStack {
+                    if let title { Text(title).font(.subheadline).fontWeight(.semibold) }
+                    Spacer()
+                    if let trailing { trailing }
+                }
+                .padding(.horizontal, 14).padding(.top, 12).padding(.bottom, 8)
             }
-            ForEach(["概览","代理","网络","配置"],id:\.self){g in
-                Section(g){ ForEach(items.filter{$0.group==g}){it in Label(it.label,systemImage:it.icon).tag(it.id) } }
-            }
-        }.listStyle(.sidebar).navigationTitle("ClashPow")
+            content().padding(.horizontal, 14).padding(.bottom, 12)
+                .padding(.top, title == nil ? 12 : 0)
+        }
+        .background(RoundedRectangle(cornerRadius: 12).fill(Color(nsColor: .controlBackgroundColor)))
+        .overlay(RoundedRectangle(cornerRadius: 12).stroke(Color.primary.opacity(0.06)))
     }
 }
-
-// ── Helpers ─────────────────────────────────────────────────────
-func frate(_ b:Double)->String {
-    if b>=1_000_000{return String(format:"%.1f MB/s",b/1_000_000)}
-    if b>=1_000{return String(format:"%.1f KB/s",b/1_000)}
-    return String(format:"%.0f B/s",b)
-}
-func fbytes(_ b:Double)->String {
-    if b>=1_000_000_000{return String(format:"%.2f GB",b/1_000_000_000)}
-    if b>=1_000_000{return String(format:"%.1f MB",b/1_000_000)}
-    if b>=1_000{return String(format:"%.1f KB",b/1_000)}
-    return "\(Int(b)) B"
-}
-func flat(_ ms:Int)->String{ms>0 ? "\(ms)ms":"—"}
-func lcolor(_ ms:Int)->Color{ms<=0 ? .secondary:ms<80 ? .green:ms<160 ? .orange:.red}
