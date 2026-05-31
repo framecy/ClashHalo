@@ -1446,14 +1446,34 @@ struct KernelCard: View {
                     }
                 }
                 if !km.installedTags.isEmpty {
+                    Divider()
                     HStack {
-                        Text("已下载内核：").font(.caption2).foregroundColor(.secondary)
-                        Text(km.installedTags.joined(separator: ", ")).font(.caption2.monospaced()).foregroundColor(.secondary)
-                        Spacer()
+                        Text("运行内核").font(.caption); Spacer()
+                        if km.activeTag.isEmpty {
+                            Text("内嵌").font(.caption2).padding(.horizontal, 6).padding(.vertical, 1)
+                                .background(Capsule().fill(M.accent.opacity(0.15))).foregroundColor(M.accent)
+                        } else {
+                            Button("切回内嵌内核") { Task { await km.useEmbedded(); try? await Task.sleep(nanoseconds: 3_500_000_000); await M.reconnect() } }
+                                .controlSize(.small)
+                        }
+                    }
+                    ForEach(km.installedTags, id: \.self) { tag in
+                        HStack {
+                            Image(systemName: "shippingbox").font(.caption2).foregroundColor(.secondary)
+                            Text(tag).font(.caption.monospaced())
+                            Spacer()
+                            if km.activeTag == tag {
+                                Label("使用中", systemImage: "checkmark.circle.fill").font(.caption2).foregroundColor(M.accent)
+                            } else {
+                                Button("启用") { Task { await km.activate(tag); try? await Task.sleep(nanoseconds: 3_500_000_000); await M.reconnect() } }
+                                    .controlSize(.small)
+                            }
+                        }
+                        .padding(.vertical, 2)
                     }
                 }
                 if !km.note.isEmpty { Text(km.note).font(.caption2).foregroundColor(.secondary).frame(maxWidth: .infinity, alignment: .leading) }
-                Text("下载源 MetaCubeX/mihomo releases。当前内核内嵌于引擎；下载的内核用于切换通道（监管进程模式将于后续启用）。")
+                Text("下载源 MetaCubeX/mihomo releases。启用下载内核后，引擎以监管进程模式运行该外部内核；可随时切回内嵌内核。")
                     .font(.caption2).foregroundColor(.secondary).frame(maxWidth: .infinity, alignment: .leading)
             }
         }
