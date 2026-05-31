@@ -353,7 +353,22 @@ struct DnsPage: View {
     var body: some View {
         ScrollView {
             VStack(spacing: 14) {
-                Card(title: "DNS 解析") {
+                // DNS settings (editable)
+                Card(title: "DNS 服务器", icon: "server.rack") {
+                    VStack(spacing: 2) {
+                        NToggle("启用 DNS", "dns", "enable")
+                        NToggle("IPv6 解析", "dns", "ipv6")
+                        NPicker("增强模式", "dns", "enhanced-mode", [("fake-ip","Fake-IP"),("redir-host","Redir-Host")])
+                        NText("Fake-IP 段", "dns", "fake-ip-range", placeholder: "198.18.0.1/16")
+                        NText("监听地址", "dns", "listen", placeholder: "0.0.0.0:53")
+                        NList("上游 (nameserver)", "dns", "nameserver", placeholder: "https://1.1.1.1/dns-query")
+                        NList("Fake-IP 过滤", "dns", "fake-ip-filter", placeholder: "*.lan")
+                    }
+                    Text("Fake-IP 为代理域名返回保留段虚拟 IP，避免 DNS 泄漏；上游支持 DoH/DoT/DoQ/UDP。")
+                        .font(.caption2).foregroundColor(.secondary).padding(.top, 6)
+                }
+
+                Card(title: "DNS 解析测试", icon: "magnifyingglass") {
                     VStack(alignment: .leading, spacing: 8) {
                         HStack {
                             TextField("输入域名，如 google.com", text: $query)
@@ -907,25 +922,24 @@ struct NetworkPage: View {
 struct TunPage: View {
     @EnvironmentObject var M: AppModel
     var body: some View {
-        let tun = M.configs["tun"] as? [String: Any] ?? [:]
         ScrollView {
             VStack(spacing: 14) {
                 Card(title: "TUN 虚拟网卡", icon: "shield.lefthalf.filled") {
-                    VStack(spacing: 9) {
+                    VStack(spacing: 2) {
                         HStack {
-                            Text("启用 TUN").font(.caption)
-                            Spacer()
+                            Text("启用 TUN").font(.callout); Spacer()
                             Toggle("", isOn: Binding(get: { M.tunOn }, set: { _ in M.toggleTUN() }))
                                 .toggleStyle(.switch).labelsHidden()
-                        }
-                        kvRow("协议栈", cfgStr(tun, "stack"))
-                        kvRow("自动路由", cfgBool(tun, "auto-route") ? "开" : "关")
-                        kvRow("自动检测网卡", cfgBool(tun, "auto-detect-interface") ? "开" : "关")
-                        kvRow("DNS 劫持", (tun["dns-hijack"] as? [Any]).map { "\($0.count) 条" } ?? "—")
+                        }.padding(.vertical, 5)
+                        NPicker("协议栈", "tun", "stack", [("gvisor","gVisor"),("system","System"),("mixed","Mixed")])
+                        NToggle("自动路由", "tun", "auto-route")
+                        NToggle("自动检测网卡", "tun", "auto-detect-interface")
+                        NList("DNS 劫持", "tun", "dns-hijack", placeholder: "any:53")
+                        NList("路由排除网段", "tun", "route-exclude-address", placeholder: "192.168.0.0/16")
                     }
+                    Text("用户态 UTUN (AF_SYSTEM)，不占 VPN 插槽。排除 SD-WAN 网段可避免抢占其路由。")
+                        .font(.caption2).foregroundColor(.secondary).padding(.top, 6)
                 }
-                Text("用户态 UTUN (AF_SYSTEM)，不占 VPN 插槽。完整路由排除编辑在 TUN 阶段开放。")
-                    .font(.caption2).foregroundColor(.secondary)
                 Spacer(minLength: 0)
             }.padding(18)
         }
@@ -935,18 +949,17 @@ struct TunPage: View {
 struct SnifferPage: View {
     @EnvironmentObject var M: AppModel
     var body: some View {
-        let sniffer = M.configs["sniffer"] as? [String: Any] ?? [:]
         ScrollView {
             VStack(spacing: 14) {
                 Card(title: "协议嗅探 Sniffer", icon: "scope") {
-                    VStack(spacing: 9) {
-                        kvRow("启用嗅探", cfgBool(sniffer, "enable") ? "开" : "关")
-                        kvRow("覆盖目标地址", cfgBool(sniffer, "override-destination") ? "开" : "关")
-                        kvRow("强制 DNS 映射", cfgBool(sniffer, "force-dns-mapping") ? "开" : "关")
+                    VStack(spacing: 2) {
+                        NToggle("启用嗅探", "sniffer", "enable")
+                        NToggle("覆盖目标地址", "sniffer", "override-destination")
+                        NToggle("强制 DNS 映射", "sniffer", "force-dns-mapping")
                     }
+                    Text("从 TLS / QUIC / HTTP 握手中提取真实域名用于分流，对走 IP 的连接尤为重要。")
+                        .font(.caption2).foregroundColor(.secondary).padding(.top, 6)
                 }
-                Text("从 TLS / QUIC / HTTP 握手中提取真实域名用于分流。嗅探协议编辑在嗅探阶段开放。")
-                    .font(.caption2).foregroundColor(.secondary)
                 Spacer(minLength: 0)
             }.padding(18)
         }
@@ -1093,4 +1106,87 @@ struct GeoURLRow: View {
             text = (geo[sub] as? String) ?? ""
         }
     }
+}
+
+// MARK: - Nested config form rows (parent.sub keys: dns / tun / sniffer)
+
+@MainActor private func nestedDict(_ M: AppModel, _ parent: String) -> [String: Any] {
+    M.configs[parent] as? [String: Any] ?? [:]
+}
+
+struct NToggle: View {
+    @EnvironmentObject var M: AppModel
+    let parent: String; let sub: String; let label: String
+    init(_ label: String, _ parent: String, _ sub: String) { self.label = label; self.parent = parent; self.sub = sub }
+    var body: some View {
+        HStack {
+            Text(label).font(.callout); Spacer()
+            Toggle("", isOn: Binding(
+                get: { (nestedDict(M, parent)[sub] as? Bool) == true },
+                set: { v in Task { await M.patch([parent: [sub: v]]) } }
+            )).toggleStyle(.switch).labelsHidden()
+        }.padding(.vertical, 5)
+    }
+}
+
+struct NPicker: View {
+    @EnvironmentObject var M: AppModel
+    let parent: String; let sub: String; let label: String; let options: [(String, String)]
+    init(_ label: String, _ parent: String, _ sub: String, _ options: [(String, String)]) {
+        self.label = label; self.parent = parent; self.sub = sub; self.options = options
+    }
+    var body: some View {
+        HStack {
+            Text(label).font(.callout); Spacer()
+            Picker("", selection: Binding(
+                get: { (nestedDict(M, parent)[sub] as? String) ?? options.first?.0 ?? "" },
+                set: { v in Task { await M.patch([parent: [sub: v]]) } }
+            )) { ForEach(options, id: \.0) { Text($0.1).tag($0.0) } }.labelsHidden().frame(width: 150)
+        }.padding(.vertical, 5)
+    }
+}
+
+struct NText: View {
+    @EnvironmentObject var M: AppModel
+    let parent: String; let sub: String; let label: String; let placeholder: String
+    init(_ label: String, _ parent: String, _ sub: String, placeholder: String = "") {
+        self.label = label; self.parent = parent; self.sub = sub; self.placeholder = placeholder
+    }
+    @State private var text = ""
+    var body: some View {
+        HStack {
+            Text(label).font(.callout); Spacer()
+            TextField(placeholder, text: $text).textFieldStyle(.roundedBorder).frame(width: 180)
+                .font(.callout.monospaced()).multilineTextAlignment(.trailing)
+                .onSubmit { Task { await M.patch([parent: [sub: text]]) } }
+        }.padding(.vertical, 5)
+        .onAppear { text = (nestedDict(M, parent)[sub] as? String) ?? "" }
+    }
+}
+
+struct NList: View {
+    @EnvironmentObject var M: AppModel
+    let parent: String; let sub: String; let label: String; let placeholder: String
+    init(_ label: String, _ parent: String, _ sub: String, placeholder: String = "") {
+        self.label = label; self.parent = parent; self.sub = sub; self.placeholder = placeholder
+    }
+    @State private var items: [String] = []
+    @State private var draft = ""
+    var body: some View {
+        VStack(alignment: .leading, spacing: 5) {
+            Text(label).font(.callout)
+            ForEach(items.indices, id: \.self) { i in
+                HStack {
+                    Text(items[i]).font(.caption.monospaced()).foregroundColor(.secondary); Spacer()
+                    Button { items.remove(at: i); commit() } label: { Image(systemName: "minus.circle").font(.caption) }.buttonStyle(.borderless)
+                }
+            }
+            HStack {
+                TextField(placeholder, text: $draft).textFieldStyle(.roundedBorder).font(.caption.monospaced())
+                Button { if !draft.isEmpty { items.append(draft); draft = ""; commit() } } label: { Image(systemName: "plus.circle.fill") }.buttonStyle(.borderless)
+            }
+        }.padding(.vertical, 5)
+        .onAppear { items = (nestedDict(M, parent)[sub] as? [Any])?.map { "\($0)" } ?? [] }
+    }
+    private func commit() { Task { await M.patch([parent: [sub: items]]) } }
 }
