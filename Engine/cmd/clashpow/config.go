@@ -52,11 +52,10 @@ func (c *configManager) override(raw []byte) ([]byte, error) {
 	m["external-controller"] = c.controllerAddr
 	m["secret"] = c.secret
 	if c.devMode {
-		m["mixed-port"] = 7892
-		m["socks-port"] = 7893
-		m["port"] = 0
-		m["redir-port"] = 0
-		m["tproxy-port"] = 0
+		// Dev coexistence: only force TUN off (needs root + a privileged Helper,
+		// arriving in stage J). Ports are left as authored so the Network form
+		// edits are faithful; any listener conflict with a standalone kernel is
+		// non-fatal (the controller stays up).
 		if tun, ok := m["tun"].(map[string]any); ok {
 			tun["enable"] = false
 			m["tun"] = tun

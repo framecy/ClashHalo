@@ -711,55 +711,62 @@ struct GeneralPage: View {
     var body: some View {
         ScrollView {
             VStack(spacing: 14) {
-                // Engine (managed kernel)
-                Card(title: "内核") {
-                    VStack(spacing: 10) {
-                        HStack {
-                            Circle().fill(M.reachable ? Color.green : Color.red).frame(width: 8, height: 8)
-                            Text(statusLine).font(.caption).foregroundColor(.secondary)
-                            Spacer()
-                            if M.engineManaged {
-                                Button("重启内核", systemImage: "arrow.triangle.2.circlepath") {
-                                    Task { await M.engine.restart(); try? await Task.sleep(nanoseconds: 3_000_000_000); await M.reconnect(); M.showToast("内核已重启") }
-                                }.buttonStyle(.bordered).tint(.orange).controlSize(.small)
-                            }
-                        }
+                // 路由与连接
+                Card(title: "路由与连接", icon: "arrow.triangle.branch") {
+                    VStack(spacing: 2) {
+                        PickerRow("日志级别", key: "log-level", options: [("silent","静默"),("error","error"),("warning","warning"),("info","info"),("debug","debug")])
+                        ToggleRow("TCP 并发连接", key: "tcp-concurrent")
+                        ToggleRow("统一延迟测速", key: "unified-delay")
+                        TextRow("绑定网卡", key: "interface-name", placeholder: "自动")
+                        PickerRow("进程匹配", key: "find-process-mode", options: [("always","总是"),("strict","严格"),("off","关闭")])
+                        NumRow("Keep-Alive 间隔 (秒)", key: "keep-alive-interval")
+                        NumRow("Keep-Alive 空闲 (秒)", key: "keep-alive-idle")
+                        ToggleRow("禁用 Keep-Alive", key: "disable-keep-alive")
+                    }
+                    Text("TCP 并发能极大加快多节点测速；统一延迟将握手时间计入以反映真实体感延迟；进程匹配使 macOS 能按 App 名分流。")
+                        .font(.caption2).foregroundColor(.secondary).padding(.top, 6)
+                }
+                // GEO 数据库
+                Card(title: "GEO 数据库", icon: "globe.asia.australia") {
+                    VStack(spacing: 2) {
+                        ToggleRow("DAT 模式", key: "geodata-mode")
+                        PickerRow("加载器", key: "geodata-loader", options: [("memconservative","内存优先"),("standard","标准")])
+                        ToggleRow("自动更新", key: "geo-auto-update")
+                        NumRow("更新间隔 (小时)", key: "geo-update-interval")
+                    }
+                    Text("DAT 模式使用 v2ray (.dat) 替代 MaxMind (.mmdb) 进行 GeoIP 匹配，文件更小；推荐“内存优先”加载器以降低后台占用。")
+                        .font(.caption2).foregroundColor(.secondary).padding(.top, 6)
+                }
+                // GEO 下载源
+                Card(title: "GEO 下载源", icon: "arrow.down.circle") {
+                    VStack(spacing: 2) {
+                        GeoURLRow("GeoIP", sub: "geoip")
+                        GeoURLRow("GeoSite", sub: "geosite")
+                        GeoURLRow("MMDB", sub: "mmdb")
+                        GeoURLRow("ASN", sub: "asn")
+                    }
+                    Text("修改下载源 URL 后会在下次更新时生效。")
+                        .font(.caption2).foregroundColor(.secondary).padding(.top, 6)
+                }
+                // 内核 + 应用
+                Card(title: "内核", icon: "cpu") {
+                    HStack {
+                        Circle().fill(M.reachable ? Color.green : Color.red).frame(width: 8, height: 8)
+                        Text(statusLine).font(.caption).foregroundColor(.secondary)
+                        Spacer()
                         if M.engineManaged {
-                            HStack {
-                                Text("运行模式").font(.caption).foregroundColor(.secondary)
-                                Text("ClashPow 引擎托管 (launchd)").font(.caption2)
-                                    .padding(.horizontal, 6).padding(.vertical, 2)
-                                    .background(Capsule().fill(M.accent.opacity(0.15))).foregroundColor(M.accent)
-                                Spacer()
-                                Text("运行 \(uptimeText)").font(.caption2.monospaced()).foregroundColor(.secondary)
-                            }
+                            Text("引擎托管 · 运行 \(uptimeText)").font(.caption2.monospaced()).foregroundColor(.secondary)
+                            Button("重启", systemImage: "arrow.triangle.2.circlepath") {
+                                Task { await M.engine.restart(); try? await Task.sleep(nanoseconds: 3_000_000_000); await M.reconnect(); M.showToast("内核已重启") }
+                            }.buttonStyle(.bordered).tint(.orange).controlSize(.small)
                         }
                     }
                 }
-                // Manual connection override (when not engine-managed)
-                Card(title: "手动连接 (高级)") {
-                    VStack(spacing: 10) {
-                        field("地址", text: $host, placeholder: "127.0.0.1")
-                        field("端口", text: $port, placeholder: "9092")
-                        SecureField("密钥 (secret)", text: $secret).textFieldStyle(.roundedBorder)
-                        HStack {
-                            Text("覆盖引擎自动发现，直连指定 mihomo").font(.caption2).foregroundColor(.secondary)
-                            Spacer()
-                            Button("应用并重连") {
-                                M.api.host = host.isEmpty ? "127.0.0.1" : host
-                                M.api.port = Int(port) ?? 9092
-                                M.api.secret = secret
-                                Task { await M.reconnect() }
-                            }.buttonStyle(.borderedProminent)
-                        }
-                    }
-                }
-                Card(title: "外观") {
+                Card(title: "外观", icon: "paintbrush") {
                     VStack(spacing: 10) {
                         Toggle("深色模式", isOn: $M.dark)
                         HStack {
-                            Text("强调色").font(.caption).foregroundColor(.secondary)
-                            Spacer()
+                            Text("强调色").font(.caption); Spacer()
                             ForEach(["green","blue","purple","orange"], id: \.self) { c in
                                 Circle().fill(colorFor(c)).frame(width: 22, height: 22)
                                     .overlay(Circle().stroke(Color.primary, lineWidth: M.accentRaw == c ? 2 : 0))
@@ -772,7 +779,6 @@ struct GeneralPage: View {
             }
             .padding(18)
         }
-        .onAppear { host = M.api.host; port = "\(M.api.port)"; secret = M.api.secret }
     }
     private var statusLine: String {
         if !M.reachable { return "未连接内核" }
@@ -853,24 +859,45 @@ struct NetworkPage: View {
         ScrollView {
             VStack(spacing: 14) {
                 Card(title: "入站端口", icon: "arrow.down.right.circle") {
-                    VStack(spacing: 9) {
-                        kvRow("HTTP 端口", cfgStr(M.configs, "port"))
-                        kvRow("SOCKS 端口", cfgStr(M.configs, "socks-port"))
-                        kvRow("混合端口", cfgStr(M.configs, "mixed-port"))
-                        kvRow("Redir 端口", cfgStr(M.configs, "redir-port"))
-                        kvRow("TProxy 端口", cfgStr(M.configs, "tproxy-port"))
+                    VStack(spacing: 2) {
+                        NumRow("HTTP 端口", key: "port")
+                        NumRow("SOCKS 端口", key: "socks-port")
+                        NumRow("混合端口", key: "mixed-port")
+                        NumRow("Redir 端口", key: "redir-port")
+                        NumRow("TProxy 端口", key: "tproxy-port")
                     }
+                    Text("端口设为 0 即禁用。建议绝大多数应用使用混合端口（兼容 HTTP 与 SOCKS5）。")
+                        .font(.caption2).foregroundColor(.secondary).padding(.top, 6)
                 }
                 Card(title: "全局网络", icon: "globe") {
-                    VStack(spacing: 9) {
-                        kvRow("IPv6 支持", cfgBool(M.configs, "ipv6") ? "开" : "关")
-                        kvRow("允许局域网", cfgBool(M.configs, "allow-lan") ? "开" : "关")
-                        kvRow("绑定地址", cfgStr(M.configs, "bind-address"))
-                        kvRow("运行模式", modeLabel(M.mode))
+                    VStack(spacing: 2) {
+                        ToggleRow("IPv6 支持", key: "ipv6")
+                        ToggleRow("多路径 TCP (MPTCP)", key: "inbound-mptcp")
+                        ToggleRow("TCP 并发连接", key: "tcp-concurrent")
                     }
                 }
-                Text("可编辑表单将在网络阶段开放（端口/IPv6/TFO/MPTCP/QUIC/访问控制/系统代理）。")
-                    .font(.caption2).foregroundColor(.secondary)
+                Card(title: "访问控制", icon: "lock.shield") {
+                    VStack(spacing: 2) {
+                        ToggleRow("允许局域网连接", key: "allow-lan")
+                        TextRow("绑定地址", key: "bind-address", placeholder: "*")
+                        StringListRow("允许的 IP", key: "lan-allowed-ips", placeholder: "0.0.0.0/0")
+                        StringListRow("拒绝的 IP", key: "lan-disallowed-ips", placeholder: "192.168.0.3/32")
+                        StringListRow("代理认证", key: "authentication", placeholder: "user:pass")
+                        StringListRow("免认证网段", key: "skip-auth-prefixes", placeholder: "127.0.0.1/8")
+                    }
+                    Text("开启“允许局域网”可将代理共享给同 Wi-Fi 下的其他设备；可用 IP 网段与认证做严格审查。")
+                        .font(.caption2).foregroundColor(.secondary).padding(.top, 6)
+                }
+                Card(title: "系统代理", icon: "globe.badge.chevron.backward") {
+                    HStack {
+                        Text("系统代理总开关").font(.caption)
+                        Spacer()
+                        Toggle("", isOn: Binding(get: { M.systemProxyOn }, set: { _ in M.toggleSystemProxy() }))
+                            .toggleStyle(.switch).labelsHidden()
+                    }
+                    Text("开启后将本机 HTTP/HTTPS/SOCKS 系统代理指向 ClashPow（需特权 Helper，见“通用”页授权）。")
+                        .font(.caption2).foregroundColor(.secondary).padding(.top, 6)
+                }
                 Spacer(minLength: 0)
             }.padding(18)
         }
@@ -928,4 +955,142 @@ struct SnifferPage: View {
 
 private func kvRow(_ l: String, _ v: String) -> some View {
     HStack { Text(l).font(.caption); Spacer(); Text(v).font(.caption.monospaced()).foregroundColor(.secondary) }
+}
+
+// MARK: - Reusable config form rows (read M.configs, write via M.patch)
+
+/// Number field bound to a top-level config key.
+struct NumRow: View {
+    @EnvironmentObject var M: AppModel
+    let label: String; let key: String
+    init(_ label: String, key: String) { self.label = label; self.key = key }
+    @State private var text = ""
+    var body: some View {
+        HStack {
+            Text(label).font(.callout)
+            Spacer()
+            TextField("0", text: $text)
+                .textFieldStyle(.roundedBorder).frame(width: 90)
+                .font(.callout.monospaced()).multilineTextAlignment(.trailing)
+                .onSubmit { commit() }
+        }
+        .padding(.vertical, 5)
+        .onAppear { text = intStr(M.configs[key]) }
+        .onChange(of: configValue) { text = intStr(M.configs[key]) }
+    }
+    private var configValue: String { intStr(M.configs[key]) }
+    private func intStr(_ v: Any?) -> String { if let i = v as? Int { return "\(i)" }; if let d = v as? Double { return "\(Int(d))" }; return "0" }
+    private func commit() {
+        let n = Int(text) ?? 0
+        Task { await M.patch([key: n]) }
+    }
+}
+
+/// Toggle bound to a top-level boolean config key.
+struct ToggleRow: View {
+    @EnvironmentObject var M: AppModel
+    let label: String; let key: String
+    init(_ label: String, key: String) { self.label = label; self.key = key }
+    var body: some View {
+        HStack {
+            Text(label).font(.callout)
+            Spacer()
+            Toggle("", isOn: Binding(
+                get: { (M.configs[key] as? Bool) == true },
+                set: { v in Task { await M.patch([key: v]) } }
+            )).toggleStyle(.switch).labelsHidden()
+        }
+        .padding(.vertical, 5)
+    }
+}
+
+/// Single-string field bound to a top-level config key.
+struct TextRow: View {
+    @EnvironmentObject var M: AppModel
+    let label: String; let key: String; let placeholder: String
+    init(_ label: String, key: String, placeholder: String = "") { self.label = label; self.key = key; self.placeholder = placeholder }
+    @State private var text = ""
+    var body: some View {
+        HStack {
+            Text(label).font(.callout)
+            Spacer()
+            TextField(placeholder, text: $text)
+                .textFieldStyle(.roundedBorder).frame(width: 160)
+                .font(.callout.monospaced()).multilineTextAlignment(.trailing)
+                .onSubmit { Task { await M.patch([key: text]) } }
+        }
+        .padding(.vertical, 5)
+        .onAppear { text = (M.configs[key] as? String) ?? "" }
+    }
+}
+
+/// Picker bound to a top-level string config key.
+struct PickerRow: View {
+    @EnvironmentObject var M: AppModel
+    let label: String; let key: String; let options: [(String, String)]
+    init(_ label: String, key: String, options: [(String, String)]) { self.label = label; self.key = key; self.options = options }
+    var body: some View {
+        HStack {
+            Text(label).font(.callout)
+            Spacer()
+            Picker("", selection: Binding(
+                get: { (M.configs[key] as? String) ?? options.first?.0 ?? "" },
+                set: { v in Task { await M.patch([key: v]) } }
+            )) {
+                ForEach(options, id: \.0) { Text($0.1).tag($0.0) }
+            }.labelsHidden().frame(width: 150)
+        }
+        .padding(.vertical, 5)
+    }
+}
+
+/// Editable string-list bound to a top-level array config key.
+struct StringListRow: View {
+    @EnvironmentObject var M: AppModel
+    let label: String; let key: String; let placeholder: String
+    init(_ label: String, key: String, placeholder: String = "") { self.label = label; self.key = key; self.placeholder = placeholder }
+    @State private var items: [String] = []
+    @State private var draft = ""
+    var body: some View {
+        VStack(alignment: .leading, spacing: 5) {
+            Text(label).font(.callout)
+            ForEach(items.indices, id: \.self) { i in
+                HStack {
+                    Text(items[i]).font(.caption.monospaced()).foregroundColor(.secondary)
+                    Spacer()
+                    Button { items.remove(at: i); commit() } label: { Image(systemName: "minus.circle").font(.caption) }
+                        .buttonStyle(.borderless)
+                }
+            }
+            HStack {
+                TextField(placeholder, text: $draft).textFieldStyle(.roundedBorder).font(.caption.monospaced())
+                Button { if !draft.isEmpty { items.append(draft); draft = ""; commit() } } label: { Image(systemName: "plus.circle.fill") }
+                    .buttonStyle(.borderless)
+            }
+        }
+        .padding(.vertical, 5)
+        .onAppear { items = (M.configs[key] as? [Any])?.map { "\($0)" } ?? [] }
+    }
+    private func commit() { Task { await M.patch([key: items]) } }
+}
+
+/// GEO download-source URL row (nested under geox-url.<sub>).
+struct GeoURLRow: View {
+    @EnvironmentObject var M: AppModel
+    let label: String; let sub: String
+    init(_ label: String, sub: String) { self.label = label; self.sub = sub }
+    @State private var text = ""
+    var body: some View {
+        HStack {
+            Text(label).font(.callout).frame(width: 70, alignment: .leading)
+            TextField("https://…", text: $text)
+                .textFieldStyle(.roundedBorder).font(.system(size: 10, design: .monospaced))
+                .onSubmit { Task { await M.patch(["geox-url": [sub: text]]) } }
+        }
+        .padding(.vertical, 5)
+        .onAppear {
+            let geo = M.configs["geox-url"] as? [String: Any] ?? [:]
+            text = (geo[sub] as? String) ?? ""
+        }
+    }
 }
