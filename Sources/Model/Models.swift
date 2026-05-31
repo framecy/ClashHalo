@@ -66,6 +66,18 @@ struct Log: Identifiable {
 final class AppModel: ObservableObject {
     let api = MihomoClient.shared
     let engine = EngineControl.shared
+    let store = ConfigStore()
+
+    /// Switch the active config profile: persist as engine config + hot-apply.
+    func activateProfile(_ id: String) {
+        guard let content = store.makeActiveContent(id) else { showToast("配置为空"); return }
+        let name = store.profiles.first { $0.id == id }?.name ?? ""
+        Task {
+            let (ok, err) = await engine.setConfig(content)
+            showToast(ok ? "已切换配置「\(name)」" : "配置错误：\(err ?? "")，已回滚")
+            if ok { await reconnect() }
+        }
+    }
 
     // Navigation + theme
     @Published var route = "dashboard"
@@ -126,6 +138,7 @@ final class AppModel: ObservableObject {
 
     func start() {
         engine.ensureInstalled()   // first-run: install bundled engine + LaunchAgent
+        store.load()
         Task { await reconnect() }
     }
 
@@ -382,6 +395,91 @@ final class AppModel: ObservableObject {
         if cur == "DIRECT" { return "直连" }
         if cur == "REJECT" { return "拒绝" }
         return cur
+    }
+}
+
+// MARK: - Config profiles (multi-config management)
+
+struct Profile: Identifiable, Codable {
+    let id: String
+    var name: String
+    var source: String       // "local" | "remote"
+    var url: String?
+    var importedAt: Date
+    var updatedAt: Date
+}
+
+@MainActor
+final class ConfigStore: ObservableObject {
+    @Published var profiles: [Profile] = []
+    @AppStorage("config.active") var activeID = ""
+
+    private let dir = NSHomeDirectory() + "/Library/Application Support/ClashPow/profiles"
+    private let configPath = NSHomeDirectory() + "/Library/Application Support/ClashPow/config.yaml"
+    private var manifestPath: String { dir + "/manifest.json" }
+    private let fm = FileManager.default
+
+    func path(_ id: String) -> String { dir + "/\(id).yaml" }
+
+    func load() {
+        try? fm.createDirectory(atPath: dir, withIntermediateDirectories: true)
+        if let data = fm.contents(atPath: manifestPath),
+           let list = try? JSONDecoder().decode([Profile].self, from: data) {
+            profiles = list
+        }
+        // Seed from the existing config.yaml on first run.
+        if profiles.isEmpty, let content = try? String(contentsOfFile: configPath, encoding: .utf8) {
+            let id = UUID().uuidString
+            try? content.write(toFile: path(id), atomically: true, encoding: .utf8)
+            let p = Profile(id: id, name: "默认配置", source: "local", url: nil, importedAt: Date(), updatedAt: Date())
+            profiles = [p]; activeID = id; save()
+        }
+        if activeID.isEmpty { activeID = profiles.first?.id ?? "" }
+    }
+
+    private func save() {
+        if let data = try? JSONEncoder().encode(profiles) { try? data.write(to: URL(fileURLWithPath: manifestPath)) }
+    }
+
+    func content(_ id: String) -> String { (try? String(contentsOfFile: path(id), encoding: .utf8)) ?? "" }
+    func saveContent(_ id: String, _ text: String) { try? text.write(toFile: path(id), atomically: true, encoding: .utf8); touch(id) }
+    private func touch(_ id: String) { if let i = profiles.firstIndex(where: { $0.id == id }) { profiles[i].updatedAt = Date(); save() } }
+
+    func addLocal(name: String, content: String) -> String {
+        let id = UUID().uuidString
+        try? content.write(toFile: path(id), atomically: true, encoding: .utf8)
+        profiles.append(Profile(id: id, name: name, source: "local", url: nil, importedAt: Date(), updatedAt: Date()))
+        save(); return id
+    }
+
+    func importRemote(name: String, url: String) async -> String? {
+        guard let u = URL(string: url) else { return nil }
+        guard let (data, _) = try? await URLSession.shared.data(from: u),
+              let content = String(data: data, encoding: .utf8), content.contains(":") else { return nil }
+        let id = UUID().uuidString
+        try? content.write(toFile: path(id), atomically: true, encoding: .utf8)
+        profiles.append(Profile(id: id, name: name, source: "remote", url: url, importedAt: Date(), updatedAt: Date()))
+        save(); return id
+    }
+
+    func updateRemote(_ id: String) async -> Bool {
+        guard let p = profiles.first(where: { $0.id == id }), let url = p.url, let u = URL(string: url),
+              let (data, _) = try? await URLSession.shared.data(from: u),
+              let content = String(data: data, encoding: .utf8) else { return false }
+        try? content.write(toFile: path(id), atomically: true, encoding: .utf8); touch(id); return true
+    }
+
+    func remove(_ id: String) {
+        try? fm.removeItem(atPath: path(id))
+        profiles.removeAll { $0.id == id }; save()
+        if activeID == id { activeID = profiles.first?.id ?? "" }
+    }
+
+    /// Persist the selected profile as the engine's config.yaml (engine reloads it).
+    func makeActiveContent(_ id: String) -> String? {
+        let c = content(id); guard !c.isEmpty else { return nil }
+        try? c.write(toFile: configPath, atomically: true, encoding: .utf8)
+        activeID = id; return c
     }
 }
 
