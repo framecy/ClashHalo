@@ -132,11 +132,12 @@ struct ProxiesPage: View {
 struct ConnectionsPage: View {
     @EnvironmentObject var M: AppModel
     @State private var q = ""
+    @State private var showConfirmDisconnect = false
 
     var body: some View {
         VStack(spacing: 0) {
             PageHead(title: "连接", desc: "\(M.conns.count) 个活跃连接 · 实时速率") {
-                Button(role: .destructive) { /* TODO */ } label: { Label("全部断开", systemImage: "xmark.circle") }
+                Button(role: .destructive) { showConfirmDisconnect = true } label: { Label("全部断开", systemImage: "xmark.circle") }
                     .controlSize(.small)
             }
 
@@ -175,6 +176,11 @@ struct ConnectionsPage: View {
                 }
             }
         }
+        .confirmationDialog("确定要断开所有连接吗？", isPresented: $showConfirmDisconnect, titleVisibility: .visible) {
+            Button("确定断开", role: .destructive) { M.closeAllConnections() }
+        } message: {
+            Text("这将中断所有正在进行的网络会话")
+        }
     }
 
     private func matches(_ c: Conn) -> Bool {
@@ -212,13 +218,15 @@ struct RulesPage: View {
 
             ScrollView {
                 LazyVStack(spacing: 0) {
-                    ForEach(Array(enabled.enumerated()), id: \.offset) { idx, rule in
+                    ForEach(Array(enabled.indices), id: \.self) { idx in
+                        let rule = enabled[idx]
                         if matches(rule) { row(rule, idx: idx, disabled: false, count: enabled.count) }
                     }
                     if !disabled.isEmpty {
                         HStack { Text("已禁用").font(.caption).fontWeight(.bold).foregroundColor(.secondary); Spacer() }
                             .padding(.horizontal, 14).padding(.top, 16).padding(.bottom, 8)
-                        ForEach(Array(disabled.enumerated()), id: \.offset) { _, rule in
+                        ForEach(Array(disabled.indices), id: \.self) { idx in
+                            let rule = disabled[idx]
                             if matches(rule) { row(rule, idx: -1, disabled: true, count: 0) }
                         }
                     }
@@ -292,8 +300,6 @@ struct RulesPage: View {
         M.showToast("已复制")
     }
 }
-
-// MARK: - Logs
 
 // MARK: - Logs
 
@@ -472,8 +478,8 @@ struct DnsPage: View {
     var body: some View {
         VStack(spacing: 0) {
             PageHead(title: "DNS 缓存", desc: "内置 DNS 服务器 · Fake‑IP 映射与条目缓存分析") {
-                Button { /* TODO: Refresh DNS cache */ } label: { Label("刷新缓存", systemImage: "arrow.clockwise") }.controlSize(.small)
-                Button { /* TODO: Clear DNS cache */ } label: { Label("清空", systemImage: "trash") }.controlSize(.small)
+                Button { M.flushDnsCache() } label: { Label("刷新缓存", systemImage: "arrow.clockwise") }.controlSize(.small)
+                Button { M.clearAllCache() } label: { Label("清空", systemImage: "trash") }.controlSize(.small)
             }
 
             ScrollView {
@@ -995,6 +1001,7 @@ struct GeneralPage: View {
                     Text("TCP 并发能极大加快多节点测速；统一延迟将握手时间计入以反映真实体感延迟；进程匹配使 macOS 能按 App 名分流。")
                         .font(.caption2).foregroundColor(.secondary).padding(.top, 6)
                 }
+                }
                 // GEO 数据库
                 Card(title: "GEO 数据库", icon: "globe.asia.australia") {
                     VStack(spacing: 2) {
@@ -1037,19 +1044,20 @@ struct GeneralPage: View {
             .padding(18)
         }
     }
-    private var statusLine: String {
+
+    var statusLine: String {
         if !M.reachable { return "未连接内核" }
         return "已连接 · mihomo \(M.version)" + (M.engineManaged ? " · 引擎 \(M.engine.engineVersion)" : "")
     }
-    private var uptimeText: String {
+    var uptimeText: String {
         let s = M.engineUptime; let h = s / 3600; let m = (s % 3600) / 60
         return h > 0 ? "\(h)h \(m)m" : "\(m)m \(s % 60)s"
     }
-    private func field(_ l: String, text: Binding<String>, placeholder: String) -> some View {
+    func field(_ l: String, text: Binding<String>, placeholder: String) -> some View {
         HStack { Text(l).font(.caption).foregroundColor(.secondary).frame(width: 50, alignment: .leading)
             TextField(placeholder, text: text).textFieldStyle(.roundedBorder) }
     }
-    private func colorFor(_ s: String) -> Color { ["green":.green,"blue":.blue,"purple":.purple,"orange":.orange][s] ?? .green }
+    func colorFor(_ s: String) -> Color { ["green":.green,"blue":.blue,"purple":.purple,"orange":.orange][s] ?? .green }
 }
 
 // MARK: - Menu Bar
@@ -1130,6 +1138,7 @@ struct NetworkPage: View {
                     Text("端口设为 0 即禁用。建议绝大多数应用使用混合端口（兼容 HTTP 与 SOCKS5）。")
                         .font(.caption2).foregroundColor(.secondary).padding(.top, 6)
                 }
+                }
                 Card(title: "全局网络", icon: "globe") {
                     VStack(spacing: 2) {
                         ToggleRow("IPv6 支持", key: "ipv6")
@@ -1189,6 +1198,7 @@ struct TunPage: View {
                     Text("用户态 UTUN (AF_SYSTEM)，不占 VPN 插槽。排除 SD-WAN 网段可避免抢占其路由。")
                         .font(.caption2).foregroundColor(.secondary).padding(.top, 6)
                 }
+                }
                 Spacer(minLength: 0)
             }.padding(18)
         }
@@ -1211,6 +1221,7 @@ struct SnifferPage: View {
                     }
                     Text("从 TLS / QUIC / HTTP 握手中提取真实域名用于分流，对走 IP 的连接尤为重要。")
                         .font(.caption2).foregroundColor(.secondary).padding(.top, 6)
+                }
                 }
                 Spacer(minLength: 0)
             }.padding(18)
