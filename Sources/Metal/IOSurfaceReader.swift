@@ -45,8 +45,8 @@ final class StatsReader {
 
     var available: Bool { mapIfNeeded(); return base != nil }
 
-    /// Most-recent `n` samples as (down, up) bytes/sec, oldest→newest.
-    func series(_ n: Int) -> (down: [Float], up: [Float]) {
+    /// Most-recent `n` samples with offset as (down, up) bytes/sec, oldest→newest.
+    func series(_ n: Int, offset: Int = 0) -> (down: [Float], up: [Float]) {
         mapIfNeeded()
         var down = [Float](repeating: 0, count: n)
         var up = [Float](repeating: 0, count: n)
@@ -55,7 +55,7 @@ final class StatsReader {
         let slotCount = Int(b.load(fromByteOffset: 4, as: UInt32.self))
         guard slotCount > 0 else { return (down, up) }
         for i in 0..<n {
-            let logical = wp - n + i
+            let logical = wp - n + i - offset
             if logical < 0 { continue }
             let idx = logical % slotCount
             let off = headerSize + idx * slotSize
@@ -79,12 +79,20 @@ struct MetalTrafficView: NSViewRepresentable {
         view.colorPixelFormat = .bgra8Unorm
         view.clearColor = MTLClearColorMake(0, 0, 0, 0)
         view.layer?.isOpaque = false
-        view.preferredFramesPerSecond = 60   // smooth without burning power; pauses off-active
+        view.preferredFramesPerSecond = 60
         view.isPaused = false
         view.enableSetNeedsDisplay = false
         view.delegate = context.coordinator
         context.coordinator.configure(view)
-        // Power throttle: stop GPU work when the app is not active (≤20mW idle goal).
+
+        // Setup gestures for panning history
+        let pan = NSPanGestureRecognizer(target: context.coordinator, action: #selector(Renderer.handlePan(_:)))
+        view.addGestureRecognizer(pan)
+
+        let click = NSClickGestureRecognizer(target: context.coordinator, action: #selector(Renderer.handleDoubleClick(_:)))
+        click.numberOfClicksRequired = 2
+        view.addGestureRecognizer(click)
+
         let nc = NotificationCenter.default
         nc.addObserver(forName: NSApplication.didResignActiveNotification, object: nil, queue: .main) { [weak view] _ in
             view?.isPaused = true
@@ -109,9 +117,12 @@ struct MetalTrafficView: NSViewRepresentable {
         private var device: MTLDevice?
         private var queue: MTLCommandQueue?
         private var pipeline: MTLRenderPipelineState?
-        private var vbuf: MTLBuffer?
-        private let points = 240          // rolling window
+        private let points = 240
         private var maxSeen: Float = 1
+
+        // Gestures & history navigation state
+        var scrollOffset = 0
+        private var startScrollOffset = 0
 
         init(accent: NSColor) { self.accent = accent }
 
@@ -134,13 +145,30 @@ struct MetalTrafficView: NSViewRepresentable {
             desc.vertexFunction = lib.makeFunction(name: "v_main")
             desc.fragmentFunction = lib.makeFunction(name: "f_main")
             desc.colorAttachments[0].pixelFormat = .bgra8Unorm
-            // alpha blending for the translucent area fill
             desc.colorAttachments[0].isBlendingEnabled = true
             desc.colorAttachments[0].sourceRGBBlendFactor = .sourceAlpha
             desc.colorAttachments[0].destinationRGBBlendFactor = .oneMinusSourceAlpha
             desc.colorAttachments[0].sourceAlphaBlendFactor = .one
             desc.colorAttachments[0].destinationAlphaBlendFactor = .oneMinusSourceAlpha
             pipeline = try? dev.makeRenderPipelineState(descriptor: desc)
+        }
+
+        @objc func handlePan(_ gesture: NSPanGestureRecognizer) {
+            let translation = gesture.translation(in: gesture.view)
+            switch gesture.state {
+            case .began:
+                startScrollOffset = scrollOffset
+            case .changed:
+                // Swipe right (translation.x > 0) to navigate back in time (increase offset)
+                let delta = Int(translation.x * 1.5)
+                scrollOffset = max(0, min(1800, startScrollOffset + delta))
+            default:
+                break
+            }
+        }
+
+        @objc func handleDoubleClick(_ gesture: NSClickGestureRecognizer) {
+            scrollOffset = 0
         }
 
         func mtkView(_ view: MTKView, drawableSizeWillChange size: CGSize) {}
@@ -152,34 +180,65 @@ struct MetalTrafficView: NSViewRepresentable {
                   let cmd = queue.makeCommandBuffer(),
                   let enc = cmd.makeRenderCommandEncoder(descriptor: rpd) else { return }
 
-            let (down, _) = reader.series(points)
-            // adaptive max with decay so the chart auto-scales smoothly
-            let localMax = max(down.max() ?? 0, 1)
+            let (down, up) = reader.series(points, offset: scrollOffset)
+            let localMax = max(down.max() ?? 0, up.max() ?? 0, 1)
             maxSeen = max(localMax, maxSeen * 0.96)
             let scale = max(maxSeen, 1)
 
-            // Build a triangle strip: for each x, two verts (baseline, value).
-            var verts = [SIMD2<Float>]()
-            verts.reserveCapacity(points * 2)
+            enc.setRenderPipelineState(pipeline)
+
+            // Prepare Upload coordinates
+            var upFill = [SIMD2<Float>]()
+            var upLine = [SIMD2<Float>]()
+            upFill.reserveCapacity(points * 2)
+            upLine.reserveCapacity(points)
             for i in 0..<points {
                 let x = Float(i) / Float(points - 1)
-                let y = min(1, down[i] / scale) * 0.92
-                verts.append(SIMD2<Float>(x, 0))
-                verts.append(SIMD2<Float>(x, y))
+                let y = min(1, up[i] / scale) * 0.88
+                upFill.append(SIMD2<Float>(x, 0))
+                upFill.append(SIMD2<Float>(x, y))
+                upLine.append(SIMD2<Float>(x, y))
             }
-            let byteLen = verts.count * MemoryLayout<SIMD2<Float>>.stride
-            if vbuf == nil || vbuf!.length < byteLen {
-                vbuf = dev.makeBuffer(length: max(byteLen, 64), options: .storageModeShared)
+
+            // Prepare Download coordinates
+            var downFill = [SIMD2<Float>]()
+            var downLine = [SIMD2<Float>]()
+            downFill.reserveCapacity(points * 2)
+            downLine.reserveCapacity(points)
+            for i in 0..<points {
+                let x = Float(i) / Float(points - 1)
+                let y = min(1, down[i] / scale) * 0.88
+                downFill.append(SIMD2<Float>(x, 0))
+                downFill.append(SIMD2<Float>(x, y))
+                downLine.append(SIMD2<Float>(x, y))
             }
-            verts.withUnsafeBytes { vbuf!.contents().copyMemory(from: $0.baseAddress!, byteCount: byteLen) }
 
-            enc.setRenderPipelineState(pipeline)
-            enc.setVertexBuffer(vbuf, offset: 0, index: 0)
+            // Helper to build a temporary buffer and draw primitives
+            func drawVerts(_ verts: [SIMD2<Float>], type: MTLPrimitiveType, color: NSColor, alpha: Float) {
+                let byteLen = verts.count * MemoryLayout<SIMD2<Float>>.stride
+                guard byteLen > 0 else { return }
+                guard let tempBuf = dev.makeBuffer(bytes: verts, length: byteLen, options: .storageModeShared) else { return }
+                enc.setVertexBuffer(tempBuf, offset: 0, index: 0)
 
-            let c = accent.usingColorSpace(.sRGB) ?? accent
-            var fill = SIMD4<Float>(Float(c.redComponent), Float(c.greenComponent), Float(c.blueComponent), 0.28)
-            enc.setFragmentBytes(&fill, length: MemoryLayout<SIMD4<Float>>.stride, index: 0)
-            enc.drawPrimitives(type: .triangleStrip, vertexStart: 0, vertexCount: verts.count)
+                let c = color.usingColorSpace(.sRGB) ?? color
+                var col = SIMD4<Float>(Float(c.redComponent), Float(c.greenComponent), Float(c.blueComponent), alpha)
+                enc.setFragmentBytes(&col, length: MemoryLayout<SIMD4<Float>>.stride, index: 0)
+                enc.drawPrimitives(type: type, vertexStart: 0, vertexCount: verts.count)
+            }
+
+            // Upload is Orange, Download is primary Accent color
+            let upColor = NSColor.systemOrange
+            let downColor = accent
+
+            // Multi-pass draw order:
+            // 1. Upload Fill
+            drawVerts(upFill, type: .triangleStrip, color: upColor, alpha: 0.12)
+            // 2. Download Fill
+            drawVerts(downFill, type: .triangleStrip, color: downColor, alpha: 0.22)
+            // 3. Upload line
+            drawVerts(upLine, type: .lineStrip, color: upColor, alpha: 0.75)
+            // 4. Download line
+            drawVerts(downLine, type: .lineStrip, color: downColor, alpha: 0.90)
 
             enc.endEncoding()
             cmd.present(drawable)

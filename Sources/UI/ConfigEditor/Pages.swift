@@ -563,6 +563,175 @@ struct DnsPage: View {
 
 // MARK: - SD-WAN coexistence (topology + conflict detection)
 
+struct VisualEffectView: NSViewRepresentable {
+    var material: NSVisualEffectView.Material
+    var blendingMode: NSVisualEffectView.BlendingMode
+    func makeNSView(context: Context) -> NSVisualEffectView {
+        let v = NSVisualEffectView()
+        v.material = material
+        v.blendingMode = blendingMode
+        v.state = .active
+        return v
+    }
+    func updateNSView(_ nsView: NSVisualEffectView, context: Context) {
+        nsView.material = material
+        nsView.blendingMode = blendingMode
+    }
+}
+
+struct LinkLine: View {
+    let start: CGPoint
+    let end: CGPoint
+    let color: Color
+    @State private var phase: CGFloat = 0
+
+    var body: some View {
+        Path { path in
+            path.move(to: start)
+            let control1 = CGPoint(x: start.x + (end.x - start.x) * 0.5, y: start.y)
+            let control2 = CGPoint(x: start.x + (end.x - start.x) * 0.5, y: end.y)
+            path.addCurve(to: end, control1: control1, control2: control2)
+        }
+        .stroke(color.opacity(0.18), lineWidth: 1.5)
+        .overlay(
+            Path { path in
+                path.move(to: start)
+                let control1 = CGPoint(x: start.x + (end.x - start.x) * 0.5, y: start.y)
+                let control2 = CGPoint(x: start.x + (end.x - start.x) * 0.5, y: end.y)
+                path.addCurve(to: end, control1: control1, control2: control2)
+            }
+            .stroke(color, style: StrokeStyle(lineWidth: 1.8, lineCap: .round, lineJoin: .round, miterLimit: 0, dash: [6, 6], dashPhase: phase))
+        )
+        .onAppear {
+            withAnimation(.linear(duration: 2.0).repeatForever(autoreverses: false)) {
+                phase = -24
+            }
+        }
+    }
+}
+
+struct SdwanTopologyView: View {
+    @EnvironmentObject var M: AppModel
+    let ifaces: [NetIface]
+    let routes: [(dest: String, iface: String)]
+
+    var body: some View {
+        let activeIfaces = ifaces.filter { $0.isUp && !$0.ipv4.isEmpty }
+        var dests = Array(Set(routes.map { $0.dest }))
+        if dests.isEmpty {
+            dests.append("0.0.0.0/0 (默认出口)")
+        }
+
+        return GeometryReader { geo in
+            let w = geo.size.width
+            let h = geo.size.height
+
+            let hostPt = CGPoint(x: 55, y: h / 2)
+
+            let ifaceCount = max(1, activeIfaces.count)
+            let ifacePoints = (0..<activeIfaces.count).map { idx -> (String, CGPoint) in
+                let y = h / 2 + CGFloat(idx - (ifaceCount - 1) / 2) * 46
+                return (activeIfaces[idx].id, CGPoint(x: w * 0.44, y: y))
+            }
+
+            let destCount = max(1, dests.count)
+            let destPoints = (0..<dests.count).map { idx -> (String, CGPoint) in
+                let y = h / 2 + CGFloat(idx - (destCount - 1) / 2) * 42
+                return (dests[idx], CGPoint(x: w * 0.82, y: y))
+            }
+
+            ZStack {
+                // Connections (Pan lines with flow simulation)
+                ForEach(ifacePoints, id: \.0) { ifaceId, pt in
+                    let color = lineColor(for: activeIfaces.first(where: { $0.id == ifaceId })?.kind ?? .physical)
+                    LinkLine(start: hostPt, end: pt, color: color)
+                }
+
+                ForEach(routes.indices, id: \.self) { idx in
+                    let r = routes[idx]
+                    if let startPt = ifacePoints.first(where: { $0.0 == r.iface })?.1,
+                       let endPt = destPoints.first(where: { $0.0 == r.dest })?.1 {
+                        let color = lineColor(for: activeIfaces.first(where: { $0.id == r.iface })?.kind ?? .physical)
+                        LinkLine(start: startPt, end: endPt, color: color)
+                    }
+                }
+
+                if let eth = activeIfaces.first(where: { $0.kind == .physical }),
+                   let ethPt = ifacePoints.first(where: { $0.0 == eth.id })?.1,
+                   let defaultDestPt = destPoints.first(where: { $0.0.contains("0.0.0.0") || $0.0 == "default" })?.1 {
+                    LinkLine(start: ethPt, end: defaultDestPt, color: .blue)
+                }
+
+                // Nodes
+                VStack(spacing: 3) {
+                    Image(systemName: "laptopcomputer").font(.system(size: 13))
+                    Text("本机 (Host)").font(.system(size: 8, weight: .bold))
+                }
+                .frame(width: 66, height: 38)
+                .background(RoundedRectangle(cornerRadius: 6).fill(Color(nsColor: .windowBackgroundColor)).opacity(0.85))
+                .overlay(RoundedRectangle(cornerRadius: 6).stroke(M.accent, lineWidth: 1.2))
+                .position(hostPt)
+
+                ForEach(0..<activeIfaces.count, id: \.self) { idx in
+                    let iface = activeIfaces[idx]
+                    let pt = ifacePoints[idx].1
+                    let color = lineColor(for: iface.kind)
+                    HStack(spacing: 4) {
+                        Image(systemName: iconName(for: iface.kind)).foregroundColor(color).font(.system(size: 10))
+                        VStack(alignment: .leading, spacing: 0) {
+                            Text(iface.name).font(.system(size: 9, design: .monospaced)).fontWeight(.bold)
+                            Text(iface.primaryIP).font(.system(size: 7, design: .monospaced)).foregroundColor(.secondary)
+                        }
+                    }
+                    .padding(.horizontal, 6).padding(.vertical, 3)
+                    .background(RoundedRectangle(cornerRadius: 6).fill(Color(nsColor: .windowBackgroundColor).opacity(0.85)))
+                    .overlay(RoundedRectangle(cornerRadius: 6).stroke(color.opacity(0.7), lineWidth: 1.0))
+                    .position(pt)
+                }
+
+                ForEach(0..<dests.count, id: \.self) { idx in
+                    let dest = dests[idx]
+                    let pt = destPoints[idx].1
+                    HStack(spacing: 3) {
+                        Image(systemName: "arrow.up.right.circle.fill").foregroundColor(.secondary).font(.system(size: 8))
+                        Text(dest).font(.system(size: 8, design: .monospaced)).lineLimit(1)
+                    }
+                    .padding(.horizontal, 6).padding(.vertical, 4)
+                    .background(RoundedRectangle(cornerRadius: 6).fill(Color(nsColor: .windowBackgroundColor).opacity(0.85)))
+                    .overlay(RoundedRectangle(cornerRadius: 6).stroke(Color.primary.opacity(0.1), lineWidth: 0.8))
+                    .position(pt)
+                }
+            }
+        }
+        .frame(height: 200)
+        .padding(10)
+        .background(VisualEffectView(material: .underWindowBackground, blendingMode: .withinWindow).cornerRadius(12))
+        .overlay(RoundedRectangle(cornerRadius: 12).stroke(Color.primary.opacity(0.06)))
+    }
+
+    private func lineColor(for k: IfaceKind) -> Color {
+        switch k {
+        case .physical: return .blue
+        case .proxyTun: return M.accent
+        case .tailscale: return .teal
+        case .zerotier: return .orange
+        case .oray: return .purple
+        default: return .secondary
+        }
+    }
+
+    private func iconName(for k: IfaceKind) -> String {
+        switch k {
+        case .physical: return "wifi"
+        case .proxyTun: return "shield.fill"
+        case .tailscale: return "point.3.connected.trianglepath.dotted"
+        case .zerotier: return "globe"
+        case .oray: return "link"
+        default: return "network"
+        }
+    }
+}
+
 struct SdwanPage: View {
     @EnvironmentObject var M: AppModel
     @State private var ifaces: [NetIface] = []
@@ -597,6 +766,9 @@ struct SdwanPage: View {
                     .padding(14)
                     .background(RoundedRectangle(cornerRadius: 12).fill(Color(nsColor: .windowBackgroundColor).opacity(0.5)))
                     .overlay(RoundedRectangle(cornerRadius: 12).stroke(Color.primary.opacity(0.06)))
+
+                    // Topology view of the network routing relation map
+                    SdwanTopologyView(ifaces: ifaces, routes: routes)
 
                     // interfaces
                     Card(title: "网络接口拓扑 · \(ifaces.count)", icon: "network") {
