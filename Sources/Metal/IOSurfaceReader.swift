@@ -48,12 +48,12 @@ final class StatsReader {
     /// Most-recent `n` samples as (down, up) bytes/sec, oldest→newest.
     func series(_ n: Int) -> (down: [Float], up: [Float]) {
         mapIfNeeded()
-        guard let b = base else { return ([], []) }
-        let wp = Int(b.load(fromByteOffset: 0, as: UInt32.self))
-        let slotCount = Int(b.load(fromByteOffset: 4, as: UInt32.self))
-        guard slotCount > 0 else { return ([], []) }
         var down = [Float](repeating: 0, count: n)
         var up = [Float](repeating: 0, count: n)
+        guard let b = base else { return (down, up) }
+        let wp = Int(b.load(fromByteOffset: 0, as: UInt32.self))
+        let slotCount = Int(b.load(fromByteOffset: 4, as: UInt32.self))
+        guard slotCount > 0 else { return (down, up) }
         for i in 0..<n {
             let logical = wp - n + i
             if logical < 0 { continue }
