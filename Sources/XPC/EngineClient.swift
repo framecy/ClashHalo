@@ -263,10 +263,12 @@ struct EngineStatusRPC: Decodable {
     let version: String
     let controllerAddr: String
     let controllerSecret: String
+    let isRoot: Bool
     enum CodingKeys: String, CodingKey {
         case running, tunEnabled = "tun_enabled", connections
         case uptimeSec = "uptime_sec", version
         case controllerAddr = "controller_addr", controllerSecret = "controller_secret"
+        case isRoot = "is_root"
     }
 }
 
@@ -278,9 +280,11 @@ final class EngineControl: ObservableObject {
     @Published var present = false
     @Published var uptimeSec: Int64 = 0
     @Published var engineVersion = "?"
+    @Published var isRoot = false          // engine running as root LaunchDaemon (TUN-capable)
 
     private let appSupport = NSHomeDirectory() + "/Library/Application Support/ClashPow"
     private let plistPath = NSHomeDirectory() + "/Library/LaunchAgents/com.clashpow.engine.plist"
+    private let rootPlistPath = "/Library/LaunchDaemons/com.clashpow.engine.plist"
 
     /// First-run bootstrap: install the bundled engine + geodata and the
     /// LaunchAgent so the kernel runs without any manual setup. Idempotent.
@@ -371,8 +375,86 @@ final class EngineControl: ObservableObject {
         present = true
         uptimeSec = s.uptimeSec
         engineVersion = s.version
+        isRoot = s.isRoot
         guard !s.controllerAddr.isEmpty else { return nil }
         return (s.controllerAddr, s.controllerSecret)
+    }
+
+    /// Promote the engine to a root LaunchDaemon so TUN works. Requires one
+    /// administrator-auth prompt (osascript). Installs the engine + geodata to a
+    /// system path, unloads the user LaunchAgent, writes /Library/LaunchDaemons,
+    /// and bootstraps it as root. Returns true on success.
+    @discardableResult
+    func installPrivileged() async -> Bool {
+        let engineBin = appSupport + "/clashpow-engine"
+        guard FileManager.default.fileExists(atPath: engineBin) else { return false }
+        let logDir = NSHomeDirectory() + "/Library/Logs/ClashPow"
+        // The root daemon runs the SAME engine binary but as root, with the same
+        // app-support home so config/geodata/controller are unchanged.
+        let plist = """
+        <?xml version="1.0" encoding="UTF-8"?>
+        <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+        <plist version="1.0"><dict>
+          <key>Label</key><string>com.clashpow.engine</string>
+          <key>ProgramArguments</key><array><string>\(engineBin)</string></array>
+          <key>EnvironmentVariables</key><dict><key>CLASHPOW_CONFIG</key><string>\(appSupport)/config.yaml</string></dict>
+          <key>RunAtLoad</key><true/>
+          <key>KeepAlive</key><dict><key>SuccessfulExit</key><false/><key>Crashed</key><true/></dict>
+          <key>ThrottleInterval</key><integer>3</integer>
+          <key>StandardOutPath</key><string>\(logDir)/clashpow-engine.log</string>
+          <key>StandardErrorPath</key><string>\(logDir)/clashpow-engine.log</string>
+        </dict></plist>
+        """
+        // Write the plist to a temp file the privileged shell will move into place.
+        let tmpPlist = NSTemporaryDirectory() + "com.clashpow.engine.plist"
+        guard (try? plist.write(toFile: tmpPlist, atomically: true, encoding: .utf8)) != nil else { return false }
+
+        // One privileged shell: stop user agent, install root daemon, bootstrap it.
+        let uid = getuid()
+        let shell = [
+            "/bin/launchctl bootout gui/\(uid)/com.clashpow.engine 2>/dev/null || true",
+            "/bin/launchctl unload '\(plistPath)' 2>/dev/null || true",
+            "/bin/cp '\(tmpPlist)' '\(rootPlistPath)'",
+            "/usr/sbin/chown root:wheel '\(rootPlistPath)'",
+            "/bin/chmod 644 '\(rootPlistPath)'",
+            "/bin/launchctl bootout system/com.clashpow.engine 2>/dev/null || true",
+            "/bin/launchctl bootstrap system '\(rootPlistPath)'",
+        ].joined(separator: "; ")
+        let ok = await Self.runAdmin(shell)
+        if ok { isRoot = true }
+        return ok
+    }
+
+    /// Demote back to the user LaunchAgent (removes the root daemon). Admin auth.
+    @discardableResult
+    func uninstallPrivileged() async -> Bool {
+        let shell = [
+            "/bin/launchctl bootout system/com.clashpow.engine 2>/dev/null || true",
+            "/bin/rm -f '\(rootPlistPath)'",
+        ].joined(separator: "; ")
+        let ok = await Self.runAdmin(shell)
+        if ok {
+            isRoot = false
+            // bring the user LaunchAgent back
+            let t = Process(); t.executableURL = URL(fileURLWithPath: "/bin/launchctl")
+            t.arguments = ["load", plistPath]; try? t.run(); t.waitUntilExit()
+        }
+        return ok
+    }
+
+    /// Run a shell snippet with administrator privileges via one osascript prompt.
+    static func runAdmin(_ shell: String) async -> Bool {
+        let escaped = shell.replacingOccurrences(of: "\\", with: "\\\\").replacingOccurrences(of: "\"", with: "\\\"")
+        let script = "do shell script \"\(escaped)\" with administrator privileges"
+        return await withCheckedContinuation { cont in
+            DispatchQueue.global().async {
+                let p = Process()
+                p.executableURL = URL(fileURLWithPath: "/usr/bin/osascript")
+                p.arguments = ["-e", script]
+                do { try p.run(); p.waitUntilExit(); cont.resume(returning: p.terminationStatus == 0) }
+                catch { cont.resume(returning: false) }
+            }
+        }
     }
 
     /// Deep-merge config overrides into the running config (validate + rollback).
