@@ -113,6 +113,7 @@ type StatusSnapshot struct {
 	LogSocketPath  string `json:"log_socket_path"`
 	ControllerAddr string `json:"controller_addr"`
 	ControllerKey  string `json:"controller_secret"`
+	IsRoot         bool   `json:"is_root"`
 }
 
 const (
@@ -333,6 +334,7 @@ func (s *Server) handleGetStatus(req jsonRPCRequest) jsonRPCResponse {
 		LogSocketPath:  s.deps.LogWriter.SockPath(),
 		ControllerAddr: addr,
 		ControllerKey:  key,
+		IsRoot:         os.Geteuid() == 0,
 	}
 	return jsonRPCResponse{JSONRPC: "2.0", ID: req.ID, Result: status}
 }
