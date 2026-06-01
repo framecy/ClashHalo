@@ -617,10 +617,18 @@ struct SdwanTopologyView: View {
 
     var body: some View {
         let activeIfaces = ifaces.filter { $0.isUp && !$0.ipv4.isEmpty }
-        var dests = Array(Set(routes.map { $0.dest }))
-        if dests.isEmpty {
-            dests.append("0.0.0.0/0 (默认出口)")
+        
+        // Filter and limit destinations to max 4 to fit nicely inside the card without crowding/overflow.
+        var rawDests = Array(Set(routes.map { $0.dest }))
+        if rawDests.isEmpty {
+            rawDests.append("0.0.0.0/0 (默认出口)")
         }
+        let dests = Array(rawDests.sorted { a, b in
+            let aIsDefault = a == "default" || a.contains("0.0.0.0")
+            let bIsDefault = b == "default" || b.contains("0.0.0.0")
+            if aIsDefault != bIsDefault { return aIsDefault }
+            return a.localizedStandardCompare(b) == .orderedAscending
+        }.prefix(4))
 
         return GeometryReader { geo in
             let w = geo.size.width
@@ -634,9 +642,8 @@ struct SdwanTopologyView: View {
                 return (activeIfaces[idx].id, CGPoint(x: w * 0.44, y: y))
             }
 
-            let destCount = max(1, dests.count)
             let destPoints = (0..<dests.count).map { idx -> (String, CGPoint) in
-                let y = h / 2 + CGFloat(idx - (destCount - 1) / 2) * 42
+                let y = h / 2 + CGFloat(idx - (dests.count - 1) / 2) * 42
                 return (dests[idx], CGPoint(x: w * 0.82, y: y))
             }
 
@@ -647,9 +654,11 @@ struct SdwanTopologyView: View {
                     LinkLine(start: hostPt, end: pt, color: color)
                 }
 
+                // Draw lines to destinations, only if they are visible in our top 4 limited dests.
                 ForEach(routes.indices, id: \.self) { idx in
                     let r = routes[idx]
-                    if let startPt = ifacePoints.first(where: { $0.0 == r.iface })?.1,
+                    if dests.contains(r.dest),
+                       let startPt = ifacePoints.first(where: { $0.0 == r.iface })?.1,
                        let endPt = destPoints.first(where: { $0.0 == r.dest })?.1 {
                         let color = lineColor(for: activeIfaces.first(where: { $0.id == r.iface })?.kind ?? .physical)
                         LinkLine(start: startPt, end: endPt, color: color)
@@ -707,6 +716,7 @@ struct SdwanTopologyView: View {
         .padding(10)
         .background(VisualEffectView(material: .underWindowBackground, blendingMode: .withinWindow).cornerRadius(12))
         .overlay(RoundedRectangle(cornerRadius: 12).stroke(Color.primary.opacity(0.06)))
+        .clipped()
     }
 
     private func lineColor(for k: IfaceKind) -> Color {
@@ -1198,10 +1208,10 @@ struct GeneralPage: View {
                 // GEO 下载源
                 Card(title: "GEO 下载源", icon: "arrow.down.circle") {
                     VStack(spacing: 2) {
-                        GeoURLRow("GeoIP", sub: "geoip")
-                        GeoURLRow("GeoSite", sub: "geosite")
-                        GeoURLRow("MMDB", sub: "mmdb")
-                        GeoURLRow("ASN", sub: "asn")
+                        GeoURLRow("GeoIP", sub: "geoip", defaultURL: "https://cdn.jsdelivr.net/gh/Loyalsoldier/v2ray-rules-dat@release/geoip.dat")
+                        GeoURLRow("GeoSite", sub: "geosite", defaultURL: "https://cdn.jsdelivr.net/gh/Loyalsoldier/v2ray-rules-dat@release/geosite.dat")
+                        GeoURLRow("MMDB", sub: "mmdb", defaultURL: "https://cdn.jsdelivr.net/gh/Loyalsoldier/v2ray-rules-dat@release/country.mmdb")
+                        GeoURLRow("ASN", sub: "asn", defaultURL: "https://github.com/P3TERX/GeoLite.mmdb/raw/download/GeoLite2-ASN.mmdb")
                     }
                     Text("修改下载源 URL 后会在下次更新时生效。")
                         .font(.caption2).foregroundColor(.secondary).padding(.top, 6)
@@ -1558,11 +1568,10 @@ struct StringListRow: View {
     }
 }
 
-/// GEO download-source URL row (nested under geox-url.<sub>).
 struct GeoURLRow: View {
     @EnvironmentObject var M: AppModel
-    let label: String; let sub: String
-    init(_ label: String, sub: String) { self.label = label; self.sub = sub }
+    let label: String; let sub: String; let defaultURL: String
+    init(_ label: String, sub: String, defaultURL: String) { self.label = label; self.sub = sub; self.defaultURL = defaultURL }
     @State private var text = ""
     var body: some View {
         HStack {
@@ -1574,7 +1583,7 @@ struct GeoURLRow: View {
         .padding(.vertical, 5)
         .onAppear {
             let geo = M.configs["geox-url"] as? [String: Any] ?? [:]
-            text = (geo[sub] as? String) ?? ""
+            text = (geo[sub] as? String) ?? defaultURL
         }
     }
 }
