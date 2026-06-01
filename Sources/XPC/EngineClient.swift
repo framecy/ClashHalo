@@ -496,6 +496,16 @@ final class EngineControl: ObservableObject {
     func startTUN() async { _ = await call("start_tun") }
     func stopTUN() async { _ = await call("stop_tun") }
 
+    /// Ask the root engine daemon to set/clear the macOS system HTTP/HTTPS/SOCKS proxy.
+    /// Since the engine runs as root, this does not pop up any authorization dialogs.
+    @discardableResult
+    func setSystemProxy(enabled: Bool, port: Int) async -> Bool {
+        let params = #"{"enabled":\#(enabled),"port":\#(port)}"#
+        guard let data = await call("set_system_proxy", params: params) else { return false }
+        struct Resp: Decodable { struct R: Decodable { let ok: Bool? }; let result: R? }
+        return (try? JSONDecoder().decode(Resp.self, from: data))?.result?.ok == true
+    }
+
     /// Apply a full YAML config. The engine validates + applies with rollback;
     /// returns (ok, errorMessage). A non-nil error means validation failed and
     /// the engine kept the previous good config.
