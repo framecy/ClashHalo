@@ -8,25 +8,25 @@ struct ProxiesPage: View {
     @State private var collapsed: Set<String> = []
 
     var body: some View {
-        ScrollView {
-            LazyVStack(spacing: 12) {
-                HStack {
-                    Text("\(M.groups.count) 组 · \(M.nodes.count) 节点")
-                        .font(.caption).foregroundColor(.secondary)
-                    Spacer()
-                    Button {
-                        collapsed = collapsed.count == M.groups.count ? [] : Set(M.groups.map(\.id))
-                    } label: { Label(collapsed.count == M.groups.count ? "全部展开" : "全部折叠", systemImage: "rectangle.expand.vertical") }
-                        .controlSize(.small)
-                    Button { M.testAll() } label: { Label("全部测速", systemImage: "bolt.fill") }
-                        .controlSize(.small).tint(M.accent)
-                }
-                if M.groups.isEmpty {
-                    ContentUnavailable("正在加载代理…", "arrow.triangle.2.circlepath")
-                }
-                ForEach(M.groups) { g in groupCard(g) }
+        VStack(spacing: 0) {
+            PageHead(title: "策略", desc: "\(M.groups.count) 组 · \(M.nodes.count) 节点") {
+                Button {
+                    collapsed = collapsed.count == M.groups.count ? [] : Set(M.groups.map(\.id))
+                } label: { Label(collapsed.count == M.groups.count ? "全部展开" : "全部折叠", systemImage: "rectangle.expand.vertical") }
+                    .controlSize(.small)
+                Button { M.testAll() } label: { Label("全部测速", systemImage: "bolt.fill") }
+                    .controlSize(.small).tint(M.accent).buttonStyle(.borderedProminent)
             }
-            .padding(18)
+
+            ScrollView {
+                LazyVStack(spacing: 12) {
+                    if M.groups.isEmpty {
+                        ContentUnavailable("正在加载代理…", "arrow.triangle.2.circlepath")
+                    }
+                    ForEach(M.groups) { g in groupCard(g) }
+                }
+                .padding(.horizontal, 20).padding(.bottom, 24)
+            }
         }
     }
 
@@ -134,19 +134,23 @@ struct ConnectionsPage: View {
     @State private var q = ""
 
     var body: some View {
-        let rows = M.conns.filter {
-            q.isEmpty || "\($0.host)\($0.process)\($0.chain)\($0.rule)".localizedCaseInsensitiveContains(q)
-        }
         VStack(spacing: 0) {
+            PageHead(title: "连接", desc: "\(M.conns.count) 个活跃连接 · 实时速率") {
+                Button(role: .destructive) { /* TODO */ } label: { Label("全部断开", systemImage: "xmark.circle") }
+                    .controlSize(.small)
+            }
+
             HStack {
                 Image(systemName: "magnifyingglass").foregroundColor(.secondary)
                 TextField("搜索域名 / 进程 / 规则", text: $q).textFieldStyle(.plain)
                 Spacer()
-                Text("\(rows.count) 活跃").font(.caption).foregroundColor(.secondary)
+                Text("\(M.conns.filter { matches($0) }.count) 匹配").font(.caption).foregroundColor(.secondary)
             }
             .padding(.horizontal, 14).padding(.vertical, 10)
+            .background(Color(nsColor: .windowBackgroundColor).opacity(0.3))
             Divider()
 
+            let rows = M.conns.filter { matches($0) }
             if rows.isEmpty {
                 ContentUnavailable(q.isEmpty ? "暂无活跃连接" : "无匹配结果", "point.3.connected.trianglepath.dotted")
                     .frame(maxHeight: .infinity)
@@ -154,18 +158,27 @@ struct ConnectionsPage: View {
                 Table(rows) {
                     TableColumn("目标") { c in
                         VStack(alignment: .leading, spacing: 1) {
-                            Text(c.host).font(.caption).fontWeight(.medium).lineLimit(1)
+                            Text(c.host).font(.system(size: 12, weight: .medium)).lineLimit(1)
                             Text("\(c.dstIP):\(c.port)").font(.system(size: 10, design: .monospaced)).foregroundColor(.secondary)
                         }
                     }.width(min: 180, ideal: 240)
-                    TableColumn("进程") { c in Text(c.process).font(.caption).lineLimit(1) }.width(min: 80, ideal: 120)
+                    TableColumn("进程") { c in Text(c.process).font(.system(size: 11)).foregroundColor(.secondary).lineLimit(1) }.width(min: 80, ideal: 120)
                     TableColumn("规则") { c in Text(c.rule).font(.system(size: 10, design: .monospaced)).foregroundColor(.secondary).lineLimit(1) }.width(min: 100, ideal: 150)
-                    TableColumn("链路") { c in Text(c.chain).font(.caption).foregroundColor(M.accent).lineLimit(1) }.width(min: 100, ideal: 160)
+                    TableColumn("链路") { c in
+                        HStack(spacing: 4) {
+                            Text(c.chain).font(.system(size: 11, weight: .semibold)).foregroundColor(c.category == "proxy" ? M.accent : .secondary).lineLimit(1)
+                            Text(c.node).font(.system(size: 10, design: .monospaced)).foregroundColor(.secondary)
+                        }
+                    }.width(min: 120, ideal: 180)
                     TableColumn("↓") { c in Text(fmtRate(Double(c.downRate))).font(.system(size: 10, design: .monospaced)) }.width(70)
                     TableColumn("↑") { c in Text(fmtRate(Double(c.upRate))).font(.system(size: 10, design: .monospaced)).foregroundColor(.secondary) }.width(70)
                 }
             }
         }
+    }
+
+    private func matches(_ c: Conn) -> Bool {
+        q.isEmpty || "\(c.host)\(c.process)\(c.chain)\(c.rule)".localizedCaseInsensitiveContains(q)
     }
 }
 
@@ -184,23 +197,27 @@ struct RulesPage: View {
         let enabled = M.inlineRules
         let disabled = M.disabledRules
         VStack(spacing: 0) {
+            PageHead(title: "分流规则", desc: "\(enabled.count) 启用 · \(disabled.count) 禁用") {
+                Button { newRule = ""; showAdd = true } label: { Label("添加规则", systemImage: "plus") }
+                    .controlSize(.small).tint(M.accent).buttonStyle(.borderedProminent)
+            }
+
             HStack(spacing: 10) {
                 Image(systemName: "magnifyingglass").foregroundColor(.secondary)
-                TextField("搜索规则", text: $q).textFieldStyle(.plain)
-                Spacer()
-                Button { newRule = ""; showAdd = true } label: { Label("添加", systemImage: "plus") }.controlSize(.small)
-                Text("\(enabled.count) 启用 · \(disabled.count) 禁用").font(.caption).foregroundColor(.secondary)
+                TextField("搜索规则内容或策略", text: $q).textFieldStyle(.plain)
             }
             .padding(.horizontal, 14).padding(.vertical, 10)
+            .background(Color(nsColor: .windowBackgroundColor).opacity(0.3))
             Divider()
+
             ScrollView {
                 LazyVStack(spacing: 0) {
                     ForEach(Array(enabled.enumerated()), id: \.offset) { idx, rule in
                         if matches(rule) { row(rule, idx: idx, disabled: false, count: enabled.count) }
                     }
                     if !disabled.isEmpty {
-                        HStack { Text("已禁用").font(.caption).foregroundColor(.secondary); Spacer() }
-                            .padding(.horizontal, 14).padding(.top, 10).padding(.bottom, 4)
+                        HStack { Text("已禁用").font(.caption).fontWeight(.bold).foregroundColor(.secondary); Spacer() }
+                            .padding(.horizontal, 14).padding(.top, 16).padding(.bottom, 8)
                         ForEach(Array(disabled.enumerated()), id: \.offset) { _, rule in
                             if matches(rule) { row(rule, idx: -1, disabled: true, count: 0) }
                         }
@@ -294,25 +311,31 @@ struct LogsPage: View {
             (q.isEmpty || $0.text.localizedCaseInsensitiveContains(q))
         }
         VStack(spacing: 0) {
-            HStack(spacing: 10) {
-                Image(systemName: "magnifyingglass").foregroundColor(.secondary)
-                TextField("过滤日志", text: $q).textFieldStyle(.plain).frame(maxWidth: 180)
-                Picker("", selection: $level) {
-                    Text("全部").tag("all"); Text("INFO").tag("info")
-                    Text("WARN").tag("warning"); Text("ERROR").tag("error")
-                }.pickerStyle(.segmented).frame(width: 240).labelsHidden()
-                Spacer()
+            PageHead(title: "实时日志", desc: "结构化日志流 · 核心运行状态") {
                 Button { paused.toggle(); if paused { frozen = M.logs } } label: {
                     Label(paused ? "继续" : "暂停", systemImage: paused ? "play.fill" : "pause.fill")
                 }.controlSize(.small)
                 Button { exportLogs(rows) } label: { Label("导出", systemImage: "square.and.arrow.up") }
                     .controlSize(.small)
-                HStack(spacing: 4) {
-                    Circle().fill(paused ? Color.secondary : Color.green).frame(width: 5, height: 5)
-                    Text("\(rows.count) 行").font(.caption).foregroundColor(.secondary)
+            }
+
+            HStack(spacing: 12) {
+                HStack(spacing: 8) {
+                    Image(systemName: "magnifyingglass").foregroundColor(.secondary)
+                    TextField("过滤日志内容…", text: $q).textFieldStyle(.plain).frame(maxWidth: 200)
+                }
+                Picker("", selection: $level) {
+                    Text("全部").tag("all"); Text("INFO").tag("info")
+                    Text("WARN").tag("warning"); Text("ERROR").tag("error"); Text("DEBUG").tag("debug")
+                }.pickerStyle(.segmented).frame(width: 300).labelsHidden()
+                Spacer()
+                HStack(spacing: 6) {
+                    Circle().fill(paused ? Color.secondary : M.accent).frame(width: 6, height: 6)
+                    Text("\(rows.count) 行").font(.system(size: 11, design: .monospaced)).foregroundColor(.secondary)
                 }
             }
             .padding(.horizontal, 14).padding(.vertical, 10)
+            .background(Color(nsColor: .windowBackgroundColor).opacity(0.3))
             Divider()
             ScrollViewReader { sp in
                 ScrollView {
@@ -447,61 +470,75 @@ struct DnsPage: View {
     @State private var resolving = false
 
     var body: some View {
-        ScrollView {
-            VStack(spacing: 14) {
-                // DNS settings (editable)
-                Card(title: "DNS 服务器", icon: "server.rack") {
-                    VStack(spacing: 2) {
-                        NToggle("启用 DNS", "dns", "enable")
-                        NToggle("IPv6 解析", "dns", "ipv6")
-                        NPicker("增强模式", "dns", "enhanced-mode", [("fake-ip","Fake-IP"),("redir-host","Redir-Host")])
-                        NText("Fake-IP 段", "dns", "fake-ip-range", placeholder: "198.18.0.1/16")
-                        NText("监听地址", "dns", "listen", placeholder: "0.0.0.0:53")
-                        NList("上游 (nameserver)", "dns", "nameserver", placeholder: "https://1.1.1.1/dns-query")
-                        NList("Fake-IP 过滤", "dns", "fake-ip-filter", placeholder: "*.lan")
-                    }
-                    Text("Fake-IP 为代理域名返回保留段虚拟 IP，避免 DNS 泄漏；上游支持 DoH/DoT/DoQ/UDP。")
-                        .font(.caption2).foregroundColor(.secondary).padding(.top, 6)
-                }
+        VStack(spacing: 0) {
+            PageHead(title: "DNS 缓存", desc: "内置 DNS 服务器 · Fake‑IP 映射与条目缓存分析") {
+                Button { /* TODO: Refresh DNS cache */ } label: { Label("刷新缓存", systemImage: "arrow.clockwise") }.controlSize(.small)
+                Button { /* TODO: Clear DNS cache */ } label: { Label("清空", systemImage: "trash") }.controlSize(.small)
+            }
 
-                Card(title: "DNS 解析测试", icon: "magnifyingglass") {
-                    VStack(alignment: .leading, spacing: 8) {
-                        HStack {
-                            TextField("输入域名，如 google.com", text: $query)
-                                .textFieldStyle(.roundedBorder)
-                                .onSubmit { Task { await resolve() } }
-                            Button { Task { await resolve() } } label: {
-                                if resolving { ProgressView().controlSize(.small) } else { Text("解析") }
-                            }.disabled(query.isEmpty || resolving)
+            ScrollView {
+                VStack(spacing: 14) {
+                    // DNS stats
+                    HStack(spacing: 12) {
+                        StatBox(label: "平均解析", value: "0.4", unit: "ms", sub: "DoH · 1.1.1.1")
+                        StatBox(label: "Fake-IP 池", value: "198.18/15", sub: "已分配 1,204", accent: true)
+                        StatBox(label: "缓存条目", value: "842", sub: "内存常驻")
+                    }
+
+                    // DNS settings (editable)
+                    Card(title: "DNS 服务器", icon: "server.rack") {
+                        VStack(spacing: 2) {
+                            NToggle("启用 DNS", "dns", "enable")
+                            NToggle("IPv6 解析", "dns", "ipv6")
+                            NPicker("增强模式", "dns", "enhanced-mode", [("fake-ip","Fake-IP"),("redir-host","Redir-Host")])
+                            NText("Fake-IP 段", "dns", "fake-ip-range", placeholder: "198.18.0.1/16")
+                            NText("监听地址", "dns", "listen", placeholder: "0.0.0.0:53")
+                            NList("上游 (nameserver)", "dns", "nameserver", placeholder: "https://1.1.1.1/dns-query")
+                            NList("Fake-IP 过滤", "dns", "fake-ip-filter", placeholder: "*.lan")
                         }
-                        if !result.isEmpty {
-                            Text(result).font(.caption.monospaced()).foregroundColor(.secondary)
-                                .textSelection(.enabled).frame(maxWidth: .infinity, alignment: .leading)
+                        Text("Fake-IP 为代理域名返回保留段虚拟 IP，避免 DNS 泄漏；上游支持 DoH/DoT/DoQ/UDP。")
+                            .font(.system(size: 10)).foregroundColor(.secondary).padding(.top, 6)
+                    }
+
+                    Card(title: "DNS 解析测试", icon: "magnifyingglass") {
+                        VStack(alignment: .leading, spacing: 8) {
+                            HStack {
+                                TextField("输入域名，如 google.com", text: $query)
+                                    .textFieldStyle(.roundedBorder)
+                                    .onSubmit { Task { await resolve() } }
+                                Button { Task { await resolve() } } label: {
+                                    if resolving { ProgressView().controlSize(.small) } else { Text("解析") }
+                                }.disabled(query.isEmpty || resolving)
+                            }
+                            if !result.isEmpty {
+                                Text(result).font(.system(size: 11, design: .monospaced)).foregroundColor(.secondary)
+                                    .textSelection(.enabled).frame(maxWidth: .infinity, alignment: .leading)
+                            }
                         }
                     }
-                }
 
-                // Fake-IP mappings observed in live connections
-                let fakeip = M.conns.filter { $0.dstIP.hasPrefix("198.18.") || $0.dstIP.hasPrefix("198.19.") }
-                Card(title: "Fake-IP 映射 · \(fakeip.count)（来自活跃连接）") {
-                    if fakeip.isEmpty {
-                        Text("当前无 Fake-IP 连接（需内核启用 dns.enhanced-mode: fake-ip 且有代理流量）")
-                            .font(.caption).foregroundColor(.secondary)
-                    } else {
-                        VStack(spacing: 4) {
-                            ForEach(fakeip.prefix(50)) { c in
-                                HStack {
-                                    Text(c.host).font(.caption).lineLimit(1)
-                                    Spacer()
-                                    Text(c.dstIP).font(.caption.monospaced()).foregroundColor(M.accent)
+                    // Fake-IP mappings observed in live connections
+                    let fakeip = M.conns.filter { $0.dstIP.hasPrefix("198.18.") || $0.dstIP.hasPrefix("198.19.") }
+                    Card(title: "Fake-IP 映射 · \(fakeip.count)（来自活跃连接）") {
+                        if fakeip.isEmpty {
+                            Text("当前无 Fake-IP 连接（需内核启用 dns.enhanced-mode: fake-ip 且有代理流量）")
+                                .font(.system(size: 11)).foregroundColor(.secondary)
+                        } else {
+                            VStack(spacing: 4) {
+                                ForEach(fakeip.prefix(50)) { c in
+                                    HStack {
+                                        Text(c.host).font(.system(size: 11)).lineLimit(1)
+                                        Spacer()
+                                        Text(c.dstIP).font(.system(size: 11, design: .monospaced)).foregroundColor(M.accent)
+                                    }
                                 }
                             }
                         }
                     }
+                    Spacer(minLength: 0)
                 }
-                Spacer(minLength: 0)
+                .padding(.horizontal, 20).padding(.bottom, 24)
             }
-            .padding(18)
         }
     }
     private func resolve() async {
@@ -529,55 +566,61 @@ struct SdwanPage: View {
     private var hasDefaultViaTun: Bool { routes.contains { $0.dest == "default" } }
 
     var body: some View {
-        ScrollView {
-            VStack(spacing: 14) {
-                // status banner
-                HStack(spacing: 12) {
-                    Image(systemName: "shield.lefthalf.filled").font(.title).foregroundColor(hasDefaultViaTun ? .orange : M.accent)
-                    VStack(alignment: .leading, spacing: 3) {
-                        Text(hasDefaultViaTun ? "检测到 TUN 默认路由" : "智能路由隔离已生效").font(.callout).fontWeight(.semibold)
-                        Text(hasDefaultViaTun
-                             ? "存在经 utun 的默认路由，可能与 SD-WAN 抢占。建议仅注入精确网段。"
-                             : "代理仅注入精确网段，未抢占默认路由；\(sdwanCount) 个 SD-WAN 接口路由保持完整。")
-                            .font(.caption).foregroundColor(.secondary)
-                    }
-                    Spacer()
-                    VStack { Text("\(hasDefaultViaTun ? 1 : 0)").font(.title.monospaced()).fontWeight(.bold)
-                             .foregroundColor(hasDefaultViaTun ? .orange : M.accent)
-                        Text("路由冲突").font(.caption2).foregroundColor(.secondary) }
-                }
-                .padding(14)
-                .background(RoundedRectangle(cornerRadius: 12).fill(Color(nsColor: .controlBackgroundColor)))
-                .overlay(RoundedRectangle(cornerRadius: 12).stroke(Color.primary.opacity(0.06)))
+        VStack(spacing: 0) {
+            PageHead(title: "SD-WAN 共存", desc: "网卡拓扑识别 · 路由冲突检测 · 多隧道并存分析") {
+                Button { rescan() } label: { Label("重新扫描", systemImage: "arrow.clockwise") }.controlSize(.small)
+            }
 
-                // interfaces
-                Card(title: "网络接口拓扑 · \(ifaces.count)") {
-                    VStack(spacing: 8) {
-                        ForEach(ifaces) { i in ifaceRow(i) }
-                        if ifaces.isEmpty { Text("正在扫描接口…").font(.caption).foregroundColor(.secondary) }
+            ScrollView {
+                VStack(spacing: 14) {
+                    // status banner
+                    HStack(spacing: 12) {
+                        Image(systemName: "shield.lefthalf.filled").font(.title).foregroundColor(hasDefaultViaTun ? .orange : M.accent)
+                        VStack(alignment: .leading, spacing: 3) {
+                            Text(hasDefaultViaTun ? "检测到 TUN 默认路由" : "智能路由隔离已生效").font(.system(size: 14, weight: .bold))
+                            Text(hasDefaultViaTun
+                                 ? "存在经 utun 的默认路由，可能与 SD-WAN 抢占。建议仅注入精确网段。"
+                                 : "代理仅注入精确网段，未抢占默认路由；\(sdwanCount) 个 SD-WAN 接口路由保持完整。")
+                                .font(.system(size: 11)).foregroundColor(.secondary)
+                        }
+                        Spacer()
+                        VStack { Text("\(hasDefaultViaTun ? 1 : 0)").font(.system(size: 24, weight: .bold, design: .monospaced))
+                                 .foregroundColor(hasDefaultViaTun ? .orange : M.accent)
+                            Text("路由冲突").font(.system(size: 10)).foregroundColor(.secondary) }
                     }
-                }
+                    .padding(14)
+                    .background(RoundedRectangle(cornerRadius: 12).fill(Color(nsColor: .windowBackgroundColor).opacity(0.5)))
+                    .overlay(RoundedRectangle(cornerRadius: 12).stroke(Color.primary.opacity(0.06)))
 
-                // utun routes
-                Card(title: "UTUN 路由表 · \(routes.count)") {
-                    VStack(spacing: 4) {
-                        if routes.isEmpty { Text("无 utun 路由").font(.caption).foregroundColor(.secondary) }
-                        ForEach(routes.indices, id: \.self) { idx in
-                            HStack {
-                                Text(routes[idx].dest).font(.caption.monospaced())
-                                Spacer()
-                                Image(systemName: "arrow.right").font(.caption2).foregroundColor(.secondary)
-                                Text(routes[idx].iface).font(.caption.monospaced()).foregroundColor(M.accent)
+                    // interfaces
+                    Card(title: "网络接口拓扑 · \(ifaces.count)", icon: "network") {
+                        VStack(spacing: 8) {
+                            ForEach(ifaces) { i in ifaceRow(i) }
+                            if ifaces.isEmpty { Text("正在扫描接口…").font(.system(size: 11)).foregroundColor(.secondary) }
+                        }
+                    }
+
+                    // utun routes
+                    Card(title: "UTUN 路由表 · \(routes.count)", icon: "list.bullet.indent") {
+                        VStack(spacing: 4) {
+                            if routes.isEmpty { Text("无 utun 路由").font(.system(size: 11)).foregroundColor(.secondary) }
+                            ForEach(routes.indices, id: \.self) { idx in
+                                HStack {
+                                    Text(routes[idx].dest).font(.system(size: 11, design: .monospaced))
+                                    Spacer()
+                                    Image(systemName: "arrow.right").font(.system(size: 9)).foregroundColor(.secondary)
+                                    Text(routes[idx].iface).font(.system(size: 11, design: .monospaced)).foregroundColor(M.accent)
+                                }
                             }
                         }
                     }
-                }
 
-                Label("进程级分流 (SO_USER_COOKIE + PF) 与路由注入需特权 Helper（代码签名后于 v1.0 启用）",
-                      systemImage: "lock.shield").font(.caption2).foregroundColor(.secondary)
-                Spacer(minLength: 0)
+                    Label("进程级分流 (SO_USER_COOKIE + PF) 与路由注入需特权 Helper（代码签名后于 v1.0 启用）",
+                          systemImage: "lock.shield").font(.system(size: 10)).foregroundColor(.secondary)
+                    Spacer(minLength: 0)
+                }
+                .padding(.horizontal, 20).padding(.bottom, 24)
             }
-            .padding(18)
         }
         .onAppear { rescan() }
     }
@@ -636,28 +679,25 @@ struct ConfigPage: View {
     @State private var showAddLocal = false
 
     var body: some View {
-        ScrollView {
-            VStack(alignment: .leading, spacing: 14) {
-                HStack {
-                    Text("本地配置").font(.system(size: 13, weight: .semibold)).foregroundColor(.secondary)
-                    Text("(\(M.store.profiles.count))").font(.caption).foregroundColor(.secondary)
-                    Spacer()
-                    Menu {
-                        Button { showImportRemote = true } label: { Label("导入远程配置或订阅节点", systemImage: "icloud.and.arrow.down") }
-                        Button { showAddLocal = true } label: { Label("添加本地配置", systemImage: "doc.badge.plus") }
-                    } label: {
-                        Label("添加", systemImage: "plus")
-                    }.menuStyle(.borderlessButton).fixedSize()
-                }
-
-                if M.store.profiles.isEmpty {
-                    ContentUnavailable("暂无配置，点击右上角“+”导入", "doc.text")
-                }
-                LazyVGrid(columns: [GridItem(.adaptive(minimum: 260), spacing: 12)], spacing: 12) {
-                    ForEach(M.store.profiles) { p in profileCard(p) }
-                }
+        VStack(spacing: 0) {
+            PageHead(title: "配置", desc: "本地 YAML 配置 · 远程订阅导入 · 一键切换并热重载") {
+                Button { showImportRemote = true } label: { Label("导入订阅", systemImage: "icloud.and.arrow.down") }
+                    .controlSize(.small)
+                Button { showAddLocal = true } label: { Label("添加本地", systemImage: "doc.badge.plus") }
+                    .controlSize(.small).tint(M.accent).buttonStyle(.borderedProminent)
             }
-            .padding(18)
+
+            ScrollView {
+                VStack(alignment: .leading, spacing: 14) {
+                    if M.store.profiles.isEmpty {
+                        ContentUnavailable("暂无配置，点击右上角“+”导入", "doc.text")
+                    }
+                    LazyVGrid(columns: [GridItem(.adaptive(minimum: 280), spacing: 14)], spacing: 14) {
+                        ForEach(M.store.profiles) { p in profileCard(p) }
+                    }
+                }
+                .padding(.horizontal, 20).padding(.bottom, 24)
+            }
         }
         .sheet(isPresented: $showImportRemote) { ImportRemoteSheet() }
         .sheet(isPresented: $showAddLocal) { AddLocalSheet() }
@@ -673,23 +713,37 @@ struct ConfigPage: View {
         return VStack(alignment: .leading, spacing: 10) {
             HStack(spacing: 8) {
                 Image(systemName: p.source == "remote" ? "icloud.fill" : "doc.fill")
+                    .font(.system(size: 14))
                     .foregroundColor(active ? M.accent : .secondary)
-                Text(p.name).font(.callout).fontWeight(.semibold).lineLimit(1)
+                Text(p.name).font(.system(size: 14, weight: .bold)).lineLimit(1)
                 Spacer()
-                if active { Image(systemName: "checkmark.circle.fill").foregroundColor(M.accent) }
+                if active {
+                    Text("生效中").font(.system(size: 10, weight: .bold)).foregroundColor(M.accent)
+                        .padding(.horizontal, 6).padding(.vertical, 2)
+                        .background(Capsule().fill(M.accent.opacity(0.12)))
+                } else {
+                    Circle().stroke(Color.secondary.opacity(0.3), lineWidth: 1.5).frame(width: 12, height: 12)
+                }
             }
-            HStack(spacing: 6) {
-                Text(p.source == "remote" ? "远程" : "本地").font(.caption2)
-                    .padding(.horizontal, 6).padding(.vertical, 1)
-                    .background(Capsule().fill(Color.primary.opacity(0.08)))
+            Text(p.source == "remote" ? "远程订阅" : "本地文件").font(.system(size: 10)).foregroundColor(.secondary)
+            
+            Divider().opacity(0.4).padding(.vertical, 2)
+            
+            HStack {
+                Text(relTime(p.updatedAt)).font(.system(size: 10)).foregroundColor(.secondary)
                 Spacer()
-                Text(relTime(p.updatedAt)).font(.caption2).foregroundColor(.secondary)
+                if active {
+                    Image(systemName: "checkmark.circle.fill").foregroundColor(M.accent).font(.system(size: 14))
+                } else {
+                    Button("设为活动") { M.activateProfile(p.id) }
+                        .buttonStyle(.plain).font(.system(size: 11, weight: .semibold)).foregroundColor(.accentColor)
+                }
             }
         }
         .padding(14)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background(RoundedRectangle(cornerRadius: 12).fill(Color(nsColor: .controlBackgroundColor)))
-        .overlay(RoundedRectangle(cornerRadius: 12).stroke(active ? M.accent : Color.primary.opacity(0.08), lineWidth: active ? 2 : 1))
+        .background(RoundedRectangle(cornerRadius: 12).fill(Color(nsColor: .windowBackgroundColor).opacity(0.5)))
+        .overlay(RoundedRectangle(cornerRadius: 12).stroke(active ? M.accent.opacity(0.4) : Color.primary.opacity(0.08), lineWidth: active ? 1.5 : 1))
         .contentShape(Rectangle())
         .onTapGesture { if !active { M.activateProfile(p.id) } }
         .contextMenu {
@@ -921,10 +975,13 @@ struct GeneralPage: View {
     @State private var secret = ""
 
     var body: some View {
-        ScrollView {
-            VStack(spacing: 14) {
-                // 路由与连接
-                Card(title: "路由与连接", icon: "arrow.triangle.branch") {
+        VStack(spacing: 0) {
+            PageHead(title: "通用设置", desc: "连接参数 · 数据库更新 · 内核版本管理")
+
+            ScrollView {
+                VStack(spacing: 14) {
+                    // 路由与连接
+                    Card(title: "路由与连接", icon: "arrow.triangle.branch") {
                     VStack(spacing: 2) {
                         PickerRow("日志级别", key: "log-level", options: [("silent","静默"),("error","error"),("warning","warning"),("info","info"),("debug","debug")])
                         ToggleRow("TCP 并发连接", key: "tcp-concurrent")
@@ -1057,9 +1114,12 @@ private func cfgBool(_ c: [String: Any], _ k: String) -> Bool { (c[k] as? Bool) 
 struct NetworkPage: View {
     @EnvironmentObject var M: AppModel
     var body: some View {
-        ScrollView {
-            VStack(spacing: 14) {
-                Card(title: "入站端口", icon: "arrow.down.right.circle") {
+        VStack(spacing: 0) {
+            PageHead(title: "网络入站", desc: "端口监听 · 局域网共享 · 访问控制列表 (ACL)")
+
+            ScrollView {
+                VStack(spacing: 14) {
+                    Card(title: "入站端口", icon: "arrow.down.right.circle") {
                     VStack(spacing: 2) {
                         NumRow("HTTP 端口", key: "port")
                         NumRow("SOCKS 端口", key: "socks-port")
@@ -1108,9 +1168,12 @@ struct NetworkPage: View {
 struct TunPage: View {
     @EnvironmentObject var M: AppModel
     var body: some View {
-        ScrollView {
-            VStack(spacing: 14) {
-                Card(title: "TUN 虚拟网卡", icon: "shield.lefthalf.filled") {
+        VStack(spacing: 0) {
+            PageHead(title: "TUN 模式", desc: "虚拟网卡驱动 · 协议栈选择 · 路由注入策略")
+
+            ScrollView {
+                VStack(spacing: 14) {
+                    Card(title: "TUN 虚拟网卡", icon: "shield.lefthalf.filled") {
                     VStack(spacing: 2) {
                         HStack {
                             Text("启用 TUN").font(.callout); Spacer()
@@ -1135,9 +1198,12 @@ struct TunPage: View {
 struct SnifferPage: View {
     @EnvironmentObject var M: AppModel
     var body: some View {
-        ScrollView {
-            VStack(spacing: 14) {
-                Card(title: "协议嗅探 Sniffer", icon: "scope") {
+        VStack(spacing: 0) {
+            PageHead(title: "流量嗅探", desc: "协议解析 (TLS/HTTP/QUIC) · 真实域名还原")
+
+            ScrollView {
+                VStack(spacing: 14) {
+                    Card(title: "协议嗅探 Sniffer", icon: "scope") {
                     VStack(spacing: 2) {
                         NToggle("启用嗅探", "sniffer", "enable")
                         NToggle("覆盖目标地址", "sniffer", "override-destination")
