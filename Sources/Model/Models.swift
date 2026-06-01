@@ -9,6 +9,7 @@
 
 import Foundation
 import SwiftUI
+import Security
 
 // MARK: - View models
 
@@ -369,43 +370,16 @@ final class AppModel: ObservableObject {
         let on = !systemProxyOn
         let port = (configs["mixed-port"] as? Int) ?? (configs["port"] as? Int) ?? 7890
         Task {
-            let ok = await Self.setSystemProxy(enabled: on, port: port)
-            systemProxyOn = ok ? on : systemProxyOn
-            showToast(ok ? (on ? "系统代理已开启" : "系统代理已关闭") : "系统代理设置失败（需管理员授权）")
-        }
-    }
-
-    /// Set/clear the macOS system HTTP/HTTPS/SOCKS proxy on the primary network
-    /// service. Uses networksetup under one administrator-auth prompt (osascript),
-    /// so no separately-signed privileged Helper is required.
-    static func setSystemProxy(enabled: Bool, port: Int) async -> Bool {
-        let shell: String
-        if enabled {
-            shell = """
-            dev=$(route -n get default 2>/dev/null | awk '/interface:/{print $2}'); \
-            svc=$(networksetup -listnetworkserviceorder | grep -B1 \\"Device: $dev)\\" | head -1 | sed -E 's/^\\\\([0-9]+\\\\) //'); \
-            networksetup -setwebproxy \\"$svc\\" 127.0.0.1 \(port); \
-            networksetup -setsecurewebproxy \\"$svc\\" 127.0.0.1 \(port); \
-            networksetup -setsocksfirewallproxy \\"$svc\\" 127.0.0.1 \(port)
-            """
-        } else {
-            shell = """
-            dev=$(route -n get default 2>/dev/null | awk '/interface:/{print $2}'); \
-            svc=$(networksetup -listnetworkserviceorder | grep -B1 \\"Device: $dev)\\" | head -1 | sed -E 's/^\\\\([0-9]+\\\\) //'); \
-            networksetup -setwebproxystate \\"$svc\\" off; \
-            networksetup -setsecurewebproxystate \\"$svc\\" off; \
-            networksetup -setsocksfirewallproxystate \\"$svc\\" off
-            """
-        }
-        let script = "do shell script \"\(shell)\" with administrator privileges"
-        return await withCheckedContinuation { cont in
-            DispatchQueue.global().async {
-                let p = Process()
-                p.executableURL = URL(fileURLWithPath: "/usr/bin/osascript")
-                p.arguments = ["-e", script]
-                do { try p.run(); p.waitUntilExit(); cont.resume(returning: p.terminationStatus == 0) }
-                catch { cont.resume(returning: false) }
+            if !engine.isRoot {
+                showToast("设置系统代理需要管理员授权以安装特权服务…")
+                let ok = await engine.installPrivileged()
+                guard ok else { showToast("授权失败，未修改系统代理"); return }
+                try? await Task.sleep(nanoseconds: 3_500_000_000)   // let root daemon boot
+                await reconnect()
             }
+            let ok = await engine.setSystemProxy(enabled: on, port: port)
+            systemProxyOn = ok ? on : systemProxyOn
+            showToast(ok ? (on ? "系统代理已开启" : "系统代理已关闭") : "系统代理设置失败")
         }
     }
     func toggleTUN() {
@@ -543,6 +517,52 @@ final class AppModel: ObservableObject {
     }
 }
 
+// MARK: - Keychain Security Helper
+
+struct KeychainHelper {
+    static let service = "com.clashpow.secrets"
+
+    @discardableResult
+    static func save(key: String, value: String) -> Bool {
+        guard let data = value.data(using: .utf8) else { return false }
+        delete(key: key)
+        let query: [String: Any] = [
+            kSecClass as String: kSecClassGenericPassword,
+            kSecAttrService as String: service,
+            kSecAttrAccount as String: key,
+            kSecValueData as String: data,
+            kSecAttrAccessible as String: kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly
+        ]
+        let status = SecItemAdd(query as CFDictionary, nil)
+        return status == errSecSuccess
+    }
+
+    static func read(key: String) -> String? {
+        let query: [String: Any] = [
+            kSecClass as String: kSecClassGenericPassword,
+            kSecAttrService as String: service,
+            kSecAttrAccount as String: key,
+            kSecReturnData as String: true,
+            kSecMatchLimit as String: kSecMatchLimitOne
+        ]
+        var dataTypeRef: AnyObject?
+        let status = SecItemCopyMatching(query as CFDictionary, &dataTypeRef)
+        guard status == errSecSuccess, let data = dataTypeRef as? Data else { return nil }
+        return String(data: data, encoding: .utf8)
+    }
+
+    @discardableResult
+    static func delete(key: String) -> Bool {
+        let query: [String: Any] = [
+            kSecClass as String: kSecClassGenericPassword,
+            kSecAttrService as String: service,
+            kSecAttrAccount as String: key
+        ]
+        let status = SecItemDelete(query as CFDictionary)
+        return status == errSecSuccess
+    }
+}
+
 // MARK: - Config profiles (multi-config management)
 
 struct Profile: Identifiable, Codable {
@@ -569,7 +589,12 @@ final class ConfigStore: ObservableObject {
     func load() {
         try? fm.createDirectory(atPath: dir, withIntermediateDirectories: true)
         if let data = fm.contents(atPath: manifestPath),
-           let list = try? JSONDecoder().decode([Profile].self, from: data) {
+           var list = try? JSONDecoder().decode([Profile].self, from: data) {
+            for i in list.indices {
+                if list[i].source == "remote" {
+                    list[i].url = KeychainHelper.read(key: list[i].id)
+                }
+            }
             profiles = list
         }
         // Seed from the existing config.yaml on first run.
@@ -583,7 +608,17 @@ final class ConfigStore: ObservableObject {
     }
 
     private func save() {
-        if let data = try? JSONEncoder().encode(profiles) { try? data.write(to: URL(fileURLWithPath: manifestPath)) }
+        let sanitized = profiles.map { p -> Profile in
+            if let u = p.url {
+                KeychainHelper.save(key: p.id, value: u)
+            }
+            var copy = p
+            copy.url = nil
+            return copy
+        }
+        if let data = try? JSONEncoder().encode(sanitized) {
+            try? data.write(to: URL(fileURLWithPath: manifestPath))
+        }
     }
 
     func content(_ id: String) -> String { (try? String(contentsOfFile: path(id), encoding: .utf8)) ?? "" }
@@ -616,6 +651,7 @@ final class ConfigStore: ObservableObject {
 
     func remove(_ id: String) {
         try? fm.removeItem(atPath: path(id))
+        KeychainHelper.delete(key: id)
         profiles.removeAll { $0.id == id }; save()
         if activeID == id { activeID = profiles.first?.id ?? "" }
     }
