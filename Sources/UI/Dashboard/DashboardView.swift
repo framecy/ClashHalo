@@ -5,6 +5,14 @@ import SwiftUI
 
 struct DashboardPage: View {
     @EnvironmentObject var M: AppModel
+    enum Range { case today, month }
+    @State private var range: Range = .today
+
+    private var rangePicker: some View {
+        Picker("", selection: $range) {
+            Text("今日").tag(Range.today); Text("本月").tag(Range.month)
+        }.pickerStyle(.segmented).frame(width: 130).labelsHidden()
+    }
 
     var body: some View {
         ScrollView {
@@ -36,15 +44,21 @@ struct DashboardPage: View {
                     }.frame(width: 240)
                 }
 
-                // distribution + policy groups
+                // distribution (history, 今日/本月) + policy groups
                 HStack(alignment: .top, spacing: 14) {
-                    Card(title: "流量分布", icon: "chart.pie.fill") { distribution }
+                    Card(title: "流量分布", icon: "chart.pie.fill") {
+                        VStack(alignment: .leading, spacing: 10) {
+                            rangePicker
+                            distribution
+                        }
+                    }
                     Card(title: "策略组", icon: "rectangle.3.group.fill") { RankList(rows: policyGroupRows, accent: M.accent, mode: .bytes) }
                 }
 
-                // hourly timeline
-                Card(title: "流量时间轴", icon: "chart.bar.fill") {
-                    HourlyBars(values: M.hourly, accent: M.accent).frame(height: 130)
+                // timeline: hourly (today) or daily (month)
+                Card(title: range == .today ? "流量时间轴 · 今日(每小时)" : "流量时间轴 · 本月(每日)", icon: "chart.bar.fill") {
+                    HourlyBars(values: range == .today ? M.history.today.hourlyDown : M.history.monthDailyTotals,
+                               accent: M.accent).frame(height: 130)
                 }
 
                 // top rules / hosts / nodes
@@ -77,9 +91,10 @@ struct DashboardPage: View {
     private var targetClass: [Rank] { M.dash.targets }
 
     private var distribution: some View {
-        let direct = M.dash.directBytes
-        let proxy  = M.dash.proxyBytes
-        let reject = M.dash.rejectBytes
+        let day = range == .today ? M.history.today : M.history.month
+        let direct = day.direct
+        let proxy  = day.proxy
+        let reject = day.reject
         let total = max(direct + proxy + reject, 1)
         return VStack(alignment: .leading, spacing: 10) {
             Text(fmtBytes(direct + proxy + reject)).font(.system(size: 26, weight: .bold))
