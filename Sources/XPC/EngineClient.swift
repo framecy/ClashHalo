@@ -378,7 +378,19 @@ final class EngineControl: ObservableObject {
                 }
                 guard ok == 0 else { cont.resume(returning: nil); return }
                 let payload = #"{"jsonrpc":"2.0","method":"\#(method)","params":\#(params),"id":1}"# + "\n"
-                _ = payload.withCString { send(fd, $0, strlen($0), 0) }
+                guard let payloadData = payload.data(using: .utf8) else { cont.resume(returning: nil); return }
+                var sent = 0
+                let total = payloadData.count
+                var failed = false
+                payloadData.withUnsafeBytes { buffer in
+                    guard let baseAddress = buffer.baseAddress else { return }
+                    while sent < total {
+                        let n = send(fd, baseAddress + sent, total - sent, 0)
+                        if n <= 0 { failed = true; break }
+                        sent += n
+                    }
+                }
+                guard !failed else { cont.resume(returning: nil); return }
                 var buf = [UInt8](repeating: 0, count: 65536)
                 let n = recv(fd, &buf, buf.count, 0)
                 cont.resume(returning: n > 0 ? Data(buf[0..<n]) : nil)
