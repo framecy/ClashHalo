@@ -27,6 +27,7 @@ echo "  Done. Module ready."
 echo "[2/4] Building engine..."
 cd "$PROJECT_DIR/Engine"
 CGO_ENABLED=0 GOOS=darwin GOARCH=arm64 go build \
+    -tags with_gvisor \
     -ldflags="-s -w" \
     -o /tmp/clashpow-engine \
     ./cmd/clashpow

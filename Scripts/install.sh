@@ -45,6 +45,7 @@ if [ ! -f "$ENGINE_BIN" ]; then
     echo "[1/4] Building engine..."
     cd "$PROJECT_DIR/Engine"
     CGO_ENABLED=0 GOOS=darwin GOARCH=arm64 go build \
+        -tags with_gvisor \
         -ldflags="-s -w" \
         -o "$ENGINE_BIN" \
         ./cmd/clashpow

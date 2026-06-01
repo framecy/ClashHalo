@@ -318,16 +318,45 @@ final class EngineControl: ObservableObject {
         try? fm.createDirectory(atPath: appSupport, withIntermediateDirectories: true)
         let engineDst = appSupport + "/clashpow-engine"
 
-        // Copy bundled engine if the installed copy is missing.
-        if !fm.fileExists(atPath: engineDst),
-           let bundled = Bundle.main.resourceURL?.appendingPathComponent("clashpow-engine"),
-           fm.fileExists(atPath: bundled.path) {
-            try? fm.copyItem(atPath: bundled.path, toPath: engineDst)
-            try? fm.setAttributes([.posixPermissions: 0o755], ofItemAtPath: engineDst)
-            // bundled geodata (optional)
-            for f in ["GeoSite.dat", "geoip.metadb", "ASN.mmdb"] {
-                if let g = Bundle.main.resourceURL?.appendingPathComponent(f), fm.fileExists(atPath: g.path) {
-                    try? fm.copyItem(atPath: g.path, toPath: appSupport + "/" + f)
+        let bundled = Bundle.main.resourceURL?.appendingPathComponent("clashpow-engine")
+        if let bundled = bundled, fm.fileExists(atPath: bundled.path) {
+            var needsCopy = false
+            if !fm.fileExists(atPath: engineDst) {
+                needsCopy = true
+            } else {
+                let bundledAttr = try? fm.attributesOfItem(atPath: bundled.path)
+                let installedAttr = try? fm.attributesOfItem(atPath: engineDst)
+                let bundledSize = bundledAttr?[.size] as? UInt64 ?? 0
+                let installedSize = installedAttr?[.size] as? UInt64 ?? 0
+                if bundledSize != installedSize {
+                    needsCopy = true
+                }
+            }
+            
+            if needsCopy {
+                try? fm.removeItem(atPath: engineDst)
+                try? fm.copyItem(atPath: bundled.path, toPath: engineDst)
+                try? fm.setAttributes([.posixPermissions: 0o755], ofItemAtPath: engineDst)
+            }
+        }
+
+        // bundled geodata (optional)
+        for f in ["GeoSite.dat", "geoip.metadb", "ASN.mmdb"] {
+            if let g = Bundle.main.resourceURL?.appendingPathComponent(f), fm.fileExists(atPath: g.path) {
+                let dst = appSupport + "/" + f
+                var needsCopy = false
+                if !fm.fileExists(atPath: dst) {
+                    needsCopy = true
+                } else {
+                    let srcSize = (try? fm.attributesOfItem(atPath: g.path))?[.size] as? UInt64 ?? 0
+                    let dstSize = (try? fm.attributesOfItem(atPath: dst))?[.size] as? UInt64 ?? 0
+                    if srcSize != dstSize {
+                        needsCopy = true
+                    }
+                }
+                if needsCopy {
+                    try? fm.removeItem(atPath: dst)
+                    try? fm.copyItem(atPath: g.path, toPath: dst)
                 }
             }
         }
@@ -407,6 +436,8 @@ final class EngineControl: ObservableObject {
               let env = try? JSONDecoder().decode(Envelope<EngineStatusRPC>.self, from: data),
               let s = env.result else {
             present = false
+            isRoot = false
+            engineVersion = "?"
             return nil
         }
         present = true
@@ -426,18 +457,19 @@ final class EngineControl: ObservableObject {
         let engineBin = appSupport + "/clashpow-engine"
         guard FileManager.default.fileExists(atPath: engineBin) else { return false }
         let logDir = NSHomeDirectory() + "/Library/Logs/ClashPow"
-        // The root daemon runs the SAME engine binary but as root, with the same
-        // app-support home so config/geodata/controller are unchanged.
+        // The root daemon runs the engine binary copied to /Library/PrivilegedHelperTools but as root,
+        // with the same app-support home so config/geodata/controller are unchanged.
         let plist = """
         <?xml version="1.0" encoding="UTF-8"?>
         <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
         <plist version="1.0"><dict>
           <key>Label</key><string>com.clashpow.engine</string>
-          <key>ProgramArguments</key><array><string>\(engineBin)</string></array>
+          <key>ProgramArguments</key><array><string>/Library/PrivilegedHelperTools/clashpow-engine</string></array>
           <key>EnvironmentVariables</key><dict><key>CLASHPOW_CONFIG</key><string>\(appSupport)/config.yaml</string></dict>
           <key>RunAtLoad</key><true/>
           <key>KeepAlive</key><dict><key>SuccessfulExit</key><false/><key>Crashed</key><true/></dict>
           <key>ThrottleInterval</key><integer>3</integer>
+          <key>Umask</key><integer>0</integer>
           <key>StandardOutPath</key><string>\(logDir)/clashpow-engine.log</string>
           <key>StandardErrorPath</key><string>\(logDir)/clashpow-engine.log</string>
         </dict></plist>
@@ -446,11 +478,15 @@ final class EngineControl: ObservableObject {
         let tmpPlist = NSTemporaryDirectory() + "com.clashpow.engine.plist"
         guard (try? plist.write(toFile: tmpPlist, atomically: true, encoding: .utf8)) != nil else { return false }
 
-        // One privileged shell: stop user agent, install root daemon, bootstrap it.
+        // One privileged shell: stop user agent, copy engine to secure path & chmod, install root daemon, bootstrap it.
         let uid = getuid()
         let shell = [
             "/bin/launchctl bootout gui/\(uid)/com.clashpow.engine 2>/dev/null || true",
             "/bin/launchctl unload '\(plistPath)' 2>/dev/null || true",
+            "/bin/mkdir -p /Library/PrivilegedHelperTools",
+            "/bin/cp '\(engineBin)' /Library/PrivilegedHelperTools/clashpow-engine",
+            "/usr/sbin/chown root:wheel /Library/PrivilegedHelperTools/clashpow-engine",
+            "/bin/chmod 755 /Library/PrivilegedHelperTools/clashpow-engine",
             "/bin/cp '\(tmpPlist)' '\(rootPlistPath)'",
             "/usr/sbin/chown root:wheel '\(rootPlistPath)'",
             "/bin/chmod 644 '\(rootPlistPath)'",
@@ -468,6 +504,7 @@ final class EngineControl: ObservableObject {
         let shell = [
             "/bin/launchctl bootout system/com.clashpow.engine 2>/dev/null || true",
             "/bin/rm -f '\(rootPlistPath)'",
+            "/bin/rm -f /Library/PrivilegedHelperTools/clashpow-engine",
         ].joined(separator: "; ")
         let ok = await Self.runAdmin(shell)
         if ok {
@@ -498,10 +535,32 @@ final class EngineControl: ObservableObject {
     @discardableResult
     func patchConfig(_ overrides: [String: Any]) async -> Bool {
         guard let pd = try? JSONSerialization.data(withJSONObject: overrides),
-              let params = String(data: pd, encoding: .utf8),
-              let data = await call("patch_config", params: params) else { return false }
-        struct Resp: Decodable { struct R: Decodable { let ok: Bool? }; let result: R? }
-        return (try? JSONDecoder().decode(Resp.self, from: data))?.result?.ok == true
+              let params = String(data: pd, encoding: .utf8) else {
+            print("patchConfig: serialization failed")
+            return false
+        }
+        print("patchConfig: sending overrides: \(params)")
+        guard let data = await call("patch_config", params: params) else {
+            print("patchConfig: UDS call returned nil")
+            return false
+        }
+        if let str = String(data: data, encoding: .utf8) {
+            print("patchConfig: received raw response: \(str)")
+        }
+        
+        do {
+            struct Resp: Decodable { struct R: Decodable { let ok: Bool? }; let result: R? }
+            let resp = try JSONDecoder().decode(Resp.self, from: data)
+            let ok = resp.result?.ok == true
+            print("patchConfig: decoded success: \(ok)")
+            return ok
+        } catch {
+            print("patchConfig: decode error: \(error)")
+            if let str = String(data: data, encoding: .utf8) {
+                print("patchConfig: raw data was: \(str)")
+            }
+            return false
+        }
     }
 
     func restart() async { _ = await call("shutdown") }   // launchd KeepAlive respawns
