@@ -67,6 +67,7 @@ final class AppModel: ObservableObject {
     let api = MihomoClient.shared
     let engine = EngineControl.shared
     let store = ConfigStore()
+    let history = TrafficHistory()
 
     /// Switch the active config profile: persist as engine config + hot-apply.
     func activateProfile(_ id: String) {
@@ -125,7 +126,6 @@ final class AppModel: ObservableObject {
     // Dashboard session aggregates
     @Published var closedConns = 0
     @Published var appMemoryMB = 0.0
-    @Published var hourly: [Double] = Array(repeating: 0, count: 24)  // download bytes per hour-of-day
     private var seenConnIDs = Set<String>()
     private var lastDownTotal: Int64 = 0
 
@@ -142,6 +142,7 @@ final class AppModel: ObservableObject {
     func start() {
         engine.ensureInstalled()   // first-run: install bundled engine + LaunchAgent
         store.load()
+        history.load()
         logFlushTimer = Timer.scheduledTimer(withTimeInterval: 0.5, repeats: true) { [weak self] _ in
             Task { @MainActor in self?.flushLogs() }
         }
@@ -221,12 +222,17 @@ final class AppModel: ObservableObject {
         var next: [Conn] = []
         var bytes: [String: (up: Int64, down: Int64)] = [:]
         var activeIDs = Set<String>()
+        let hour = Calendar.current.component(.hour, from: Date())
         for c in items {
             activeIDs.insert(c.id); seenConnIDs.insert(c.id)
             let prev = prevConnBytes[c.id]
             let upRate = prev.map { max(0, c.upload - $0.up) } ?? 0
             let downRate = prev.map { max(0, c.download - $0.down) } ?? 0
             bytes[c.id] = (c.upload, c.download)
+            // attribute this connection's byte delta to its category → history
+            let cat = (c.chains.first == "DIRECT" || c.chains.contains("DIRECT")) ? "direct"
+                    : (c.chains.first == "REJECT" || c.chains.contains("REJECT")) ? "reject" : "proxy"
+            history.record(category: cat, down: Int64(downRate), up: Int64(upRate), hour: hour)
             next.append(Conn(
                 id: c.id,
                 host: c.metadata.host?.isEmpty == false ? c.metadata.host! : (c.metadata.destinationIP ?? "?"),
@@ -251,11 +257,7 @@ final class AppModel: ObservableObject {
 
         // closed-connection count (this session) = seen − currently-active
         closedConns = max(0, seenConnIDs.count - activeIDs.count)
-        // hourly download accumulation (delta of cumulative total into current hour bucket)
-        if lastDownTotal > 0, s.downloadTotal >= lastDownTotal {
-            let h = Calendar.current.component(.hour, from: Date())
-            hourly[h] += Double(s.downloadTotal - lastDownTotal)
-        }
+        history.flushIfNeeded()
         lastDownTotal = s.downloadTotal
         // app RSS
         appMemoryMB = Double(Self.residentMemoryBytes()) / 1_000_000
@@ -579,6 +581,76 @@ final class ConfigStore: ObservableObject {
         let c = content(id); guard !c.isEmpty else { return nil }
         try? c.write(toFile: configPath, atomically: true, encoding: .utf8)
         activeID = id; return c
+    }
+}
+
+// MARK: - Traffic history (persisted per-day category + hourly totals)
+
+@MainActor
+final class TrafficHistory: ObservableObject {
+    struct Day: Codable {
+        var direct = 0.0, proxy = 0.0, reject = 0.0
+        var hourlyDown = [Double](repeating: 0, count: 24)
+        var total: Double { direct + proxy + reject }
+    }
+    @Published var days: [String: Day] = [:]   // key "yyyy-MM-dd"
+
+    private let path = NSHomeDirectory() + "/Library/Application Support/ClashPow/traffic-history.json"
+    private var dirty = false
+    private var lastSave = Date.distantPast
+
+    private var todayKey: String {
+        let f = DateFormatter(); f.dateFormat = "yyyy-MM-dd"; return f.string(from: Date())
+    }
+
+    func load() {
+        if let data = FileManager.default.contents(atPath: path),
+           let d = try? JSONDecoder().decode([String: Day].self, from: data) {
+            // keep only last 60 days
+            let cutoff = Calendar.current.date(byAdding: .day, value: -60, to: Date())!
+            let f = DateFormatter(); f.dateFormat = "yyyy-MM-dd"
+            days = d.filter { (f.date(from: $0.key) ?? .distantPast) >= cutoff }
+        }
+    }
+
+    func record(category: String, down: Int64, up: Int64, hour: Int) {
+        let bytes = Double(down + up)
+        guard bytes > 0 else { return }
+        var day = days[todayKey] ?? Day()
+        switch category {
+        case "direct": day.direct += bytes
+        case "reject": day.reject += bytes
+        default: day.proxy += bytes
+        }
+        if hour >= 0 && hour < 24 { day.hourlyDown[hour] += Double(down) }
+        days[todayKey] = day
+        dirty = true
+    }
+
+    func flushIfNeeded() {
+        guard dirty, Date().timeIntervalSince(lastSave) > 5 else { return }
+        save()
+    }
+    func save() {
+        dirty = false; lastSave = Date()
+        if let data = try? JSONEncoder().encode(days) { try? data.write(to: URL(fileURLWithPath: path)) }
+    }
+
+    // Aggregates for the dashboard
+    var today: Day { days[todayKey] ?? Day() }
+    var month: Day {
+        let prefix = String(todayKey.prefix(7))  // yyyy-MM
+        var m = Day()
+        for (k, d) in days where k.hasPrefix(prefix) {
+            m.direct += d.direct; m.proxy += d.proxy; m.reject += d.reject
+            for i in 0..<24 { m.hourlyDown[i] += d.hourlyDown[i] }
+        }
+        return m
+    }
+    /// Daily totals for the current month, oldest→newest (for the month timeline).
+    var monthDailyTotals: [Double] {
+        let prefix = String(todayKey.prefix(7))
+        return days.filter { $0.key.hasPrefix(prefix) }.sorted { $0.key < $1.key }.map { $0.value.total }
     }
 }
 
