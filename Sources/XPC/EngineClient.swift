@@ -406,6 +406,12 @@ final class EngineControl: ObservableObject {
                     $0.withMemoryRebound(to: sockaddr.self, capacity: 1) { connect(fd, $0, len) }
                 }
                 guard ok == 0 else { cont.resume(returning: nil); return }
+
+                // Set 10s receive timeout
+                var tv = timeval(tv_sec: 10, tv_usec: 0)
+                setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &tv, socklen_t(MemoryLayout<timeval>.size))
+                setsockopt(fd, SOL_SOCKET, SO_SNDTIMEO, &tv, socklen_t(MemoryLayout<timeval>.size))
+
                 let payload = #"{"jsonrpc":"2.0","method":"\#(method)","params":\#(params),"id":1}"# + "\n"
                 guard let payloadData = payload.data(using: .utf8) else { cont.resume(returning: nil); return }
                 var sent = 0
@@ -420,9 +426,16 @@ final class EngineControl: ObservableObject {
                     }
                 }
                 guard !failed else { cont.resume(returning: nil); return }
+                
+                var data = Data()
                 var buf = [UInt8](repeating: 0, count: 65536)
-                let n = recv(fd, &buf, buf.count, 0)
-                cont.resume(returning: n > 0 ? Data(buf[0..<n]) : nil)
+                while true {
+                    let n = recv(fd, &buf, buf.count, 0)
+                    if n <= 0 { break }
+                    data.append(contentsOf: buf[0..<n])
+                    if buf[0..<n].contains(10) { break } // 10 is '\n'
+                }
+                cont.resume(returning: data.isEmpty ? nil : data)
             }
         }
     }
@@ -481,6 +494,11 @@ final class EngineControl: ObservableObject {
         // One privileged shell: stop user agent, copy engine to secure path & chmod, install root daemon, bootstrap it.
         let uid = getuid()
         let shell = [
+            "/usr/bin/killall -9 mihomo clashpow-engine 2>/dev/null || true",
+            "if /usr/sbin/lsof -t -i :7890 >/dev/null; then /bin/kill -9 $(/usr/sbin/lsof -t -i :7890) 2>/dev/null || true; fi",
+            "if /usr/sbin/lsof -t -i :9092 >/dev/null; then /bin/kill -9 $(/usr/sbin/lsof -t -i :9092) 2>/dev/null || true; fi",
+            "/sbin/route -n delete -net 1.0.0.0/8 2>/dev/null || true",
+            "/sbin/route -n delete -net 198.18.0.0/15 2>/dev/null || true",
             "/bin/launchctl bootout gui/\(uid)/com.clashpow.engine 2>/dev/null || true",
             "/bin/launchctl unload '\(plistPath)' 2>/dev/null || true",
             "/bin/mkdir -p /Library/PrivilegedHelperTools",
@@ -505,6 +523,11 @@ final class EngineControl: ObservableObject {
             "/bin/launchctl bootout system/com.clashpow.engine 2>/dev/null || true",
             "/bin/rm -f '\(rootPlistPath)'",
             "/bin/rm -f /Library/PrivilegedHelperTools/clashpow-engine",
+            "/usr/bin/killall -9 mihomo clashpow-engine 2>/dev/null || true",
+            "if /usr/sbin/lsof -t -i :7890 >/dev/null; then /bin/kill -9 $(/usr/sbin/lsof -t -i :7890) 2>/dev/null || true; fi",
+            "if /usr/sbin/lsof -t -i :9092 >/dev/null; then /bin/kill -9 $(/usr/sbin/lsof -t -i :9092) 2>/dev/null || true; fi",
+            "/sbin/route -n delete -net 1.0.0.0/8 2>/dev/null || true",
+            "/sbin/route -n delete -net 198.18.0.0/15 2>/dev/null || true",
         ].joined(separator: "; ")
         let ok = await Self.runAdmin(shell)
         if ok {

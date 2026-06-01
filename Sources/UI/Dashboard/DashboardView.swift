@@ -24,59 +24,115 @@ struct DashboardPage: View {
                 VStack(alignment: .leading, spacing: 16) {
                     Text(greeting()).font(.system(size: 20, weight: .bold)).padding(.horizontal, 4)
 
-                    // top stat bar
-                    HStack(spacing: 12) {
-                        BarStat("总下载", fmtBytes(Double(M.downloadTotal)), "arrow.down.circle.fill", M.accent)
-                        BarStat("总上传", fmtBytes(Double(M.uploadTotal)), "arrow.up.circle.fill", .red)
-                        BarStat("连接数", "\(M.conns.count)", "link.circle.fill", .cyan)
-                        BarStat("访问目标", "\(uniqueHosts)", "scope", .orange)
-                    }
+                    Grid(horizontalSpacing: 14, verticalSpacing: 14) {
+                        // Row 1: Top stats bar (4 columns, height 80)
+                        GridRow {
+                            BarStat("总下载", fmtBytes(Double(M.downloadTotal)), "arrow.down.circle.fill", M.accent)
+                                .frame(height: 80)
+                            BarStat("总上传", fmtBytes(Double(M.uploadTotal)), "arrow.up.circle.fill", .red)
+                                .frame(height: 80)
+                            BarStat("连接数", "\(M.conns.count)", "link.circle.fill", .cyan)
+                                .frame(height: 80)
+                            BarStat("访问目标", "\(uniqueHosts)", "scope", .orange)
+                                .frame(height: 80)
+                        }
 
-                    // chart + memory column
-                    HStack(alignment: .top, spacing: 14) {
-                        Card(title: "流量趋势", icon: "chart.xyaxis.line") {
-                            VStack(alignment: .leading, spacing: 0) {
-                                HStack(spacing: 18) {
-                                    Label(fmtRate(Double(M.curDown)), systemImage: "arrow.down").foregroundColor(.red).font(.headline.monospaced())
-                                    Label(fmtRate(Double(M.curUp)), systemImage: "arrow.up").foregroundColor(M.accent).font(.headline.monospaced())
-                                    Spacer()
-                                }.padding(.bottom, 8)
-                                MetalTrafficView(accent: NSColor(M.accent)).frame(height: 180)
+                        // Row 2: Chart + memory column (height 256)
+                        GridRow {
+                            Card(title: "流量趋势", icon: "chart.xyaxis.line") {
+                                VStack(alignment: .leading, spacing: 0) {
+                                    HStack(spacing: 18) {
+                                        Label(fmtRate(Double(M.curDown)), systemImage: "arrow.down").foregroundColor(.red).font(.headline.monospaced())
+                                        Label(fmtRate(Double(M.curUp)), systemImage: "arrow.up").foregroundColor(M.accent).font(.headline.monospaced())
+                                        Spacer()
+                                    }.padding(.bottom, 8)
+                                    MetalTrafficView(accent: NSColor(M.accent)).frame(height: 180)
+                                }
                             }
+                            .frame(height: 256)
+                            .gridCellColumns(3)
+
+                            VStack(spacing: 8) {
+                                MiniStat("活跃连接", "\(M.conns.count)", sub: "已关闭 \(M.closedConns)", icon: "link", color: .cyan)
+                                    .frame(height: 80)
+                                MiniStat("核心内存", fmtBytes(Double(M.memory)), sub: nil, icon: "memorychip", color: .purple)
+                                    .frame(height: 80)
+                                MiniStat("应用内存", String(format: "%.0f MB", M.appMemoryMB), sub: nil, icon: "app.dashed", color: .orange)
+                                    .frame(height: 80)
+                            }
+                            .frame(height: 256)
+                            .gridCellColumns(1)
                         }
-                        VStack(spacing: 14) {
-                            MiniStat("活跃连接", "\(M.conns.count)", sub: "已关闭 \(M.closedConns)", icon: "link", color: .cyan)
-                            MiniStat("核心内存", fmtBytes(Double(M.memory)), sub: nil, icon: "memorychip", color: .purple)
-                            MiniStat("应用内存", String(format: "%.0f MB", M.appMemoryMB), sub: nil, icon: "app.dashed", color: .orange)
-                        }.frame(width: 240)
-                    }
 
-                    // distribution (history, 今日/本月) + policy groups
-                    HStack(alignment: .top, spacing: 14) {
-                        Card(title: "流量分布", icon: "chart.pie.fill") {
-                            distribution
+                        // Row 3: Distribution + policy groups (height 208)
+                        GridRow {
+                            Card(title: "流量分布", icon: "chart.pie.fill") {
+                                distribution
+                            }
+                            .frame(height: 208)
+                            .gridCellColumns(2)
+
+                            Card(title: "策略组排名", icon: "rectangle.3.group.fill") {
+                                RankList(rows: policyGroupRows, accent: M.accent, mode: .bytes)
+                            }
+                            .frame(height: 208)
+                            .gridCellColumns(2)
                         }
-                        Card(title: "策略组排名", icon: "rectangle.3.group.fill") { RankList(rows: policyGroupRows, accent: M.accent, mode: .bytes) }
-                    }
 
-                    // timeline: hourly (today) or daily (month)
-                    Card(title: range == .today ? "流量时间轴 · 今日(每小时)" : "流量时间轴 · 本月(每日)", icon: "chart.bar.fill") {
-                        HourlyBars(values: range == .today ? M.history.today.hourlyDown : M.history.monthDailyTotals,
-                                   accent: M.accent).frame(height: 110)
-                    }
+                        // Row 4: Timeline (height 160)
+                        GridRow {
+                            Card(title: range == .today ? "流量时间轴 · 今日(每小时)" : "流量时间轴 · 本月(每日)", icon: "chart.bar.fill") {
+                                HourlyBars(values: range == .today ? M.history.today.hourlyDown : M.history.monthDailyTotals,
+                                           accent: M.accent).frame(height: 110)
+                            }
+                            .frame(height: 160)
+                            .gridCellColumns(4)
+                        }
 
-                    // top rules / hosts / nodes
-                    HStack(alignment: .top, spacing: 14) {
-                        Card(title: "高频规则", icon: "list.number") { RankList(rows: topRules, accent: .red, mode: .count) }
-                        Card(title: "热门域名", icon: "globe") { RankList(rows: topHosts, accent: .cyan, mode: .bytes) }
-                        Card(title: "热门节点", icon: "bolt.horizontal.fill") { RankList(rows: topNodes, accent: .orange, mode: .bytes) }
-                    }
+                        // Row 5: Rank lists (each spans 2, height 208)
+                        GridRow {
+                            Card(title: "高频规则", icon: "list.number") {
+                                RankList(rows: topRules, accent: .red, mode: .count)
+                            }
+                            .frame(height: 208)
+                            .gridCellColumns(2)
 
-                    // source IPs / processes / target class
-                    HStack(alignment: .top, spacing: 14) {
-                        Card(title: "客户端源 IP", icon: "desktopcomputer") { RankList(rows: topSources, accent: .green, mode: .bytes) }
-                        Card(title: "热门进程", icon: "app.badge") { RankList(rows: topProcs, accent: .blue, mode: .bytes) }
-                        Card(title: "目标分类", icon: "globe.asia.australia.fill") { RankList(rows: targetClass, accent: .pink, mode: .bytes) }
+                            Card(title: "热门域名", icon: "globe") {
+                                RankList(rows: topHosts, accent: .cyan, mode: .bytes)
+                            }
+                            .frame(height: 208)
+                            .gridCellColumns(2)
+                        }
+
+                        // Row 6: Rank lists (each spans 2, height 208)
+                        GridRow {
+                            Card(title: "热门节点", icon: "bolt.horizontal.fill") {
+                                RankList(rows: topNodes, accent: .orange, mode: .bytes)
+                            }
+                            .frame(height: 208)
+                            .gridCellColumns(2)
+
+                            Card(title: "客户端源 IP", icon: "desktopcomputer") {
+                                RankList(rows: topSources, accent: .green, mode: .bytes)
+                            }
+                            .frame(height: 208)
+                            .gridCellColumns(2)
+                        }
+
+                        // Row 7: Rank lists (each spans 2, height 208)
+                        GridRow {
+                            Card(title: "热门进程", icon: "app.badge") {
+                                RankList(rows: topProcs, accent: .blue, mode: .bytes)
+                            }
+                            .frame(height: 208)
+                            .gridCellColumns(2)
+
+                            Card(title: "目标分类", icon: "globe.asia.australia.fill") {
+                                RankList(rows: targetClass, accent: .pink, mode: .bytes)
+                            }
+                            .frame(height: 208)
+                            .gridCellColumns(2)
+                        }
                     }
                 }
                 .padding(.horizontal, 20).padding(.bottom, 24)

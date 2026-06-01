@@ -1272,14 +1272,25 @@ struct GeneralPage: View {
                         // 外观
                         Card(title: "外观", icon: "paintbrush") {
                             VStack(spacing: 10) {
-                                Toggle("深色模式", isOn: $M.dark)
                                 HStack {
-                                    Text("强调色").font(.caption); Spacer()
-                                    ForEach(["green","blue","purple","orange"], id: \.self) { c in
-                                        Circle().fill(colorFor(c)).frame(width: 22, height: 22)
-                                            .overlay(Circle().stroke(Color.primary, lineWidth: M.accentRaw == c ? 2 : 0))
-                                            .onTapGesture { M.accentRaw = c }
+                                    Text("深色模式").font(.callout)
+                                    Spacer()
+                                    Toggle("", isOn: $M.dark)
+                                        .toggleStyle(.switch)
+                                        .labelsHidden()
+                                        .frame(width: 160, alignment: .trailing)
+                                }
+                                HStack {
+                                    Text("强调色").font(.callout)
+                                    Spacer()
+                                    HStack(spacing: 8) {
+                                        ForEach(["green","blue","purple","orange"], id: \.self) { c in
+                                            Circle().fill(colorFor(c)).frame(width: 22, height: 22)
+                                                .overlay(Circle().stroke(Color.primary, lineWidth: M.accentRaw == c ? 2 : 0))
+                                                .onTapGesture { M.accentRaw = c }
+                                        }
                                     }
+                                    .frame(width: 160, alignment: .trailing)
                                 }
                             }
                         }
@@ -1708,9 +1719,12 @@ struct NumRow: View {
             Text(label).font(.callout)
             Spacer()
             TextField("0", text: $text)
-                .textFieldStyle(.roundedBorder).frame(width: 90)
-                .font(.callout.monospaced()).multilineTextAlignment(.trailing)
+                .textFieldStyle(.roundedBorder)
+                .font(.callout.monospaced())
+                .multilineTextAlignment(.trailing)
+                .frame(width: 90)
                 .onSubmit { commit() }
+                .frame(width: 160, alignment: .trailing)
         }
         .padding(.vertical, 5)
         .onAppear { text = intStr(M.configs[key]) }
@@ -1736,7 +1750,10 @@ struct ToggleRow: View {
             Toggle("", isOn: Binding(
                 get: { (M.configs[key] as? Bool) == true },
                 set: { v in Task { await M.patch([key: v]) } }
-            )).toggleStyle(.switch).labelsHidden()
+            ))
+            .toggleStyle(.switch)
+            .labelsHidden()
+            .frame(width: 160, alignment: .trailing)
         }
         .padding(.vertical, 5)
     }
@@ -1753,9 +1770,11 @@ struct TextRow: View {
             Text(label).font(.callout)
             Spacer()
             TextField(placeholder, text: $text)
-                .textFieldStyle(.roundedBorder).frame(width: 160)
-                .font(.callout.monospaced()).multilineTextAlignment(.trailing)
+                .textFieldStyle(.roundedBorder)
+                .font(.callout.monospaced())
+                .multilineTextAlignment(.trailing)
                 .onSubmit { Task { await M.patch([key: text]) } }
+                .frame(width: 160, alignment: .trailing)
         }
         .padding(.vertical, 5)
         .onAppear { text = (M.configs[key] as? String) ?? "" }
@@ -1771,12 +1790,17 @@ struct PickerRow: View {
         HStack {
             Text(label).font(.callout)
             Spacer()
-            Picker("", selection: Binding(
-                get: { (M.configs[key] as? String) ?? options.first?.0 ?? "" },
+            Picker("", selection: Binding<String>(
+                get: {
+                    let val = (M.configs[key] as? String) ?? ""
+                    return options.contains(where: { $0.0 == val }) ? val : (options.first?.0 ?? "")
+                },
                 set: { v in Task { await M.patch([key: v]) } }
             )) {
                 ForEach(options, id: \.0) { Text($0.1).tag($0.0) }
-            }.labelsHidden().frame(width: 150)
+            }
+            .labelsHidden()
+            .frame(width: 160, alignment: .trailing)
         }
         .padding(.vertical, 5)
     }
@@ -1874,7 +1898,10 @@ struct NToggle: View {
             Toggle("", isOn: Binding(
                 get: { (nestedDict(M, parent)[sub] as? Bool) == true },
                 set: { v in Task { await M.patch([parent: [sub: v]]) } }
-            )).toggleStyle(.switch).labelsHidden()
+            ))
+            .toggleStyle(.switch)
+            .labelsHidden()
+            .frame(width: 160, alignment: .trailing)
         }.padding(.vertical, 5)
     }
 }
@@ -1888,10 +1915,15 @@ struct NPicker: View {
     var body: some View {
         HStack {
             Text(label).font(.callout); Spacer()
-            Picker("", selection: Binding(
-                get: { (nestedDict(M, parent)[sub] as? String) ?? options.first?.0 ?? "" },
+            Picker("", selection: Binding<String>(
+                get: {
+                    let val = (nestedDict(M, parent)[sub] as? String) ?? ""
+                    return options.contains(where: { $0.0 == val }) ? val : (options.first?.0 ?? "")
+                },
                 set: { v in Task { await M.patch([parent: [sub: v]]) } }
-            )) { ForEach(options, id: \.0) { Text($0.1).tag($0.0) } }.labelsHidden().frame(width: 150)
+            )) { ForEach(options, id: \.0) { Text($0.1).tag($0.0) } }
+            .labelsHidden()
+            .frame(width: 160, alignment: .trailing)
         }.padding(.vertical, 5)
     }
 }
@@ -1906,9 +1938,12 @@ struct NText: View {
     var body: some View {
         HStack {
             Text(label).font(.callout); Spacer()
-            TextField(placeholder, text: $text).textFieldStyle(.roundedBorder).frame(width: 180)
-                .font(.callout.monospaced()).multilineTextAlignment(.trailing)
+            TextField(placeholder, text: $text)
+                .textFieldStyle(.roundedBorder)
+                .font(.callout.monospaced())
+                .multilineTextAlignment(.trailing)
                 .onSubmit { Task { await M.patch([parent: [sub: text]]) } }
+                .frame(width: 160, alignment: .trailing)
         }.padding(.vertical, 5)
         .onAppear { text = (nestedDict(M, parent)[sub] as? String) ?? "" }
     }
@@ -1987,11 +2022,14 @@ struct KernelCard: View {
                 }
                 Divider()
                 HStack {
-                    Text("更新通道").font(.caption)
+                    Text("更新通道").font(.callout)
                     Spacer()
                     Picker("", selection: $km.channel) {
                         Text("正式版").tag("stable"); Text("Alpha").tag("alpha")
-                    }.pickerStyle(.segmented).frame(width: 160).labelsHidden()
+                    }
+                    .pickerStyle(.segmented)
+                    .labelsHidden()
+                    .frame(width: 160, alignment: .trailing)
                 }
                 HStack {
                     if km.checking { ProgressView().controlSize(.small) }
@@ -2001,25 +2039,43 @@ struct KernelCard: View {
                         Text("点击检查可用内核版本").font(.caption).foregroundColor(.secondary)
                     }
                     Spacer()
-                    Button("检查更新") { Task { await km.check() } }.controlSize(.small).disabled(km.checking)
-                    if !km.assetURL.isEmpty {
-                        Button {
-                            Task { await km.download() }
-                        } label: {
-                            if km.downloading { ProgressView().controlSize(.small) } else { Text("下载 \(km.channel == "alpha" ? "Alpha" : "正式版")") }
-                        }.controlSize(.small).buttonStyle(.borderedProminent).tint(M.accent).disabled(km.downloading)
+                    HStack(spacing: 8) {
+                        Button("检查更新") { Task { await km.check() } }
+                            .buttonStyle(.bordered)
+                            .controlSize(.small)
+                            .disabled(km.checking)
+                        if !km.assetURL.isEmpty {
+                            Button {
+                                Task { await km.download() }
+                            } label: {
+                                if km.downloading { ProgressView().controlSize(.small) } else { Text("下载 \(km.channel == "alpha" ? "Alpha" : "正式版")") }
+                            }
+                            .controlSize(.small)
+                            .buttonStyle(.borderedProminent)
+                            .tint(M.accent)
+                            .disabled(km.downloading)
+                        }
                     }
+                    .frame(width: 160, alignment: .trailing)
                 }
                 if !km.installedTags.isEmpty {
                     Divider()
                     HStack {
-                        Text("运行内核").font(.caption); Spacer()
+                        Text("运行内核").font(.callout); Spacer()
                         if km.activeTag.isEmpty {
-                            Text("内嵌").font(.caption2).padding(.horizontal, 6).padding(.vertical, 1)
-                                .background(Capsule().fill(M.accent.opacity(0.15))).foregroundColor(M.accent)
+                            Text("内嵌")
+                                .font(.caption2)
+                                .fontWeight(.medium)
+                                .padding(.horizontal, 8)
+                                .padding(.vertical, 3)
+                                .background(Capsule().fill(M.accent.opacity(0.15)))
+                                .foregroundColor(M.accent)
+                                .frame(width: 160, alignment: .trailing)
                         } else {
                             Button("切回内嵌内核") { Task { await km.useEmbedded(); try? await Task.sleep(nanoseconds: 3_500_000_000); await M.reconnect() } }
+                                .buttonStyle(.bordered)
                                 .controlSize(.small)
+                                .frame(width: 160, alignment: .trailing)
                         }
                     }
                     ForEach(km.installedTags, id: \.self) { tag in
@@ -2028,10 +2084,15 @@ struct KernelCard: View {
                             Text(tag).font(.caption.monospaced())
                             Spacer()
                             if km.activeTag == tag {
-                                Label("使用中", systemImage: "checkmark.circle.fill").font(.caption2).foregroundColor(M.accent)
+                                Label("使用中", systemImage: "checkmark.circle.fill")
+                                    .font(.caption2)
+                                    .foregroundColor(M.accent)
+                                    .frame(width: 160, alignment: .trailing)
                             } else {
                                 Button("启用") { Task { await km.activate(tag); try? await Task.sleep(nanoseconds: 3_500_000_000); await M.reconnect() } }
+                                    .buttonStyle(.bordered)
                                     .controlSize(.small)
+                                    .frame(width: 160, alignment: .trailing)
                             }
                         }
                         .padding(.vertical, 2)

@@ -45,10 +45,11 @@ type Pusher struct {
 
 // NewPusher creates/truncates the shared stats file and mmaps it RW.
 func NewPusher() *Pusher {
-	f, err := os.OpenFile(StatsFilePath, os.O_CREATE|os.O_RDWR|os.O_TRUNC, 0o644)
+	f, err := os.OpenFile(StatsFilePath, os.O_CREATE|os.O_RDWR|os.O_TRUNC, 0o666)
 	if err != nil {
 		return &Pusher{} // degraded: Push becomes a no-op
 	}
+	os.Chmod(StatsFilePath, 0666)
 	if err := f.Truncate(int64(fileSize)); err != nil {
 		f.Close()
 		return &Pusher{}
