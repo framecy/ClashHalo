@@ -399,9 +399,20 @@ final class AppModel: ObservableObject {
         }
     }
     func toggleTUN() {
-        tunOn.toggle()
-        Task { await patch(["tun": ["enable": tunOn]]) }
-        showToast(tunOn ? "TUN 模式已开启" : "TUN 模式已关闭")
+        let want = !tunOn
+        Task {
+            if want && !engine.isRoot {
+                // TUN needs the engine running as root. Promote via one admin prompt.
+                showToast("启用 TUN 需要管理员授权…")
+                let ok = await engine.installPrivileged()
+                guard ok else { showToast("授权失败，TUN 未启用"); return }
+                try? await Task.sleep(nanoseconds: 3_500_000_000)   // let root daemon boot
+                await reconnect()
+            }
+            tunOn = want
+            await patch(["tun": ["enable": want, "stack": (configs["tun"] as? [String:Any])?["stack"] ?? "gvisor", "auto-route": true, "auto-detect-interface": true]])
+            showToast(want ? "TUN 模式已开启" : "TUN 模式已关闭")
+        }
     }
 
     /// Deep-merge config overrides into the running config via the engine
