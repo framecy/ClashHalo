@@ -4,36 +4,35 @@ import SwiftUI
 struct ContentView: View {
     @EnvironmentObject var M: AppModel
 
-    // grouped navigation (matches reference layout)
+    // grouped navigation (matches prototype layout)
     struct Tab { let id, label, icon: String }
-    private let topTabs: [Tab] = [
-        .init(id: "dashboard", label: "概览", icon: "square.grid.2x2.fill"),
-        .init(id: "connections", label: "连接", icon: "list.bullet.rectangle.fill"),
-        .init(id: "proxies", label: "策略", icon: "diamond.fill"),
-        .init(id: "rules", label: "规则", icon: "line.3.horizontal.decrease"),
-        .init(id: "config", label: "配置", icon: "doc.text.fill"),
+    private let dashTabs: [Tab] = [
+        .init(id: "dashboard", label: "仪表盘", icon: "gauge"),
+    ]
+    private let proxyTabs: [Tab] = [
+        .init(id: "proxies", label: "代理", icon: "diamond.fill"),
+        .init(id: "connections", label: "连接监控", icon: "link"),
+        .init(id: "map", label: "SD-WAN 共存", icon: "shareplay"),
+    ]
+    private let netTabs: [Tab] = [
+        .init(id: "dns", label: "DNS 缓存", icon: "server.rack"),
         .init(id: "logs", label: "日志", icon: "doc.plaintext.fill"),
+        .init(id: "rules", label: "分流规则", icon: "line.3.horizontal.decrease"),
     ]
-    private let engineTabs: [Tab] = [
-        .init(id: "general", label: "通用", icon: "gearshape.fill"),
-        .init(id: "network", label: "网络", icon: "network"),
-        .init(id: "dns", label: "DNS", icon: "server.rack"),
-        .init(id: "tun", label: "TUN", icon: "shield.lefthalf.filled"),
-        .init(id: "sniffer", label: "嗅探", icon: "scope"),
-    ]
-    private let labTabs: [Tab] = [
-        .init(id: "map", label: "地图", icon: "map.fill"),
+    private let configTabs: [Tab] = [
+        .init(id: "config", label: "配置编辑", icon: "slider.horizontal.3"),
+        .init(id: "general", label: "通用设置", icon: "gearshape.fill"),
     ]
 
     private let titles: [String: String] = [
-        "dashboard":"概览","connections":"连接","proxies":"策略","rules":"分流规则",
-        "config":"配置","logs":"实时日志","general":"通用","network":"网络",
-        "dns":"DNS","tun":"TUN","sniffer":"嗅探","map":"网络地图",
+        "dashboard":"仪表盘","connections":"连接监控","proxies":"代理","rules":"分流规则",
+        "config":"配置编辑","logs":"实时日志","general":"通用设置","network":"网络入站",
+        "dns":"DNS 缓存","tun":"TUN 模式","sniffer":"流量嗅探","map":"SD-WAN 共存",
     ]
 
     var body: some View {
         NavigationSplitView {
-            sidebar.navigationSplitViewColumnWidth(min: 208, ideal: 216, max: 240)
+            sidebar.navigationSplitViewColumnWidth(min: 200, ideal: 210, max: 240)
         } detail: { detail }
     }
 
@@ -42,18 +41,24 @@ struct ContentView: View {
     private var sidebar: some View {
         VStack(spacing: 0) {
             appHeader
-            Divider().opacity(0.5)
+            Divider().opacity(0.4)
             List(selection: $M.route) {
-                Section { rows(topTabs) }
-                Section("引擎") { rows(engineTabs) }
-                Section("实验室") { rows(labTabs) }
+                Section("概览") { rows(dashTabs) }
+                Section("代理") { rows(proxyTabs) }
+                Section("网络") { rows(netTabs) }
+                Section("配置") { rows(configTabs) }
+                
+                Section("引擎底层") {
+                    Label("网络入站", systemImage: "network").tag("network")
+                    Label("TUN 模式", systemImage: "shield.lefthalf.filled").tag("tun")
+                    Label("流量嗅探", systemImage: "scope").tag("sniffer")
+                }
             }
             .listStyle(.sidebar)
             .scrollContentBackground(.hidden)
-            Divider().opacity(0.5)
+            Divider().opacity(0.4)
             statusFooter
         }
-        .navigationTitle("ClashPow")
     }
 
     private func rows(_ tabs: [Tab]) -> some View {
@@ -63,39 +68,43 @@ struct ContentView: View {
     }
 
     private var appHeader: some View {
-        HStack(spacing: 10) {
-            RoundedRectangle(cornerRadius: 9, style: .continuous)
-                .fill(LinearGradient(colors: [M.accent, M.accent.opacity(0.6)], startPoint: .topLeading, endPoint: .bottomTrailing))
-                .frame(width: 34, height: 34)
-                .overlay(Image(systemName: "bolt.fill").font(.system(size: 16, weight: .bold)).foregroundColor(.white))
-            VStack(alignment: .leading, spacing: 1) {
-                Text("ClashPow").font(.system(size: 15, weight: .semibold))
+        HStack(spacing: 12) {
+            RoundedRectangle(cornerRadius: 10, style: .continuous)
+                .fill(LinearGradient(colors: [M.accent, M.accent.opacity(0.7)], startPoint: .topLeading, endPoint: .bottomTrailing))
+                .frame(width: 32, height: 32)
+                .overlay(Image(systemName: "bolt.fill").font(.system(size: 15, weight: .bold)).foregroundColor(.white))
+            VStack(alignment: .leading, spacing: 0) {
+                Text("ClashPow").font(.system(size: 14, weight: .bold))
                 Text(M.reachable ? "mihomo \(M.version)" : "未连接")
-                    .font(.system(size: 11)).foregroundColor(.secondary)
+                    .font(.system(size: 10)).foregroundColor(.secondary)
             }
             Spacer()
         }
-        .padding(.horizontal, 14).padding(.vertical, 12)
+        .padding(.horizontal, 16).padding(.vertical, 14)
     }
 
     private var statusFooter: some View {
-        VStack(alignment: .leading, spacing: 7) {
-            footerRow("系统代理", on: M.systemProxyOn, accent: false)
-            footerRow(M.tunOn ? "TUN 模式" : "增强模式", on: M.tunOn, accent: true)
-            HStack(spacing: 6) {
-                Circle().fill(M.reachable ? Color.green : Color.secondary.opacity(0.4)).frame(width: 6, height: 6)
-                Text("核心 \(M.reachable ? M.version : "—")").font(.system(size: 11)).foregroundColor(.secondary)
+        VStack(spacing: 8) {
+            statusToggle("系统代理", icon: "globe", isOn: Binding(get: { M.systemProxyOn }, set: { _ in M.toggleSystemProxy() }), accent: false)
+            statusToggle("TUN 模式", icon: "shield.lefthalf.filled", isOn: Binding(get: { M.tunOn }, set: { _ in M.toggleTUN() }), accent: true)
+            
+            HStack {
+                Circle().fill(M.reachable ? Color.green : Color.red).frame(width: 6, height: 6)
+                Text("核心已就绪").font(.system(size: 10)).foregroundColor(.secondary)
                 Spacer()
+                Text(M.version).font(.system(size: 10, design: .monospaced)).foregroundColor(.secondary)
             }
+            .padding(.top, 4)
         }
-        .padding(.horizontal, 16).padding(.vertical, 11)
+        .padding(16)
     }
 
-    private func footerRow(_ label: String, on: Bool, accent: Bool) -> some View {
-        HStack(spacing: 6) {
-            Circle().fill(on ? (accent ? M.accent : Color.green) : Color.secondary.opacity(0.35)).frame(width: 6, height: 6)
-            Text(label).font(.system(size: 11)).foregroundColor(on ? .primary : .secondary)
+    private func statusToggle(_ label: String, icon: String, isOn: Binding<Bool>, accent: Bool) -> some View {
+        HStack(spacing: 8) {
+            Circle().fill(isOn.wrappedValue ? (accent ? M.accent : Color.green) : Color.secondary.opacity(0.3)).frame(width: 6, height: 6)
+            Text(label).font(.system(size: 11, weight: .medium)).foregroundColor(isOn.wrappedValue ? .primary : .secondary)
             Spacer()
+            Toggle("", isOn: isOn).toggleStyle(.switch).controlSize(.mini).labelsHidden()
         }
     }
 
@@ -103,26 +112,6 @@ struct ContentView: View {
 
     private var detail: some View {
         VStack(spacing: 0) {
-            HStack(spacing: 10) {
-                Text(titles[M.route] ?? "ClashPow").font(.system(size: 17, weight: .semibold))
-                Spacer()
-                if M.route == "dashboard" || M.route == "proxies" {
-                    Picker("", selection: Binding(get: { M.mode }, set: { M.setMode($0) })) {
-                        Text("规则").tag("rule"); Text("全局").tag("global"); Text("直连").tag("direct")
-                    }.pickerStyle(.segmented).frame(width: 200).labelsHidden()
-                }
-                // master toggles
-                Button { M.toggleSystemProxy() } label: {
-                    Image(systemName: "globe").foregroundColor(M.systemProxyOn ? M.accent : .secondary)
-                }.help("系统代理").buttonStyle(.borderless)
-                Button { M.toggleTUN() } label: {
-                    Image(systemName: "shield.lefthalf.filled").foregroundColor(M.tunOn ? M.accent : .secondary)
-                }.help("TUN 模式").buttonStyle(.borderless)
-            }
-            .padding(.horizontal, 18).padding(.vertical, 12)
-            .background(.bar)
-            Divider()
-
             Group {
                 switch M.route {
                 case "connections": ConnectionsPage()
@@ -154,29 +143,61 @@ struct ContentView: View {
     }
 }
 
+// MARK: - Components
+
+struct PageHead<Actions: View>: View {
+    let title: String
+    let desc: String?
+    @ViewBuilder var actions: () -> Actions
+
+    var body: some View {
+        HStack(alignment: .top) {
+            VStack(alignment: .leading, spacing: 4) {
+                Text(title).font(.system(size: 24, weight: .bold))
+                if let desc {
+                    Text(desc).font(.system(size: 12)).foregroundColor(.secondary)
+                }
+            }
+            Spacer()
+            HStack(spacing: 10) {
+                actions()
+            }
+        }
+        .padding(.horizontal, 20).padding(.top, 24).padding(.bottom, 16)
+    }
+}
+
+extension PageHead where Actions == EmptyView {
+    init(title: String, desc: String? = nil) {
+        self.init(title: title, desc: desc, actions: { EmptyView() })
+    }
+}
+
 // MARK: - Reusable card container
 
 struct Card<Content: View>: View {
     var title: String? = nil
     var icon: String? = nil
+    var pad = true
     @ViewBuilder var content: () -> Content
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
             if let title {
                 HStack(spacing: 6) {
-                    if let icon { Image(systemName: icon).font(.caption).foregroundColor(.secondary) }
-                    Text(title).font(.system(size: 13, weight: .semibold)).foregroundColor(.secondary)
+                    if let icon { Image(systemName: icon).font(.system(size: 11)).foregroundColor(.secondary) }
+                    Text(title).font(.system(size: 12, weight: .bold)).foregroundColor(.secondary)
                     Spacer()
                 }
                 .padding(.horizontal, 14).padding(.top, 12).padding(.bottom, 8)
             }
             content()
                 .frame(maxWidth: .infinity, alignment: .leading)
-                .padding(.horizontal, 14).padding(.bottom, 12)
-                .padding(.top, title == nil ? 12 : 0)
+                .padding(.horizontal, pad ? 14 : 0)
+                .padding(.bottom, pad ? 12 : 0)
+                .padding(.top, (title == nil && pad) ? 12 : 0)
         }
-        .frame(maxWidth: .infinity, alignment: .topLeading)   // fill column even when content is empty
-        .background(RoundedRectangle(cornerRadius: 12).fill(Color(nsColor: .controlBackgroundColor)))
+        .frame(maxWidth: .infinity, alignment: .topLeading)
+        .background(RoundedRectangle(cornerRadius: 12).fill(Color(nsColor: .windowBackgroundColor).opacity(0.5)))
         .overlay(RoundedRectangle(cornerRadius: 12).stroke(Color.primary.opacity(0.06)))
     }
 }
