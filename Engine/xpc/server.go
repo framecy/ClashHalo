@@ -24,6 +24,7 @@ import (
 	"fmt"
 	"net"
 	"os"
+	"os/exec"
 	"sync"
 	"time"
 
@@ -100,6 +101,11 @@ type compileRulesParams struct {
 
 type reloadRulesParams struct {
 	BinaryPath string `json:"binary_path"`
+}
+
+type setSystemProxyParams struct {
+	Enabled bool `json:"enabled"`
+	Port    int  `json:"port"`
 }
 
 // StatusSnapshot carries point-in-time status for the GUI.
@@ -227,6 +233,8 @@ func (s *Server) dispatch(req jsonRPCRequest) jsonRPCResponse {
 		return s.handleGetStatus(req)
 	case "get_log_socket_path":
 		return s.handleGetLogSocketPath(req)
+	case "set_system_proxy":
+		return s.handleSetSystemProxy(req)
 	case "shutdown":
 		return s.handleShutdown(req)
 	default:
@@ -354,4 +362,38 @@ func (s *Server) handleShutdown(req jsonRPCRequest) jsonRPCResponse {
 	return jsonRPCResponse{JSONRPC: "2.0", ID: req.ID, Result: map[string]bool{"ok": true}}
 }
 
+func (s *Server) handleSetSystemProxy(req jsonRPCRequest) jsonRPCResponse {
+	var p setSystemProxyParams
+	if err := json.Unmarshal(req.Params, &p); err != nil {
+		return jsonRPCResponse{JSONRPC: "2.0", ID: req.ID, Error: &rpcError{Code: rpcCodeParseError, Message: err.Error()}}
+	}
+
+	var shell string
+	if p.Enabled {
+		shell = fmt.Sprintf(`dev=$(route -n get default 2>/dev/null | awk '/interface:/{print $2}'); `+
+			`svc=$(networksetup -listnetworkserviceorder | grep -B1 "Device: $dev)" | head -1 | sed -E 's/^\([0-9]+\) //'); `+
+			`networksetup -setwebproxy "$svc" 127.0.0.1 %d; `+
+			`networksetup -setsecurewebproxy "$svc" 127.0.0.1 %d; `+
+			`networksetup -setsocksfirewallproxy "$svc" 127.0.0.1 %d`, p.Port, p.Port, p.Port)
+	} else {
+		shell = `dev=$(route -n get default 2>/dev/null | awk '/interface:/{print $2}'); `+
+			`svc=$(networksetup -listnetworkserviceorder | grep -B1 "Device: $dev)" | head -1 | sed -E 's/^\([0-9]+\) //'); `+
+			`networksetup -setwebproxystate "$svc" off; `+
+			`networksetup -setsecurewebproxystate "$svc" off; `+
+			`networksetup -setsocksfirewallproxystate "$svc" off`
+	}
+
+	cmd := exec.Command("/bin/sh", "-c", shell)
+	if out, err := cmd.CombinedOutput(); err != nil {
+		return jsonRPCResponse{
+			JSONRPC: "2.0",
+			ID:      req.ID,
+			Error:   &rpcError{Code: -1, Message: fmt.Sprintf("failed to run networksetup: %v (output: %s)", err, string(out))},
+		}
+	}
+
+	return jsonRPCResponse{JSONRPC: "2.0", ID: req.ID, Result: map[string]bool{"ok": true}}
+}
+
 var _ = fmt.Sprintf
+
