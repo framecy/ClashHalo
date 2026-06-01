@@ -938,13 +938,23 @@ struct YAMLEditor: NSViewRepresentable {
     final class Coordinator: NSObject, NSTextViewDelegate {
         let parent: YAMLEditor
         weak var textView: NSTextView?
+        private var highlightTimer: Timer?
         init(_ p: YAMLEditor) { parent = p }
 
         func textDidChange(_ notification: Notification) {
             guard let tv = textView else { return }
             parent.text = tv.string
             parent.onChange()
-            highlight()
+            scheduleHighlight()
+        }
+
+        /// Debounce highlight: wait 150ms of idle after the last keystroke
+        /// before running the full regex pass. Prevents stutter on large files.
+        private func scheduleHighlight() {
+            highlightTimer?.invalidate()
+            highlightTimer = Timer.scheduledTimer(withTimeInterval: 0.15, repeats: false) { [weak self] _ in
+                self?.highlight()
+            }
         }
 
         // Lightweight line-based YAML highlighter.
@@ -1321,12 +1331,14 @@ struct PickerRow: View {
 }
 
 /// Editable string-list bound to a top-level array config key.
+/// Automatically validates input format based on placeholder hints (CIDR, URL, etc.).
 struct StringListRow: View {
     @EnvironmentObject var M: AppModel
     let label: String; let key: String; let placeholder: String
     init(_ label: String, key: String, placeholder: String = "") { self.label = label; self.key = key; self.placeholder = placeholder }
     @State private var items: [String] = []
     @State private var draft = ""
+    private var draftValid: Bool { draft.isEmpty || validateInput(draft) }
     var body: some View {
         VStack(alignment: .leading, spacing: 5) {
             Text(label).font(.callout)
@@ -1339,15 +1351,39 @@ struct StringListRow: View {
                 }
             }
             HStack {
-                TextField(placeholder, text: $draft).textFieldStyle(.roundedBorder).font(.caption.monospaced())
-                Button { if !draft.isEmpty { items.append(draft); draft = ""; commit() } } label: { Image(systemName: "plus.circle.fill") }
-                    .buttonStyle(.borderless)
+                TextField(placeholder, text: $draft)
+                    .textFieldStyle(.roundedBorder).font(.caption.monospaced())
+                    .overlay(RoundedRectangle(cornerRadius: 5).stroke(!draftValid ? Color.red.opacity(0.7) : Color.clear, lineWidth: 1))
+                Button { if !draft.isEmpty && draftValid { items.append(draft); draft = ""; commit() } } label: { Image(systemName: "plus.circle.fill") }
+                    .buttonStyle(.borderless).disabled(!draftValid || draft.isEmpty)
+            }
+            if !draftValid {
+                Text("格式无效 — 请检查输入（如 IP/CIDR: 10.0.0.0/8, URL: https://...）")
+                    .font(.system(size: 9)).foregroundColor(.red)
             }
         }
         .padding(.vertical, 5)
         .onAppear { items = (M.configs[key] as? [Any])?.map { "\($0)" } ?? [] }
     }
     private func commit() { Task { await M.patch([key: items]) } }
+
+    /// Infer expected format from placeholder and validate accordingly.
+    private func validateInput(_ s: String) -> Bool {
+        let p = placeholder.lowercased()
+        if p.contains("/") && (p.contains(".") || p.contains(":")) {
+            // CIDR: e.g. 10.0.0.0/8 or 192.168.0.0/16 or fd00::/8
+            return s.range(of: #"^[\da-fA-F.:]+/\d{1,3}$"#, options: .regularExpression) != nil
+        }
+        if p.hasPrefix("http") {
+            // URL
+            return s.range(of: #"^https?://\S+"#, options: .regularExpression) != nil
+        }
+        if p.contains(":") && !p.contains("/") {
+            // host:port or user:pass
+            return s.contains(":")
+        }
+        return true // no specific validation for this placeholder
+    }
 }
 
 /// GEO download-source URL row (nested under geox-url.<sub>).
