@@ -16,66 +16,71 @@ struct DashboardPage: View {
 
     var body: some View {
         ScrollView {
-            VStack(alignment: .leading, spacing: 16) {
-                Text(greeting()).font(.system(size: 22, weight: .bold)).padding(.top, 2)
-
-                // top stat bar
-                HStack(spacing: 12) {
-                    BarStat("总下载", fmtBytes(Double(M.downloadTotal)), "arrow.down.circle.fill", M.accent)
-                    BarStat("总上传", fmtBytes(Double(M.uploadTotal)), "arrow.up.circle.fill", .red)
-                    BarStat("连接数", "\(M.conns.count)", "link.circle.fill", .cyan)
-                    BarStat("访问目标", "\(uniqueHosts)", "scope", .orange)
+            VStack(alignment: .leading, spacing: 0) {
+                PageHead(title: "仪表盘", desc: "流量趋势 · 实时统计 · 策略组排行 · 访问目标分析") {
+                    rangePicker
                 }
 
-                // chart + memory column
-                HStack(alignment: .top, spacing: 14) {
-                    Card(title: "流量趋势", icon: "chart.xyaxis.line") {
-                        HStack(spacing: 18) {
-                            Label(fmtRate(Double(M.curDown)), systemImage: "arrow.down").foregroundColor(.red).font(.headline.monospaced())
-                            Label(fmtRate(Double(M.curUp)), systemImage: "arrow.up").foregroundColor(M.accent).font(.headline.monospaced())
-                            Spacer()
-                        }.padding(.bottom, 4)
-                        MetalTrafficView(accent: NSColor(M.accent)).frame(height: 200)
+                VStack(alignment: .leading, spacing: 16) {
+                    Text(greeting()).font(.system(size: 20, weight: .bold)).padding(.horizontal, 4)
+
+                    // top stat bar
+                    HStack(spacing: 12) {
+                        BarStat("总下载", fmtBytes(Double(M.downloadTotal)), "arrow.down.circle.fill", M.accent)
+                        BarStat("总上传", fmtBytes(Double(M.uploadTotal)), "arrow.up.circle.fill", .red)
+                        BarStat("连接数", "\(M.conns.count)", "link.circle.fill", .cyan)
+                        BarStat("访问目标", "\(uniqueHosts)", "scope", .orange)
                     }
-                    VStack(spacing: 14) {
-                        MiniStat("活跃连接", "\(M.conns.count)", sub: "已关闭 \(M.closedConns)", icon: "link", color: .cyan)
-                        MiniStat("核心内存", fmtBytes(Double(M.memory)), sub: nil, icon: "memorychip", color: .purple)
-                        MiniStat("应用内存", String(format: "%.0f MB", M.appMemoryMB), sub: nil, icon: "app.dashed", color: .orange)
-                    }.frame(width: 240)
-                }
 
-                // distribution (history, 今日/本月) + policy groups
-                HStack(alignment: .top, spacing: 14) {
-                    Card(title: "流量分布", icon: "chart.pie.fill") {
-                        VStack(alignment: .leading, spacing: 10) {
-                            rangePicker
+                    // chart + memory column
+                    HStack(alignment: .top, spacing: 14) {
+                        Card(title: "流量趋势", icon: "chart.xyaxis.line") {
+                            VStack(alignment: .leading, spacing: 0) {
+                                HStack(spacing: 18) {
+                                    Label(fmtRate(Double(M.curDown)), systemImage: "arrow.down").foregroundColor(.red).font(.headline.monospaced())
+                                    Label(fmtRate(Double(M.curUp)), systemImage: "arrow.up").foregroundColor(M.accent).font(.headline.monospaced())
+                                    Spacer()
+                                }.padding(.bottom, 8)
+                                MetalTrafficView(accent: NSColor(M.accent)).frame(height: 180)
+                            }
+                        }
+                        VStack(spacing: 14) {
+                            MiniStat("活跃连接", "\(M.conns.count)", sub: "已关闭 \(M.closedConns)", icon: "link", color: .cyan)
+                            MiniStat("核心内存", fmtBytes(Double(M.memory)), sub: nil, icon: "memorychip", color: .purple)
+                            MiniStat("应用内存", String(format: "%.0f MB", M.appMemoryMB), sub: nil, icon: "app.dashed", color: .orange)
+                        }.frame(width: 240)
+                    }
+
+                    // distribution (history, 今日/本月) + policy groups
+                    HStack(alignment: .top, spacing: 14) {
+                        Card(title: "流量分布", icon: "chart.pie.fill") {
                             distribution
                         }
+                        Card(title: "策略组排名", icon: "rectangle.3.group.fill") { RankList(rows: policyGroupRows, accent: M.accent, mode: .bytes) }
                     }
-                    Card(title: "策略组", icon: "rectangle.3.group.fill") { RankList(rows: policyGroupRows, accent: M.accent, mode: .bytes) }
-                }
 
-                // timeline: hourly (today) or daily (month)
-                Card(title: range == .today ? "流量时间轴 · 今日(每小时)" : "流量时间轴 · 本月(每日)", icon: "chart.bar.fill") {
-                    HourlyBars(values: range == .today ? M.history.today.hourlyDown : M.history.monthDailyTotals,
-                               accent: M.accent).frame(height: 130)
-                }
+                    // timeline: hourly (today) or daily (month)
+                    Card(title: range == .today ? "流量时间轴 · 今日(每小时)" : "流量时间轴 · 本月(每日)", icon: "chart.bar.fill") {
+                        HourlyBars(values: range == .today ? M.history.today.hourlyDown : M.history.monthDailyTotals,
+                                   accent: M.accent).frame(height: 110)
+                    }
 
-                // top rules / hosts / nodes
-                HStack(alignment: .top, spacing: 14) {
-                    Card(title: "高频规则", icon: "list.number") { RankList(rows: topRules, accent: .red, mode: .count) }
-                    Card(title: "热门域名", icon: "globe") { RankList(rows: topHosts, accent: .cyan, mode: .bytes) }
-                    Card(title: "热门节点", icon: "bolt.horizontal.fill") { RankList(rows: topNodes, accent: .orange, mode: .bytes) }
-                }
+                    // top rules / hosts / nodes
+                    HStack(alignment: .top, spacing: 14) {
+                        Card(title: "高频规则", icon: "list.number") { RankList(rows: topRules, accent: .red, mode: .count) }
+                        Card(title: "热门域名", icon: "globe") { RankList(rows: topHosts, accent: .cyan, mode: .bytes) }
+                        Card(title: "热门节点", icon: "bolt.horizontal.fill") { RankList(rows: topNodes, accent: .orange, mode: .bytes) }
+                    }
 
-                // source IPs / processes / target class
-                HStack(alignment: .top, spacing: 14) {
-                    Card(title: "客户端源 IP", icon: "desktopcomputer") { RankList(rows: topSources, accent: .green, mode: .bytes) }
-                    Card(title: "热门进程", icon: "app.badge") { RankList(rows: topProcs, accent: .blue, mode: .bytes) }
-                    Card(title: "目标分类", icon: "globe.asia.australia.fill") { RankList(rows: targetClass, accent: .pink, mode: .bytes) }
+                    // source IPs / processes / target class
+                    HStack(alignment: .top, spacing: 14) {
+                        Card(title: "客户端源 IP", icon: "desktopcomputer") { RankList(rows: topSources, accent: .green, mode: .bytes) }
+                        Card(title: "热门进程", icon: "app.badge") { RankList(rows: topProcs, accent: .blue, mode: .bytes) }
+                        Card(title: "目标分类", icon: "globe.asia.australia.fill") { RankList(rows: targetClass, accent: .pink, mode: .bytes) }
+                    }
                 }
+                .padding(.horizontal, 20).padding(.bottom, 24)
             }
-            .padding(18)
         }
     }
 
@@ -155,27 +160,49 @@ struct RankList: View {
     let rows: [Rank]; let accent: Color; let mode: Mode
     var body: some View {
         let mx = max(rows.first?.value ?? 1, 1)
-        VStack(spacing: 8) {
+        VStack(spacing: 10) {
             if rows.isEmpty {
-                Text("暂无数据").font(.caption).foregroundColor(.secondary)
-                    .frame(maxWidth: .infinity, minHeight: 116, alignment: .center)
+                Text("暂无活跃数据").font(.system(size: 11)).foregroundColor(.secondary)
+                    .frame(maxWidth: .infinity, minHeight: 120, alignment: .center)
             }
             ForEach(Array(rows.enumerated()), id: \.offset) { i, r in
-                VStack(spacing: 3) {
+                VStack(spacing: 4) {
                     HStack(spacing: 8) {
-                        Text("\(i+1)").font(.caption2.monospaced()).foregroundColor(.secondary).frame(width: 12)
-                        Text(r.name).font(.caption).lineLimit(1).truncationMode(.middle)
+                        Text("\(i+1)").font(.system(size: 10, design: .monospaced)).foregroundColor(.secondary).frame(width: 14, alignment: .leading)
+                        Text(r.name).font(.system(size: 11)).lineLimit(1).truncationMode(.middle)
                         Spacer()
                         Text(mode == .bytes ? fmtBytes(r.value) : "\(Int(r.value))")
-                            .font(.caption.monospaced()).foregroundColor(.secondary)
+                            .font(.system(size: 10, design: .monospaced)).foregroundColor(.secondary)
                     }
                     GeometryReader { g in
-                        Capsule().fill(accent.opacity(0.7)).frame(width: max(3, g.size.width * r.value/mx), height: 3)
-                            .frame(maxWidth: .infinity, alignment: .leading)
-                    }.frame(height: 3)
+                        ZStack(alignment: .leading) {
+                            Capsule().fill(Color.primary.opacity(0.03)).frame(height: 2)
+                            Capsule().fill(accent.opacity(0.6)).frame(width: max(2, g.size.width * r.value/mx), height: 2)
+                        }
+                    }.frame(height: 2)
                 }
             }
         }
+    }
+}
+
+struct StatBox: View {
+    let label, value: String; var unit: String? = nil; let sub: String; var accent = false
+    @EnvironmentObject var M: AppModel
+    var body: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Text(label).font(.system(size: 11)).foregroundColor(.secondary)
+            HStack(alignment: .firstTextBaseline, spacing: 2) {
+                Text(value).font(.system(size: 22, weight: .bold, design: .rounded))
+                    .foregroundColor(accent ? M.accent : .primary)
+                if let unit { Text(unit).font(.system(size: 12, weight: .semibold)).foregroundColor(.secondary) }
+            }
+            Text(sub).font(.system(size: 10)).foregroundColor(.secondary).lineLimit(1)
+        }
+        .padding(14)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(RoundedRectangle(cornerRadius: 12).fill(Color(nsColor: .windowBackgroundColor).opacity(0.5)))
+        .overlay(RoundedRectangle(cornerRadius: 12).stroke(accent ? M.accent.opacity(0.3) : Color.primary.opacity(0.06)))
     }
 }
 
@@ -186,14 +213,14 @@ struct BarStat: View {
         HStack(spacing: 11) {
             Image(systemName: icon).font(.title2).foregroundColor(color)
             VStack(alignment: .leading, spacing: 2) {
-                Text(label).font(.caption).foregroundColor(.secondary)
+                Text(label).font(.system(size: 11)).foregroundColor(.secondary)
                 Text(value).font(.system(size: 20, weight: .bold, design: .rounded))
             }
             Spacer()
         }
         .padding(.horizontal, 16).padding(.vertical, 13)
         .frame(maxWidth: .infinity)
-        .background(RoundedRectangle(cornerRadius: 12).fill(Color(nsColor: .controlBackgroundColor)))
+        .background(RoundedRectangle(cornerRadius: 12).fill(Color(nsColor: .windowBackgroundColor).opacity(0.5)))
         .overlay(RoundedRectangle(cornerRadius: 12).stroke(Color.primary.opacity(0.06)))
     }
 }
@@ -205,13 +232,13 @@ struct MiniStat: View {
     }
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
-            Label(title, systemImage: icon).font(.caption).foregroundColor(.secondary)
+            Label(title, systemImage: icon).font(.system(size: 11)).foregroundColor(.secondary)
             Text(value).font(.system(size: 22, weight: .bold, design: .rounded))
-            if let sub { Text(sub).font(.caption2).foregroundColor(.secondary) }
+            if let sub { Text(sub).font(.system(size: 10)).foregroundColor(.secondary) }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         .padding(14)
-        .background(RoundedRectangle(cornerRadius: 12).fill(Color(nsColor: .controlBackgroundColor)))
+        .background(RoundedRectangle(cornerRadius: 12).fill(Color(nsColor: .windowBackgroundColor).opacity(0.5)))
         .overlay(RoundedRectangle(cornerRadius: 12).stroke(Color.primary.opacity(0.06)))
     }
 }
