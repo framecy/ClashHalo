@@ -13,6 +13,7 @@ echo "[1/3] Building engine..."
 mkdir -p "$BUILD_DIR/engine"
 cd "$PROJECT_DIR/Engine"
 CGO_ENABLED=0 GOOS=darwin GOARCH=arm64 go build \
+    -tags with_gvisor \
     -ldflags="-s -w" \
     -o "$BUILD_DIR/engine/clashpow-engine" \
     ./cmd/clashpow

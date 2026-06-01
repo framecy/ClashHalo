@@ -335,6 +335,33 @@ final class AppModel: ObservableObject {
 
     // MARK: Polling
 
+    /// Parse the order of proxy-groups from the active profile's YAML text.
+    private func parseProxyGroupsOrder(from yaml: String) -> [String] {
+        var order: [String] = []
+        guard let range = yaml.range(of: #"(?m)^proxy-groups:\s*$"#, options: .regularExpression) else {
+            return []
+        }
+        let sub = yaml[range.upperBound...]
+        var groupBlock = ""
+        if let endRange = sub.range(of: #"(?m)^\S+:"#, options: .regularExpression) {
+            groupBlock = String(sub[..<endRange.lowerBound])
+        } else {
+            groupBlock = String(sub)
+        }
+        let pattern = #"-\s*name:\s*["']?([^"'\n\r]+)["']?"#
+        if let regex = try? NSRegularExpression(pattern: pattern, options: []) {
+            let ns = groupBlock as NSString
+            let matches = regex.matches(in: groupBlock, options: [], range: NSRange(location: 0, length: ns.length))
+            for m in matches {
+                if m.numberOfRanges >= 2 {
+                    let name = ns.substring(with: m.range(at: 1)).trimmingCharacters(in: .whitespacesAndNewlines)
+                    order.append(name)
+                }
+            }
+        }
+        return order
+    }
+
     func refreshProxies() async {
         guard let p = try? await api.fetchProxies() else { return }
         var gs: [ProxyGroup] = []
@@ -349,8 +376,18 @@ final class AppModel: ObservableObject {
         }
         // Preserve existing measured delays for nodes that report 0 now
         for (k, v) in nodes where ns[k]?.delay == 0 && v.delay > 0 { ns[k]?.delay = v.delay }
-        // Sort groups: GLOBAL last, others alphabetical-ish by original order
+        
+        // Retrieve order from current active profile configuration file
+        let yaml = store.content(store.activeID)
+        let order = parseProxyGroupsOrder(from: yaml)
+        
+        // Sort groups strictly according to YAML order; unrecognized/GLOBAL go last
         groups = gs.sorted { a, b in
+            let idxA = order.firstIndex(of: a.name) ?? 999
+            let idxB = order.firstIndex(of: b.name) ?? 999
+            if idxA != idxB {
+                return idxA < idxB
+            }
             if a.name == "GLOBAL" { return false }
             if b.name == "GLOBAL" { return true }
             return a.name < b.name
@@ -359,7 +396,28 @@ final class AppModel: ObservableObject {
     }
 
     func refreshConfigs() async {
-        guard let c = try? await api.fetchConfigs() else { return }
+        guard var c = try? await api.fetchConfigs() else { return }
+        
+        // Strictly enforce CDN GEO defaults if missing or empty
+        var geo = c["geox-url"] as? [String: String] ?? [:]
+        let defaults = [
+            "mmdb": "https://cdn.jsdelivr.net/gh/Loyalsoldier/v2ray-rules-dat@release/country.mmdb",
+            "asn": "https://github.com/P3TERX/GeoLite.mmdb/raw/download/GeoLite2-ASN.mmdb",
+            "geosite": "https://cdn.jsdelivr.net/gh/Loyalsoldier/v2ray-rules-dat@release/geosite.dat",
+            "geoip": "https://cdn.jsdelivr.net/gh/Loyalsoldier/v2ray-rules-dat@release/geoip.dat"
+        ]
+        var changed = false
+        for (k, v) in defaults {
+            if (geo[k] ?? "").isEmpty || (geo[k] ?? "").contains("geodata.kelee.one") {
+                geo[k] = v
+                changed = true
+            }
+        }
+        if changed {
+            c["geox-url"] = geo
+            Task { await patch(["geox-url": geo]) }
+        }
+
         configs = c
         if let m = c["mode"] as? String { mode = m }
         if let tun = c["tun"] as? [String: Any] { tunOn = (tun["enable"] as? Bool) == true }
@@ -372,14 +430,69 @@ final class AppModel: ObservableObject {
         Task {
             if !engine.isRoot {
                 showToast("设置系统代理需要管理员授权以安装特权服务…")
-                let ok = await engine.installPrivileged()
-                guard ok else { showToast("授权失败，未修改系统代理"); return }
-                try? await Task.sleep(nanoseconds: 3_500_000_000)   // let root daemon boot
-                await reconnect()
+                let installOk = await engine.installPrivileged()
+                if installOk {
+                    try? await Task.sleep(nanoseconds: 3_500_000_000)   // let root daemon boot
+                    await reconnect()
+                } else {
+                    showToast("授权失败，系统代理未启用")
+                    return
+                }
             }
+            
+            guard engine.isRoot else {
+                showToast("特权服务未运行，系统代理设置失败")
+                return
+            }
+            
             let ok = await engine.setSystemProxy(enabled: on, port: port)
-            systemProxyOn = ok ? on : systemProxyOn
-            showToast(ok ? (on ? "系统代理已开启" : "系统代理已关闭") : "系统代理设置失败")
+            if ok {
+                systemProxyOn = on
+                showToast(on ? "系统代理已开启" : "系统代理已关闭")
+            } else {
+                showToast("特权服务响应失败，尝试备用提权方式…")
+                let fallbackOk = await Self.setSystemProxyFallback(enabled: on, port: port)
+                if fallbackOk {
+                    systemProxyOn = on
+                    showToast(on ? "系统代理已开启 (备用)" : "系统代理已关闭 (备用)")
+                } else {
+                    showToast("系统代理设置失败")
+                }
+            }
+        }
+    }
+
+    /// Set/clear the macOS system HTTP/HTTPS/SOCKS proxy on the primary network
+    /// service. Uses networksetup under one administrator-auth prompt (osascript),
+    /// so no separately-signed privileged Helper is required.
+    static func setSystemProxyFallback(enabled: Bool, port: Int) async -> Bool {
+        let shell: String
+        if enabled {
+            shell = """
+            dev=$(route -n get default 2>/dev/null | awk '/interface:/{print $2}'); \
+            svc=$(networksetup -listnetworkserviceorder | grep -B1 \\"Device: $dev)\\" | head -1 | sed -E 's/^\\\\([0-9]+\\\\) //'); \
+            networksetup -setwebproxy \\"$svc\\" 127.0.0.1 \(port); \
+            networksetup -setsecurewebproxy \\"$svc\\" 127.0.0.1 \(port); \
+            networksetup -setsocksfirewallproxy \\"$svc\\" 127.0.0.1 \(port)
+            """
+        } else {
+            shell = """
+            dev=$(route -n get default 2>/dev/null | awk '/interface:/{print $2}'); \
+            svc=$(networksetup -listnetworkserviceorder | grep -B1 \\"Device: $dev)\\" | head -1 | sed -E 's/^\\\\([0-9]+\\\\) //'); \
+            networksetup -setwebproxystate \\"$svc\\" off; \
+            networksetup -setsecurewebproxystate \\"$svc\\" off; \
+            networksetup -setsocksfirewallproxystate \\"$svc\\" off
+            """
+        }
+        let script = "do shell script \"\(shell)\" with administrator privileges"
+        return await withCheckedContinuation { cont in
+            DispatchQueue.global().async {
+                let p = Process()
+                p.executableURL = URL(fileURLWithPath: "/usr/bin/osascript")
+                p.arguments = ["-e", script]
+                do { try p.run(); p.waitUntilExit(); cont.resume(returning: p.terminationStatus == 0) }
+                catch { cont.resume(returning: false) }
+            }
         }
     }
     func toggleTUN() {
@@ -393,6 +506,12 @@ final class AppModel: ObservableObject {
                 try? await Task.sleep(nanoseconds: 3_500_000_000)   // let root daemon boot
                 await reconnect()
             }
+            
+            if want && !engine.isRoot {
+                showToast("特权服务加载失败，TUN 未启用")
+                return
+            }
+            
             tunOn = want
             await patch(["tun": ["enable": want, "stack": (configs["tun"] as? [String:Any])?["stack"] ?? "gvisor", "auto-route": true, "auto-detect-interface": true]])
             showToast(want ? "TUN 模式已开启" : "TUN 模式已关闭")
