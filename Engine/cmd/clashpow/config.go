@@ -65,11 +65,11 @@ func (c *configManager) override(raw []byte) ([]byte, error) {
 	}
 	m["external-controller"] = c.controllerAddr
 	m["secret"] = c.secret
-	if c.devMode {
-		// Dev coexistence: only force TUN off (needs root + a privileged Helper,
-		// arriving in stage J). Ports are left as authored so the Network form
-		// edits are faithful; any listener conflict with a standalone kernel is
-		// non-fatal (the controller stays up).
+	// TUN requires root to create the utun + manage routes (no Network Extension
+	// entitlement per spec). When NOT running as root we force TUN off so the
+	// user-level engine never errors on it; as a root LaunchDaemon we leave TUN
+	// as authored so the embedded mihomo brings the utun up itself.
+	if os.Geteuid() != 0 {
 		if tun, ok := m["tun"].(map[string]any); ok {
 			tun["enable"] = false
 			m["tun"] = tun
