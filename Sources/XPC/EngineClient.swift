@@ -191,6 +191,31 @@ final class MihomoClient: ObservableObject {
         _ = try await session.data(for: req)
     }
 
+    /// Close all active connections.
+    func closeAllConnections() async throws {
+        guard let req = request("/connections", method: "DELETE") else { throw MihomoError.badURL }
+        _ = try await session.data(for: req)
+    }
+
+    /// Close a single connection by ID.
+    func closeConnection(id: String) async throws {
+        let enc = id.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? id
+        guard let req = request("/connections/\(enc)", method: "DELETE") else { throw MihomoError.badURL }
+        _ = try await session.data(for: req)
+    }
+
+    /// Flush the kernel's DNS resolver cache.
+    func flushDnsCache() async throws {
+        guard let req = request("/cache/dns/flush", method: "POST") else { throw MihomoError.badURL }
+        _ = try await session.data(for: req)
+    }
+
+    /// Flush the Fake-IP allocation cache.
+    func flushFakeIpCache() async throws {
+        guard let req = request("/cache/fakeip/flush", method: "POST") else { throw MihomoError.badURL }
+        _ = try await session.data(for: req)
+    }
+
     func probe() async {
         do { let v = try await fetchVersion(); version = v.version; reachable = true }
         catch { reachable = false }
