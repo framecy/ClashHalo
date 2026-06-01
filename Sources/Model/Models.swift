@@ -397,9 +397,13 @@ final class AppModel: ObservableObject {
 
     func refreshConfigs() async {
         guard var c = try? await api.fetchConfigs() else { return }
-        
+
         // Strictly enforce CDN GEO defaults if missing or empty
-        var geo = c["geox-url"] as? [String: String] ?? [:]
+        var geo: [String: String] = [:]
+        if let rawGeo = c["geox-url"] as? [String: Any] {
+            for (k, v) in rawGeo { geo[k] = "\(v)" }
+        }
+
         let defaults = [
             "mmdb": "https://cdn.jsdelivr.net/gh/Loyalsoldier/v2ray-rules-dat@release/country.mmdb",
             "asn": "https://github.com/P3TERX/GeoLite.mmdb/raw/download/GeoLite2-ASN.mmdb",
@@ -408,7 +412,7 @@ final class AppModel: ObservableObject {
         ]
         var changed = false
         for (k, v) in defaults {
-            if (geo[k] ?? "").isEmpty || (geo[k] ?? "").contains("geodata.kelee.one") {
+            if (geo[k] ?? "").isEmpty || (geo[k] ?? "").contains("geodata.kelee.one") || (geo[k] ?? "").contains("github.com") {
                 geo[k] = v
                 changed = true
             }
@@ -417,7 +421,6 @@ final class AppModel: ObservableObject {
             c["geox-url"] = geo
             Task { await patch(["geox-url": geo]) }
         }
-
         configs = c
         if let m = c["mode"] as? String { mode = m }
         if let tun = c["tun"] as? [String: Any] { tunOn = (tun["enable"] as? Bool) == true }
@@ -512,9 +515,22 @@ final class AppModel: ObservableObject {
                 return
             }
             
-            tunOn = want
-            await patch(["tun": ["enable": want, "stack": (configs["tun"] as? [String:Any])?["stack"] ?? "gvisor", "auto-route": true, "auto-detect-interface": true]])
-            showToast(want ? "TUN 模式已开启" : "TUN 模式已关闭")
+            let overrides: [String: Any] = [
+                "tun": [
+                    "enable": want,
+                    "stack": (configs["tun"] as? [String:Any])?["stack"] ?? "gvisor",
+                    "auto-route": true,
+                    "auto-detect-interface": true
+                ]
+            ]
+            let ok = await engine.patchConfig(overrides)
+            if ok {
+                await refreshConfigs()
+                tunOn = want
+                showToast(want ? "TUN 模式已开启" : "TUN 模式已关闭")
+            } else {
+                showToast(want ? "TUN 模式开启失败，请检查网络或端口冲突" : "TUN 模式关闭失败")
+            }
         }
     }
 
@@ -717,8 +733,19 @@ final class ConfigStore: ObservableObject {
             profiles = list
         }
         // Seed from the existing config.yaml on first run.
-        if profiles.isEmpty, let content = try? String(contentsOfFile: configPath, encoding: .utf8) {
+        if profiles.isEmpty {
             let id = UUID().uuidString
+            let defaultContent = """
+            mixed-port: 7890
+            mode: rule
+            log-level: info
+            geox-url:
+              mmdb: https://cdn.jsdelivr.net/gh/Loyalsoldier/v2ray-rules-dat@release/country.mmdb
+              asn: https://github.com/P3TERX/GeoLite.mmdb/raw/download/GeoLite2-ASN.mmdb
+              geosite: https://cdn.jsdelivr.net/gh/Loyalsoldier/v2ray-rules-dat@release/geosite.dat
+              geoip: https://cdn.jsdelivr.net/gh/Loyalsoldier/v2ray-rules-dat@release/geoip.dat
+            """
+            let content = (try? String(contentsOfFile: configPath, encoding: .utf8)) ?? defaultContent
             try? content.write(toFile: path(id), atomically: true, encoding: .utf8)
             let p = Profile(id: id, name: "默认配置", source: "local", url: nil, importedAt: Date(), updatedAt: Date())
             profiles = [p]; activeID = id; save()

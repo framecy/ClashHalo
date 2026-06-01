@@ -12,6 +12,7 @@ package main
 import (
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"sync"
 
@@ -65,6 +66,16 @@ func (c *configManager) override(raw []byte) ([]byte, error) {
 	}
 	m["external-controller"] = c.controllerAddr
 	m["secret"] = c.secret
+
+	// Strictly enforce CDN GEO defaults
+	geo := map[string]string{
+		"mmdb":    "https://cdn.jsdelivr.net/gh/Loyalsoldier/v2ray-rules-dat@release/country.mmdb",
+		"asn":     "https://github.com/P3TERX/GeoLite.mmdb/raw/download/GeoLite2-ASN.mmdb",
+		"geosite": "https://cdn.jsdelivr.net/gh/Loyalsoldier/v2ray-rules-dat@release/geosite.dat",
+		"geoip":   "https://cdn.jsdelivr.net/gh/Loyalsoldier/v2ray-rules-dat@release/geoip.dat",
+	}
+	m["geox-url"] = geo
+
 	// TUN requires root to create the utun + manage routes (no Network Extension
 	// entitlement per spec). When NOT running as root we force TUN off so the
 	// user-level engine never errors on it; as a root LaunchDaemon we leave TUN
@@ -73,6 +84,12 @@ func (c *configManager) override(raw []byte) ([]byte, error) {
 		if tun, ok := m["tun"].(map[string]any); ok {
 			tun["enable"] = false
 			m["tun"] = tun
+		}
+	} else {
+		// Clean up stale route 1.0.0.0/8 and 198.18.0.0/15 which block TUN startup
+		if tun, ok := m["tun"].(map[string]any); ok && tun["enable"] == true {
+			exec.Command("/sbin/route", "-n", "delete", "-net", "1.0.0.0/8").Run()
+			exec.Command("/sbin/route", "-n", "delete", "-net", "198.18.0.0/15").Run()
 		}
 	}
 	return yaml.Marshal(m)
@@ -180,7 +197,12 @@ func (c *configManager) loadInitial() error {
 	if err != nil {
 		log.Warnln("config %s not found, using minimal fallback", c.path)
 		raw = []byte(fmt.Sprintf(
-			"mixed-port: 7892\nmode: rule\nlog-level: info\nexternal-controller: %s\nsecret: %s\n",
+			"mixed-port: 7890\nmode: rule\nlog-level: info\nexternal-controller: %s\nsecret: %s\n"+
+				"geox-url:\n"+
+				"  mmdb: https://cdn.jsdelivr.net/gh/Loyalsoldier/v2ray-rules-dat@release/country.mmdb\n"+
+				"  asn: https://github.com/P3TERX/GeoLite.mmdb/raw/download/GeoLite2-ASN.mmdb\n"+
+				"  geosite: https://cdn.jsdelivr.net/gh/Loyalsoldier/v2ray-rules-dat@release/geosite.dat\n"+
+				"  geoip: https://cdn.jsdelivr.net/gh/Loyalsoldier/v2ray-rules-dat@release/geoip.dat\n",
 			c.controllerAddr, c.secret))
 		// best-effort: write the fallback so the user has a file to edit
 		_ = os.MkdirAll(filepath.Dir(c.path), 0o755)
