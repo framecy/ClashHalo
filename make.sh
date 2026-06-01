@@ -17,7 +17,7 @@ mkdir -p "$BUILD"
 
 echo "[1/4] Building engine (Go + mihomo, arm64)…"
 ( cd "$ROOT/Engine" && CGO_ENABLED=0 GOOS=darwin GOARCH=arm64 \
-    go build -ldflags="-s -w" -o "$BUILD/clashpow-engine" ./cmd/clashpow )
+    go build -tags with_gvisor -ldflags="-s -w" -o "$BUILD/clashpow-engine" ./cmd/clashpow )
 echo "      $(du -h "$BUILD/clashpow-engine" | cut -f1) engine"
 
 echo "[2/4] Building GUI (xcodebuild Release, sign later)…"
