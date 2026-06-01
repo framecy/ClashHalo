@@ -163,6 +163,7 @@ func (s *Server) Run() {
 		fmt.Fprintf(os.Stderr, "xpc: listen %s: %v\n", s.sockPath, err)
 		os.Exit(1)
 	}
+	os.Chmod(s.sockPath, 0666) // Allow non-root users to connect to the socket
 	s.listener = l
 	s.running = true
 
