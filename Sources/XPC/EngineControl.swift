@@ -171,69 +171,23 @@ import SwiftUI
     /// and bootstraps it as root. Returns true on success.
     @discardableResult
     func installPrivileged() async -> Bool {
-        let engineBin = appSupport + "/clashpow-engine"
-        guard FileManager.default.fileExists(atPath: engineBin) else { return false }
-        let logDir = NSHomeDirectory() + "/Library/Logs/ClashPow"
-        // The root daemon runs the engine binary copied to /Library/PrivilegedHelperTools but as root,
-        // with the same app-support home so config/geodata/controller are unchanged.
-        let plist = """
-        <?xml version="1.0" encoding="UTF-8"?>
-        <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-        <plist version="1.0"><dict>
-          <key>Label</key><string>com.clashpow.engine</string>
-          <key>ProgramArguments</key><array><string>/Library/PrivilegedHelperTools/clashpow-engine</string></array>
-          <key>EnvironmentVariables</key><dict><key>CLASHPOW_CONFIG</key><string>\(appSupport)/config.yaml</string></dict>
-          <key>RunAtLoad</key><true/>
-          <key>KeepAlive</key><dict><key>SuccessfulExit</key><false/><key>Crashed</key><true/></dict>
-          <key>ThrottleInterval</key><integer>3</integer>
-          <key>Umask</key><integer>0</integer>
-          <key>StandardOutPath</key><string>\(logDir)/clashpow-engine.log</string>
-          <key>StandardErrorPath</key><string>\(logDir)/clashpow-engine.log</string>
-        </dict></plist>
-        """
-        // Write the plist to a temp file the privileged shell will move into place.
-        let tmpPlist = NSTemporaryDirectory() + "com.clashpow.engine.plist"
-        guard (try? plist.write(toFile: tmpPlist, atomically: true, encoding: .utf8)) != nil else { return false }
-
-        // One privileged shell: stop user agent, copy engine to secure path & chmod, install root daemon, bootstrap it.
-        let uid = getuid()
-        let shell = [
-            "/usr/bin/killall -9 mihomo clashpow-engine 2>/dev/null || true",
-            "if /usr/sbin/lsof -t -iTCP:7890 -sTCP:LISTEN >/dev/null; then /bin/kill -9 $(/usr/sbin/lsof -t -iTCP:7890 -sTCP:LISTEN) 2>/dev/null || true; fi",
-            "if /usr/sbin/lsof -t -iTCP:9092 -sTCP:LISTEN >/dev/null; then /bin/kill -9 $(/usr/sbin/lsof -t -iTCP:9092 -sTCP:LISTEN) 2>/dev/null || true; fi",
-            "/sbin/route -n delete -net 1.0.0.0/8 2>/dev/null || true",
-            "/sbin/route -n delete -net 198.18.0.0/15 2>/dev/null || true",
-            "/bin/launchctl bootout gui/\(uid)/com.clashpow.engine 2>/dev/null || true",
-            "/bin/launchctl unload '\(plistPath)' 2>/dev/null || true",
-            "/bin/mkdir -p /Library/PrivilegedHelperTools",
-            "/bin/cp '\(engineBin)' /Library/PrivilegedHelperTools/clashpow-engine",
-            "/usr/sbin/chown root:wheel /Library/PrivilegedHelperTools/clashpow-engine",
-            "/bin/chmod 755 /Library/PrivilegedHelperTools/clashpow-engine",
-            "/bin/cp '\(tmpPlist)' '\(rootPlistPath)'",
-            "/usr/sbin/chown root:wheel '\(rootPlistPath)'",
-            "/bin/chmod 644 '\(rootPlistPath)'",
-            "/bin/launchctl bootout system/com.clashpow.engine 2>/dev/null || true",
-            "/bin/launchctl bootstrap system '\(rootPlistPath)'",
-        ].joined(separator: "; ")
-        let ok = await Self.runAdmin(shell)
-        if ok { isRoot = true }
+        let ok = await XPCManager.shared.installDaemon()
+        if ok {
+            isRoot = true
+            // Stop the user-level engine
+            let uid = getuid()
+            let task = Process()
+            task.executableURL = URL(fileURLWithPath: "/bin/launchctl")
+            task.arguments = ["bootout", "gui/\(uid)/com.clashpow.engine"]
+            try? task.run()
+        }
         return ok
     }
 
     /// Demote back to the user LaunchAgent (removes the root daemon). Admin auth.
     @discardableResult
     func uninstallPrivileged() async -> Bool {
-        let shell = [
-            "/bin/launchctl bootout system/com.clashpow.engine 2>/dev/null || true",
-            "/bin/rm -f '\(rootPlistPath)'",
-            "/bin/rm -f /Library/PrivilegedHelperTools/clashpow-engine",
-            "/usr/bin/killall -9 mihomo clashpow-engine 2>/dev/null || true",
-            "if /usr/sbin/lsof -t -iTCP:7890 -sTCP:LISTEN >/dev/null; then /bin/kill -9 $(/usr/sbin/lsof -t -iTCP:7890 -sTCP:LISTEN) 2>/dev/null || true; fi",
-            "if /usr/sbin/lsof -t -iTCP:9092 -sTCP:LISTEN >/dev/null; then /bin/kill -9 $(/usr/sbin/lsof -t -iTCP:9092 -sTCP:LISTEN) 2>/dev/null || true; fi",
-            "/sbin/route -n delete -net 1.0.0.0/8 2>/dev/null || true",
-            "/sbin/route -n delete -net 198.18.0.0/15 2>/dev/null || true",
-        ].joined(separator: "; ")
-        let ok = await Self.runAdmin(shell)
+        let ok = await XPCManager.shared.uninstallDaemon()
         if ok {
             isRoot = false
             // bring the user LaunchAgent back
@@ -298,10 +252,21 @@ import SwiftUI
     /// Since the engine runs as root, this does not pop up any authorization dialogs.
     @discardableResult
     func setSystemProxy(enabled: Bool, port: Int) async -> Bool {
-        let params = #"{"enabled":\#(enabled),"port":\#(port)}"#
-        guard let data = await call("set_system_proxy", params: params) else { return false }
-        struct Resp: Decodable { struct R: Decodable { let ok: Bool? }; let result: R? }
-        return (try? JSONDecoder().decode(Resp.self, from: data))?.result?.ok == true
+        if isRoot {
+            guard let helper = XPCManager.shared.helper() else { return false }
+            return await withCheckedContinuation { cont in
+                helper.setSystemProxy(enabled: enabled, port: port) { ok in
+                    cont.resume(returning: ok)
+                }
+            }
+        } else {
+            // Not root, use normal JSON-RPC for now (which will fail if the engine doesn't have root,
+            // but the engine uses networksetup internally).
+            let params = #"{"enabled":\#(enabled),"port":\#(port)}"#
+            guard let data = await call("set_system_proxy", params: params) else { return false }
+            struct Resp: Decodable { struct R: Decodable { let ok: Bool? }; let result: R? }
+            return (try? JSONDecoder().decode(Resp.self, from: data))?.result?.ok == true
+        }
     }
 
     /// Apply a full YAML config. The engine validates + applies with rollback;
