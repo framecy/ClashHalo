@@ -2,7 +2,7 @@ import Foundation
 import Combine
 import SwiftUI
 
-final class TrafficHistory: ObservableObject {
+@MainActor final class TrafficHistory: ObservableObject {
     struct Day: Codable {
         var direct = 0.0, proxy = 0.0, reject = 0.0
         var hourlyDown = [Double](repeating: 0, count: 24)

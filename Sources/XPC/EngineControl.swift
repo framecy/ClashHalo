@@ -2,7 +2,7 @@ import Foundation
 import Combine
 import SwiftUI
 
-final class EngineControl: ObservableObject {
+@MainActor final class EngineControl: ObservableObject {
     static let shared = EngineControl()
     let socketPath = "/tmp/clashpow-engine.sock"
 
