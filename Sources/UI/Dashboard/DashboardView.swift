@@ -2,6 +2,7 @@
 // memory, distribution, policy-group ranking, hourly timeline, top rules/hosts/
 // nodes, client source IPs, target classification. All from live mihomo data.
 import SwiftUI
+import Charts
 
 struct DashboardPage: View {
     @EnvironmentObject var M: AppModel
@@ -9,38 +10,48 @@ struct DashboardPage: View {
     @State private var range: Range = .today
 
     private var rangePicker: some View {
-        Picker("", selection: $range) {
-            Text("今日").tag(Range.today); Text("本月").tag(Range.month)
-        }.pickerStyle(.segmented).frame(width: 130).labelsHidden()
+        HStack {
+            Picker("", selection: $range) {
+                Text("今日").tag(Range.today); Text("本月").tag(Range.month)
+            }.pickerStyle(.segmented).labelsHidden()
+        }
+        .frame(height: 32)
     }
 
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 0) {
                 PageHead(title: "仪表盘", desc: "流量趋势 · 实时统计 · 策略组排行 · 访问目标分析") {
-                    rangePicker
+                    VStack(alignment: .trailing, spacing: 8) {
+                        HStack(spacing: 8) {
+                            HeadSwitch(title: "系统", icon: "globe", isOn: Binding(get: { M.systemProxyOn }, set: { _ in M.toggleSystemProxy() }), accentColor: .blue)
+                            HeadSwitch(title: "TUN", icon: "shield.lefthalf.filled", isOn: Binding(get: { M.tunOn }, set: { _ in M.toggleTUN() }), accentColor: M.accent)
+                            HeadSwitch(title: "核心", icon: "power", isOn: Binding(get: { M.reachable }, set: { _ in M.toggleEngine() }), accentColor: .green)
+                        }
+                        rangePicker
+                    }
                 }
 
                 VStack(alignment: .leading, spacing: 16) {
                     Text(greeting()).font(.system(size: 20, weight: .bold)).padding(.horizontal, 4)
 
-                    // Row 1: Top stats bar (4 columns, height 48)
+                    // Row 1: Top stats bar (4 columns, height 64)
                     HStack(spacing: 16) {
                         BarStat("总下载", fmtBytes(Double(M.downloadTotal)), "arrow.down.circle.fill", M.accent)
-                            .frame(height: 48)
+                            .frame(height: 64)
                             .frame(maxWidth: .infinity)
                         BarStat("总上传", fmtBytes(Double(M.uploadTotal)), "arrow.up.circle.fill", .red)
-                            .frame(height: 48)
+                            .frame(height: 64)
                             .frame(maxWidth: .infinity)
                         BarStat("连接数", "\(M.conns.count)", "link.circle.fill", .cyan)
-                            .frame(height: 48)
+                            .frame(height: 64)
                             .frame(maxWidth: .infinity)
                         BarStat("访问目标", "\(uniqueHosts)", "scope", .orange)
-                            .frame(height: 48)
+                            .frame(height: 64)
                             .frame(maxWidth: .infinity)
                     }
 
-                    // Row 2: Chart + memory column (height 176, 3:1 width ratio)
+                    // Row 2: Chart + memory column (height 224 = 64*3+16*2, 3:1 width ratio)
                     Grid(horizontalSpacing: 16) {
                         GridRow {
                             Color.clear.frame(height: 0).frame(maxWidth: .infinity)
@@ -60,21 +71,21 @@ struct DashboardPage: View {
                                             .font(.system(size: 12, weight: .bold, design: .monospaced))
                                         Spacer()
                                     }.padding(.bottom, 6)
-                                    MetalTrafficView(accent: NSColor(M.accent)).frame(height: 96)
+                                    MetalTrafficView(accent: NSColor(M.accent)).frame(height: 144)
                                 }
                             }
-                            .frame(height: 176)
+                            .frame(height: 224)
                             .gridCellColumns(3)
 
                             VStack(spacing: 16) {
                                 MiniStat("活跃连接", "\(M.conns.count)", sub: "已关闭 \(M.closedConns)", icon: "link", color: .cyan)
-                                    .frame(height: 48)
+                                    .frame(height: 64)
                                 MiniStat("核心内存", fmtBytes(Double(M.memory)), sub: nil, icon: "memorychip", color: .purple)
-                                    .frame(height: 48)
+                                    .frame(height: 64)
                                 MiniStat("应用内存", String(format: "%.0f MB", M.appMemoryMB), sub: nil, icon: "app.dashed", color: .orange)
-                                    .frame(height: 48)
+                                    .frame(height: 64)
                             }
-                            .frame(height: 176)
+                            .frame(height: 224)
                             .gridCellColumns(1)
                         }
                     }
@@ -162,36 +173,68 @@ struct DashboardPage: View {
     private var topRules: [Rank] { M.dash.rules }
     private var targetClass: [Rank] { M.dash.targets }
 
+    struct TrafficSlice: Identifiable {
+        let name: String
+        let value: Double
+        let color: Color
+        var id: String { name }
+    }
+
     private var distribution: some View {
         let day = range == .today ? M.history.today : M.history.month
         let direct = day.direct
         let proxy  = day.proxy
         let reject = day.reject
         let total = max(direct + proxy + reject, 1)
-        return VStack(alignment: .leading, spacing: 10) {
-            Text(fmtBytes(direct + proxy + reject)).font(.system(size: 26, weight: .bold))
-            GeometryReader { g in
-                HStack(spacing: 2) {
-                    Rectangle().fill(Color.cyan).frame(width: g.size.width * direct/total)
-                    Rectangle().fill(M.accent).frame(width: g.size.width * proxy/total)
-                    Rectangle().fill(Color.red).frame(width: max(2, g.size.width * reject/total))
-                }.clipShape(Capsule())
-            }.frame(height: 10)
-            HStack(spacing: 14) {
-                legendDot("直连", fmtBytes(direct), .cyan)
-                legendDot("代理", fmtBytes(proxy), M.accent)
-                legendDot("拦截", fmtBytes(reject), .red)
+
+        let data: [TrafficSlice] = [
+            TrafficSlice(name: "直连", value: Double(direct), color: .cyan),
+            TrafficSlice(name: "代理", value: Double(proxy), color: M.accent),
+            TrafficSlice(name: "拦截", value: Double(reject), color: .red)
+        ]
+
+        return HStack(spacing: 32) {
+            // Left side: Donut Chart
+            ZStack {
+                Chart(data) { slice in
+                    SectorMark(
+                        angle: .value("Traffic", slice.value),
+                        innerRadius: .ratio(0.72),
+                        angularInset: 1.5
+                    )
+                    .foregroundStyle(slice.color)
+                    .cornerRadius(4)
+                }
+                .frame(width: 110, height: 110)
+
+                // Center Text
+                VStack(spacing: 2) {
+                    Text("总计").font(.system(size: 11)).foregroundColor(.secondary)
+                    Text(fmtBytes(direct + proxy + reject))
+                        .font(.system(size: 16, weight: .bold, design: .rounded))
+                }
+            }
+            .frame(width: 120, height: 120) // slight buffer
+
+            // Right side: Legends
+            VStack(spacing: 14) {
+                legendRow("直连", fmtBytes(direct), .cyan)
+                legendRow("代理", fmtBytes(proxy), M.accent)
+                legendRow("拦截", fmtBytes(reject), .red)
             }
         }
+        .padding(.vertical, 8)
+        .padding(.horizontal, 8)
     }
-    private func legendDot(_ l: String, _ v: String, _ c: Color) -> some View {
-        HStack(spacing: 5) {
-            Circle().fill(c).frame(width: 7, height: 7)
-            VStack(alignment: .leading, spacing: 0) {
-                Text(v).font(.system(size: 12, design: .monospaced))
-                Text(l).font(.system(size: 12)).foregroundColor(.secondary)
-            }
+
+    private func legendRow(_ l: String, _ v: String, _ c: Color) -> some View {
+        HStack(spacing: 12) {
+            Circle().fill(c).frame(width: 8, height: 8)
+            Text(l).font(.system(size: 13, weight: .medium)).foregroundColor(.secondary).fixedSize()
+            Spacer()
+            Text(v).font(.system(size: 14, weight: .bold, design: .monospaced)).fixedSize()
         }
+        .frame(maxWidth: .infinity)
     }
 
     private func greeting() -> String {
@@ -277,16 +320,16 @@ struct BarStat: View {
     let label, value, icon: String; let color: Color
     init(_ l: String, _ v: String, _ i: String, _ c: Color) { label = l; value = v; icon = i; color = c }
     var body: some View {
-        HStack(spacing: 8) {
-            Image(systemName: icon).font(.system(size: 16)).foregroundColor(color)
-            VStack(alignment: .leading, spacing: 0) {
+        HStack(spacing: 12) {
+            Image(systemName: icon).font(.system(size: 20)).foregroundColor(color)
+            VStack(alignment: .leading, spacing: 2) {
                 Text(label).font(.system(size: 12)).foregroundColor(.secondary)
-                Text(value).font(.system(size: 16, weight: .bold, design: .rounded))
+                Text(value).font(.system(size: 18, weight: .bold, design: .rounded))
             }
             Spacer()
         }
-        .padding(.horizontal, 16).padding(.vertical, 6)
-        .frame(height: 48)
+        .padding(.horizontal, 16)
+        .frame(height: 64)
         .frame(maxWidth: .infinity)
         .background(RoundedRectangle(cornerRadius: 8).fill(Color(red: 0x2A/255.0, green: 0x2A/255.0, blue: 0x2A/255.0)))
         .overlay(RoundedRectangle(cornerRadius: 8).stroke(Color(red: 0x2C/255.0, green: 0x2C/255.0, blue: 0x2C/255.0)))
@@ -299,13 +342,14 @@ struct MiniStat: View {
         self.title = title; self.value = value; self.sub = sub; self.icon = icon; self.color = color
     }
     var body: some View {
-        VStack(alignment: .leading, spacing: 1) {
-            HStack(spacing: 4) {
+        VStack(alignment: .leading, spacing: 0) {
+            HStack(spacing: 6) {
                 Image(systemName: icon).font(.system(size: 12)).foregroundColor(color)
                 Text(title).font(.system(size: 12, weight: .medium)).foregroundColor(.secondary)
             }
+            Spacer(minLength: 0)
             HStack(alignment: .firstTextBaseline) {
-                Text(value).font(.system(size: 16, weight: .bold, design: .rounded))
+                Text(value).font(.system(size: 18, weight: .bold, design: .rounded))
                 if let sub {
                     Spacer()
                     Text(sub).font(.system(size: 12)).foregroundColor(.secondary)
@@ -313,8 +357,8 @@ struct MiniStat: View {
             }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
-        .padding(.horizontal, 16).padding(.vertical, 6)
-        .frame(height: 48)
+        .padding(.horizontal, 16).padding(.vertical, 12)
+        .frame(height: 64)
         .background(RoundedRectangle(cornerRadius: 8).fill(Color(red: 0x2A/255.0, green: 0x2A/255.0, blue: 0x2A/255.0)))
         .overlay(RoundedRectangle(cornerRadius: 8).stroke(Color(red: 0x2C/255.0, green: 0x2C/255.0, blue: 0x2C/255.0)))
     }
@@ -335,5 +379,32 @@ struct HourlyBars: View {
             }
             .frame(maxHeight: .infinity, alignment: .bottom)
         }
+    }
+}
+
+struct HeadSwitch: View {
+    let title: String
+    let icon: String
+    @Binding var isOn: Bool
+    let accentColor: Color
+
+    var body: some View {
+        HStack(spacing: 6) {
+            Image(systemName: icon)
+                .font(.system(size: 12))
+                .foregroundColor(isOn ? accentColor : .secondary)
+                .frame(width: 14)
+            
+            Text(title).font(.system(size: 12, weight: .medium)).lineLimit(1)
+            
+            Toggle("", isOn: $isOn)
+                .toggleStyle(.switch)
+                .controlSize(.mini)
+                .labelsHidden()
+        }
+        .padding(.horizontal, 8)
+        .frame(height: 32)
+        .background(RoundedRectangle(cornerRadius: 8).fill(Color(red: 0x2A/255.0, green: 0x2A/255.0, blue: 0x2A/255.0)))
+        .overlay(RoundedRectangle(cornerRadius: 8).stroke(Color.primary.opacity(0.1), lineWidth: 1.0))
     }
 }

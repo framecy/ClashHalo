@@ -704,7 +704,9 @@ struct SdwanTopologyView: View {
             let bIsDefault = b == "default" || b.contains("0.0.0.0")
             if aIsDefault != bIsDefault { return aIsDefault }
             return a.localizedStandardCompare(b) == .orderedAscending
-        }.prefix(4))
+        }.prefix(8))
+
+        let calculatedHeight = max(200, CGFloat(max(activeIfaces.count, dests.count)) * 56 + 40)
 
         return GeometryReader { geo in
             let w = geo.size.width
@@ -714,12 +716,12 @@ struct SdwanTopologyView: View {
 
             let ifaceCount = max(1, activeIfaces.count)
             let ifacePoints = (0..<activeIfaces.count).map { idx -> (String, CGPoint) in
-                let y = h / 2 + CGFloat(idx - (ifaceCount - 1) / 2) * 46
+                let y = h / 2 + CGFloat(idx - (ifaceCount - 1) / 2) * 54
                 return (activeIfaces[idx].id, CGPoint(x: w * 0.44, y: y))
             }
 
             let destPoints = (0..<dests.count).map { idx -> (String, CGPoint) in
-                let y = h / 2 + CGFloat(idx - (dests.count - 1) / 2) * 42
+                let y = h / 2 + CGFloat(idx - (dests.count - 1) / 2) * 50
                 return (dests[idx], CGPoint(x: w * 0.82, y: y))
             }
 
@@ -730,7 +732,7 @@ struct SdwanTopologyView: View {
                     LinkLine(start: hostPt, end: pt, color: color)
                 }
 
-                // Draw lines to destinations, only if they are visible in our top 4 limited dests.
+                // Draw lines to destinations, only if they are visible in our top 8 limited dests.
                 ForEach(routes.indices, id: \.self) { idx in
                     let r = routes[idx]
                     if dests.contains(r.dest),
@@ -748,47 +750,54 @@ struct SdwanTopologyView: View {
                 }
 
                 // Nodes
-                VStack(spacing: 3) {
-                    Image(systemName: "laptopcomputer").font(.system(size: 13))
+                VStack(spacing: 4) {
+                    Image(systemName: "laptopcomputer").font(.system(size: 16))
                     Text("本机 (Host)").font(.system(size: 12, weight: .bold))
                 }
-                .frame(width: 66, height: 38)
-                .background(RoundedRectangle(cornerRadius: 6).fill(Color(red: 0x2A/255.0, green: 0x2A/255.0, blue: 0x2A/255.0)))
-                .overlay(RoundedRectangle(cornerRadius: 6).stroke(M.accent, lineWidth: 1.2))
+                .frame(width: 80, height: 48)
+                .background(RoundedRectangle(cornerRadius: 8).fill(Color(red: 0x2A/255.0, green: 0x2A/255.0, blue: 0x2A/255.0)))
+                .overlay(RoundedRectangle(cornerRadius: 8).stroke(M.accent, lineWidth: 1.2))
                 .position(hostPt)
 
                 ForEach(0..<activeIfaces.count, id: \.self) { idx in
                     let iface = activeIfaces[idx]
                     let pt = ifacePoints[idx].1
                     let color = lineColor(for: iface.kind)
-                    HStack(spacing: 4) {
-                        Image(systemName: iconName(for: iface.kind)).foregroundColor(color).font(.system(size: 12))
-                        VStack(alignment: .leading, spacing: 0) {
-                            Text(iface.name).font(.system(size: 12, design: .monospaced)).fontWeight(.bold)
-                            Text(iface.primaryIP).font(.system(size: 12, design: .monospaced)).foregroundColor(.secondary)
+                    HStack(spacing: 8) {
+                        Image(systemName: iconName(for: iface.kind))
+                            .foregroundColor(color)
+                            .font(.system(size: 14))
+                            .frame(width: 16)
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text(iface.name).font(.system(size: 12, design: .monospaced)).fontWeight(.bold).lineLimit(1)
+                            Text(iface.primaryIP).font(.system(size: 12, design: .monospaced)).foregroundColor(.secondary).lineLimit(1)
                         }
+                        Spacer(minLength: 0)
                     }
-                    .padding(.horizontal, 6).padding(.vertical, 3)
-                    .background(RoundedRectangle(cornerRadius: 6).fill(Color(red: 0x2A/255.0, green: 0x2A/255.0, blue: 0x2A/255.0)))
-                    .overlay(RoundedRectangle(cornerRadius: 6).stroke(color.opacity(0.7), lineWidth: 1.0))
+                    .padding(.horizontal, 10).padding(.vertical, 6)
+                    .frame(width: 144, alignment: .leading)
+                    .background(RoundedRectangle(cornerRadius: 8).fill(Color(red: 0x2A/255.0, green: 0x2A/255.0, blue: 0x2A/255.0)))
+                    .overlay(RoundedRectangle(cornerRadius: 8).stroke(color.opacity(0.7), lineWidth: 1.0))
                     .position(pt)
                 }
 
                 ForEach(0..<dests.count, id: \.self) { idx in
                     let dest = dests[idx]
                     let pt = destPoints[idx].1
-                    HStack(spacing: 3) {
+                    HStack(spacing: 6) {
                         Image(systemName: "arrow.up.right.circle.fill").foregroundColor(.secondary).font(.system(size: 12))
                         Text(dest).font(.system(size: 12, design: .monospaced)).lineLimit(1)
+                        Spacer(minLength: 0)
                     }
-                    .padding(.horizontal, 6).padding(.vertical, 4)
-                    .background(RoundedRectangle(cornerRadius: 6).fill(Color(red: 0x2A/255.0, green: 0x2A/255.0, blue: 0x2A/255.0)))
-                    .overlay(RoundedRectangle(cornerRadius: 6).stroke(Color.primary.opacity(0.1), lineWidth: 0.8))
+                    .padding(.horizontal, 10).padding(.vertical, 6)
+                    .frame(width: 110, alignment: .leading)
+                    .background(RoundedRectangle(cornerRadius: 8).fill(Color(red: 0x2A/255.0, green: 0x2A/255.0, blue: 0x2A/255.0)))
+                    .overlay(RoundedRectangle(cornerRadius: 8).stroke(Color.primary.opacity(0.12), lineWidth: 1.0))
                     .position(pt)
                 }
             }
         }
-        .frame(height: 200)
+        .frame(height: calculatedHeight)
         .padding(10)
         .background(VisualEffectView(material: .underWindowBackground, blendingMode: .withinWindow).cornerRadius(12))
         .overlay(RoundedRectangle(cornerRadius: 12).stroke(Color.primary.opacity(0.06)))
@@ -838,16 +847,38 @@ struct SdwanPage: View {
                     HStack(spacing: 12) {
                         Image(systemName: "shield.lefthalf.filled").font(.title).foregroundColor(hasDefaultViaTun ? .orange : M.accent)
                         VStack(alignment: .leading, spacing: 3) {
-                            Text(hasDefaultViaTun ? "检测到 TUN 默认路由" : "智能路由隔离已生效").font(.system(size: 14, weight: .bold))
-                            Text(hasDefaultViaTun
-                                 ? "存在经 utun 的默认路由，可能与 SD-WAN 抢占。建议仅注入精确网段。"
-                                 : "代理仅注入精确网段，未抢占默认路由；\(sdwanCount) 个 SD-WAN 接口路由保持完整。")
-                                .font(.system(size: 12)).foregroundColor(.secondary)
+                            Text(hasDefaultViaTun ? "检测到 TUN 默认路由冲突" : "智能路由隔离已生效").font(.system(size: 14, weight: .bold))
+                            if hasDefaultViaTun, let conflictIface = routes.first(where: { $0.dest == "default" || $0.dest.contains("0.0.0.0/0") })?.iface {
+                                Text("接口 \(conflictIface) 接管了全局默认路由，与 SD-WAN 原生路由冲突。建议关闭自动路由。")
+                                    .font(.system(size: 12)).foregroundColor(.secondary)
+                            } else {
+                                Text("代理仅注入精确网段，未抢占默认路由；\(sdwanCount) 个 SD-WAN 接口路由保持完整。")
+                                    .font(.system(size: 12)).foregroundColor(.secondary)
+                            }
                         }
                         Spacer()
-                        VStack { Text("\(hasDefaultViaTun ? 1 : 0)").font(.system(size: 24, weight: .bold, design: .monospaced))
-                                 .foregroundColor(hasDefaultViaTun ? .orange : M.accent)
-                            Text("路由冲突").font(.system(size: 12)).foregroundColor(.secondary) }
+                        if hasDefaultViaTun {
+                            Button("一键修复") {
+                                Task {
+                                    await M.patch([
+                                        "tun": [
+                                            "auto-route": false,
+                                            "auto-detect-interface": false
+                                        ]
+                                    ])
+                                    try? await Task.sleep(nanoseconds: 1_000_000_000)
+                                    rescan()
+                                }
+                            }
+                            .buttonStyle(.borderedProminent)
+                            .tint(.orange)
+                        } else {
+                            VStack {
+                                Text("0").font(.system(size: 24, weight: .bold, design: .monospaced))
+                                    .foregroundColor(M.accent)
+                                Text("路由冲突").font(.system(size: 12)).foregroundColor(.secondary)
+                            }
+                        }
                     }
                     .padding(16)
                     .background(RoundedRectangle(cornerRadius: 12).fill(Color(red: 0x2A/255.0, green: 0x2A/255.0, blue: 0x2A/255.0)))
@@ -858,22 +889,31 @@ struct SdwanPage: View {
 
                     // interfaces
                     Card(title: "网络接口拓扑 · \(ifaces.count)", icon: "network") {
-                        VStack(spacing: 8) {
-                            ForEach(ifaces) { i in ifaceRow(i) }
-                            if ifaces.isEmpty { Text("正在扫描接口…").font(.system(size: 12)).foregroundColor(.secondary) }
+                        VStack(spacing: 4) {
+                            if ifaces.isEmpty { Text("正在扫描接口…").font(.system(size: 12)).foregroundColor(.secondary).padding() }
+                            ForEach(ifaces.indices, id: \.self) { idx in
+                                ifaceRow(ifaces[idx]).padding(.vertical, 4)
+                                if idx < ifaces.count - 1 {
+                                    Divider()
+                                }
+                            }
                         }
                     }
 
                     // utun routes
                     Card(title: "UTUN 路由表 · \(routes.count)", icon: "list.bullet.indent") {
                         VStack(spacing: 4) {
-                            if routes.isEmpty { Text("无 utun 路由").font(.system(size: 12)).foregroundColor(.secondary) }
+                            if routes.isEmpty { Text("无 utun 路由").font(.system(size: 12)).foregroundColor(.secondary).padding() }
                             ForEach(routes.indices, id: \.self) { idx in
                                 HStack {
                                     Text(routes[idx].dest).font(.system(size: 12, design: .monospaced))
                                     Spacer()
                                     Image(systemName: "arrow.right").font(.system(size: 12)).foregroundColor(.secondary)
                                     Text(routes[idx].iface).font(.system(size: 12, design: .monospaced)).foregroundColor(M.accent)
+                                }
+                                .padding(.vertical, 4)
+                                if idx < routes.count - 1 {
+                                    Divider()
                                 }
                             }
                         }

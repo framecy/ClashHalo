@@ -495,8 +495,8 @@ final class EngineControl: ObservableObject {
         let uid = getuid()
         let shell = [
             "/usr/bin/killall -9 mihomo clashpow-engine 2>/dev/null || true",
-            "if /usr/sbin/lsof -t -i :7890 >/dev/null; then /bin/kill -9 $(/usr/sbin/lsof -t -i :7890) 2>/dev/null || true; fi",
-            "if /usr/sbin/lsof -t -i :9092 >/dev/null; then /bin/kill -9 $(/usr/sbin/lsof -t -i :9092) 2>/dev/null || true; fi",
+            "if /usr/sbin/lsof -t -iTCP:7890 -sTCP:LISTEN >/dev/null; then /bin/kill -9 $(/usr/sbin/lsof -t -iTCP:7890 -sTCP:LISTEN) 2>/dev/null || true; fi",
+            "if /usr/sbin/lsof -t -iTCP:9092 -sTCP:LISTEN >/dev/null; then /bin/kill -9 $(/usr/sbin/lsof -t -iTCP:9092 -sTCP:LISTEN) 2>/dev/null || true; fi",
             "/sbin/route -n delete -net 1.0.0.0/8 2>/dev/null || true",
             "/sbin/route -n delete -net 198.18.0.0/15 2>/dev/null || true",
             "/bin/launchctl bootout gui/\(uid)/com.clashpow.engine 2>/dev/null || true",
@@ -524,8 +524,8 @@ final class EngineControl: ObservableObject {
             "/bin/rm -f '\(rootPlistPath)'",
             "/bin/rm -f /Library/PrivilegedHelperTools/clashpow-engine",
             "/usr/bin/killall -9 mihomo clashpow-engine 2>/dev/null || true",
-            "if /usr/sbin/lsof -t -i :7890 >/dev/null; then /bin/kill -9 $(/usr/sbin/lsof -t -i :7890) 2>/dev/null || true; fi",
-            "if /usr/sbin/lsof -t -i :9092 >/dev/null; then /bin/kill -9 $(/usr/sbin/lsof -t -i :9092) 2>/dev/null || true; fi",
+            "if /usr/sbin/lsof -t -iTCP:7890 -sTCP:LISTEN >/dev/null; then /bin/kill -9 $(/usr/sbin/lsof -t -iTCP:7890 -sTCP:LISTEN) 2>/dev/null || true; fi",
+            "if /usr/sbin/lsof -t -iTCP:9092 -sTCP:LISTEN >/dev/null; then /bin/kill -9 $(/usr/sbin/lsof -t -iTCP:9092 -sTCP:LISTEN) 2>/dev/null || true; fi",
             "/sbin/route -n delete -net 1.0.0.0/8 2>/dev/null || true",
             "/sbin/route -n delete -net 198.18.0.0/15 2>/dev/null || true",
         ].joined(separator: "; ")
