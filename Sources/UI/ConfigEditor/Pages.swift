@@ -72,11 +72,11 @@ struct ProxiesPage: View {
         return Card {
             VStack(alignment: .leading, spacing: 6) {
                 HStack(spacing: 6) {
-                    Image(systemName: groupIcon(g.type)).font(.system(size: 11)).foregroundColor(c).frame(width: 14)
+                    Image(systemName: groupIcon(g.type)).font(.system(size: 12)).foregroundColor(c).frame(width: 14)
                     Text(g.name).font(.system(size: 12, weight: .semibold)).lineLimit(1)
                     Spacer()
                     Button { M.testGroup(g) } label: { Image(systemName: "bolt") }
-                        .buttonStyle(.borderless).controlSize(.small).font(.system(size: 9))
+                        .buttonStyle(.borderless).controlSize(.small).font(.system(size: 12))
                 }
 
                 HStack(spacing: 4) {
@@ -97,9 +97,9 @@ struct ProxiesPage: View {
                         }
                     } label: {
                         HStack(spacing: 4) {
-                            Text(cur).font(.system(size: 11, weight: .medium)).foregroundColor(c).lineLimit(1)
+                            Text(cur).font(.system(size: 12, weight: .medium)).foregroundColor(c).lineLimit(1)
                             if curDelay > 0 {
-                                Text("\(curDelay)ms").font(.system(size: 8, design: .monospaced)).foregroundColor(delayColor(curDelay))
+                                Text("\(curDelay)ms").font(.system(size: 12, design: .monospaced)).foregroundColor(delayColor(curDelay))
                             }
                             if busy {
                                 ProgressView().controlSize(.mini).scaleEffect(0.5)
@@ -109,7 +109,7 @@ struct ProxiesPage: View {
                     .menuStyle(.borderlessButton)
                     .controlSize(.small)
                     Spacer()
-                    Text("\(g.all.count) 节点").font(.system(size: 8)).foregroundColor(.secondary)
+                    Text("\(g.all.count) 节点").font(.system(size: 12)).foregroundColor(.secondary)
                 }
             }
             .padding(.vertical, 2)
@@ -134,13 +134,13 @@ struct ProxiesPage: View {
                         VStack(alignment: .leading, spacing: 2) {
                             HStack(spacing: 6) {
                                 Text(g.name).font(.callout).fontWeight(.semibold)
-                                Text(g.type).font(.system(size: 9)).foregroundColor(.secondary)
+                                Text(g.type).font(.system(size: 12)).foregroundColor(.secondary)
                                     .padding(.horizontal, 5).padding(.vertical, 1)
                                     .background(Capsule().fill(Color.primary.opacity(0.08)))
                             }
                             HStack(spacing: 5) {
                                 Text(cur).font(.caption).foregroundColor(M.accent).lineLimit(1)
-                                if curDelay > 0 { Text("\(curDelay)ms").font(.system(size: 9, design: .monospaced)).foregroundColor(delayColor(curDelay)) }
+                                if curDelay > 0 { Text("\(curDelay)ms").font(.system(size: 12, design: .monospaced)).foregroundColor(delayColor(curDelay)) }
                             }
                         }
                         Spacer()
@@ -181,15 +181,15 @@ struct ProxiesPage: View {
                     if on { Image(systemName: "checkmark.circle.fill").font(.caption2).foregroundColor(M.accent) }
                 }
                 HStack(spacing: 6) {
-                    Text(isGroup ? "组" : (node?.type ?? "—")).font(.system(size: 9)).foregroundColor(.secondary)
+                    Text(isGroup ? "组" : (node?.type ?? "—")).font(.system(size: 12)).foregroundColor(.secondary)
                     Spacer(minLength: 2)
                     if busy {
                         ProgressView().controlSize(.mini).scaleEffect(0.55)
                     } else if !isGroup {
                         Circle().fill(delayColor(delay)).frame(width: 5, height: 5)
-                        Text(fmtDelay(delay)).font(.system(size: 10, design: .monospaced)).foregroundColor(delayColor(delay))
+                        Text(fmtDelay(delay)).font(.system(size: 12, design: .monospaced)).foregroundColor(delayColor(delay))
                     } else {
-                        Image(systemName: "chevron.right.circle").font(.system(size: 9)).foregroundColor(.secondary)
+                        Image(systemName: "chevron.right.circle").font(.system(size: 12)).foregroundColor(.secondary)
                     }
                 }
             }
@@ -236,19 +236,19 @@ struct ConnectionsPage: View {
                     TableColumn("目标") { c in
                         VStack(alignment: .leading, spacing: 1) {
                             Text(c.host).font(.system(size: 12, weight: .medium)).lineLimit(1)
-                            Text("\(c.dstIP):\(c.port)").font(.system(size: 10, design: .monospaced)).foregroundColor(.secondary)
+                            Text("\(c.dstIP):\(c.port)").font(.system(size: 12, design: .monospaced)).foregroundColor(.secondary)
                         }
                     }.width(min: 180, ideal: 240)
-                    TableColumn("进程") { c in Text(c.process).font(.system(size: 11)).foregroundColor(.secondary).lineLimit(1) }.width(min: 80, ideal: 120)
-                    TableColumn("规则") { c in Text(c.rule).font(.system(size: 10, design: .monospaced)).foregroundColor(.secondary).lineLimit(1) }.width(min: 100, ideal: 150)
+                    TableColumn("进程") { c in Text(c.process).font(.system(size: 12)).foregroundColor(.secondary).lineLimit(1) }.width(min: 80, ideal: 120)
+                    TableColumn("规则") { c in Text(c.rule).font(.system(size: 12, design: .monospaced)).foregroundColor(.secondary).lineLimit(1) }.width(min: 100, ideal: 150)
                     TableColumn("链路") { c in
                         HStack(spacing: 4) {
-                            Text(c.chain).font(.system(size: 11, weight: .semibold)).foregroundColor(c.category == "proxy" ? M.accent : .secondary).lineLimit(1)
-                            Text(c.node).font(.system(size: 10, design: .monospaced)).foregroundColor(.secondary)
+                            Text(c.chain).font(.system(size: 12, weight: .semibold)).foregroundColor(c.category == "proxy" ? M.accent : .secondary).lineLimit(1)
+                            Text(c.node).font(.system(size: 12, design: .monospaced)).foregroundColor(.secondary)
                         }
                     }.width(min: 120, ideal: 180)
-                    TableColumn("↓") { c in Text(fmtRate(Double(c.downRate))).font(.system(size: 10, design: .monospaced)) }.width(70)
-                    TableColumn("↑") { c in Text(fmtRate(Double(c.upRate))).font(.system(size: 10, design: .monospaced)).foregroundColor(.secondary) }.width(70)
+                    TableColumn("↓") { c in Text(fmtRate(Double(c.downRate))).font(.system(size: 12, design: .monospaced)) }.width(70)
+                    TableColumn("↑") { c in Text(fmtRate(Double(c.upRate))).font(.system(size: 12, design: .monospaced)).foregroundColor(.secondary) }.width(70)
                 }
             }
         }
@@ -330,7 +330,7 @@ struct RulesPage: View {
         let proxy = parts.count > 2 ? parts[2] : (parts.count > 1 && type == "MATCH" ? parts[1] : "")
         return Group {
             HStack(spacing: 10) {
-                Text(type).font(.system(size: 10, weight: .medium))
+                Text(type).font(.system(size: 12, weight: .medium))
                     .padding(.horizontal, 6).padding(.vertical, 2)
                     .background(Capsule().fill(Color.primary.opacity(0.08)))
                     .frame(width: 140, alignment: .leading)
@@ -413,7 +413,7 @@ struct LogsPage: View {
                 Spacer()
                 HStack(spacing: 6) {
                     Circle().fill(paused ? Color.secondary : M.accent).frame(width: 6, height: 6)
-                    Text("\(rows.count) 行").font(.system(size: 11, design: .monospaced)).foregroundColor(.secondary)
+                    Text("\(rows.count) 行").font(.system(size: 12, design: .monospaced)).foregroundColor(.secondary)
                 }
             }
             .padding(.horizontal, 14).padding(.vertical, 10)
@@ -424,10 +424,10 @@ struct LogsPage: View {
                     LazyVStack(alignment: .leading, spacing: 2) {
                         ForEach(rows) { l in
                             HStack(alignment: .top, spacing: 8) {
-                                Text(l.time).font(.system(size: 10, design: .monospaced)).foregroundColor(.secondary)
-                                Text(l.level.uppercased()).font(.system(size: 9, weight: .bold))
+                                Text(l.time).font(.system(size: 12, design: .monospaced)).foregroundColor(.secondary)
+                                Text(l.level.uppercased()).font(.system(size: 12, weight: .bold))
                                     .foregroundColor(logColor(l.level)).frame(width: 46, alignment: .leading)
-                                Text(l.text).font(.system(size: 11, design: .monospaced)).textSelection(.enabled)
+                                Text(l.text).font(.system(size: 12, design: .monospaced)).textSelection(.enabled)
                                 Spacer(minLength: 0)
                             }
                             .padding(.horizontal, 14).padding(.vertical, 1)
@@ -579,7 +579,7 @@ struct DnsPage: View {
                             NList("Fake-IP 过滤", "dns", "fake-ip-filter", placeholder: "*.lan")
                         }
                         Text("Fake-IP 为代理域名返回保留段虚拟 IP，避免 DNS 泄漏；上游支持 DoH/DoT/DoQ/UDP。")
-                            .font(.system(size: 10)).foregroundColor(.secondary).padding(.top, 6)
+                            .font(.system(size: 12)).foregroundColor(.secondary).padding(.top, 6)
                     }
 
                     Card(title: "DNS 解析测试", icon: "magnifyingglass") {
@@ -593,7 +593,7 @@ struct DnsPage: View {
                                 }.disabled(query.isEmpty || resolving)
                             }
                             if !result.isEmpty {
-                                Text(result).font(.system(size: 11, design: .monospaced)).foregroundColor(.secondary)
+                                Text(result).font(.system(size: 12, design: .monospaced)).foregroundColor(.secondary)
                                     .textSelection(.enabled).frame(maxWidth: .infinity, alignment: .leading)
                             }
                         }
@@ -604,14 +604,14 @@ struct DnsPage: View {
                     Card(title: "Fake-IP 映射 · \(fakeip.count)（来自活跃连接）") {
                         if fakeip.isEmpty {
                             Text("当前无 Fake-IP 连接（需内核启用 dns.enhanced-mode: fake-ip 且有代理流量）")
-                                .font(.system(size: 11)).foregroundColor(.secondary)
+                                .font(.system(size: 12)).foregroundColor(.secondary)
                         } else {
                             VStack(spacing: 4) {
                                 ForEach(fakeip.prefix(50)) { c in
                                     HStack {
-                                        Text(c.host).font(.system(size: 11)).lineLimit(1)
+                                        Text(c.host).font(.system(size: 12)).lineLimit(1)
                                         Spacer()
-                                        Text(c.dstIP).font(.system(size: 11, design: .monospaced)).foregroundColor(M.accent)
+                                        Text(c.dstIP).font(.system(size: 12, design: .monospaced)).foregroundColor(M.accent)
                                     }
                                 }
                             }
@@ -750,10 +750,10 @@ struct SdwanTopologyView: View {
                 // Nodes
                 VStack(spacing: 3) {
                     Image(systemName: "laptopcomputer").font(.system(size: 13))
-                    Text("本机 (Host)").font(.system(size: 8, weight: .bold))
+                    Text("本机 (Host)").font(.system(size: 12, weight: .bold))
                 }
                 .frame(width: 66, height: 38)
-                .background(RoundedRectangle(cornerRadius: 6).fill(Color(nsColor: .windowBackgroundColor)).opacity(0.85))
+                .background(RoundedRectangle(cornerRadius: 6).fill(Color(red: 0x2A/255.0, green: 0x2A/255.0, blue: 0x2A/255.0)))
                 .overlay(RoundedRectangle(cornerRadius: 6).stroke(M.accent, lineWidth: 1.2))
                 .position(hostPt)
 
@@ -762,14 +762,14 @@ struct SdwanTopologyView: View {
                     let pt = ifacePoints[idx].1
                     let color = lineColor(for: iface.kind)
                     HStack(spacing: 4) {
-                        Image(systemName: iconName(for: iface.kind)).foregroundColor(color).font(.system(size: 10))
+                        Image(systemName: iconName(for: iface.kind)).foregroundColor(color).font(.system(size: 12))
                         VStack(alignment: .leading, spacing: 0) {
-                            Text(iface.name).font(.system(size: 9, design: .monospaced)).fontWeight(.bold)
-                            Text(iface.primaryIP).font(.system(size: 7, design: .monospaced)).foregroundColor(.secondary)
+                            Text(iface.name).font(.system(size: 12, design: .monospaced)).fontWeight(.bold)
+                            Text(iface.primaryIP).font(.system(size: 12, design: .monospaced)).foregroundColor(.secondary)
                         }
                     }
                     .padding(.horizontal, 6).padding(.vertical, 3)
-                    .background(RoundedRectangle(cornerRadius: 6).fill(Color(nsColor: .windowBackgroundColor).opacity(0.85)))
+                    .background(RoundedRectangle(cornerRadius: 6).fill(Color(red: 0x2A/255.0, green: 0x2A/255.0, blue: 0x2A/255.0)))
                     .overlay(RoundedRectangle(cornerRadius: 6).stroke(color.opacity(0.7), lineWidth: 1.0))
                     .position(pt)
                 }
@@ -778,11 +778,11 @@ struct SdwanTopologyView: View {
                     let dest = dests[idx]
                     let pt = destPoints[idx].1
                     HStack(spacing: 3) {
-                        Image(systemName: "arrow.up.right.circle.fill").foregroundColor(.secondary).font(.system(size: 8))
-                        Text(dest).font(.system(size: 8, design: .monospaced)).lineLimit(1)
+                        Image(systemName: "arrow.up.right.circle.fill").foregroundColor(.secondary).font(.system(size: 12))
+                        Text(dest).font(.system(size: 12, design: .monospaced)).lineLimit(1)
                     }
                     .padding(.horizontal, 6).padding(.vertical, 4)
-                    .background(RoundedRectangle(cornerRadius: 6).fill(Color(nsColor: .windowBackgroundColor).opacity(0.85)))
+                    .background(RoundedRectangle(cornerRadius: 6).fill(Color(red: 0x2A/255.0, green: 0x2A/255.0, blue: 0x2A/255.0)))
                     .overlay(RoundedRectangle(cornerRadius: 6).stroke(Color.primary.opacity(0.1), lineWidth: 0.8))
                     .position(pt)
                 }
@@ -842,16 +842,16 @@ struct SdwanPage: View {
                             Text(hasDefaultViaTun
                                  ? "存在经 utun 的默认路由，可能与 SD-WAN 抢占。建议仅注入精确网段。"
                                  : "代理仅注入精确网段，未抢占默认路由；\(sdwanCount) 个 SD-WAN 接口路由保持完整。")
-                                .font(.system(size: 11)).foregroundColor(.secondary)
+                                .font(.system(size: 12)).foregroundColor(.secondary)
                         }
                         Spacer()
                         VStack { Text("\(hasDefaultViaTun ? 1 : 0)").font(.system(size: 24, weight: .bold, design: .monospaced))
                                  .foregroundColor(hasDefaultViaTun ? .orange : M.accent)
-                            Text("路由冲突").font(.system(size: 10)).foregroundColor(.secondary) }
+                            Text("路由冲突").font(.system(size: 12)).foregroundColor(.secondary) }
                     }
-                    .padding(14)
-                    .background(RoundedRectangle(cornerRadius: 12).fill(Color(nsColor: .windowBackgroundColor).opacity(0.5)))
-                    .overlay(RoundedRectangle(cornerRadius: 12).stroke(Color.primary.opacity(0.06)))
+                    .padding(16)
+                    .background(RoundedRectangle(cornerRadius: 12).fill(Color(red: 0x2A/255.0, green: 0x2A/255.0, blue: 0x2A/255.0)))
+                    .overlay(RoundedRectangle(cornerRadius: 12).stroke(Color(red: 0x2C/255.0, green: 0x2C/255.0, blue: 0x2C/255.0)))
 
                     // Topology view of the network routing relation map
                     SdwanTopologyView(ifaces: ifaces, routes: routes)
@@ -860,27 +860,27 @@ struct SdwanPage: View {
                     Card(title: "网络接口拓扑 · \(ifaces.count)", icon: "network") {
                         VStack(spacing: 8) {
                             ForEach(ifaces) { i in ifaceRow(i) }
-                            if ifaces.isEmpty { Text("正在扫描接口…").font(.system(size: 11)).foregroundColor(.secondary) }
+                            if ifaces.isEmpty { Text("正在扫描接口…").font(.system(size: 12)).foregroundColor(.secondary) }
                         }
                     }
 
                     // utun routes
                     Card(title: "UTUN 路由表 · \(routes.count)", icon: "list.bullet.indent") {
                         VStack(spacing: 4) {
-                            if routes.isEmpty { Text("无 utun 路由").font(.system(size: 11)).foregroundColor(.secondary) }
+                            if routes.isEmpty { Text("无 utun 路由").font(.system(size: 12)).foregroundColor(.secondary) }
                             ForEach(routes.indices, id: \.self) { idx in
                                 HStack {
-                                    Text(routes[idx].dest).font(.system(size: 11, design: .monospaced))
+                                    Text(routes[idx].dest).font(.system(size: 12, design: .monospaced))
                                     Spacer()
-                                    Image(systemName: "arrow.right").font(.system(size: 9)).foregroundColor(.secondary)
-                                    Text(routes[idx].iface).font(.system(size: 11, design: .monospaced)).foregroundColor(M.accent)
+                                    Image(systemName: "arrow.right").font(.system(size: 12)).foregroundColor(.secondary)
+                                    Text(routes[idx].iface).font(.system(size: 12, design: .monospaced)).foregroundColor(M.accent)
                                 }
                             }
                         }
                     }
 
                     Label("进程级分流 (SO_USER_COOKIE + PF) 与路由注入需特权 Helper（代码签名后于 v1.0 启用）",
-                          systemImage: "lock.shield").font(.system(size: 10)).foregroundColor(.secondary)
+                          systemImage: "lock.shield").font(.system(size: 12)).foregroundColor(.secondary)
                     Spacer(minLength: 0)
                 }
                 .padding(.horizontal, 20).padding(.bottom, 24)
@@ -982,32 +982,32 @@ struct ConfigPage: View {
                 Text(p.name).font(.system(size: 14, weight: .bold)).lineLimit(1)
                 Spacer()
                 if active {
-                    Text("生效中").font(.system(size: 10, weight: .bold)).foregroundColor(M.accent)
+                    Text("生效中").font(.system(size: 12, weight: .bold)).foregroundColor(M.accent)
                         .padding(.horizontal, 6).padding(.vertical, 2)
                         .background(Capsule().fill(M.accent.opacity(0.12)))
                 } else {
                     Circle().stroke(Color.secondary.opacity(0.3), lineWidth: 1.5).frame(width: 12, height: 12)
                 }
             }
-            Text(p.source == "remote" ? "远程订阅" : "本地文件").font(.system(size: 10)).foregroundColor(.secondary)
+            Text(p.source == "remote" ? "远程订阅" : "本地文件").font(.system(size: 12)).foregroundColor(.secondary)
             
             Divider().opacity(0.4).padding(.vertical, 2)
             
             HStack {
-                Text(relTime(p.updatedAt)).font(.system(size: 10)).foregroundColor(.secondary)
+                Text(relTime(p.updatedAt)).font(.system(size: 12)).foregroundColor(.secondary)
                 Spacer()
                 if active {
                     Image(systemName: "checkmark.circle.fill").foregroundColor(M.accent).font(.system(size: 14))
                 } else {
                     Button("设为活动") { M.activateProfile(p.id) }
-                        .buttonStyle(.plain).font(.system(size: 11, weight: .semibold)).foregroundColor(.accentColor)
+                        .buttonStyle(.plain).font(.system(size: 12, weight: .semibold)).foregroundColor(.accentColor)
                 }
             }
         }
-        .padding(14)
+        .padding(16)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background(RoundedRectangle(cornerRadius: 12).fill(Color(nsColor: .windowBackgroundColor).opacity(0.5)))
-        .overlay(RoundedRectangle(cornerRadius: 12).stroke(active ? M.accent.opacity(0.4) : Color.primary.opacity(0.08), lineWidth: active ? 1.5 : 1))
+        .background(RoundedRectangle(cornerRadius: 12).fill(Color(red: 0x2A/255.0, green: 0x2A/255.0, blue: 0x2A/255.0)))
+        .overlay(RoundedRectangle(cornerRadius: 12).stroke(active ? M.accent.opacity(0.4) : Color(red: 0x2C/255.0, green: 0x2C/255.0, blue: 0x2C/255.0), lineWidth: active ? 1.5 : 1))
         .contentShape(Rectangle())
         .onTapGesture { if !active { M.activateProfile(p.id) } }
         .contextMenu {
@@ -1462,7 +1462,7 @@ struct GeneralPage: View {
                     .font(.system(size: 20))
                     .foregroundColor(active ? M.accent : .secondary)
                 Text(label)
-                    .font(.system(size: 11, weight: active ? .semibold : .regular))
+                    .font(.system(size: 12, weight: active ? .semibold : .regular))
                     .foregroundColor(active ? .primary : .secondary)
             }
             .frame(width: 80)
@@ -1835,7 +1835,7 @@ struct StringListRow: View {
             }
             if !draftValid {
                 Text("格式无效 — 请检查输入（如 IP/CIDR: 10.0.0.0/8, URL: https://...）")
-                    .font(.system(size: 9)).foregroundColor(.red)
+                    .font(.system(size: 12)).foregroundColor(.red)
             }
         }
         .padding(.vertical, 5)
@@ -1871,7 +1871,7 @@ struct GeoURLRow: View {
         HStack {
             Text(label).font(.callout).frame(width: 70, alignment: .leading)
             TextField("https://…", text: $text)
-                .textFieldStyle(.roundedBorder).font(.system(size: 10, design: .monospaced))
+                .textFieldStyle(.roundedBorder).font(.system(size: 12, design: .monospaced))
                 .onSubmit { Task { await M.patch(["geox-url": [sub: text]]) } }
         }
         .padding(.vertical, 5)

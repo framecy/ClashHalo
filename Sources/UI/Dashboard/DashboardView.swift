@@ -24,118 +24,129 @@ struct DashboardPage: View {
                 VStack(alignment: .leading, spacing: 16) {
                     Text(greeting()).font(.system(size: 20, weight: .bold)).padding(.horizontal, 4)
 
-                    Grid(horizontalSpacing: 14, verticalSpacing: 14) {
-                        // Row 1: Top stats bar (4 columns, height 80)
-                        GridRow {
-                            BarStat("总下载", fmtBytes(Double(M.downloadTotal)), "arrow.down.circle.fill", M.accent)
-                                .frame(height: 80)
-                            BarStat("总上传", fmtBytes(Double(M.uploadTotal)), "arrow.up.circle.fill", .red)
-                                .frame(height: 80)
-                            BarStat("连接数", "\(M.conns.count)", "link.circle.fill", .cyan)
-                                .frame(height: 80)
-                            BarStat("访问目标", "\(uniqueHosts)", "scope", .orange)
-                                .frame(height: 80)
-                        }
+                    // Row 1: Top stats bar (4 columns, height 48)
+                    HStack(spacing: 16) {
+                        BarStat("总下载", fmtBytes(Double(M.downloadTotal)), "arrow.down.circle.fill", M.accent)
+                            .frame(height: 48)
+                            .frame(maxWidth: .infinity)
+                        BarStat("总上传", fmtBytes(Double(M.uploadTotal)), "arrow.up.circle.fill", .red)
+                            .frame(height: 48)
+                            .frame(maxWidth: .infinity)
+                        BarStat("连接数", "\(M.conns.count)", "link.circle.fill", .cyan)
+                            .frame(height: 48)
+                            .frame(maxWidth: .infinity)
+                        BarStat("访问目标", "\(uniqueHosts)", "scope", .orange)
+                            .frame(height: 48)
+                            .frame(maxWidth: .infinity)
+                    }
 
-                        // Row 2: Chart + memory column (height 256)
+                    // Row 2: Chart + memory column (height 176, 3:1 width ratio)
+                    Grid(horizontalSpacing: 16) {
+                        GridRow {
+                            Color.clear.frame(height: 0).frame(maxWidth: .infinity)
+                            Color.clear.frame(height: 0).frame(maxWidth: .infinity)
+                            Color.clear.frame(height: 0).frame(maxWidth: .infinity)
+                            Color.clear.frame(height: 0).frame(maxWidth: .infinity)
+                        }
                         GridRow {
                             Card(title: "流量趋势", icon: "chart.xyaxis.line") {
                                 VStack(alignment: .leading, spacing: 0) {
                                     HStack(spacing: 18) {
-                                        Label(fmtRate(Double(M.curDown)), systemImage: "arrow.down").foregroundColor(.red).font(.headline.monospaced())
-                                        Label(fmtRate(Double(M.curUp)), systemImage: "arrow.up").foregroundColor(M.accent).font(.headline.monospaced())
+                                        Label(fmtRate(Double(M.curDown)), systemImage: "arrow.down")
+                                            .foregroundColor(.red)
+                                            .font(.system(size: 12, weight: .bold, design: .monospaced))
+                                        Label(fmtRate(Double(M.curUp)), systemImage: "arrow.up")
+                                            .foregroundColor(M.accent)
+                                            .font(.system(size: 12, weight: .bold, design: .monospaced))
                                         Spacer()
-                                    }.padding(.bottom, 8)
-                                    MetalTrafficView(accent: NSColor(M.accent)).frame(height: 180)
+                                    }.padding(.bottom, 6)
+                                    MetalTrafficView(accent: NSColor(M.accent)).frame(height: 96)
                                 }
                             }
-                            .frame(height: 256)
+                            .frame(height: 176)
                             .gridCellColumns(3)
 
-                            VStack(spacing: 8) {
+                            VStack(spacing: 16) {
                                 MiniStat("活跃连接", "\(M.conns.count)", sub: "已关闭 \(M.closedConns)", icon: "link", color: .cyan)
-                                    .frame(height: 80)
+                                    .frame(height: 48)
                                 MiniStat("核心内存", fmtBytes(Double(M.memory)), sub: nil, icon: "memorychip", color: .purple)
-                                    .frame(height: 80)
+                                    .frame(height: 48)
                                 MiniStat("应用内存", String(format: "%.0f MB", M.appMemoryMB), sub: nil, icon: "app.dashed", color: .orange)
-                                    .frame(height: 80)
+                                    .frame(height: 48)
                             }
-                            .frame(height: 256)
+                            .frame(height: 176)
                             .gridCellColumns(1)
                         }
+                    }
 
-                        // Row 3: Distribution + policy groups (height 208)
-                        GridRow {
-                            Card(title: "流量分布", icon: "chart.pie.fill") {
-                                distribution
-                            }
-                            .frame(height: 208)
-                            .gridCellColumns(2)
-
-                            Card(title: "策略组排名", icon: "rectangle.3.group.fill") {
-                                RankList(rows: policyGroupRows, accent: M.accent, mode: .bytes)
-                            }
-                            .frame(height: 208)
-                            .gridCellColumns(2)
+                    // Row 3: Distribution + policy groups (height 208)
+                    HStack(spacing: 16) {
+                        Card(title: "流量分布", icon: "chart.pie.fill") {
+                            distribution
                         }
+                        .frame(height: 208)
+                        .frame(maxWidth: .infinity)
 
-                        // Row 4: Timeline (height 160)
-                        GridRow {
-                            Card(title: range == .today ? "流量时间轴 · 今日(每小时)" : "流量时间轴 · 本月(每日)", icon: "chart.bar.fill") {
-                                HourlyBars(values: range == .today ? M.history.today.hourlyDown : M.history.monthDailyTotals,
-                                           accent: M.accent).frame(height: 110)
-                            }
-                            .frame(height: 160)
-                            .gridCellColumns(4)
+                        Card(title: "策略组排名", icon: "rectangle.3.group.fill") {
+                            RankList(rows: policyGroupRows, accent: M.accent, mode: .bytes)
                         }
+                        .frame(height: 208)
+                        .frame(maxWidth: .infinity)
+                    }
 
-                        // Row 5: Rank lists (each spans 2, height 208)
-                        GridRow {
-                            Card(title: "高频规则", icon: "list.number") {
-                                RankList(rows: topRules, accent: .red, mode: .count)
-                            }
-                            .frame(height: 208)
-                            .gridCellColumns(2)
+                    // Row 4: Timeline (height 160)
+                    Card(title: range == .today ? "流量时间轴 · 今日(每小时)" : "流量时间轴 · 本月(每日)", icon: "chart.bar.fill") {
+                        HourlyBars(values: range == .today ? M.history.today.hourlyDown : M.history.monthDailyTotals,
+                                   accent: M.accent).frame(height: 110)
+                    }
+                    .frame(height: 160)
 
-                            Card(title: "热门域名", icon: "globe") {
-                                RankList(rows: topHosts, accent: .cyan, mode: .bytes)
-                            }
-                            .frame(height: 208)
-                            .gridCellColumns(2)
+                    // Row 5: Rank lists (each spans 2, height 208)
+                    HStack(spacing: 16) {
+                        Card(title: "高频规则", icon: "list.number") {
+                            RankList(rows: topRules, accent: .red, mode: .count)
                         }
+                        .frame(height: 208)
+                        .frame(maxWidth: .infinity)
 
-                        // Row 6: Rank lists (each spans 2, height 208)
-                        GridRow {
-                            Card(title: "热门节点", icon: "bolt.horizontal.fill") {
-                                RankList(rows: topNodes, accent: .orange, mode: .bytes)
-                            }
-                            .frame(height: 208)
-                            .gridCellColumns(2)
-
-                            Card(title: "客户端源 IP", icon: "desktopcomputer") {
-                                RankList(rows: topSources, accent: .green, mode: .bytes)
-                            }
-                            .frame(height: 208)
-                            .gridCellColumns(2)
+                        Card(title: "热门域名", icon: "globe") {
+                            RankList(rows: topHosts, accent: .cyan, mode: .bytes)
                         }
+                        .frame(height: 208)
+                        .frame(maxWidth: .infinity)
+                    }
 
-                        // Row 7: Rank lists (each spans 2, height 208)
-                        GridRow {
-                            Card(title: "热门进程", icon: "app.badge") {
-                                RankList(rows: topProcs, accent: .blue, mode: .bytes)
-                            }
-                            .frame(height: 208)
-                            .gridCellColumns(2)
-
-                            Card(title: "目标分类", icon: "globe.asia.australia.fill") {
-                                RankList(rows: targetClass, accent: .pink, mode: .bytes)
-                            }
-                            .frame(height: 208)
-                            .gridCellColumns(2)
+                    // Row 6: Rank lists (each spans 2, height 208)
+                    HStack(spacing: 16) {
+                        Card(title: "热门节点", icon: "bolt.horizontal.fill") {
+                            RankList(rows: topNodes, accent: .orange, mode: .bytes)
                         }
+                        .frame(height: 208)
+                        .frame(maxWidth: .infinity)
+
+                        Card(title: "客户端源 IP", icon: "desktopcomputer") {
+                            RankList(rows: topSources, accent: .green, mode: .bytes)
+                        }
+                        .frame(height: 208)
+                        .frame(maxWidth: .infinity)
+                    }
+
+                    // Row 7: Rank lists (each spans 2, height 208)
+                    HStack(spacing: 16) {
+                        Card(title: "热门进程", icon: "app.badge") {
+                            RankList(rows: topProcs, accent: .blue, mode: .bytes)
+                        }
+                        .frame(height: 208)
+                        .frame(maxWidth: .infinity)
+
+                        Card(title: "目标分类", icon: "globe.asia.australia.fill") {
+                            RankList(rows: targetClass, accent: .pink, mode: .bytes)
+                        }
+                        .frame(height: 208)
+                        .frame(maxWidth: .infinity)
                     }
                 }
-                .padding(.horizontal, 20).padding(.bottom, 24)
+                .padding(.horizontal, 16).padding(.bottom, 16)
             }
         }
     }
@@ -177,8 +188,8 @@ struct DashboardPage: View {
         HStack(spacing: 5) {
             Circle().fill(c).frame(width: 7, height: 7)
             VStack(alignment: .leading, spacing: 0) {
-                Text(v).font(.caption.monospaced())
-                Text(l).font(.caption2).foregroundColor(.secondary)
+                Text(v).font(.system(size: 12, design: .monospaced))
+                Text(l).font(.system(size: 12)).foregroundColor(.secondary)
             }
         }
     }
@@ -218,17 +229,17 @@ struct RankList: View {
         let mx = max(rows.first?.value ?? 1, 1)
         VStack(spacing: 10) {
             if rows.isEmpty {
-                Text("暂无活跃数据").font(.system(size: 11)).foregroundColor(.secondary)
+                Text("暂无活跃数据").font(.system(size: 12)).foregroundColor(.secondary)
                     .frame(maxWidth: .infinity, minHeight: 120, alignment: .center)
             }
             ForEach(Array(rows.enumerated()), id: \.offset) { i, r in
                 VStack(spacing: 4) {
                     HStack(spacing: 8) {
-                        Text("\(i+1)").font(.system(size: 10, design: .monospaced)).foregroundColor(.secondary).frame(width: 14, alignment: .leading)
-                        Text(r.name).font(.system(size: 11)).lineLimit(1).truncationMode(.middle)
+                        Text("\(i+1)").font(.system(size: 12, design: .monospaced)).foregroundColor(.secondary).frame(width: 14, alignment: .leading)
+                        Text(r.name).font(.system(size: 12)).lineLimit(1).truncationMode(.middle)
                         Spacer()
                         Text(mode == .bytes ? fmtBytes(r.value) : "\(Int(r.value))")
-                            .font(.system(size: 10, design: .monospaced)).foregroundColor(.secondary)
+                            .font(.system(size: 12, design: .monospaced)).foregroundColor(.secondary)
                     }
                     GeometryReader { g in
                         ZStack(alignment: .leading) {
@@ -247,18 +258,18 @@ struct StatBox: View {
     @EnvironmentObject var M: AppModel
     var body: some View {
         VStack(alignment: .leading, spacing: 4) {
-            Text(label).font(.system(size: 11)).foregroundColor(.secondary)
+            Text(label).font(.system(size: 12)).foregroundColor(.secondary)
             HStack(alignment: .firstTextBaseline, spacing: 2) {
                 Text(value).font(.system(size: 22, weight: .bold, design: .rounded))
                     .foregroundColor(accent ? M.accent : .primary)
                 if let unit { Text(unit).font(.system(size: 12, weight: .semibold)).foregroundColor(.secondary) }
             }
-            Text(sub).font(.system(size: 10)).foregroundColor(.secondary).lineLimit(1)
+            Text(sub).font(.system(size: 12)).foregroundColor(.secondary).lineLimit(1)
         }
-        .padding(14)
+        .padding(16)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background(RoundedRectangle(cornerRadius: 12).fill(Color(nsColor: .windowBackgroundColor).opacity(0.5)))
-        .overlay(RoundedRectangle(cornerRadius: 12).stroke(accent ? M.accent.opacity(0.3) : Color.primary.opacity(0.06)))
+        .background(RoundedRectangle(cornerRadius: 12).fill(Color(red: 0x2A/255.0, green: 0x2A/255.0, blue: 0x2A/255.0)))
+        .overlay(RoundedRectangle(cornerRadius: 12).stroke(accent ? M.accent.opacity(0.3) : Color(red: 0x2C/255.0, green: 0x2C/255.0, blue: 0x2C/255.0)))
     }
 }
 
@@ -266,18 +277,19 @@ struct BarStat: View {
     let label, value, icon: String; let color: Color
     init(_ l: String, _ v: String, _ i: String, _ c: Color) { label = l; value = v; icon = i; color = c }
     var body: some View {
-        HStack(spacing: 11) {
-            Image(systemName: icon).font(.title2).foregroundColor(color)
-            VStack(alignment: .leading, spacing: 2) {
-                Text(label).font(.system(size: 11)).foregroundColor(.secondary)
-                Text(value).font(.system(size: 20, weight: .bold, design: .rounded))
+        HStack(spacing: 8) {
+            Image(systemName: icon).font(.system(size: 16)).foregroundColor(color)
+            VStack(alignment: .leading, spacing: 0) {
+                Text(label).font(.system(size: 12)).foregroundColor(.secondary)
+                Text(value).font(.system(size: 16, weight: .bold, design: .rounded))
             }
             Spacer()
         }
-        .padding(.horizontal, 16).padding(.vertical, 13)
+        .padding(.horizontal, 16).padding(.vertical, 6)
+        .frame(height: 48)
         .frame(maxWidth: .infinity)
-        .background(RoundedRectangle(cornerRadius: 12).fill(Color(nsColor: .windowBackgroundColor).opacity(0.5)))
-        .overlay(RoundedRectangle(cornerRadius: 12).stroke(Color.primary.opacity(0.06)))
+        .background(RoundedRectangle(cornerRadius: 8).fill(Color(red: 0x2A/255.0, green: 0x2A/255.0, blue: 0x2A/255.0)))
+        .overlay(RoundedRectangle(cornerRadius: 8).stroke(Color(red: 0x2C/255.0, green: 0x2C/255.0, blue: 0x2C/255.0)))
     }
 }
 
@@ -287,15 +299,24 @@ struct MiniStat: View {
         self.title = title; self.value = value; self.sub = sub; self.icon = icon; self.color = color
     }
     var body: some View {
-        VStack(alignment: .leading, spacing: 6) {
-            Label(title, systemImage: icon).font(.system(size: 11)).foregroundColor(.secondary)
-            Text(value).font(.system(size: 22, weight: .bold, design: .rounded))
-            if let sub { Text(sub).font(.system(size: 10)).foregroundColor(.secondary) }
+        VStack(alignment: .leading, spacing: 1) {
+            HStack(spacing: 4) {
+                Image(systemName: icon).font(.system(size: 12)).foregroundColor(color)
+                Text(title).font(.system(size: 12, weight: .medium)).foregroundColor(.secondary)
+            }
+            HStack(alignment: .firstTextBaseline) {
+                Text(value).font(.system(size: 16, weight: .bold, design: .rounded))
+                if let sub {
+                    Spacer()
+                    Text(sub).font(.system(size: 12)).foregroundColor(.secondary)
+                }
+            }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
-        .padding(14)
-        .background(RoundedRectangle(cornerRadius: 12).fill(Color(nsColor: .windowBackgroundColor).opacity(0.5)))
-        .overlay(RoundedRectangle(cornerRadius: 12).stroke(Color.primary.opacity(0.06)))
+        .padding(.horizontal, 16).padding(.vertical, 6)
+        .frame(height: 48)
+        .background(RoundedRectangle(cornerRadius: 8).fill(Color(red: 0x2A/255.0, green: 0x2A/255.0, blue: 0x2A/255.0)))
+        .overlay(RoundedRectangle(cornerRadius: 8).stroke(Color(red: 0x2C/255.0, green: 0x2C/255.0, blue: 0x2C/255.0)))
     }
 }
 
