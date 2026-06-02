@@ -35,11 +35,11 @@ echo "  Engine built: $(ls -lh /tmp/clashpow-engine | awk '{print $5}')"
 
 # ── Step 3: Install launchd service ───────────────────────────────
 echo "[3/4] Installing launchd daemon (dev mode)..."
-bash "$PROJECT_DIR/Scripts/install.sh" --dev 2>&1 | tail -10
+BUILD_DIR=/tmp bash "$PROJECT_DIR/Scripts/install.sh" --dev 2>&1 | tail -10
 
 # ── Step 4: Verify engine is running ──────────────────────────────
 echo "[4/4] Verifying engine RPC..."
-sleep 0.5
+sleep 2.0
 if echo '{"jsonrpc":"2.0","method":"get_status","params":{},"id":1}' | nc -w 2 -U /tmp/clashpow-engine.sock 2>/dev/null | grep -q '"result"'; then
     echo "  ✓ Engine RPC responding"
 else
