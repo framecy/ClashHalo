@@ -90,9 +90,11 @@ struct ContentView: View {
             
             HStack {
                 Circle().fill(M.reachable ? Color.green : Color.red).frame(width: 6, height: 6)
-                Text("核心已就绪").font(.system(size: 12)).foregroundColor(.secondary)
+                Text(M.reachable ? "核心已就绪" : "核心已停止").font(.system(size: 12)).foregroundColor(.secondary)
                 Spacer()
-                Text(M.version).font(.system(size: 12, design: .monospaced)).foregroundColor(.secondary)
+                if M.reachable {
+                    Text(M.version).font(.system(size: 12, design: .monospaced)).foregroundColor(.secondary)
+                }
             }
             .padding(.top, 4)
         }
@@ -151,7 +153,7 @@ struct PageHead<Actions: View>: View {
     @ViewBuilder var actions: () -> Actions
 
     var body: some View {
-        HStack(alignment: .top) {
+        HStack(alignment: .center) {
             VStack(alignment: .leading, spacing: 4) {
                 Text(title).font(.system(size: 24, weight: .bold))
                 if let desc {
