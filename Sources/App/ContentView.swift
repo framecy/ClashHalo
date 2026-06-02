@@ -76,7 +76,7 @@ struct ContentView: View {
             VStack(alignment: .leading, spacing: 0) {
                 Text("ClashPow").font(.system(size: 14, weight: .bold))
                 Text(M.reachable ? "mihomo \(M.version)" : "未连接")
-                    .font(.system(size: 10)).foregroundColor(.secondary)
+                    .font(.system(size: 12)).foregroundColor(.secondary)
             }
             Spacer()
         }
@@ -90,9 +90,9 @@ struct ContentView: View {
             
             HStack {
                 Circle().fill(M.reachable ? Color.green : Color.red).frame(width: 6, height: 6)
-                Text("核心已就绪").font(.system(size: 10)).foregroundColor(.secondary)
+                Text("核心已就绪").font(.system(size: 12)).foregroundColor(.secondary)
                 Spacer()
-                Text(M.version).font(.system(size: 10, design: .monospaced)).foregroundColor(.secondary)
+                Text(M.version).font(.system(size: 12, design: .monospaced)).foregroundColor(.secondary)
             }
             .padding(.top, 4)
         }
@@ -102,7 +102,7 @@ struct ContentView: View {
     private func statusToggle(_ label: String, icon: String, isOn: Binding<Bool>, accent: Bool) -> some View {
         HStack(spacing: 8) {
             Circle().fill(isOn.wrappedValue ? (accent ? M.accent : Color.green) : Color.secondary.opacity(0.3)).frame(width: 6, height: 6)
-            Text(label).font(.system(size: 11, weight: .medium)).foregroundColor(isOn.wrappedValue ? .primary : .secondary)
+            Text(label).font(.system(size: 12, weight: .medium)).foregroundColor(isOn.wrappedValue ? .primary : .secondary)
             Spacer()
             Toggle("", isOn: isOn).toggleStyle(.switch).controlSize(.mini).labelsHidden()
         }
@@ -163,7 +163,7 @@ struct PageHead<Actions: View>: View {
                 actions()
             }
         }
-        .padding(.horizontal, 20).padding(.top, 24).padding(.bottom, 16)
+        .padding(.horizontal, 16).padding(.top, 16).padding(.bottom, 16)
     }
 }
 
@@ -184,20 +184,22 @@ struct Card<Content: View>: View {
         VStack(alignment: .leading, spacing: 0) {
             if let title {
                 HStack(spacing: 6) {
-                    if let icon { Image(systemName: icon).font(.system(size: 11)).foregroundColor(.secondary) }
+                    if let icon { Image(systemName: icon).font(.system(size: 12)).foregroundColor(.secondary) }
                     Text(title).font(.system(size: 12, weight: .bold)).foregroundColor(.secondary)
                     Spacer()
                 }
-                .padding(.horizontal, 14).padding(.top, 12).padding(.bottom, 8)
+                .padding(.horizontal, 16).padding(.top, 12).padding(.bottom, 8)
             }
             content()
                 .frame(maxWidth: .infinity, alignment: .leading)
-                .padding(.horizontal, pad ? 14 : 0)
-                .padding(.bottom, pad ? 12 : 0)
-                .padding(.top, (title == nil && pad) ? 12 : 0)
+                .padding(.horizontal, pad ? 16 : 0)
+                .padding(.bottom, pad ? 16 : 0)
+                .padding(.top, (title == nil && pad) ? 16 : 0)
+            Spacer(minLength: 0)
         }
-        .frame(maxWidth: .infinity, alignment: .topLeading)
-        .background(RoundedRectangle(cornerRadius: 12).fill(Color(nsColor: .windowBackgroundColor).opacity(0.5)))
-        .overlay(RoundedRectangle(cornerRadius: 12).stroke(Color.primary.opacity(0.06)))
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+        .clipped()
+        .background(RoundedRectangle(cornerRadius: 12).fill(Color(red: 0x2A/255.0, green: 0x2A/255.0, blue: 0x2A/255.0)))
+        .overlay(RoundedRectangle(cornerRadius: 12).stroke(Color(red: 0x2C/255.0, green: 0x2C/255.0, blue: 0x2C/255.0)))
     }
 }

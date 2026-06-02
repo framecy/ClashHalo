@@ -11,7 +11,7 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 PROJECT_DIR="$(dirname "$SCRIPT_DIR")"
 BUILD_DIR="${BUILD_DIR:-$PROJECT_DIR/build}"
-ENGINE_BIN="$BUILD_DIR/engine/clashpow-engine"
+ENGINE_BIN="$BUILD_DIR/clashpow-engine"
 PLIST_SRC="$PROJECT_DIR/Config/com.clashpow.engine.plist"
 PLIST_NAME="com.clashpow.engine.plist"
 
