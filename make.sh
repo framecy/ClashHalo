@@ -1,24 +1,19 @@
 #!/bin/bash
-# make.sh — build a self-contained, distributable ClashPow.app (+ DMG).
-#
-#   1. builds the Go engine (embeds mihomo) for arm64
-#   2. builds the SwiftUI GUI via xcodebuild
-#   3. bundles the engine + geodata into ClashPow.app/Contents/Resources
-#      (the app installs them on first run via EngineControl.ensureInstalled)
-#   4. ad-hoc signs and (optionally) builds a DMG
-#
-# Real distribution additionally needs a Developer ID + notarization + Sparkle
-# appcast — those require the user's signing identity and are noted below.
-
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")" && pwd)"
 BUILD="$ROOT/build"
 mkdir -p "$BUILD"
 
-echo "[1/4] Building engine (Go + mihomo, arm64)…"
-( cd "$ROOT/Engine" && CGO_ENABLED=0 GOOS=darwin GOARCH=arm64 \
-    go build -tags with_gvisor -ldflags="-s -w" -o "$BUILD/clashpow-engine" ./cmd/clashpow )
-echo "      $(du -h "$BUILD/clashpow-engine" | cut -f1) engine"
+echo "[1/4] Building engine (CGO) & Helper Tool…"
+( cd "$ROOT/Engine" && CGO_ENABLED=1 GOOS=darwin GOARCH=arm64 \
+    go build -buildmode=c-shared -o "$BUILD/libmihomo.dylib" ./cgo/main.go )
+echo "      $(du -h "$BUILD/libmihomo.dylib" | cut -f1) libmihomo"
+
+swiftc -import-objc-header "$ROOT/Engine/libmihomo.h" \
+    -I "$ROOT/Engine" -L "$BUILD" -lmihomo \
+    "$ROOT/Sources/Helper/main.swift" "$ROOT/Sources/XPC/ProxyManager.swift" "$ROOT/Sources/XPC/HelperProtocol.swift" \
+    -o "$BUILD/dev.clashpow.helper"
+echo "      Helper compiled natively."
 
 echo "[2/4] Building GUI (xcodebuild Release, sign later)…"
 xcodebuild -project "$ROOT/ClashPow.xcodeproj" -scheme ClashPow \
@@ -30,9 +25,20 @@ APP="$BUILD/dd/Build/Products/Release/ClashPow.app"
 
 echo "[3/4] Bundling engine + geodata into .app…"
 RES="$APP/Contents/Resources"
-cp "$BUILD/clashpow-engine" "$RES/clashpow-engine"
-chmod 755 "$RES/clashpow-engine"
-# bundle geodata if available locally (first-run install copies them out)
+# Bundle CGO Engine into MacOS and Helper Tool
+mkdir -p "$APP/Contents/MacOS"
+mkdir -p "$APP/Contents/Library/LaunchDaemons"
+cp "$BUILD/libmihomo.dylib" "$APP/Contents/MacOS/libmihomo.dylib"
+cp "$BUILD/dev.clashpow.helper" "$APP/Contents/MacOS/dev.clashpow.helper"
+cp "$ROOT/dev.clashpow.helper.plist" "$APP/Contents/Library/LaunchDaemons/"
+
+chmod 755 "$APP/Contents/MacOS/libmihomo.dylib"
+chmod 755 "$APP/Contents/MacOS/dev.clashpow.helper"
+
+# Use install_name_tool so Helper finds the dylib in the same directory
+install_name_tool -change libmihomo.dylib @executable_path/libmihomo.dylib "$APP/Contents/MacOS/dev.clashpow.helper"
+
+# bundle geodata if available locally
 for f in GeoSite.dat geoip.metadb ASN.mmdb; do
     for src in "$HOME/.config/mihomo/$f" "$HOME/Library/Application Support/ClashPow/$f"; do
         [ -f "$src" ] && cp "$src" "$RES/$f" && break
@@ -41,6 +47,8 @@ done
 
 echo "[4/4] Ad-hoc signing + DMG…"
 xattr -cr "$APP"                       # strip resource-fork/Finder detritus
+codesign --force --sign - "$APP/Contents/MacOS/libmihomo.dylib"
+codesign --force --sign - "$APP/Contents/MacOS/dev.clashpow.helper"
 codesign --force --deep --options runtime --sign - "$APP"
 DMG="$BUILD/ClashPow.dmg"
 rm -f "$DMG"
@@ -49,8 +57,3 @@ echo ""
 echo "=== Done ==="
 echo "App: $APP"
 echo "DMG: $DMG  ($(du -h "$DMG" | cut -f1))"
-echo ""
-echo "NOTE: For public distribution you still need:"
-echo "  • Developer ID signing:  codesign --sign \"Developer ID Application: …\" --options runtime"
-echo "  • Notarization:          xcrun notarytool submit \"$DMG\" --apple-id … --team-id … --wait"
-echo "  • Sparkle auto-update:   add Sparkle SPM + appcast URL + EdDSA signing"
