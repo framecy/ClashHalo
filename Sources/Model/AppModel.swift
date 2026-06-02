@@ -2,7 +2,7 @@ import Foundation
 import Combine
 import SwiftUI
 
-final class AppModel: ObservableObject {
+@MainActor final class AppModel: ObservableObject {
     let api = MihomoClient.shared
     let engine = EngineControl.shared
     let store = ConfigStore()
@@ -501,7 +501,7 @@ final class AppModel: ObservableObject {
                 // but since killall -9 clashpow-engine only kills user processes, 
                 // we might need to use the EngineControl uninstall API if it's root.
                 if engine.isRoot {
-                    showToast("停止核心需要管理员权限...")
+                    showToast("停止系统核心需要授权...")
                     let ok = await engine.uninstallPrivileged()
                     if !ok { showToast("停止失败") }
                 }

@@ -2,7 +2,7 @@ import Foundation
 import Combine
 import SwiftUI
 
-final class ConfigStore: ObservableObject {
+@MainActor final class ConfigStore: ObservableObject {
     @Published var profiles: [Profile] = []
     @AppStorage("config.active") var activeID = ""
 

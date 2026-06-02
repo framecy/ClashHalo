@@ -2,7 +2,7 @@ import Foundation
 import Combine
 import SwiftUI
 
-final class MihomoClient: ObservableObject {
+@MainActor final class MihomoClient: ObservableObject {
     static let shared = MihomoClient()
 
     // Connection settings (persisted). Defaults target the ClashPow engine's
