@@ -211,8 +211,11 @@ struct DashboardPage: View {
                 VStack(spacing: 2) {
                     Text("总计").font(.system(size: 11)).foregroundColor(.secondary)
                     Text(fmtBytes(direct + proxy + reject))
-                        .font(.system(size: 16, weight: .bold, design: .rounded))
+                        .font(.system(size: 14, weight: .bold, design: .rounded))
+                        .lineLimit(1)
+                        .minimumScaleFactor(0.5)
                 }
+                .padding(.horizontal, 24)
             }
             .frame(width: 120, height: 120) // slight buffer
 
