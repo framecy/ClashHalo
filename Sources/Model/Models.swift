@@ -541,6 +541,39 @@ final class AppModel: ObservableObject {
         if ok { await refreshConfigs() } else { showToast("配置写入失败") }
     }
 
+    func toggleEngine() {
+        let want = !reachable
+        Task {
+            if want {
+                // start engine
+                engine.ensureInstalled()
+                let t = Process(); t.executableURL = URL(fileURLWithPath: "/bin/launchctl")
+                t.arguments = ["start", "com.clashpow.engine"]
+                try? t.run(); t.waitUntilExit()
+                showToast("正在启动核心...")
+                try? await Task.sleep(nanoseconds: 1_000_000_000)
+                await reconnect()
+            } else {
+                // stop engine
+                let t = Process(); t.executableURL = URL(fileURLWithPath: "/usr/bin/killall")
+                t.arguments = ["-9", "clashpow-engine"]
+                try? t.run(); t.waitUntilExit()
+                
+                // If it is running as root, we also need to kill it via admin or it won't die,
+                // but since killall -9 clashpow-engine only kills user processes, 
+                // we might need to use the EngineControl uninstall API if it's root.
+                if engine.isRoot {
+                    showToast("停止核心需要管理员权限...")
+                    let ok = await engine.uninstallPrivileged()
+                    if !ok { showToast("停止失败") }
+                }
+                
+                reachable = false
+                showToast("核心已停止")
+            }
+        }
+    }
+
     // Rules editing (operates on the config's inline `rules` list)
     @AppStorage("rules.disabled") private var disabledRulesJSON = "[]"
     var disabledRules: [String] {
