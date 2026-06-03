@@ -2,91 +2,65 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
-## Project Overview
+## 项目概述
 
-ClashPow is a **macOS 14+ (Apple Silicon only)** native SwiftUI client for the mihomo (Clash.Meta) kernel.
+ClashPow 是 macOS 14+ (Apple Silicon) 原生 SwiftUI 代理客户端。**已彻底移除自研 Go 引擎**（见 git status 中被删除的 `Engine/`），改为直接编排官方 `mihomo` (Clash.Meta) 内核：GUI 通过 REST + WebSocket 与内核通信，特权操作交给独立签名的 Helper。
 
-**Status: v1.0 — bundled-engine architecture complete (v0.4→v1.0). Self-contained .app: Go engine (embeds mihomo) + geodata bundled; GUI auto-installs engine via launchd on first run; Metal 120fps chart from mmap stats; YAML config center w/ rollback; SD-WAN topology; subscriptions/DNS/logs; DMG packaging via make.sh.**
-
-```
-┌──────────────────────┐   REST + WebSocket   ┌──────────────────────┐
-│  ClashPow GUI         │◄────────────────────►│  mihomo kernel        │
-│  SwiftUI 5            │  /traffic /logs       │  (external-controller │
-│  MihomoClient + AppModel  /connections /proxies   127.0.0.1:6170)    │
-└──────────────────────┘                       └──────────────────────┘
-```
-
-The GUI talks **directly** to mihomo's external-controller. There is no intermediate
-Go engine, no JSON-RPC, no UDS. The user runs their own mihomo (launchd or manually);
-the GUI connects to its REST/WS API. Connection settings (host/port/secret) are
-configurable in Settings and persisted via `@AppStorage`.
-
-**Default connection:** engine-managed mihomo controller on `127.0.0.1:9092` (secret auto-discovered from the engine via UDS `get_status`).
-**App launch:** `open <path-to>/ClashPow.app` *(NOT direct binary — BackgroundOnly issue)*
-**Verify connected:** `lsof -a -p $(pgrep -f ClashPow.app/Contents/MacOS/ClashPow) -iTCP -P -n` → should show 4 ESTABLISHED to :6170 (3 WS + REST).
-
-## Architecture (4 real Swift files + stubs)
-
-- `Sources/App/ClashPowApp.swift` — `@main`, `WindowGroup` + `MenuBarExtra`
-- `Sources/App/ContentView.swift` — `NavigationSplitView` shell, sidebar, `Card`
-- `Sources/UI/Dashboard/DashboardView.swift` — `DashboardPage`, `Tile`, `TrafficChart`
-- `Sources/UI/ConfigEditor/Pages.swift` — `ProxiesPage` `ConnectionsPage` `RulesPage` `LogsPage` `ConfigPage` `SettingsPage` `MenuBarPanel` `ContentUnavailable`
-- `Sources/Model/Models.swift` — `AppModel` (state + WS/poll orchestration), view types `ProxyGroup`/`Node`/`Conn`/`Log`, formatting helpers
-- `Sources/XPC/EngineClient.swift` — `MihomoClient` (REST + WebSocket), wire types, `WSHandle`
-- `Sources/Metal/IOSurfaceReader.swift` — empty stub (reserved)
-
-The `Engine/` Go tree and `Helper/` are **legacy/unused by the current GUI** — kept for
-reference but the GUI does not depend on them.
-
-## Legacy Paths (old engine — not used by GUI)
-
-| Resource | Path |
-|----------|------|
-| Old engine socket | `/tmp/clashpow-engine.sock` *(dead)* |
-| User mihomo binary | `~/Library/Application Support/ClashPow/mihomo` |
-| User mihomo config | `~/Desktop/mihomo_config.yaml` |
-| launchd plist | `~/Library/LaunchAgents/com.clashpow.engine.plist` |
-
-## Old Source Files
-
-### GUI
-- `Sources/App/ClashPowApp.swift` — `@main` entry, `WindowGroup` + `MenuBarExtra`
-- `Sources/App/ContentView.swift` — `NavigationSplitView` shell, `SidebarView`, page router
-(Legacy `Engine/` Go and `Helper/` XPC trees remain in the repo but the v0.3 GUI does
-not use them. Ignore unless explicitly reviving the bundled-engine design.)
-
-## Build & Run
+## 构建与运行
 
 ```bash
-# Build GUI
-xcodebuild -project ClashPow.xcodeproj -scheme ClashPow -configuration Debug -destination 'platform=macOS,arch=arm64' build
+# 完整打包：编译 Helper → xcodebuild GUI(Release) → 捆绑 Helper/geodata → ad-hoc 签名 → 生成 DMG
+bash make.sh
 
-# Run (MUST use open, not direct binary!)
-APP=$(find ~/Library/Developer/Xcode/DerivedData/ClashPow-*/Build/Products/Debug -name "ClashPow.app" -type d | head -1)
-open "$APP"
+# 仅构建 GUI（开发迭代）
+xcodebuild -project ClashPow.xcodeproj -scheme ClashPow -configuration Debug build
 
-# Verify it connected to the kernel
-lsof -a -p $(pgrep -f "ClashPow.app/Contents/MacOS/ClashPow") -iTCP -P -n   # expect 4x ESTABLISHED → :6170
+# 启用 secret 扫描 pre-commit 钩子（仓库自带，非默认路径）
+git config core.hooksPath .githooks
 ```
 
-## Critical Gotchas
+- 部署目标 macOS 14.0，仅 `arm64`，Swift 5，Bundle ID `com.clashpow.app`。
+- 运行前需将官方 `mihomo` (darwin-arm64) 二进制放入 `<App>/Contents/MacOS/mihomo`；首次启动会被复制到 `~/Library/Application Support/ClashPow/bin/mihomo`。也可在应用内「内核管理」从 GitHub 下载（见 `KernelManager`）。
+- 没有测试套件；`Scripts/`（build/install/notarize/package/verify_helper）是分发脚本。
 
-1. **Direct binary = BackgroundOnly**: never run the binary directly; use `open ClashPow.app`.
-2. **No mock data**: everything comes from mihomo's live REST/WS API. App shows empty states until the kernel responds.
-3. **Color types**: use `Color.green` etc, not bare `.green` in `.foregroundColor`/`.fill` where the compiler infers `HierarchicalShapeStyle` (macOS 14/26 ambiguity).
-4. **`Group` is taken by SwiftUI** — the proxy-group model type is named `ProxyGroup`.
-5. **WebSocket auth** uses `?token=<secret>` query param; **REST** uses `Authorization: Bearer <secret>`.
+## 架构（big picture）
 
-## Mihomo API used by MihomoClient
+三层，理解任意一层都需跨多个文件：
 
-| Endpoint | Transport | Purpose |
-|----------|-----------|---------|
-| `/version` | GET | reachability + version |
-| `/proxies` | GET (poll 3s) | groups + nodes + selections + delays |
-| `/proxies/:name` | PUT | switch selector group |
-| `/proxies/:name/delay` | GET | latency test |
-| `/configs` | GET (poll 3s) / PATCH | mode/ports/dns/tun; PATCH `{mode}` |
-| `/rules` | GET | rule list (RulesPage) |
-| `/traffic` | **WS** | live up/down → chart |
-| `/connections` | **WS** | live connection list + totals + memory |
-| `/logs?level=info` | **WS** | live log stream |
+**1. GUI 层（`Sources/`，全部 `@MainActor`）**
+- `AppModel`（`Model/AppModel.swift`）—— 单一真相源 + 编排中枢，`AppModel.shared`。持有 `api`/`engine`/`store`/`history`，驱动所有 UI。
+- `MihomoClient`（`XPC/MihomoClient.swift`）—— 纯 Swift REST/WS 客户端。`probe()` 探活，`stream()` 订阅 `/traffic`、`/connections`、`/logs`（断线自动重连），其余方法封装 mihomo REST API。
+- `EngineControl`（`XPC/EngineControl.swift`）—— 内核生命周期：`ensureInstalled`/`ensureRunning`/`restart`，以及「用户态 ↔ Root 态」切换。`runningAsRoot` 标志当前内核是否经 Helper 以 root 启动。
+- `ConfigStore`（`Model/ConfigStore.swift`）—— 多套 YAML profile 管理；远程订阅 URL 存 Keychain，不落盘 manifest。
+- UI 按功能分目录于 `Sources/UI/`，路由是 `AppModel.route` 字符串（见 `App/ContentView.swift` 侧栏 tab）。
+
+**2. 特权 Helper 层（`Sources/Helper/main.swift` + `Sources/XPC/`）**
+- 独立编译的 LaunchDaemon，Mach service `com.clashpow.helper`，通过 `HelperProtocol`（`XPC/HelperProtocol.swift`）做 XPC。
+- 仅 4 个能力：`getVersion` / `setSystemProxy` / `startMihomo` / `stopMihomo`。
+- `XPCManager`（`XPC/XPCManager.swift`）—— GUI 侧连接管理 + `installDaemon()`/`uninstallDaemon()`，安装走 `osascript do shell script ... with administrator privileges`（`EngineControl.runAdmin`）。
+- `ProxyManager`（`XPC/ProxyManager.swift`）—— Helper 内用 `SystemConfiguration` 改系统代理。
+
+**3. 内核层** —— 官方 `mihomo`。GUI 仅展示与控制，不碰网络报文。
+
+### 关键工作流
+- **启动**：`AppModel.start()` → `engine.ensureInstalled()`+`ensureRunning()` → `reconnect()` 轮询 `/version` 握手 → 建 WS 长连 + 3s 轮询 `refreshProxies`/`refreshConfigs`。不可达时每 3s 静默重试。
+- **TUN 开启**（`AppModel.toggleTUN`）：TUN 需 root → 若 Helper 未装先 `installPrivileged()` 弹授权 → `engine.restart()` 以 root 重启内核 → 重连 → PATCH `tun.enable=true`。
+- **系统代理**（`toggleSystemProxy`）：优先走 Helper，否则 `setSystemProxyFallback` 用 `networksetup` osascript 兜底。
+- **配置变更**：统一经 `AppModel.patch()` → mihomo `/configs` PATCH（内核侧校验+回滚）；切换 profile 用 `setConfig` 写文件 + `/configs?force=true` PUT 热重载。
+
+### 默认连接参数
+内核 external-controller 默认 `127.0.0.1:9092`，secret `clashpow`（见 `EngineControl.ensureInstalled` 写出的初始 config.yaml 与 `MihomoClient` 的 `@AppStorage` 默认值）。数据目录 `~/Library/Application Support/ClashPow`。
+
+## 性能约定（改 UI/数据流时务必遵守）
+
+- **连接快照单遍聚合**：`AppModel.computeDash` 每个 `/connections` 快照只算一次，结果存 `dash`，UI 直接读——不要在 SwiftUI render 里重新遍历 `conns`。
+- **日志批量刷新**：日志先进 `logBuffer`，0.5s 定时器一次性 flush 到 `@Published logs`，避免每行重渲染。
+- **traffic 仅在取整速率变化时发布**，减少 view tree 抖动。
+- `Sources/Metal/IOSurfaceReader.swift` 的 `StatsReader` mmap `/tmp/clashpow-stats.bin`，注释指向已删除的 `Engine/stats/pusher.go`——属旧引擎遗留，新架构下无生产者，改 traffic 图前先确认其是否仍在用。
+
+## 约束（叠加于全局 CLAUDE.md）
+
+- 改动涉及 XPC 协议、Helper 安装脚本、entitlements（`ClashPow.entitlements`，已关沙盒）时属高风险，先输出 Impact Analysis。
+- pre-commit 钩子会 BLOCK 硬编码 secret/token/UUID（疑似节点信息），并对订阅 URL、IP 地址 WARN。勿提交真实订阅/节点数据。
+- 项目文件用 Xcode 工程（`ClashPow.xcodeproj`），新增 Swift 文件需加入对应 PBXGroup/Sources phase，否则不参与编译。
+```

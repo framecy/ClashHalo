@@ -4,16 +4,13 @@ ROOT="$(cd "$(dirname "$0")" && pwd)"
 BUILD="$ROOT/build"
 mkdir -p "$BUILD"
 
-echo "[1/4] Building engine (CGO) & Helper Tool…"
-( cd "$ROOT/Engine" && CGO_ENABLED=1 GOOS=darwin GOARCH=arm64 \
-    go build -buildmode=c-shared -o "$BUILD/libmihomo.dylib" ./cgo/main.go )
-echo "      $(du -h "$BUILD/libmihomo.dylib" | cut -f1) libmihomo"
-
-swiftc -import-objc-header "$ROOT/Engine/libmihomo.h" \
-    -I "$ROOT/Engine" -L "$BUILD" -lmihomo \
+echo "[1/4] Building Helper Tool…"
+# Note: Embed Info.plist into the binary for proper identification
+swiftc \
     "$ROOT/Sources/Helper/main.swift" "$ROOT/Sources/XPC/ProxyManager.swift" "$ROOT/Sources/XPC/HelperProtocol.swift" \
-    -o "$BUILD/dev.clashpow.helper"
-echo "      Helper compiled natively."
+    -o "$BUILD/com.clashpow.helper" \
+    -Xlinker -sectcreate -Xlinker __TEXT -Xlinker __info_plist -Xlinker "$ROOT/Helper-Info.plist"
+echo "      Helper compiled and Info.plist embedded."
 
 echo "[2/4] Building GUI (xcodebuild Release, sign later)…"
 xcodebuild -project "$ROOT/ClashPow.xcodeproj" -scheme ClashPow \
@@ -23,32 +20,32 @@ xcodebuild -project "$ROOT/ClashPow.xcodeproj" -scheme ClashPow \
 APP="$BUILD/dd/Build/Products/Release/ClashPow.app"
 [ -d "$APP" ] || { echo "GUI build not found"; exit 1; }
 
-echo "[3/4] Bundling engine + geodata into .app…"
+echo "[3/4] Bundling Helper Tool + Geodata…"
 RES="$APP/Contents/Resources"
-# Bundle CGO Engine into MacOS and Helper Tool
 mkdir -p "$APP/Contents/MacOS"
-mkdir -p "$APP/Contents/Library/LaunchDaemons"
-cp "$BUILD/libmihomo.dylib" "$APP/Contents/MacOS/libmihomo.dylib"
-cp "$BUILD/dev.clashpow.helper" "$APP/Contents/MacOS/dev.clashpow.helper"
-cp "$ROOT/dev.clashpow.helper.plist" "$APP/Contents/Library/LaunchDaemons/"
+cp "$BUILD/com.clashpow.helper" "$APP/Contents/MacOS/com.clashpow.helper"
+# B7: the LaunchDaemon plist is generated at install time by XPCManager.installDaemon
+# (single source of truth). Bundling a separate plist here was dead/misleading config.
 
-chmod 755 "$APP/Contents/MacOS/libmihomo.dylib"
-chmod 755 "$APP/Contents/MacOS/dev.clashpow.helper"
+chmod 755 "$APP/Contents/MacOS/com.clashpow.helper"
 
-# Use install_name_tool so Helper finds the dylib in the same directory
-install_name_tool -change libmihomo.dylib @executable_path/libmihomo.dylib "$APP/Contents/MacOS/dev.clashpow.helper"
-
-# bundle geodata if available locally
+# bundle geodata if available locally (B8: -s skips 0-byte/corrupt files so the
+# kernel falls back to its geox-url download instead of loading an empty .dat)
 for f in GeoSite.dat geoip.metadb ASN.mmdb; do
     for src in "$HOME/.config/mihomo/$f" "$HOME/Library/Application Support/ClashPow/$f"; do
-        [ -f "$src" ] && cp "$src" "$RES/$f" && break
+        [ -s "$src" ] && cp "$src" "$RES/$f" && break
     done
 done
 
 echo "[4/4] Ad-hoc signing + DMG…"
-xattr -cr "$APP"                       # strip resource-fork/Finder detritus
-codesign --force --sign - "$APP/Contents/MacOS/libmihomo.dylib"
-codesign --force --sign - "$APP/Contents/MacOS/dev.clashpow.helper"
+xattr -cr "$APP"
+# Sign helper tool first
+codesign --force --sign - "$APP/Contents/MacOS/com.clashpow.helper"
+# Sign mihomo if present
+if [ -f "$APP/Contents/MacOS/mihomo" ]; then
+    codesign --force --sign - "$APP/Contents/MacOS/mihomo"
+fi
+# Sign the whole app deeply
 codesign --force --deep --options runtime --sign - "$APP"
 DMG="$BUILD/ClashPow.dmg"
 rm -f "$DMG"
@@ -57,3 +54,5 @@ echo ""
 echo "=== Done ==="
 echo "App: $APP"
 echo "DMG: $DMG  ($(du -h "$DMG" | cut -f1))"
+echo ""
+echo "NOTE: Official 'mihomo' binary must be placed at $APP/Contents/MacOS/mihomo before final distribution."

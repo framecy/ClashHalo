@@ -4,197 +4,294 @@ import SwiftUI
 
 @MainActor final class EngineControl: ObservableObject {
     static let shared = EngineControl()
-    let socketPath = "/tmp/clashpow-engine.sock"
+    let api = MihomoClient.shared
 
     @Published var present = false
     @Published var uptimeSec: Int64 = 0
     @Published var engineVersion = "?"
-    @Published var isRoot = false          // engine running as root LaunchDaemon (TUN-capable)
+    @Published var helperVersion = "?"
+    @Published var isRoot = false          // helper is installed
+    @Published var runningAsRoot = false   // current process was started via helper
 
     private let appSupport = NSHomeDirectory() + "/Library/Application Support/ClashPow"
-    private let plistPath = NSHomeDirectory() + "/Library/LaunchAgents/com.clashpow.engine.plist"
-    private let rootPlistPath = "/Library/LaunchDaemons/com.clashpow.engine.plist"
+    /// Config file the running mihomo reads (`mihomo -d <appSupport>` → config.yaml).
+    /// Used as the source of truth for controller endpoint discovery (B1).
+    var configFilePath: String { appSupport + "/config.yaml" }
+    private var binDir: String { appSupport + "/bin" }
+    private var kernelPath: String { binDir + "/mihomo" }
+    private let plistPath = NSHomeDirectory() + "/Library/LaunchAgents/com.clashpow.mihomo.plist"
+    private let rootPlistPath = "/Library/LaunchDaemons/com.clashpow.mihomo.plist"
 
-    /// First-run bootstrap: install the bundled engine + geodata and the
-    /// LaunchAgent so the kernel runs without any manual setup. Idempotent.
+    init() {
+        // Start polling helper status
+        Timer.scheduledTimer(withTimeInterval: 2.0, repeats: true) { [weak self] _ in
+            Task { @MainActor in self?.pollStatus() }
+        }
+    }
+
+    func pollStatus() {
+        // B3/B4: isRoot now means "helper installed AND reachable", verified by an
+        // actual XPC handshake — not merely the plist existing on disk.
+        Task { @MainActor in
+            let active = await XPCManager.shared.verifyConnectivity()
+            if isRoot != active { isRoot = active }
+
+            if active && (helperVersion == "?" || helperVersion.isEmpty) {
+                if let helper = XPCManager.shared.helper() {
+                    helper.getVersion { v in
+                        Task { @MainActor in
+                            if !v.isEmpty { self.helperVersion = v }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    /// Ensure the mihomo binary and configuration directory are set up.
     func ensureInstalled() {
         let fm = FileManager.default
         try? fm.createDirectory(atPath: appSupport, withIntermediateDirectories: true)
-        let engineDst = appSupport + "/clashpow-engine"
-
-        let bundled = Bundle.main.resourceURL?.appendingPathComponent("clashpow-engine")
-        if let bundled = bundled, fm.fileExists(atPath: bundled.path) {
-            var needsCopy = false
-            if !fm.fileExists(atPath: engineDst) {
-                needsCopy = true
-            } else {
-                let bundledAttr = try? fm.attributesOfItem(atPath: bundled.path)
-                let installedAttr = try? fm.attributesOfItem(atPath: engineDst)
-                let bundledSize = bundledAttr?[.size] as? UInt64 ?? 0
-                let installedSize = installedAttr?[.size] as? UInt64 ?? 0
-                if bundledSize != installedSize {
-                    needsCopy = true
-                }
-            }
-            
-            if needsCopy {
-                try? fm.removeItem(atPath: engineDst)
-                try? fm.copyItem(atPath: bundled.path, toPath: engineDst)
-                try? fm.setAttributes([.posixPermissions: 0o755], ofItemAtPath: engineDst)
+        try? fm.createDirectory(atPath: binDir, withIntermediateDirectories: true)
+        
+        // Setup initial bin if missing: prefer the bundled binary, else fall back
+        // to a kernel the user already downloaded under kernels/ (B2 — avoids the
+        // split where kernels/<tag>/mihomo exists but bin/mihomo stays empty).
+        if !fm.fileExists(atPath: kernelPath) {
+            if let bundled = Bundle.main.url(forResource: "mihomo", withExtension: nil) {
+                try? fm.copyItem(at: bundled, to: URL(fileURLWithPath: kernelPath))
+                try? fm.setAttributes([.posixPermissions: 0o755], ofItemAtPath: kernelPath)
+            } else if let fallback = installedKernelFallback() {
+                try? fm.copyItem(atPath: fallback, toPath: kernelPath)
+                try? fm.setAttributes([.posixPermissions: 0o755], ofItemAtPath: kernelPath)
             }
         }
+        
+        // Initial config if missing
+        let configPath = appSupport + "/config.yaml"
+        if !fm.fileExists(atPath: configPath) {
+            let initial = """
+            mixed-port: 7890
+            allow-lan: true
+            mode: rule
+            log-level: info
+            external-controller: 127.0.0.1:9092
+            secret: clashpow
+            dns:
+              enable: true
+              enhanced-mode: fake-ip
+              nameserver:
+                - 119.29.29.29
+                - 223.5.5.5
+            """
+            try? initial.write(toFile: configPath, atomically: true, encoding: .utf8)
+        }
 
-        // bundled geodata (optional)
+        // Bundled geodata setup
         for f in ["GeoSite.dat", "geoip.metadb", "ASN.mmdb"] {
             if let g = Bundle.main.resourceURL?.appendingPathComponent(f), fm.fileExists(atPath: g.path) {
                 let dst = appSupport + "/" + f
-                var needsCopy = false
                 if !fm.fileExists(atPath: dst) {
-                    needsCopy = true
-                } else {
-                    let srcSize = (try? fm.attributesOfItem(atPath: g.path))?[.size] as? UInt64 ?? 0
-                    let dstSize = (try? fm.attributesOfItem(atPath: dst))?[.size] as? UInt64 ?? 0
-                    if srcSize != dstSize {
-                        needsCopy = true
-                    }
-                }
-                if needsCopy {
-                    try? fm.removeItem(atPath: dst)
                     try? fm.copyItem(atPath: g.path, toPath: dst)
                 }
             }
         }
 
-        // Install + load the LaunchAgent if absent.
-        if !fm.fileExists(atPath: plistPath), fm.fileExists(atPath: engineDst) {
-            let logDir = NSHomeDirectory() + "/Library/Logs/ClashPow"
-            try? fm.createDirectory(atPath: logDir, withIntermediateDirectories: true)
-            let plist = """
-            <?xml version="1.0" encoding="UTF-8"?>
-            <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-            <plist version="1.0"><dict>
-              <key>Label</key><string>com.clashpow.engine</string>
-              <key>ProgramArguments</key><array><string>\(engineDst)</string></array>
-              <key>RunAtLoad</key><true/>
-              <key>KeepAlive</key><dict><key>SuccessfulExit</key><false/><key>Crashed</key><true/></dict>
-              <key>ThrottleInterval</key><integer>3</integer>
-              <key>ProcessType</key><string>Adaptive</string>
-              <key>StandardOutPath</key><string>\(logDir)/clashpow-engine.log</string>
-              <key>StandardErrorPath</key><string>\(logDir)/clashpow-engine.log</string>
-            </dict></plist>
-            """
-            try? plist.write(toFile: plistPath, atomically: true, encoding: .utf8)
-            let task = Process()
-            task.executableURL = URL(fileURLWithPath: "/bin/launchctl")
-            task.arguments = ["load", plistPath]
-            try? task.run(); task.waitUntilExit()
+        hardenControllerConfig()
+    }
+
+    /// Force the kernel's REST control plane to bind loopback only, and replace a
+    /// missing/known-weak secret with a strong random one — editing only the
+    /// `external-controller`/`secret` scalar lines, never proxy/rule data (B6).
+    func hardenControllerConfig() {
+        let path = configFilePath
+        guard let text = try? String(contentsOfFile: path, encoding: .utf8) else { return }
+        var lines = text.components(separatedBy: "\n")
+        let weak: Set<String> = ["", "clashpow", "caseqc", "123456", "admin", "password"]
+        var hasController = false, hasSecret = false, changed = false
+
+        func scalar(_ line: String, _ key: String) -> String? {
+            guard !line.hasPrefix(" "), !line.hasPrefix("\t"), line.hasPrefix(key) else { return nil }
+            let after = line.dropFirst(key.count)
+            guard after.first == ":" else { return nil }
+            var v = after.dropFirst().trimmingCharacters(in: .whitespaces)
+            if let h = v.firstIndex(of: "#") { v = String(v[..<h]).trimmingCharacters(in: .whitespaces) }
+            return v.trimmingCharacters(in: CharacterSet(charactersIn: "\"'"))
+        }
+
+        for i in lines.indices {
+            if let ec = scalar(lines[i], "external-controller") {
+                hasController = true
+                let port = ec.lastIndex(of: ":").map { String(ec[ec.index(after: $0)...]) } ?? "9090"
+                let want = "127.0.0.1:\(port.trimmingCharacters(in: .whitespaces))"
+                if ec != want { lines[i] = "external-controller: \(want)"; changed = true }
+            }
+            if let sec = scalar(lines[i], "secret") {
+                hasSecret = true
+                if weak.contains(sec) { lines[i] = "secret: \(Self.randomSecret())"; changed = true }
+            }
+        }
+        if !hasController { lines.insert("external-controller: 127.0.0.1:9090", at: 0); changed = true }
+        if !hasSecret { lines.insert("secret: \(Self.randomSecret())", at: 0); changed = true }
+
+        if changed {
+            try? lines.joined(separator: "\n").write(toFile: path, atomically: true, encoding: .utf8)
         }
     }
 
-    /// One-shot newline-delimited JSON-RPC call over the UDS.
-    private func call(_ method: String, params: String = "{}") async -> Data? {
-        await withCheckedContinuation { (cont: CheckedContinuation<Data?, Never>) in
-            DispatchQueue.global().async {
-                let fd = socket(AF_UNIX, SOCK_STREAM, 0)
-                guard fd >= 0 else { cont.resume(returning: nil); return }
-                defer { close(fd) }
-                var addr = sockaddr_un()
-                addr.sun_family = sa_family_t(AF_UNIX)
-                _ = self.socketPath.withCString { src in
-                    withUnsafeMutablePointer(to: &addr.sun_path) {
-                        $0.withMemoryRebound(to: CChar.self, capacity: 104) { dst in strcpy(dst, src) }
+    /// Cryptographically-random, URL-safe secret for the control plane.
+    static func randomSecret() -> String {
+        let bytes = (0..<24).map { _ in UInt8.random(in: 0...255) }
+        return Data(bytes).base64EncodedString()
+            .replacingOccurrences(of: "/", with: "_")
+            .replacingOccurrences(of: "+", with: "-")
+            .replacingOccurrences(of: "=", with: "")
+    }
+
+    /// Locate an already-downloaded kernel to seed bin/mihomo when no bundled
+    /// binary exists. Prefers kernel.json's recorded `external` path, otherwise
+    /// the newest binary under kernels/<tag>/mihomo.
+    private func installedKernelFallback() -> String? {
+        let fm = FileManager.default
+        let jsonPath = appSupport + "/kernel.json"
+        if let data = fm.contents(atPath: jsonPath),
+           let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+           let ext = obj["external"] as? String, fm.fileExists(atPath: ext) {
+            return ext
+        }
+        let kernelsDir = appSupport + "/kernels"
+        let tags = (try? fm.contentsOfDirectory(atPath: kernelsDir))?.sorted() ?? []
+        for tag in tags.reversed() {
+            let p = kernelsDir + "/\(tag)/mihomo"
+            if fm.fileExists(atPath: p) { return p }
+        }
+        return nil
+    }
+
+    /// Try to start the kernel if it's not responding
+    func ensureRunning() {
+        Task {
+            await api.probe()
+            
+            // If reachable, check if we need to upgrade to root
+            if api.reachable {
+                if isRoot && !runningAsRoot {
+                    print("ensureRunning: Upgrading to root process...")
+                    await restart() // This will kill user process and start root one
+                }
+                return 
+            }
+            
+            let fm = FileManager.default
+            guard fm.fileExists(atPath: kernelPath) else {
+                AppModel.shared.logKernel("错误：未找到内核二进制 (\(kernelPath))。请在「内核管理」下载并启用内核。")
+                return
+            }
+
+            if isRoot {
+                if let helper = XPCManager.shared.helper() {
+                    helper.startMihomo(binPath: kernelPath, homeDir: appSupport) { success in
+                        Task { @MainActor in if success { self.runningAsRoot = true } }
                     }
                 }
-                let len = socklen_t(MemoryLayout<sockaddr_un>.size)
-                let ok = withUnsafePointer(to: &addr) {
-                    $0.withMemoryRebound(to: sockaddr.self, capacity: 1) { connect(fd, $0, len) }
+            } else {
+                let process = Process()
+                process.executableURL = URL(fileURLWithPath: kernelPath)
+                process.arguments = ["-d", appSupport]
+                do {
+                    try process.run()
+                    runningAsRoot = false
+                } catch {
+                    print("ensureRunning: failed to start: \(error)")
                 }
-                guard ok == 0 else { cont.resume(returning: nil); return }
-
-                // Set 10s receive timeout
-                var tv = timeval(tv_sec: 10, tv_usec: 0)
-                setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &tv, socklen_t(MemoryLayout<timeval>.size))
-                setsockopt(fd, SOL_SOCKET, SO_SNDTIMEO, &tv, socklen_t(MemoryLayout<timeval>.size))
-
-                let payload = #"{"jsonrpc":"2.0","method":"\#(method)","params":\#(params),"id":1}"# + "\n"
-                guard let payloadData = payload.data(using: .utf8) else { cont.resume(returning: nil); return }
-                var sent = 0
-                let total = payloadData.count
-                var failed = false
-                payloadData.withUnsafeBytes { buffer in
-                    guard let baseAddress = buffer.baseAddress else { return }
-                    while sent < total {
-                        let n = send(fd, baseAddress + sent, total - sent, 0)
-                        if n <= 0 { failed = true; break }
-                        sent += n
-                    }
-                }
-                guard !failed else { cont.resume(returning: nil); return }
-                
-                var data = Data()
-                var buf = [UInt8](repeating: 0, count: 65536)
-                while true {
-                    let n = recv(fd, &buf, buf.count, 0)
-                    if n <= 0 { break }
-                    data.append(contentsOf: buf[0..<n])
-                    if buf[0..<n].contains(10) { break } // 10 is '\n'
-                }
-                cont.resume(returning: data.isEmpty ? nil : data)
             }
         }
     }
 
-    private struct Envelope<T: Decodable>: Decodable { let result: T? }
-
-    /// Probe engine + discover controller. Returns (addr, secret) when present.
+    /// Refresh status via REST API
     @discardableResult
     func refresh() async -> (addr: String, secret: String)? {
-        guard let data = await call("get_status"),
-              let env = try? JSONDecoder().decode(Envelope<EngineStatusRPC>.self, from: data),
-              let s = env.result else {
-            present = false
-            isRoot = false
-            engineVersion = "?"
-            return nil
+        await api.probe()
+        if api.reachable {
+            present = true
+            engineVersion = api.version
+            // We assume it's root if TUN is enabled and working, or check via other means.
+            // For now, we'll use a property to track if we started it as root.
+            return ("\(api.host):\(api.port)", api.secret)
         }
-        present = true
-        uptimeSec = s.uptimeSec
-        engineVersion = s.version
-        isRoot = s.isRoot
-        guard !s.controllerAddr.isEmpty else { return nil }
-        return (s.controllerAddr, s.controllerSecret)
+        present = false
+        return nil
     }
 
-    /// Promote the engine to a root LaunchDaemon so TUN works. Requires one
-    /// administrator-auth prompt (osascript). Installs the engine + geodata to a
-    /// system path, unloads the user LaunchAgent, writes /Library/LaunchDaemons,
-    /// and bootstraps it as root. Returns true on success.
+    /// Install mihomo as a root LaunchDaemon.
     @discardableResult
     func installPrivileged() async -> Bool {
+        // We use XPCManager to install the daemon which points to the official mihomo binary
         let ok = await XPCManager.shared.installDaemon()
-        if ok {
-            isRoot = true
-            // Stop the user-level engine
-            let uid = getuid()
-            let task = Process()
-            task.executableURL = URL(fileURLWithPath: "/bin/launchctl")
-            task.arguments = ["bootout", "gui/\(uid)/com.clashpow.engine"]
-            try? task.run()
-        }
+        if ok { isRoot = true }
         return ok
     }
 
-    /// Demote back to the user LaunchAgent (removes the root daemon). Admin auth.
     @discardableResult
     func uninstallPrivileged() async -> Bool {
         let ok = await XPCManager.shared.uninstallDaemon()
-        if ok {
-            isRoot = false
-            // bring the user LaunchAgent back
-            let t = Process(); t.executableURL = URL(fileURLWithPath: "/bin/launchctl")
-            t.arguments = ["load", plistPath]; try? t.run(); t.waitUntilExit()
-        }
+        if ok { isRoot = false }
         return ok
+    }
+
+    /// Patch config via REST API
+    @discardableResult
+    func patchConfig(_ overrides: [String: Any]) async -> Bool {
+        do {
+            try await api.patchConfig(overrides)
+            return true
+        } catch {
+            print("patchConfig error: \(error)")
+            return false
+        }
+    }
+
+    /// Set config via REST API (reload from path or direct patch)
+    func setConfig(_ yaml: String) async -> (ok: Bool, error: String?) {
+        let path = appSupport + "/active_config.yaml"
+        do {
+            try yaml.write(toFile: path, atomically: true, encoding: .utf8)
+            try await api.reloadConfig(path: path)
+            return (true, nil)
+        } catch {
+            return (false, error.localizedDescription)
+        }
+    }
+
+    /// Stop and restart the kernel
+    func restart() async {
+        // Attempt graceful shutdown via REST API if reachable
+        if api.reachable {
+            guard let url = URL(string: "http://\(api.host):\(api.port)/shutdown") else { return }
+            var req = URLRequest(url: url)
+            req.httpMethod = "POST"
+            if !api.secret.isEmpty { req.setValue("Bearer \(api.secret)", forHTTPHeaderField: "Authorization") }
+            _ = try? await URLSession.shared.data(for: req)
+        }
+        
+        // Kill stray processes if API didn't work or for good measure
+        if isRoot {
+            if let helper = XPCManager.shared.helper() {
+                _ = await withCheckedContinuation { (cont: CheckedContinuation<Bool, Never>) in
+                    helper.stopMihomo { ok in cont.resume(returning: ok) }
+                }
+            }
+        } else {
+            let t = Process(); t.executableURL = URL(fileURLWithPath: "/usr/bin/killall")
+            t.arguments = ["-9", "mihomo"]
+            try? t.run(); t.waitUntilExit()
+        }
+        
+        // Give it a moment to release ports
+        try? await Task.sleep(nanoseconds: 500_000_000)
+        
+        // Start it back up
+        ensureRunning()
     }
 
     /// Run a shell snippet with administrator privileges via one osascript prompt.
@@ -212,77 +309,48 @@ import SwiftUI
         }
     }
 
-    /// Deep-merge config overrides into the running config (validate + rollback).
-    @discardableResult
-    func patchConfig(_ overrides: [String: Any]) async -> Bool {
-        guard let pd = try? JSONSerialization.data(withJSONObject: overrides),
-              let params = String(data: pd, encoding: .utf8) else {
-            print("patchConfig: serialization failed")
-            return false
-        }
-        print("patchConfig: sending overrides: \(params)")
-        guard let data = await call("patch_config", params: params) else {
-            print("patchConfig: UDS call returned nil")
-            return false
-        }
-        if let str = String(data: data, encoding: .utf8) {
-            print("patchConfig: received raw response: \(str)")
-        }
-        
-        do {
-            struct Resp: Decodable { struct R: Decodable { let ok: Bool? }; let result: R? }
-            let resp = try JSONDecoder().decode(Resp.self, from: data)
-            let ok = resp.result?.ok == true
-            print("patchConfig: decoded success: \(ok)")
-            return ok
-        } catch {
-            print("patchConfig: decode error: \(error)")
-            if let str = String(data: data, encoding: .utf8) {
-                print("patchConfig: raw data was: \(str)")
-            }
-            return false
-        }
-    }
-
-    func restart() async { _ = await call("shutdown") }   // launchd KeepAlive respawns
-    func startTUN() async { _ = await call("start_tun") }
-    func stopTUN() async { _ = await call("stop_tun") }
-
-    /// Ask the root engine daemon to set/clear the macOS system HTTP/HTTPS/SOCKS proxy.
-    /// Since the engine runs as root, this does not pop up any authorization dialogs.
     @discardableResult
     func setSystemProxy(enabled: Bool, port: Int) async -> Bool {
-        if isRoot {
-            guard let helper = XPCManager.shared.helper() else { return false }
-            return await withCheckedContinuation { cont in
-                helper.setSystemProxy(enabled: enabled, port: port) { ok in
-                    cont.resume(returning: ok)
-                }
+        guard let helper = XPCManager.shared.helper() else {
+            // Fallback to osascript if helper not available
+            return await Self.setSystemProxyFallback(enabled: enabled, port: port)
+        }
+        return await withCheckedContinuation { cont in
+            helper.setSystemProxy(enabled: enabled, port: port) { ok in
+                cont.resume(returning: ok)
             }
-        } else {
-            // Not root, use normal JSON-RPC for now (which will fail if the engine doesn't have root,
-            // but the engine uses networksetup internally).
-            let params = #"{"enabled":\#(enabled),"port":\#(port)}"#
-            guard let data = await call("set_system_proxy", params: params) else { return false }
-            struct Resp: Decodable { struct R: Decodable { let ok: Bool? }; let result: R? }
-            return (try? JSONDecoder().decode(Resp.self, from: data))?.result?.ok == true
         }
     }
 
-    /// Apply a full YAML config. The engine validates + applies with rollback;
-    /// returns (ok, errorMessage). A non-nil error means validation failed and
-    /// the engine kept the previous good config.
-    func setConfig(_ yaml: String) async -> (ok: Bool, error: String?) {
-        let pd = try? JSONSerialization.data(withJSONObject: ["config_yaml": yaml])
-        let params = pd.flatMap { String(data: $0, encoding: .utf8) } ?? "{}"
-        guard let data = await call("set_config", params: params) else { return (false, "引擎无响应") }
-        struct Resp: Decodable {
-            struct R: Decodable { let ok: Bool? }
-            struct E: Decodable { let message: String }
-            let result: R?; let error: E?
+    /// Set/clear the macOS system HTTP/HTTPS/SOCKS proxy via osascript fallback.
+    static func setSystemProxyFallback(enabled: Bool, port: Int) async -> Bool {
+        let shell: String
+        if enabled {
+            shell = """
+            dev=$(route -n get default 2>/dev/null | awk '/interface:/{print $2}'); \\
+            svc=$(networksetup -listnetworkserviceorder | grep -B1 \\"Device: $dev)\\" | head -1 | sed -E 's/^\\\\([0-9]+\\\\) //'); \\
+            networksetup -setwebproxy \\"$svc\\" 127.0.0.1 \(port); \\
+            networksetup -setsecurewebproxy \\"$svc\\" 127.0.0.1 \(port); \\
+            networksetup -setsocksfirewallproxy \\"$svc\\" 127.0.0.1 \(port)
+            """
+        } else {
+            shell = """
+            dev=$(route -n get default 2>/dev/null | awk '/interface:/{print $2}'); \\
+            svc=$(networksetup -listnetworkserviceorder | grep -B1 \\"Device: $dev)\\" | head -1 | sed -E 's/^\\\\([0-9]+\\\\) //'); \\
+            networksetup -setwebproxystate \\"$svc\\" off; \\
+            networksetup -setsecurewebproxystate \\"$svc\\" off; \\
+            networksetup -setsocksfirewallproxystate \\"$svc\\" off
+            """
         }
-        guard let r = try? JSONDecoder().decode(Resp.self, from: data) else { return (false, "解析失败") }
-        if let e = r.error { return (false, e.message) }
-        return (r.result?.ok == true, nil)
+        let script = "do shell script \"\(shell)\" with administrator privileges"
+        return await withCheckedContinuation { cont in
+            DispatchQueue.global().async {
+                let p = Process()
+                p.executableURL = URL(fileURLWithPath: "/usr/bin/osascript")
+                p.arguments = ["-e", script]
+                do { try p.run(); p.waitUntilExit(); cont.resume(returning: p.terminationStatus == 0) }
+                catch { cont.resume(returning: false) }
+            }
+        }
     }
 }
