@@ -415,6 +415,38 @@ struct RuleEditSheet: View {
     }
 }
 
+// MARK: - Kernel Management Page
+
+struct KernelMgmtPage: View {
+    @EnvironmentObject var M: AppModel
+    var body: some View {
+        VStack(spacing: 0) {
+            PageHead(title: "内核管理", desc: "版本更新 · 核心状态 · 启动日志")
+
+            ScrollView {
+                VStack(spacing: 14) {
+                    KernelCard()
+                    
+                    Card(title: "启动日志", icon: "terminal") {
+                        VStack(alignment: .leading, spacing: 4) {
+                            if M.kernelLogs.isEmpty {
+                                Text("暂无启动日志").font(.caption).foregroundColor(.secondary)
+                            } else {
+                                ForEach(M.kernelLogs.indices, id: \.self) { i in
+                                    Text(M.kernelLogs[i])
+                                        .font(.system(size: 11, design: .monospaced))
+                                        .foregroundColor(M.kernelLogs[i].contains("错误") ? .red : .primary)
+                                }
+                            }
+                        }
+                    }
+                }
+                Spacer(minLength: 0)
+            }.padding(18)
+        }
+    }
+}
+
 // MARK: - Kernel management card (version / channel / upgrade / restart)
 
 struct KernelCard: View {
@@ -427,7 +459,7 @@ struct KernelCard: View {
                     Circle().fill(M.reachable ? Color.green : Color.red).frame(width: 8, height: 8)
                     Text(M.reachable ? "运行中 · mihomo \(M.version)" : "未连接").font(.caption).foregroundColor(.secondary)
                     Spacer()
-                    if M.engineManaged {
+                    if M.reachable {
                         Button("重启内核", systemImage: "arrow.triangle.2.circlepath") {
                             Task { await M.engine.restart(); try? await Task.sleep(nanoseconds: 3_000_000_000); await M.reconnect(); M.showToast("内核已重启") }
                         }.buttonStyle(.bordered).tint(.orange).controlSize(.small)
@@ -474,22 +506,7 @@ struct KernelCard: View {
                 if !km.installedTags.isEmpty {
                     Divider()
                     HStack {
-                        Text("运行内核").font(.callout); Spacer()
-                        if km.activeTag.isEmpty {
-                            Text("内嵌")
-                                .font(.caption2)
-                                .fontWeight(.medium)
-                                .padding(.horizontal, 8)
-                                .padding(.vertical, 3)
-                                .background(Capsule().fill(M.accent.opacity(0.15)))
-                                .foregroundColor(M.accent)
-                                .frame(width: 160, alignment: .trailing)
-                        } else {
-                            Button("切回内嵌内核") { Task { await km.useEmbedded(); try? await Task.sleep(nanoseconds: 3_500_000_000); await M.reconnect() } }
-                                .buttonStyle(.bordered)
-                                .controlSize(.small)
-                                .frame(width: 160, alignment: .trailing)
-                        }
+                        Text("可用内核").font(.callout); Spacer()
                     }
                     ForEach(km.installedTags, id: \.self) { tag in
                         HStack {

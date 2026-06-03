@@ -11,5 +11,9 @@
 	</dict>
 	<key>Program</key>
 	<string>Contents/MacOS/dev.clashpow.helper</string>
+	<key>SMAuthorizedClients</key>
+	<array>
+		<string>identifier "com.clashpow.app"</string>
+	</array>
 </dict>
 </plist>
