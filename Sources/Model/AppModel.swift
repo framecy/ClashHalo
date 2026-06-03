@@ -3,6 +3,7 @@ import Combine
 import SwiftUI
 
 @MainActor final class AppModel: ObservableObject {
+    static let shared = AppModel()
     let api = MihomoClient.shared
     let engine = EngineControl.shared
     let store = ConfigStore()
@@ -66,6 +67,17 @@ import SwiftUI
     // Config
     @Published var configs: [String: Any] = [:]
 
+    // Kernel Logs (Startup/Process logs)
+    @Published var kernelLogs: [String] = []
+    func logKernel(_ msg: String) {
+        Task { @MainActor in
+            let line = "[\(Self.logDF.string(from: Date()))] \(msg)"
+            kernelLogs.append(line)
+            if kernelLogs.count > 100 { kernelLogs.removeFirst() }
+            print("KernelLog: \(msg)")
+        }
+    }
+
     // Master switches
     @Published var systemProxyOn = false
     @Published var tunOn = false
@@ -87,7 +99,9 @@ import SwiftUI
     // MARK: Lifecycle
 
     func start() {
-        engine.ensureInstalled()   // first-run: install bundled engine + LaunchAgent
+        engine.ensureInstalled()
+        api.applyController(fromConfigAt: engine.configFilePath)   // B1: discover endpoint before probing
+        engine.ensureRunning()   // Auto-start kernel if not responding
         store.load()
         history.load()
         logFlushTimer = Timer.scheduledTimer(withTimeInterval: 0.5, repeats: true) { [weak self] _ in
@@ -96,30 +110,28 @@ import SwiftUI
         Task { await reconnect() }
     }
 
-    @Published var engineManaged = false   // true when our launchd engine is hosting the kernel
-    @Published var engineUptime: Int64 = 0
-
     func reconnect() async {
         stopStreams()
 
-        // Prefer the ClashPow engine: discover its embedded controller endpoint.
-        if let ctl = await engine.refresh() {
-            engineManaged = true
-            engineUptime = engine.uptimeSec
-            let parts = ctl.addr.split(separator: ":")
-            if parts.count == 2 { api.host = String(parts[0]); api.port = Int(parts[1]) ?? api.port }
-            api.secret = ctl.secret
-        } else {
-            engineManaged = false
-        }
+        // B1: re-discover the controller endpoint each reconnect, so a profile
+        // switch that changes external-controller/secret is picked up.
+        api.applyController(fromConfigAt: engine.configFilePath)
 
+        // Purely observation-based: Is the official mihomo REST API responding?
         await api.probe()
+        
         reachable = api.reachable
         version = api.version
+        
         guard reachable else {
-            Task { try? await Task.sleep(nanoseconds: 3_000_000_000); await reconnect() }
+            // Silently retry in the background every 3 seconds if not reachable
+            Task {
+                try? await Task.sleep(nanoseconds: 3_000_000_000)
+                await reconnect()
+            }
             return
         }
+        
         startStreams()
         startPolling()
     }
@@ -350,14 +362,17 @@ import SwiftUI
         ]
         var changed = false
         for (k, v) in defaults {
-            if (geo[k] ?? "").isEmpty || (geo[k] ?? "").contains("geodata.kelee.one") || (geo[k] ?? "").contains("github.com") {
+            let current = geo[k] ?? ""
+            if (current.isEmpty || current.contains("geodata.kelee.one")) && current != v {
                 geo[k] = v
                 changed = true
             }
         }
+        
         if changed {
+            // Background correction: use api directly and silently
+            _ = try? await api.patchConfig(["geox-url": geo])
             c["geox-url"] = geo
-            Task { await patch(["geox-url": geo]) }
         }
         configs = c
         if let m = c["mode"] as? String { mode = m }
@@ -369,90 +384,21 @@ import SwiftUI
         let on = !systemProxyOn
         let port = (configs["mixed-port"] as? Int) ?? (configs["port"] as? Int) ?? 7890
         Task {
-            if !engine.isRoot {
-                showToast("设置系统代理需要管理员授权以安装特权服务…")
-                let installOk = await engine.installPrivileged()
-                if installOk {
-                    try? await Task.sleep(nanoseconds: 3_500_000_000)   // let root daemon boot
-                    await reconnect()
-                } else {
-                    showToast("授权失败，系统代理未启用")
-                    return
-                }
-            }
-            
-            guard engine.isRoot else {
-                showToast("特权服务未运行，系统代理设置失败")
-                return
-            }
-            
             let ok = await engine.setSystemProxy(enabled: on, port: port)
             if ok {
                 systemProxyOn = on
                 showToast(on ? "系统代理已开启" : "系统代理已关闭")
             } else {
-                showToast("特权服务响应失败，尝试备用提权方式…")
-                let fallbackOk = await Self.setSystemProxyFallback(enabled: on, port: port)
-                if fallbackOk {
-                    systemProxyOn = on
-                    showToast(on ? "系统代理已开启 (备用)" : "系统代理已关闭 (备用)")
-                } else {
-                    showToast("系统代理设置失败")
-                }
+                // Check reachability before showing generic error
+                await api.probe()
+                if api.reachable { showToast("系统代理设置失败") }
             }
         }
     }
 
-    /// Set/clear the macOS system HTTP/HTTPS/SOCKS proxy on the primary network
-    /// service. Uses networksetup under one administrator-auth prompt (osascript),
-    /// so no separately-signed privileged Helper is required.
-    static func setSystemProxyFallback(enabled: Bool, port: Int) async -> Bool {
-        let shell: String
-        if enabled {
-            shell = """
-            dev=$(route -n get default 2>/dev/null | awk '/interface:/{print $2}'); \
-            svc=$(networksetup -listnetworkserviceorder | grep -B1 \\"Device: $dev)\\" | head -1 | sed -E 's/^\\\\([0-9]+\\\\) //'); \
-            networksetup -setwebproxy \\"$svc\\" 127.0.0.1 \(port); \
-            networksetup -setsecurewebproxy \\"$svc\\" 127.0.0.1 \(port); \
-            networksetup -setsocksfirewallproxy \\"$svc\\" 127.0.0.1 \(port)
-            """
-        } else {
-            shell = """
-            dev=$(route -n get default 2>/dev/null | awk '/interface:/{print $2}'); \
-            svc=$(networksetup -listnetworkserviceorder | grep -B1 \\"Device: $dev)\\" | head -1 | sed -E 's/^\\\\([0-9]+\\\\) //'); \
-            networksetup -setwebproxystate \\"$svc\\" off; \
-            networksetup -setsecurewebproxystate \\"$svc\\" off; \
-            networksetup -setsocksfirewallproxystate \\"$svc\\" off
-            """
-        }
-        let script = "do shell script \"\(shell)\" with administrator privileges"
-        return await withCheckedContinuation { cont in
-            DispatchQueue.global().async {
-                let p = Process()
-                p.executableURL = URL(fileURLWithPath: "/usr/bin/osascript")
-                p.arguments = ["-e", script]
-                do { try p.run(); p.waitUntilExit(); cont.resume(returning: p.terminationStatus == 0) }
-                catch { cont.resume(returning: false) }
-            }
-        }
-    }
     func toggleTUN() {
         let want = !tunOn
         Task {
-            if want && !engine.isRoot {
-                // TUN needs the engine running as root. Promote via one admin prompt.
-                showToast("启用 TUN 需要管理员授权…")
-                let ok = await engine.installPrivileged()
-                guard ok else { showToast("授权失败，TUN 未启用"); return }
-                try? await Task.sleep(nanoseconds: 3_500_000_000)   // let root daemon boot
-                await reconnect()
-            }
-            
-            if want && !engine.isRoot {
-                showToast("特权服务加载失败，TUN 未启用")
-                return
-            }
-            
             let overrides: [String: Any] = [
                 "tun": [
                     "enable": want,
@@ -461,13 +407,29 @@ import SwiftUI
                     "auto-detect-interface": true
                 ]
             ]
+            
+            // TUN requires root. 
+            if want && !engine.runningAsRoot {
+                if !engine.isRoot {
+                    showToast("启用 TUN 需要管理员授权以安装特权服务…")
+                    let ok = await engine.installPrivileged()
+                    guard ok else { showToast("授权失败，TUN 未启用"); return }
+                }
+                
+                showToast("正在以 Root 权限重启核心…")
+                await engine.restart()
+                try? await Task.sleep(nanoseconds: 2_000_000_000)
+                await self.reconnect()
+            }
+
             let ok = await engine.patchConfig(overrides)
             if ok {
                 await refreshConfigs()
                 tunOn = want
                 showToast(want ? "TUN 模式已开启" : "TUN 模式已关闭")
             } else {
-                showToast(want ? "TUN 模式开启失败，请检查网络或端口冲突" : "TUN 模式关闭失败")
+                await api.probe()
+                if api.reachable { showToast(want ? "TUN 模式开启失败" : "TUN 模式关闭失败") }
             }
         }
     }
@@ -475,38 +437,62 @@ import SwiftUI
     /// Deep-merge config overrides into the running config via the engine
     /// (validate + rollback). The primitive behind all settings forms.
     func patch(_ overrides: [String: Any]) async {
+        guard reachable else {
+            showToast("内核未连接，无法修改配置")
+            return
+        }
+        
         let ok = await engine.patchConfig(overrides)
-        if ok { await refreshConfigs() } else { showToast("配置写入失败") }
+        if ok {
+            await refreshConfigs()
+            showToast("配置已更新")
+        } else {
+            // Check if it just died
+            await api.probe(timeout: 0.5)
+            if api.reachable {
+                showToast("内核拒绝了该配置修改")
+            } else {
+                reachable = false
+                showToast("内核已断开，配置写入失败")
+            }
+        }
     }
 
     func toggleEngine() {
         let want = !reachable
         Task {
             if want {
-                // start engine
-                engine.ensureInstalled()
-                let t = Process(); t.executableURL = URL(fileURLWithPath: "/bin/launchctl")
-                t.arguments = ["start", "com.clashpow.engine"]
-                try? t.run(); t.waitUntilExit()
+                logKernel("正在请求启动核心...")
                 showToast("正在启动核心...")
-                try? await Task.sleep(nanoseconds: 1_000_000_000)
-                await reconnect()
-            } else {
-                // stop engine
-                let t = Process(); t.executableURL = URL(fileURLWithPath: "/usr/bin/killall")
-                t.arguments = ["-9", "clashpow-engine"]
-                try? t.run(); t.waitUntilExit()
+                engine.ensureRunning()
                 
-                // If it is running as root, we also need to kill it via admin or it won't die,
-                // but since killall -9 clashpow-engine only kills user processes, 
-                // we might need to use the EngineControl uninstall API if it's root.
-                if engine.isRoot {
-                    showToast("停止系统核心需要授权...")
-                    let ok = await engine.uninstallPrivileged()
-                    if !ok { showToast("停止失败") }
+                // Wait and verify
+                for i in 1...5 {
+                    try? await Task.sleep(nanoseconds: 1_000_000_000)
+                    await api.probe(timeout: 0.5)
+                    if api.reachable {
+                        logKernel("核心启动成功 (尝试 \(i))")
+                        await reconnect()
+                        return
+                    }
+                    logKernel("等待核心响应... (\(i)/5)")
                 }
-                
+                logKernel("错误：核心启动超时或权限不足")
+                showToast("核心启动失败，请检查设置")
+            } else {
+                logKernel("正在停止核心...")
+                // stop engine
+                if engine.isRoot {
+                    if let helper = XPCManager.shared.helper() {
+                        helper.stopMihomo { _ in }
+                    }
+                } else {
+                    let t = Process(); t.executableURL = URL(fileURLWithPath: "/usr/bin/killall")
+                    t.arguments = ["-9", "mihomo"]
+                    try? t.run(); t.waitUntilExit()
+                }
                 reachable = false
+                logKernel("核心已停止")
                 showToast("核心已停止")
             }
         }

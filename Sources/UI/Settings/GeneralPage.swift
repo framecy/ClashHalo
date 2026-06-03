@@ -159,7 +159,7 @@ struct GeneralPage: View {
                                     Text("版本")
                                         .font(.subheadline)
                                     Spacer()
-                                    Text(engine.engineVersion)
+                                    Text(engine.helperVersion)
                                         .font(.subheadline.monospaced())
                                         .foregroundColor(.secondary)
                                     Button(action: {
@@ -280,11 +280,7 @@ struct GeneralPage: View {
 
     var statusLine: String {
         if !M.reachable { return "未连接内核" }
-        return "已连接 · mihomo \(M.version)" + (M.engineManaged ? " · 引擎 \(M.engine.engineVersion)" : "")
-    }
-    var uptimeText: String {
-        let s = M.engineUptime; let h = s / 3600; let m = (s % 3600) / 60
-        return h > 0 ? "\(h)h \(m)m" : "\(m)m \(s % 60)s"
+        return "已连接 · mihomo \(M.version)"
     }
     func field(_ l: String, text: Binding<String>, placeholder: String) -> some View {
         HStack { Text(l).font(.caption).foregroundColor(.secondary).frame(width: 50, alignment: .leading)
