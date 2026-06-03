@@ -29,5 +29,10 @@
 		<key>NSAllowsArbitraryLoads</key>
 		<true/>
 	</dict>
+	<key>SMPrivilegedExecutables</key>
+	<dict>
+		<key>dev.clashpow.helper</key>
+		<string>identifier "dev.clashpow.helper"</string>
+	</dict>
 </dict>
 </plist>

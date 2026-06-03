@@ -185,7 +185,6 @@ struct DashboardPage: View {
         let direct = day.direct
         let proxy  = day.proxy
         let reject = day.reject
-        let total = max(direct + proxy + reject, 1)
 
         let data: [TrafficSlice] = [
             TrafficSlice(name: "直连", value: Double(direct), color: .cyan),

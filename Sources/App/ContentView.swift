@@ -13,12 +13,15 @@ struct ContentView: View {
         .init(id: "proxies", label: "代理", icon: "diamond.fill"),
         .init(id: "connections", label: "连接监控", icon: "link"),
         .init(id: "map", label: "SD-WAN 共存", icon: "shareplay"),
+        .init(id: "kernel", label: "内核管理", icon: "cpu"),
     ]
+
     private let netTabs: [Tab] = [
         .init(id: "dns", label: "DNS 缓存", icon: "server.rack"),
         .init(id: "logs", label: "日志", icon: "doc.plaintext.fill"),
         .init(id: "rules", label: "分流规则", icon: "line.3.horizontal.decrease"),
     ]
+
     private let configTabs: [Tab] = [
         .init(id: "config", label: "配置编辑", icon: "slider.horizontal.3"),
         .init(id: "general", label: "通用设置", icon: "gearshape.fill"),
@@ -28,6 +31,7 @@ struct ContentView: View {
         "dashboard":"仪表盘","connections":"连接监控","proxies":"代理","rules":"分流规则",
         "config":"配置编辑","logs":"实时日志","general":"通用设置","network":"网络入站",
         "dns":"DNS 缓存","tun":"TUN 模式","sniffer":"流量嗅探","map":"SD-WAN 共存",
+        "kernel":"内核管理"
     ]
 
     var body: some View {
@@ -85,6 +89,7 @@ struct ContentView: View {
 
     private var statusFooter: some View {
         VStack(spacing: 8) {
+            statusToggle("核心运行", icon: "bolt.fill", isOn: Binding(get: { M.reachable }, set: { _ in M.toggleEngine() }), accent: false)
             statusToggle("系统代理", icon: "globe", isOn: Binding(get: { M.systemProxyOn }, set: { _ in M.toggleSystemProxy() }), accent: false)
             statusToggle("TUN 模式", icon: "shield.lefthalf.filled", isOn: Binding(get: { M.tunOn }, set: { _ in M.toggleTUN() }), accent: true)
             
@@ -127,6 +132,7 @@ struct ContentView: View {
                 case "tun": TunPage()
                 case "sniffer": SnifferPage()
                 case "map": SdwanPage()
+                case "kernel": KernelMgmtPage()
                 default: DashboardPage()
                 }
             }

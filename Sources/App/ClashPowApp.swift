@@ -3,7 +3,7 @@ import SwiftUI
 
 @main
 struct ClashPowApp: App {
-    @StateObject private var model = AppModel()
+    @StateObject private var model = AppModel.shared
 
     var body: some Scene {
         WindowGroup {

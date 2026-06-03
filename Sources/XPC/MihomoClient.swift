@@ -19,6 +19,42 @@ import SwiftUI
     private var apiBase: String { "http://\(host):\(port)" }
     private var wsBase: String { "ws://\(host):\(port)" }
 
+    // MARK: Controller discovery (B1)
+
+    /// Discover the controller endpoint/secret from the kernel's config file, so the
+    /// client always talks to whatever the *running* config actually exposes instead
+    /// of stale hardcoded defaults. A bind address of 0.0.0.0/:: is normalized to the
+    /// loopback (you cannot connect to 0.0.0.0).
+    func applyController(fromConfigAt path: String) {
+        guard let text = try? String(contentsOfFile: path, encoding: .utf8) else { return }
+        if let ec = Self.yamlScalar("external-controller", in: text),
+           let colon = ec.lastIndex(of: ":") {
+            var h = String(ec[..<colon]).trimmingCharacters(in: .whitespaces)
+            if h.isEmpty || h == "0.0.0.0" || h == "::" || h == "[::]" { h = "127.0.0.1" }
+            host = h
+            if let p = Int(ec[ec.index(after: colon)...].trimmingCharacters(in: .whitespaces)) { port = p }
+        }
+        // secret may be absent (no auth) → reflect that faithfully
+        secret = Self.yamlScalar("secret", in: text) ?? ""
+    }
+
+    /// Minimal reader for a top-level `key: value` YAML scalar. Ignores indented
+    /// (nested) keys, inline comments, and surrounding quotes. Sufficient for the
+    /// flat controller/secret fields; not a general YAML parser.
+    private static func yamlScalar(_ key: String, in text: String) -> String? {
+        for raw in text.split(separator: "\n", omittingEmptySubsequences: false) {
+            let line = String(raw)
+            guard !line.hasPrefix(" "), !line.hasPrefix("\t"), line.hasPrefix(key) else { continue }
+            let after = line.dropFirst(key.count)
+            guard after.first == ":" else { continue }
+            var val = after.dropFirst().trimmingCharacters(in: .whitespaces)
+            if let hash = val.firstIndex(of: "#") { val = String(val[..<hash]).trimmingCharacters(in: .whitespaces) }
+            val = val.trimmingCharacters(in: CharacterSet(charactersIn: "\"'"))
+            return val.isEmpty ? nil : val
+        }
+        return nil
+    }
+
     // MARK: REST
 
     private func request(_ path: String, method: String = "GET", body: Data? = nil) -> URLRequest? {
@@ -126,9 +162,24 @@ import SwiftUI
         _ = try await session.data(for: req)
     }
 
+    func probe(timeout: TimeInterval = 1.0) async {
+        guard let url = URL(string: apiBase + "/version") else { reachable = false; return }
+        var r = URLRequest(url: url)
+        r.timeoutInterval = timeout
+        if !secret.isEmpty { r.setValue("Bearer \(secret)", forHTTPHeaderField: "Authorization") }
+        
+        do {
+            let (data, _) = try await session.data(for: r)
+            let v = try JSONDecoder().decode(MihomoVersion.self, from: data)
+            version = v.version
+            reachable = true
+        } catch {
+            reachable = false
+        }
+    }
+
     func probe() async {
-        do { let v = try await fetchVersion(); version = v.version; reachable = true }
-        catch { reachable = false }
+        await probe(timeout: 1.0)
     }
 
     // MARK: WebSocket streams
@@ -168,7 +219,7 @@ import SwiftUI
                     // Reconnect after a short delay
                     Task { @MainActor in
                         try? await Task.sleep(nanoseconds: 2_000_000_000)
-                        if !handle.cancelled { self.connectStream(path, type: type, handle: handle, onValue: onValue) }
+                        if !handle.cancelled { self.connectStream(path, type: T.self, handle: handle, onValue: onValue) }
                     }
                 }
             }
@@ -177,7 +228,7 @@ import SwiftUI
     }
 }
 
-final class WSHandle {
+final class WSHandle: @unchecked Sendable {
     var task: URLSessionWebSocketTask?
     var cancelled = false
     func cancel() { cancelled = true; task?.cancel(with: .goingAway, reason: nil) }
