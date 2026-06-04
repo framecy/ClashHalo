@@ -45,16 +45,17 @@ final class KernelManager: ObservableObject {
         guard let bundled = Bundle.main.url(forResource: "mihomo", withExtension: nil) else {
             note = "内置内核缺失（打包未含 mihomo）"; return
         }
+        await EngineControl.shared.stopKernel()   // release bin/mihomo before overwrite
         do {
             if fm.fileExists(atPath: binPath) { try fm.removeItem(atPath: binPath) }
             try fm.copyItem(at: bundled, to: URL(fileURLWithPath: binPath))
             try fm.setAttributes([.posixPermissions: 0o755], ofItemAtPath: binPath)
             activeTag = "内置"
-            note = "已切换至内置内核，正在重启…"
-            await EngineControl.shared.restart()
+            note = "已切换至内置内核，正在启动…"
         } catch {
             note = "切换失败：\(error.localizedDescription)"
         }
+        await EngineControl.shared.launch()
     }
 
     /// Switch to a downloaded kernel: copy binary to unified bin path + restart.
@@ -64,16 +65,17 @@ final class KernelManager: ObservableObject {
         let fm = FileManager.default
         guard fm.fileExists(atPath: src) else { note = "内核文件缺失"; return }
 
+        await EngineControl.shared.stopKernel()   // release bin/mihomo before overwrite
         do {
             if fm.fileExists(atPath: binPath) { try fm.removeItem(atPath: binPath) }
             try fm.copyItem(atPath: src, toPath: binPath)
             try fm.setAttributes([.posixPermissions: 0o755], ofItemAtPath: binPath)
             activeTag = tag
-            note = "已启用 \(tag)，正在重启…"
-            await EngineControl.shared.restart()
+            note = "已启用 \(tag)，正在启动…"
         } catch {
             note = "启用失败：\(error.localizedDescription)"
         }
+        await EngineControl.shared.launch()
     }
 
     func scanInstalled() {
