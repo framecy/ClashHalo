@@ -22,14 +22,7 @@ struct DashboardPage: View {
         ScrollView {
             VStack(alignment: .leading, spacing: 0) {
                 PageHead(title: "仪表盘", desc: "流量趋势 · 实时统计 · 策略组排行 · 访问目标分析") {
-                    VStack(alignment: .trailing, spacing: 8) {
-                        HStack(spacing: 8) {
-                            HeadSwitch(title: "系统", icon: "globe", isOn: Binding(get: { M.systemProxyOn }, set: { _ in M.toggleSystemProxy() }), accentColor: .blue)
-                            HeadSwitch(title: "TUN", icon: "shield.lefthalf.filled", isOn: Binding(get: { M.tunOn }, set: { _ in M.toggleTUN() }), accentColor: M.accent)
-                            HeadSwitch(title: "核心", icon: "power", isOn: Binding(get: { M.reachable }, set: { _ in M.toggleEngine() }), accentColor: .green)
-                        }
-                        rangePicker
-                    }
+                    rangePicker
                 }
 
                 VStack(alignment: .leading, spacing: 16) {
@@ -381,33 +374,6 @@ struct HourlyBars: View {
             }
             .frame(maxHeight: .infinity, alignment: .bottom)
         }
-    }
-}
-
-struct HeadSwitch: View {
-    let title: String
-    let icon: String
-    @Binding var isOn: Bool
-    let accentColor: Color
-
-    var body: some View {
-        HStack(spacing: 6) {
-            Image(systemName: icon)
-                .font(.system(size: 12))
-                .foregroundColor(isOn ? accentColor : .secondary)
-                .frame(width: 14)
-            
-            Text(title).font(.system(size: 12, weight: .medium)).lineLimit(1)
-            
-            Toggle("", isOn: $isOn)
-                .toggleStyle(.switch)
-                .controlSize(.mini)
-                .labelsHidden()
-        }
-        .padding(.horizontal, 8)
-        .frame(height: 32)
-        .background(RoundedRectangle(cornerRadius: 8).fill(Color(red: 0x2A/255.0, green: 0x2A/255.0, blue: 0x2A/255.0)))
-        .overlay(RoundedRectangle(cornerRadius: 8).stroke(Color.primary.opacity(0.1), lineWidth: 1.0))
     }
 }
 
