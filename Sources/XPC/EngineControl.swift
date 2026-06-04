@@ -13,6 +13,9 @@ import SwiftUI
     @Published var isRoot = false          // helper is installed
     @Published var runningAsRoot = false   // current process was started via helper
 
+    /// Injected log sink (set by AppModel) — avoids referencing AppModel here.
+    var onLog: ((String) -> Void)?
+
     private let appSupport = NSHomeDirectory() + "/Library/Application Support/ClashPow"
     /// Config file the running mihomo reads (`mihomo -d <appSupport>` → config.yaml).
     /// Used as the source of truth for controller endpoint discovery (B1).
@@ -222,7 +225,7 @@ import SwiftUI
             
             let fm = FileManager.default
             guard fm.fileExists(atPath: kernelPath) else {
-                AppModel.shared.logKernel("错误：未找到内核二进制 (\(kernelPath))。请在「内核管理」下载并启用内核。")
+                onLog?("错误：未找到内核二进制 (\(kernelPath))。请在「内核管理」下载并启用内核。")
                 return
             }
 

@@ -102,6 +102,13 @@ import SwiftUI
     // MARK: Lifecycle
 
     func start() {
+        // Inject log sinks so the engine/helper layers report events without
+        // referencing AppModel directly (decoupling — they no longer call
+        // AppModel.shared).
+        engine.onLog = { [weak self] msg in self?.logKernel(msg) }
+        XPCManager.shared.onLog = { [weak self] msg in
+            Task { @MainActor in self?.logKernel(msg) }
+        }
         engine.ensureInstalled()
         api.applyController(fromConfigAt: engine.configFilePath)   // B1: discover endpoint before probing
         engine.ensureRunning()   // Auto-start kernel if not responding
@@ -532,25 +539,14 @@ import SwiftUI
         }
     }
 
-    // Rules editing (operates on the config's inline `rules` list)
-    @AppStorage("rules.disabled") private var disabledRulesJSON = "[]"
-    var disabledRules: [String] {
-        get { (try? JSONDecoder().decode([String].self, from: Data(disabledRulesJSON.utf8))) ?? [] }
-        set { disabledRulesJSON = (try? String(data: JSONEncoder().encode(newValue), encoding: .utf8) ?? "[]") ?? "[]" }
-    }
-    var inlineRules: [String] { (configs["rules"] as? [Any])?.map { "\($0)" } ?? [] }
-
-    func applyRules(_ rules: [String]) async {
-        await patch(["rules": rules])
-        showToast("规则已更新并热重载")
-    }
-    func disableRule(_ rule: String) async {
-        var d = disabledRules; if !d.contains(rule) { d.append(rule) }; disabledRules = d
-        await applyRules(inlineRules.filter { $0 != rule })
-    }
-    func enableRule(_ rule: String) async {
-        disabledRules = disabledRules.filter { $0 != rule }
-        await applyRules(inlineRules + [rule])
+    // Rules (read-only view of the kernel's active rule set).
+    // NOTE: mihomo does NOT expose rules in /configs and does NOT accept rule
+    // changes via /configs PATCH — the previous configs["rules"]+PATCH path was
+    // a no-op. Rules are read from the dedicated /rules endpoint; editing must be
+    // done in the profile YAML (Config page) + reload.
+    @Published var rules: [RuleEntry] = []
+    func refreshRules() async {
+        if let r = try? await api.fetchRules() { rules = r.rules }
     }
 
     // MARK: Actions
