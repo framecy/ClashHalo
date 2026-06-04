@@ -126,6 +126,16 @@ public class XPCManager {
         return ok
     }
     
+    /// Full upgrade: uninstall old binary + install new one.
+    /// Used when the running helper version is older than kExpectedHelperVersion.
+    public func upgradeDaemon() async -> Bool {
+        _ = await uninstallDaemon()
+        // Give launchd a moment to fully remove the service before reinstalling
+        try? await Task.sleep(nanoseconds: 800_000_000)
+        connection = nil
+        return await installDaemon()
+    }
+
     public func uninstallDaemon() async -> Bool {
         let plistDst = "/Library/LaunchDaemons/com.clashpow.helper.plist"
         let helperDst = "/Library/PrivilegedHelperTools/com.clashpow.helper"
