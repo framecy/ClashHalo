@@ -46,6 +46,10 @@ struct ConnectionsPage: View {
                     }.width(min: 120, ideal: 180)
                     TableColumn("↓") { c in Text(fmtRate(Double(c.downRate))).font(.system(size: 12, design: .monospaced)) }.width(70)
                     TableColumn("↑") { c in Text(fmtRate(Double(c.upRate))).font(.system(size: 12, design: .monospaced)).foregroundColor(.secondary) }.width(70)
+                    TableColumn("") { c in
+                        Button { M.closeConnection(id: c.id) } label: { Image(systemName: "xmark.circle") }
+                            .buttonStyle(.borderless).foregroundColor(.secondary).help("断开此连接")
+                    }.width(36)
                 }
             }
         }

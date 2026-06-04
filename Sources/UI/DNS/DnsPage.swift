@@ -17,14 +17,8 @@ struct DnsPage: View {
 
             ScrollView {
                 VStack(spacing: 14) {
-                    // DNS stats
-                    HStack(spacing: 12) {
-                        StatBox(label: "平均解析", value: "0.4", unit: "ms", sub: "DoH · 1.1.1.1")
-                        StatBox(label: "Fake-IP 池", value: "198.18/15", sub: "已分配 1,204", accent: true)
-                        StatBox(label: "缓存条目", value: "842", sub: "内存常驻")
-                    }
-
-                    // DNS settings (editable)
+                    // DNS settings (editable) — 顶部曾有硬编码的假统计(平均解析/池/缓存),
+                    // mihomo 无对应统计端点, 已移除以免误导; 真实信息见下方 Fake-IP 映射。
                     Card(title: "DNS 服务器", icon: "server.rack") {
                         VStack(spacing: 2) {
                             NToggle("启用 DNS", "dns", "enable")
