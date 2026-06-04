@@ -34,6 +34,9 @@ struct ContentView: View {
         "kernel":"内核管理"
     ]
 
+    /// App 版本号(随 MARKETING_VERSION),展示于侧栏头部与关于页。
+    static let appVersion = Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "—"
+
     var body: some View {
         NavigationSplitView {
             sidebar.navigationSplitViewColumnWidth(min: 200, ideal: 210, max: 240)
@@ -78,7 +81,10 @@ struct ContentView: View {
                 .frame(width: 32, height: 32)
                 .overlay(Image(systemName: "bolt.fill").font(.system(size: 15, weight: .bold)).foregroundColor(.white))
             VStack(alignment: .leading, spacing: 0) {
-                Text("ClashPow").font(.system(size: 14, weight: .bold))
+                HStack(spacing: 5) {
+                    Text("ClashPow").font(.system(size: 14, weight: .bold))
+                    Text("v\(Self.appVersion)").font(.system(size: 10, weight: .medium)).foregroundColor(.secondary)
+                }
                 Text(M.reachable ? "mihomo \(M.version)" : "未连接")
                     .font(.system(size: 12)).foregroundColor(.secondary)
             }
