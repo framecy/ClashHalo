@@ -11,6 +11,9 @@
 		A002 /* ContentView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B002; };
 		A004 /* DashboardView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B004; };
 		94B14BD55C274919B82F3C5E /* AppModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = A7EFEC0FDBC0406AA6A9D774 /* AppModel.swift */; };
+		AMP1 /* AppModel+Proxies.swift in Sources */ = {isa = PBXBuildFile; fileRef = AMP2 /* AppModel+Proxies.swift */; };
+		AMC1 /* AppModel+Connections.swift in Sources */ = {isa = PBXBuildFile; fileRef = AMC2 /* AppModel+Connections.swift */; };
+		AMG1 /* AppModel+Config.swift in Sources */ = {isa = PBXBuildFile; fileRef = AMG2 /* AppModel+Config.swift */; };
 		8BC3EAE990F64B20BA6FA269 /* ConfigStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9641FF3F733D4D03A5FC9B70 /* ConfigStore.swift */; };
 		52A040A2184744959929CD76 /* TrafficHistory.swift in Sources */ = {isa = PBXBuildFile; fileRef = 06A576D2F0DE48B7BA1A37D7 /* TrafficHistory.swift */; };
 		394E7B0C59764680BB4D9507 /* MihomoClient.swift in Sources */ = {isa = PBXBuildFile; fileRef = 40F5A17CAAA24A5BBC54C15E /* MihomoClient.swift */; };
@@ -39,6 +42,9 @@
 		B002 /* ContentView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ContentView.swift; sourceTree = "<group>"; };
 		B004 /* DashboardView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DashboardView.swift; sourceTree = "<group>"; };
 		A7EFEC0FDBC0406AA6A9D774 /* AppModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Sources/Model/AppModel.swift; sourceTree = "SOURCE_ROOT"; };
+		AMP2 /* AppModel+Proxies.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "Sources/Model/AppModel+Proxies.swift"; sourceTree = "SOURCE_ROOT"; };
+		AMC2 /* AppModel+Connections.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "Sources/Model/AppModel+Connections.swift"; sourceTree = "SOURCE_ROOT"; };
+		AMG2 /* AppModel+Config.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "Sources/Model/AppModel+Config.swift"; sourceTree = "SOURCE_ROOT"; };
 		9641FF3F733D4D03A5FC9B70 /* ConfigStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Sources/Model/ConfigStore.swift; sourceTree = "SOURCE_ROOT"; };
 		06A576D2F0DE48B7BA1A37D7 /* TrafficHistory.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Sources/Model/TrafficHistory.swift; sourceTree = "SOURCE_ROOT"; };
 		40F5A17CAAA24A5BBC54C15E /* MihomoClient.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Sources/XPC/MihomoClient.swift; sourceTree = "SOURCE_ROOT"; };
@@ -74,7 +80,7 @@
 		G_UI_DASHBOARD = {isa = PBXGroup; children = (B004); name = Dashboard; path = Dashboard; sourceTree = "<group>"; };
 		G_UI_CONFIGEDITOR = {isa = PBXGroup; children = (BF9832249132493A9E51C30C, A3F21F03B19F4760A795864C, 50A6FB0C0B7141B0A804F1A9, 932DCE667C4747EEB24EB3B1, 87F1015549B149CD80A68FBC, 2A173B69A3BD4DDA8F992A68, 5C1B022FFD034AE592948756, 3D2C04980A2D415390C45937, 8CBAE68653724149A087BBEE, A8B1C01AAFB044E986219D24); name = ConfigEditor; path = ConfigEditor; sourceTree = "<group>"; };
 		G_XPC = {isa = PBXGroup; children = (40F5A17CAAA24A5BBC54C15E, 43A486CB7FAA4FBBAEBFCCE6, A4311730377D47748FC5F9D5, A3BB008E2BF84DF5A2895FBC); name = XPC; path = XPC; sourceTree = "<group>"; };
-		G_MODEL = {isa = PBXGroup; children = (B006, A7EFEC0FDBC0406AA6A9D774, 9641FF3F733D4D03A5FC9B70, 06A576D2F0DE48B7BA1A37D7); name = Model; path = Model; sourceTree = "<group>"; };
+		G_MODEL = {isa = PBXGroup; children = (B006, A7EFEC0FDBC0406AA6A9D774, AMP2, AMC2, AMG2, 9641FF3F733D4D03A5FC9B70, 06A576D2F0DE48B7BA1A37D7); name = Model; path = Model; sourceTree = "<group>"; };
 		G_RESOURCES = {isa = PBXGroup; children = (B015); name = Resources; path = Resources; sourceTree = "<group>"; };
 		G_INFOPLIST = {isa = PBXGroup; children = (F010); name = "Supporting Files"; sourceTree = "<group>"; };
 		G_PRODUCTS = {isa = PBXGroup; children = (F001); name = Products; sourceTree = "<group>"; };
@@ -93,7 +99,7 @@
 /* End PBXResourcesBuildPhase section */
 
 /* Begin PBXSourcesBuildPhase section */
-		PHASE_SOURCES = {isa = PBXSourcesBuildPhase; buildActionMask = 2147483647; files = (AABBCCDD0000000000000001, AABBCCDD0000000000000003, A001, A002, A004, 94B14BD55C274919B82F3C5E, 8BC3EAE990F64B20BA6FA269, 52A040A2184744959929CD76, 394E7B0C59764680BB4D9507, B1F3682AEF4F4C8AB5A97582, DD035B63A0B144F2BE7205A4, 71D6AA8BB9A64328A01B5364, F0458DF12625404DA930506D, 4FE025F9B3A84B9A9563DC03, D03CD0CC2A8E4B34ACE8FB5A, 9F1A5AD4866E444CB21D6A9A, C762A449C2434390BD3E8BF2, 5C790C4A1B3744679E83ADA0, 4F219760BD14466DA838B50A, 61523827C4D44A56AB8FA9E9, AE6635A9ACB74E5DB66892EA, BA90C1F3406546599706585F, A006); };
+		PHASE_SOURCES = {isa = PBXSourcesBuildPhase; buildActionMask = 2147483647; files = (AABBCCDD0000000000000001, AABBCCDD0000000000000003, A001, A002, A004, 94B14BD55C274919B82F3C5E, 8BC3EAE990F64B20BA6FA269, 52A040A2184744959929CD76, 394E7B0C59764680BB4D9507, B1F3682AEF4F4C8AB5A97582, DD035B63A0B144F2BE7205A4, 71D6AA8BB9A64328A01B5364, F0458DF12625404DA930506D, 4FE025F9B3A84B9A9563DC03, D03CD0CC2A8E4B34ACE8FB5A, 9F1A5AD4866E444CB21D6A9A, C762A449C2434390BD3E8BF2, 5C790C4A1B3744679E83ADA0, 4F219760BD14466DA838B50A, 61523827C4D44A56AB8FA9E9, AE6635A9ACB74E5DB66892EA, BA90C1F3406546599706585F, A006, AMP1, AMC1, AMG1); };
 /* End PBXSourcesBuildPhase section */
 
 /* Begin XCBuildConfiguration section */
