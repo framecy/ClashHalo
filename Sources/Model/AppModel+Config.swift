@@ -91,6 +91,15 @@ extension AppModel {
                     showToast("启用 TUN 需要管理员授权以安装特权服务…")
                     let ok = await engine.installPrivileged()
                     guard ok else { showToast("授权失败，TUN 未启用"); return }
+                } else if engine.helperVersion != EngineControl.kExpectedHelperVersion,
+                          engine.helperVersion != "?" {
+                    // Installed helper is outdated — reinstall transparently so the new
+                    // permission fixes (isAuthorizedClient, stopMihomo) take effect.
+                    showToast("特权服务需要更新，正在自动重新安装…")
+                    let ok = await engine.installPrivileged()
+                    if !ok { showToast("Helper 更新失败，TUN 可能无法启用") }
+                    // Brief pause for helper to come up before continuing
+                    try? await Task.sleep(nanoseconds: 1_500_000_000)
                 }
 
                 showToast("正在以 Root 权限重启核心…")
