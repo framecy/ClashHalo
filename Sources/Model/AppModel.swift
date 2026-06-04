@@ -141,13 +141,13 @@ import SwiftUI
 
     private func startStreams() {
         trafficWS = api.stream("/traffic", type: TrafficTick.self) { [weak self] t in
-            self?.onTraffic(t)
+            Task { @MainActor in self?.onTraffic(t) }
         }
         connWS = api.stream("/connections", type: ConnectionsSnapshot.self) { [weak self] s in
-            self?.onConnections(s)
+            Task { @MainActor in self?.onConnections(s) }
         }
         logWS = api.stream("/logs?level=\(logLevel)", type: LogTick.self) { [weak self] l in
-            self?.onLog(l)
+            Task { @MainActor in self?.onLog(l) }
         }
     }
 
@@ -161,7 +161,7 @@ import SwiftUI
         logWS?.cancel()
         guard reachable else { return }
         logWS = api.stream("/logs?level=\(level)", type: LogTick.self) { [weak self] l in
-            self?.onLog(l)
+            Task { @MainActor in self?.onLog(l) }
         }
     }
 

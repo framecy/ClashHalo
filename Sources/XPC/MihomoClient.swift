@@ -193,38 +193,40 @@ import SwiftUI
     }
 
     /// Generic line-delimited JSON WebSocket stream. Reconnects on drop.
-    func stream<T: Decodable>(_ path: String, type: T.Type, onValue: @escaping (T) -> Void) -> WSHandle {
+    func stream<T: Decodable>(_ path: String, type: T.Type, onValue: @escaping @Sendable (T) -> Void) -> WSHandle {
         let handle = WSHandle()
         connectStream(path, type: type, handle: handle, onValue: onValue)
         return handle
     }
 
-    private func connectStream<T: Decodable>(_ path: String, type: T.Type, handle: WSHandle, onValue: @escaping (T) -> Void) {
+    private func connectStream<T: Decodable>(_ path: String, type: T.Type, handle: WSHandle, onValue: @escaping @Sendable (T) -> Void) {
         guard let url = wsURL(path) else { return }
         let task = session.webSocketTask(with: url)
         handle.task = task
         task.resume()
+        receiveLoop(task: task, path: path, type: T.self, handle: handle, onValue: onValue)
+    }
 
-        func receive() {
-            task.receive { [weak self] result in
-                guard let self, !handle.cancelled else { return }
-                switch result {
-                case .success(let msg):
-                    if case .string(let s) = msg, let data = s.data(using: .utf8),
-                       let v = try? JSONDecoder().decode(T.self, from: data) {
-                        Task { @MainActor in onValue(v) }
-                    }
-                    receive()
-                case .failure:
-                    // Reconnect after a short delay
-                    Task { @MainActor in
-                        try? await Task.sleep(nanoseconds: 2_000_000_000)
-                        if !handle.cancelled { self.connectStream(path, type: T.self, handle: handle, onValue: onValue) }
-                    }
+    /// nonisolated receive loop so the WebSocket completion handler (which runs
+    /// off the main actor) can recurse without main-actor isolation warnings.
+    private nonisolated func receiveLoop<T: Decodable>(task: URLSessionWebSocketTask, path: String, type: T.Type, handle: WSHandle, onValue: @escaping @Sendable (T) -> Void) {
+        task.receive { [weak self] result in
+            guard let self, !handle.cancelled else { return }
+            switch result {
+            case .success(let msg):
+                if case .string(let s) = msg, let data = s.data(using: .utf8),
+                   let v = try? JSONDecoder().decode(T.self, from: data) {
+                    onValue(v)   // onValue hops to @MainActor itself
+                }
+                self.receiveLoop(task: task, path: path, type: T.self, handle: handle, onValue: onValue)
+            case .failure:
+                // Reconnect after a short delay
+                Task { @MainActor in
+                    try? await Task.sleep(nanoseconds: 2_000_000_000)
+                    if !handle.cancelled { self.connectStream(path, type: T.self, handle: handle, onValue: onValue) }
                 }
             }
         }
-        receive()
     }
 }
 
