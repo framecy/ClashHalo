@@ -304,23 +304,24 @@ import SwiftUI
         }
     }
 
-    /// Stop and restart the kernel
-    func restart() async {
+    /// Stop the running kernel: graceful REST shutdown, then helper/killall fallback.
+    /// Exposed so callers (e.g. KernelManager.activate) can release bin/mihomo
+    /// before overwriting it, avoiding "file busy" when a kernel is running.
+    func stopKernel() async {
         // Attempt graceful shutdown via REST API if reachable
-        if api.reachable {
-            guard let url = URL(string: "http://\(api.host):\(api.port)/shutdown") else { return }
+        if api.reachable, let url = URL(string: "http://\(api.host):\(api.port)/shutdown") {
             var req = URLRequest(url: url)
             req.httpMethod = "POST"
             if !api.secret.isEmpty { req.setValue("Bearer \(api.secret)", forHTTPHeaderField: "Authorization") }
             _ = try? await URLSession.shared.data(for: req)
         }
-        
-        // Kill stray processes. A root kernel can only be stopped by the helper;
-        // but when upgrading user→root the *old* kernel was started by the app
-        // via Process (the helper never managed it, so stopMihomo can't kill it).
-        // So always run killall as a fallback — otherwise the old user-mode kernel
-        // survives, ensureRunning sees it still reachable and early-returns, and
-        // the root upgrade silently never happens (then TUN can't be created).
+
+        // A root kernel can only be stopped by the helper; but when upgrading
+        // user→root the *old* kernel was started by the app via Process (the
+        // helper never managed it, so stopMihomo can't kill it). So always run
+        // killall as a fallback — otherwise the old user-mode kernel survives,
+        // ensureRunning sees it reachable and early-returns, and the root upgrade
+        // silently never happens (then TUN can't be created).
         if isRoot, let helper = XPCManager.shared.helper() {
             _ = await withCheckedContinuation { (cont: CheckedContinuation<Bool, Never>) in
                 helper.stopMihomo { ok in cont.resume(returning: ok) }
@@ -329,12 +330,26 @@ import SwiftUI
         let t = Process(); t.executableURL = URL(fileURLWithPath: "/usr/bin/killall")
         t.arguments = ["-9", "mihomo"]
         try? t.run(); t.waitUntilExit()
-        
-        // Give it a moment to release ports
+
+        // Give it a moment to release ports / the binary
         try? await Task.sleep(nanoseconds: 500_000_000)
-        
-        // Start it back up
+    }
+
+    /// Stop and restart the kernel.
+    func restart() async {
+        await stopKernel()
         ensureRunning()
+    }
+
+    /// Start the kernel without stopping first (caller already stopped + swapped
+    /// the binary, e.g. KernelManager.activate).
+    func launch() async { ensureRunning() }
+
+    /// Re-probe the helper for its version (manual "检查" button feedback).
+    func refreshHelperVersion() {
+        XPCManager.shared.helper()?.getVersion { v in
+            Task { @MainActor in if !v.isEmpty { self.helperVersion = v } }
+        }
     }
 
     /// Run a shell snippet with administrator privileges via one osascript prompt.

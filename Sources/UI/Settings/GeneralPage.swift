@@ -149,7 +149,8 @@ struct GeneralPage: View {
                                         .font(.subheadline.monospaced())
                                         .foregroundColor(.secondary)
                                     Button(action: {
-                                        M.showToast("当前已是最新版本")
+                                        engine.refreshHelperVersion()
+                                        M.showToast(engine.isRoot ? "Helper 连通正常 · v\(engine.helperVersion)" : "Helper 未连通")
                                     }) {
                                         Text("检查")
                                             .padding(.horizontal, 12)
@@ -287,10 +288,14 @@ struct GeneralPage: View {
             M.showToast("正在请求授权安装特权服务…")
             let ok = await engine.installPrivileged()
             guard ok else { M.showToast("安装失败或已取消授权"); return }
-            // 等待 helper 被 launchd 拉起,pollStatus 经 verifyConnectivity 确认连通
-            try? await Task.sleep(nanoseconds: 2_500_000_000)
+            // 轮询直到 helper 被 launchd 拉起并可连通(最多 ~6s), 替代固定等待
+            var connected = false
+            for _ in 0..<12 {
+                if await XPCManager.shared.verifyConnectivity() { connected = true; break }
+                try? await Task.sleep(nanoseconds: 500_000_000)
+            }
             await M.reconnect()
-            M.showToast(engine.isRoot ? "特权辅助程序已安装并就绪" : "已安装,正在确认连通状态…")
+            M.showToast(connected ? "特权辅助程序已安装并就绪" : "已安装，但连通确认超时，请稍后重试")
         }
     }
 }
