@@ -126,11 +126,13 @@ macOS 14.0+ ，Apple Silicon (arm64)。
               /Library/PrivilegedHelperTools/com.clashpow.helper
 GUIDE
 
-DMG="$BUILD/ClashPow.dmg"
+VERSION=$(grep -oE 'MARKETING_VERSION = [0-9.]+' "$ROOT/ClashPow.xcodeproj/project.pbxproj" | head -1 | awk '{print $3}')
+DMG_NAME="ClashPow_v${VERSION}_mac_arm"
+DMG="$BUILD/${DMG_NAME}.dmg"
 rm -f "$DMG"
-hdiutil create -volname ClashPow -srcfolder "$STAGE" -ov -format UDZO "$DMG" >/dev/null
+hdiutil create -volname "ClashPow v${VERSION}" -srcfolder "$STAGE" -ov -format UDZO "$DMG" >/dev/null
 # Deliver a copy to the Desktop for convenience.
-cp -f "$DMG" "$HOME/Desktop/ClashPow.dmg"
+cp -f "$DMG" "$HOME/Desktop/${DMG_NAME}.dmg"
 echo ""
 echo "=== Done ==="
 echo "App: $APP"
