@@ -503,36 +503,41 @@ struct KernelCard: View {
                     }
                     .frame(width: 160, alignment: .trailing)
                 }
-                if !km.installedTags.isEmpty {
-                    Divider()
-                    HStack {
-                        Text("可用内核").font(.callout); Spacer()
-                    }
-                    ForEach(km.installedTags, id: \.self) { tag in
-                        HStack {
-                            Image(systemName: "shippingbox").font(.caption2).foregroundColor(.secondary)
-                            Text(tag).font(.caption.monospaced())
-                            Spacer()
-                            if km.activeTag == tag {
-                                Label("使用中", systemImage: "checkmark.circle.fill")
-                                    .font(.caption2)
-                                    .foregroundColor(M.accent)
-                                    .frame(width: 160, alignment: .trailing)
-                            } else {
-                                Button("启用") { Task { await km.activate(tag); try? await Task.sleep(nanoseconds: 3_500_000_000); await M.reconnect() } }
-                                    .buttonStyle(.bordered)
-                                    .controlSize(.small)
-                                    .frame(width: 160, alignment: .trailing)
-                            }
-                        }
-                        .padding(.vertical, 2)
-                    }
+                Divider()
+                HStack { Text("内核版本").font(.callout); Spacer() }
+                // 内置内核(随 app 分发, 始终可切回)
+                if km.hasBuiltin {
+                    kernelRow(tag: "内置",
+                              label: "内置内核" + (km.builtinVersion.isEmpty ? "" : " \(km.builtinVersion)"),
+                              icon: "shippingbox.fill", km: km)
+                }
+                // 已下载的外部内核
+                ForEach(km.installedTags, id: \.self) { tag in
+                    kernelRow(tag: tag, label: tag, icon: "shippingbox", km: km)
                 }
                 if !km.note.isEmpty { Text(km.note).font(.caption2).foregroundColor(.secondary).frame(maxWidth: .infinity, alignment: .leading) }
-                Text("下载源 MetaCubeX/mihomo releases。启用下载内核后，引擎以监管进程模式运行该外部内核；可随时切回内嵌内核。")
+                Text("下载源 MetaCubeX/mihomo releases。启用外部内核后引擎以监管进程模式运行；随时可切回内置内核。")
                     .font(.caption2).foregroundColor(.secondary).frame(maxWidth: .infinity, alignment: .leading)
             }
         }
-        .onAppear { km.scanInstalled() }
+        .onAppear { km.scanInstalled(); km.detectBuiltin() }
+    }
+
+    /// One kernel row (built-in or downloaded) with activate / in-use state.
+    @ViewBuilder
+    private func kernelRow(tag: String, label: String, icon: String, km: KernelManager) -> some View {
+        HStack {
+            Image(systemName: icon).font(.caption2).foregroundColor(tag == "内置" ? M.accent : .secondary)
+            Text(label).font(.caption.monospaced())
+            Spacer()
+            if km.activeTag == tag {
+                Label("使用中", systemImage: "checkmark.circle.fill")
+                    .font(.caption2).foregroundColor(M.accent).frame(width: 160, alignment: .trailing)
+            } else {
+                Button("启用") { Task { await km.activate(tag); try? await Task.sleep(nanoseconds: 3_500_000_000); await M.reconnect() } }
+                    .buttonStyle(.bordered).controlSize(.small).frame(width: 160, alignment: .trailing)
+            }
+        }
+        .padding(.vertical, 2)
     }
 }
