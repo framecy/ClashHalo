@@ -39,6 +39,13 @@ import SwiftUI
             let active = await XPCManager.shared.verifyConnectivity()
             if isRoot != active { isRoot = active }
 
+            // Sync runningAsRoot on app restart: if helper is active and mihomo is
+            // reachable but the flag is false, check the actual process owner so the
+            // UI reflects reality without requiring a TUN toggle to fix the state.
+            if active && !runningAsRoot && api.reachable {
+                syncRunningAsRootIfNeeded()
+            }
+
             if active && (helperVersion == "?" || helperVersion.isEmpty) {
                 if let helper = XPCManager.shared.helper() {
                     helper.getVersion { v in
@@ -49,6 +56,17 @@ import SwiftUI
                 }
             }
         }
+    }
+
+    /// Check via pgrep whether mihomo is owned by root and set the flag accordingly.
+    /// Blocks the calling thread briefly — only call from Tasks, not the main run loop.
+    private func syncRunningAsRootIfNeeded() {
+        let p = Process()
+        p.executableURL = URL(fileURLWithPath: "/usr/bin/pgrep")
+        p.arguments = ["-u", "root", "mihomo"]
+        p.standardOutput = Pipe()
+        try? p.run(); p.waitUntilExit()
+        if p.terminationStatus == 0 { runningAsRoot = true }
     }
 
     /// Ensure the mihomo binary and configuration directory are set up.
@@ -217,10 +235,16 @@ import SwiftUI
             // If reachable, check if we need to upgrade to root
             if api.reachable {
                 if isRoot && !runningAsRoot {
-                    print("ensureRunning: Upgrading to root process...")
-                    await restart() // This will kill user process and start root one
+                    // Before killing a working kernel, check the real process owner.
+                    // If it's already root (e.g. app restarted after a root session),
+                    // just set the flag instead of doing a needless restart.
+                    syncRunningAsRootIfNeeded()
+                    if !runningAsRoot {
+                        print("ensureRunning: Upgrading to root process...")
+                        await restart()
+                    }
                 }
-                return 
+                return
             }
             
             let fm = FileManager.default

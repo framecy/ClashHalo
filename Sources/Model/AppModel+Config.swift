@@ -95,7 +95,16 @@ extension AppModel {
 
                 showToast("正在以 Root 权限重启核心…")
                 await engine.restart()
-                try? await Task.sleep(nanoseconds: 2_000_000_000)
+                // Poll until the root kernel is up — ensureRunning is fire-and-forget
+                // so the 2 s hardcoded sleep was a race: the startMihomo XPC callback
+                // (sets runningAsRoot) and mihomo startup both need variable time.
+                var rootReady = false
+                for _ in 0..<10 {
+                    try? await Task.sleep(nanoseconds: 1_000_000_000)
+                    await api.probe(timeout: 1.0)
+                    if api.reachable && engine.runningAsRoot { rootReady = true; break }
+                }
+                guard rootReady else { showToast("Root 内核启动超时，TUN 未启用"); return }
                 await self.reconnect()
             }
 
