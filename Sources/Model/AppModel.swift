@@ -429,9 +429,17 @@ import SwiftUI
 
             let ok = await engine.patchConfig(overrides)
             if ok {
+                // refreshConfigs sets tunOn from the *actual* kernel state
+                // (enable && runningAsRoot, per B9) — do not blindly set tunOn=want.
+                // A user-mode kernel accepts the PATCH (HTTP 200) but cannot create
+                // the utun device and silently reverts enable to false; reporting
+                // success there is the "succeeds but actually fails" bug.
                 await refreshConfigs()
-                tunOn = want
-                showToast(want ? "TUN 模式已开启" : "TUN 模式已关闭")
+                if want && !tunOn {
+                    showToast("TUN 开启失败：内核未以管理员权限运行，无法创建 TUN 接口")
+                } else {
+                    showToast(want ? "TUN 模式已开启" : "TUN 模式已关闭")
+                }
             } else {
                 await api.probe()
                 if api.reachable { showToast(want ? "TUN 模式开启失败" : "TUN 模式关闭失败") }
