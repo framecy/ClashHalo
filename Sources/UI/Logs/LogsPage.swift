@@ -4,7 +4,6 @@ import SwiftUI
 
 struct LogsPage: View {
     @EnvironmentObject var M: AppModel
-    @State private var level = "all"
     @State private var q = ""
     @State private var paused = false
     @State private var frozen: [Log] = []
@@ -12,8 +11,7 @@ struct LogsPage: View {
     var body: some View {
         let source = paused ? frozen : M.logs
         let rows = source.filter {
-            (level == "all" || $0.level == level) &&
-            (q.isEmpty || $0.text.localizedCaseInsensitiveContains(q))
+            q.isEmpty || $0.text.localizedCaseInsensitiveContains(q)
         }
         VStack(spacing: 0) {
             PageHead(title: "实时日志", desc: "结构化日志流 · 核心运行状态") {
@@ -29,10 +27,11 @@ struct LogsPage: View {
                     Image(systemName: "magnifyingglass").foregroundColor(.secondary)
                     TextField("过滤日志内容…", text: $q).textFieldStyle(.plain).frame(maxWidth: 200)
                 }
-                Picker("", selection: $level) {
-                    Text("全部").tag("all"); Text("INFO").tag("info")
-                    Text("WARN").tag("warning"); Text("ERROR").tag("error"); Text("DEBUG").tag("debug")
+                Picker("", selection: Binding(get: { M.logLevel }, set: { M.changeLogLevel($0) })) {
+                    Text("DEBUG").tag("debug"); Text("INFO").tag("info")
+                    Text("WARN").tag("warning"); Text("ERROR").tag("error")
                 }.pickerStyle(.segmented).frame(width: 300).labelsHidden()
+                    .help("日志订阅级别（服务端过滤）。默认 WARN，避免每条连接刷屏。")
                 Spacer()
                 HStack(spacing: 6) {
                     Circle().fill(paused ? Color.secondary : M.accent).frame(width: 6, height: 6)
