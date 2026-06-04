@@ -53,9 +53,62 @@ if [ -f "$APP/Contents/MacOS/mihomo" ]; then
 fi
 # Sign the whole app deeply
 codesign --force --deep --options runtime --sign - "$APP"
+# Assemble DMG staging: the app + an /Applications shortcut + a usage guide,
+# so users can drag-install and read how to bypass Gatekeeper (ad-hoc signed).
+STAGE="$BUILD/dmg"
+rm -rf "$STAGE"; mkdir -p "$STAGE"
+cp -R "$APP" "$STAGE/ClashPow.app"
+ln -s /Applications "$STAGE/Applications"
+cat > "$STAGE/使用说明.txt" <<'GUIDE'
+ClashPow 使用说明
+====================================
+
+【关于签名（重要）】
+本应用为本地构建版本，使用 ad-hoc 临时签名（无 Apple 开发者证书）。
+首次打开时 macOS Gatekeeper 会提示“无法打开，因为无法验证开发者”——这是
+未经签名的预期行为，按下方步骤即可正常使用。
+
+【安装】
+将左侧 ClashPow 拖入右侧「应用程序」(Applications) 文件夹。
+
+【首次打开（绕过 Gatekeeper，任选其一）】
+方法一（推荐）：在「应用程序」中右键点击 ClashPow → 选择「打开」→
+            在弹窗中再次点击「打开」。仅首次需要。
+方法二：若提示被拦截，打开「系统设置 → 隐私与安全性」，在底部找到
+       被拦截提示，点击「仍要打开」。
+方法三（终端，彻底清除隔离属性）：
+       xattr -dr com.apple.quarantine /Applications/ClashPow.app
+
+【准备内核】
+本应用编排官方 mihomo (Clash.Meta) 内核，需提供 darwin-arm64 二进制：
+ · 应用内「内核管理」可直接从 GitHub 下载并启用；或
+ · 手动放置到：~/Library/Application Support/ClashPow/bin/mihomo
+
+【基本使用】
+1. 打开应用后会自动启动内核并连接（控制端口绑定回环 127.0.0.1）。
+2. 在「配置编辑 / 订阅」导入你的 YAML 配置或订阅链接。
+3. 「系统代理」开关：一键设置 / 清除 macOS 系统代理。
+4. 「TUN 模式」开关：首次开启会弹出管理员授权以安装特权服务(Helper)，
+   随后内核以 root 重启并接管全局流量（创建 utun 虚拟网卡）。
+5. 「实时日志」默认仅显示 WARN/ERROR；调试时可在页面切到 INFO/DEBUG。
+
+【系统要求】
+macOS 14.0+ ，Apple Silicon (arm64)。
+
+【卸载】
+ · 删除 /Applications/ClashPow.app
+ · 删除数据目录 ~/Library/Application Support/ClashPow
+ · 若安装过 TUN 特权服务，在终端执行：
+   sudo launchctl bootout system /Library/LaunchDaemons/com.clashpow.helper.plist
+   sudo rm -f /Library/LaunchDaemons/com.clashpow.helper.plist \
+              /Library/PrivilegedHelperTools/com.clashpow.helper
+GUIDE
+
 DMG="$BUILD/ClashPow.dmg"
 rm -f "$DMG"
-hdiutil create -volname ClashPow -srcfolder "$APP" -ov -format UDZO "$DMG" >/dev/null
+hdiutil create -volname ClashPow -srcfolder "$STAGE" -ov -format UDZO "$DMG" >/dev/null
+# Deliver a copy to the Desktop for convenience.
+cp -f "$DMG" "$HOME/Desktop/ClashPow.dmg"
 echo ""
 echo "=== Done ==="
 echo "App: $APP"
