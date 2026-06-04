@@ -12,17 +12,58 @@ final class KernelManager: ObservableObject {
     @Published var progress = 0.0
     @Published var installedTags: [String] = []
     @Published var note = ""
+    @Published var builtinVersion = ""   // version of the bundled kernel, if any
 
     private let dir = NSHomeDirectory() + "/Library/Application Support/ClashPow/kernels"
     private var binPath: String { NSHomeDirectory() + "/Library/Application Support/ClashPow/bin/mihomo" }
     @AppStorage("kernel.active") var activeTag = "内置"
 
+    /// Whether a kernel is bundled inside the app.
+    var hasBuiltin: Bool { Bundle.main.url(forResource: "mihomo", withExtension: nil) != nil }
+
+    /// Read the bundled kernel version (mihomo -v) for display, off the main thread.
+    func detectBuiltin() {
+        guard let bundled = Bundle.main.url(forResource: "mihomo", withExtension: nil) else {
+            DispatchQueue.main.async { self.builtinVersion = "" }; return
+        }
+        DispatchQueue.global().async {
+            let p = Process(); p.executableURL = bundled; p.arguments = ["-v"]
+            let pipe = Pipe(); p.standardOutput = pipe; p.standardError = pipe
+            do { try p.run() } catch { return }
+            p.waitUntilExit()
+            let out = String(data: pipe.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? ""
+            if let r = out.range(of: "v[0-9]+\\.[0-9]+\\.[0-9]+", options: .regularExpression) {
+                let v = String(out[r])
+                DispatchQueue.main.async { self.builtinVersion = v }
+            }
+        }
+    }
+
+    /// Switch the active kernel to the bundled one (copy from app → bin) + restart.
+    func activateBuiltin() async {
+        let fm = FileManager.default
+        guard let bundled = Bundle.main.url(forResource: "mihomo", withExtension: nil) else {
+            note = "内置内核缺失（打包未含 mihomo）"; return
+        }
+        do {
+            if fm.fileExists(atPath: binPath) { try fm.removeItem(atPath: binPath) }
+            try fm.copyItem(at: bundled, to: URL(fileURLWithPath: binPath))
+            try fm.setAttributes([.posixPermissions: 0o755], ofItemAtPath: binPath)
+            activeTag = "内置"
+            note = "已切换至内置内核，正在重启…"
+            await EngineControl.shared.restart()
+        } catch {
+            note = "切换失败：\(error.localizedDescription)"
+        }
+    }
+
     /// Switch to a downloaded kernel: copy binary to unified bin path + restart.
     func activate(_ tag: String) async {
+        if tag == "内置" { await activateBuiltin(); return }
         let src = dir + "/\(tag)/mihomo"
         let fm = FileManager.default
         guard fm.fileExists(atPath: src) else { note = "内核文件缺失"; return }
-        
+
         do {
             if fm.fileExists(atPath: binPath) { try fm.removeItem(atPath: binPath) }
             try fm.copyItem(atPath: src, toPath: binPath)
