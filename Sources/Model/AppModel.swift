@@ -54,6 +54,9 @@ import SwiftUI
 
     // Logs
     @Published var logs: [Log] = []
+    /// Kernel log subscription level (server-side filter). Defaults to `warning`
+    /// so the panel isn't flooded by one line per connection (info level).
+    @AppStorage("ui.logLevel") var logLevel = "warning"
     private var logBuffer: [Log] = []
     private var logFlushTimer: Timer?
     private var logSeq = 0
@@ -143,7 +146,21 @@ import SwiftUI
         connWS = api.stream("/connections", type: ConnectionsSnapshot.self) { [weak self] s in
             self?.onConnections(s)
         }
-        logWS = api.stream("/logs?level=info", type: LogTick.self) { [weak self] l in
+        logWS = api.stream("/logs?level=\(logLevel)", type: LogTick.self) { [weak self] l in
+            self?.onLog(l)
+        }
+    }
+
+    /// Change the log subscription level (server-side filter) and reconnect just
+    /// the log stream. Clears the buffer so stale higher-volume lines don't linger.
+    func changeLogLevel(_ level: String) {
+        guard level != logLevel else { return }
+        logLevel = level
+        logs.removeAll(keepingCapacity: true)
+        logBuffer.removeAll(keepingCapacity: true)
+        logWS?.cancel()
+        guard reachable else { return }
+        logWS = api.stream("/logs?level=\(level)", type: LogTick.self) { [weak self] l in
             self?.onLog(l)
         }
     }
