@@ -25,10 +25,6 @@ xcuserdata/
 *.xccheckout
 *.xcscmblueprint
 
-# Go
-Engine/build/
-Engine/vendor/
-
 # Swift
 .build/
 .swiftpm/
