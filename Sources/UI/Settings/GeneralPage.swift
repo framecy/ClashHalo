@@ -9,6 +9,7 @@ struct GeneralPage: View {
     @State private var port = ""
     @State private var secret = ""
     @State private var selectedTab = "general" // "general", "advanced", "privilege", "about"
+    @State private var helperBusy = false
 
     var body: some View {
         VStack(spacing: 0) {
@@ -116,41 +117,26 @@ struct GeneralPage: View {
                                     
                                     Spacer()
                                     
-                                    Button(action: {
-                                        Task {
-                                            if engine.isRoot {
-                                                M.showToast("正在请求授权卸载特权服务…")
-                                                let ok = await engine.uninstallPrivileged()
-                                                if ok {
-                                                    await M.reconnect()
-                                                    M.showToast("特权辅助程序已卸载")
-                                                } else {
-                                                    M.showToast("卸载失败")
-                                                }
+                                    Button(action: { Task { await toggleHelper() } }) {
+                                        Group {
+                                            if helperBusy {
+                                                ProgressView().controlSize(.small)
                                             } else {
-                                                M.showToast("正在请求授权安装特权服务…")
-                                                let ok = await engine.installPrivileged()
-                                                if ok {
-                                                    try? await Task.sleep(nanoseconds: 3_500_000_000)
-                                                    await M.reconnect()
-                                                    M.showToast("特权辅助程序安装成功！")
-                                                } else {
-                                                    M.showToast("安装失败")
-                                                }
+                                                Text(engine.isRoot ? "卸载" : "安装")
+                                                    .foregroundColor(engine.isRoot ? .red : .white)
+                                                    .fontWeight(.medium)
                                             }
                                         }
-                                    }) {
-                                        Text(engine.isRoot ? "卸载" : "安装")
-                                            .foregroundColor(engine.isRoot ? .red : .white)
-                                            .fontWeight(.medium)
-                                            .padding(.horizontal, 16)
-                                            .padding(.vertical, 6)
-                                            .background(
-                                                RoundedRectangle(cornerRadius: 6)
-                                                    .fill(engine.isRoot ? Color.red.opacity(0.15) : M.accent)
-                                            )
+                                        .frame(minWidth: 44)
+                                        .padding(.horizontal, 16)
+                                        .padding(.vertical, 6)
+                                        .background(
+                                            RoundedRectangle(cornerRadius: 6)
+                                                .fill(engine.isRoot ? Color.red.opacity(0.15) : M.accent)
+                                        )
                                     }
                                     .buttonStyle(.plain)
+                                    .disabled(helperBusy)
                                 }
                                 
                                 Divider()
@@ -247,12 +233,12 @@ struct GeneralPage: View {
                 Text("ClashPow")
                     .font(.title2)
                     .fontWeight(.bold)
-                Text("Version 1.0.3 (Daemon Fix)")
+                Text("Version \(Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "—")")
                     .font(.subheadline)
                     .foregroundColor(.secondary)
             }
-            
-            Text("ClashPow 是一个基于 mihomo (Clash.Meta) 内核的 macOS 原生代理客户端。采用原生 SwiftUI 编写，配备 Metal 硬件加速流量图表、动态拓扑以及完备的安全沙箱和 Keychain 设计。")
+
+            Text("ClashPow 是一个基于 mihomo (Clash.Meta) 内核的 macOS 原生代理客户端。采用原生 SwiftUI 编写，通过独立特权 Helper (XPC) 进行权限分离，订阅凭据经 Keychain 安全存储。")
                 .font(.callout)
                 .multilineTextAlignment(.center)
                 .foregroundColor(.secondary)
@@ -287,6 +273,26 @@ struct GeneralPage: View {
             TextField(placeholder, text: text).textFieldStyle(.roundedBorder) }
     }
     func colorFor(_ s: String) -> Color { ["green":.green,"blue":.blue,"purple":.purple,"orange":.orange][s] ?? .green }
+
+    /// Install or uninstall the privileged helper with progress + clear feedback.
+    private func toggleHelper() async {
+        helperBusy = true
+        defer { helperBusy = false }
+        if engine.isRoot {
+            M.showToast("正在请求授权卸载特权服务…")
+            let ok = await engine.uninstallPrivileged()
+            await M.reconnect()
+            M.showToast(ok ? "特权辅助程序已卸载" : "卸载失败或已取消授权")
+        } else {
+            M.showToast("正在请求授权安装特权服务…")
+            let ok = await engine.installPrivileged()
+            guard ok else { M.showToast("安装失败或已取消授权"); return }
+            // 等待 helper 被 launchd 拉起,pollStatus 经 verifyConnectivity 确认连通
+            try? await Task.sleep(nanoseconds: 2_500_000_000)
+            await M.reconnect()
+            M.showToast(engine.isRoot ? "特权辅助程序已安装并就绪" : "已安装,正在确认连通状态…")
+        }
+    }
 }
 
 // MARK: - Menu Bar

@@ -40,21 +40,21 @@ func isAllowedKernelPath(_ path: String) -> Bool {
     return true
 }
 
-// Simple logger to help debug
+// Append-only logger. Always ensures the file exists first, then opens it for
+// appending — the previous version's fallback `write(to:)` overwrote the whole
+// file, so only the last line survived (looked like "running but no logs").
 func log(_ msg: String) {
     let logDir = "/Library/Logs/ClashPow"
-    try? FileManager.default.createDirectory(atPath: logDir, withIntermediateDirectories: true)
     let logFile = "\(logDir)/helper.log"
     let line = "[\(Date())] \(msg)\n"
-    if let data = line.data(using: .utf8) {
-        if let handle = FileHandle(forWritingAtPath: logFile) {
-            handle.seekToEndOfFile()
-            handle.write(data)
-            try? handle.close()
-        } else {
-            try? data.write(to: URL(fileURLWithPath: logFile))
-        }
-    }
+    guard let data = line.data(using: .utf8) else { return }
+    let fm = FileManager.default
+    try? fm.createDirectory(atPath: logDir, withIntermediateDirectories: true)
+    if !fm.fileExists(atPath: logFile) { fm.createFile(atPath: logFile, contents: nil) }
+    guard let handle = FileHandle(forWritingAtPath: logFile) else { return }
+    defer { try? handle.close() }
+    handle.seekToEndOfFile()
+    handle.write(data)
 }
 
 class Helper: NSObject, HelperProtocol {
