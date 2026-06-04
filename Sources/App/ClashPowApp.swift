@@ -1,8 +1,42 @@
-// ClashPowApp — macOS mihomo GUI client.
 import SwiftUI
+
+// MARK: - App Delegate
+
+final class AppDelegate: NSObject, NSApplicationDelegate {
+    func applicationWillTerminate(_ notification: Notification) {
+        AppDelegate.performCleanup()
+    }
+
+    /// Synchronous teardown: kill kernel + clear system proxy.
+    /// Called from both the app delegate (normal quit) and signal handlers (SIGTERM/INT).
+    /// Thread-safe and idempotent via a one-shot semaphore.
+    static func performCleanup() {
+        // One-shot: the first caller proceeds, subsequent callers return immediately
+        guard _cleanupOnce.wait(timeout: .now()) == .success else { return }
+
+        // Kill kernel immediately — no graceful shutdown at exit time
+        let kill = Process()
+        kill.executableURL = URL(fileURLWithPath: "/usr/bin/killall")
+        kill.arguments = ["-9", "mihomo"]
+        kill.standardOutput = Pipe(); kill.standardError = Pipe()
+        try? kill.run(); kill.waitUntilExit()
+
+        // Clear system proxy via helper XPC (helper is a persistent daemon, survives app exit)
+        let sema = DispatchSemaphore(value: 0)
+        if let helper = XPCManager.shared.helper() {
+            helper.setSystemProxy(enabled: false, port: 0) { _ in sema.signal() }
+            _ = sema.wait(timeout: .now() + 2)
+        }
+    }
+
+    private static let _cleanupOnce = DispatchSemaphore(value: 1)
+}
+
+// MARK: - App
 
 @main
 struct ClashPowApp: App {
+    @NSApplicationDelegateAdaptor(AppDelegate.self) var appDelegate
     @StateObject private var model = AppModel.shared
 
     var body: some Scene {

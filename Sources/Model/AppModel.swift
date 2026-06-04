@@ -1,6 +1,7 @@
 import Foundation
 import Combine
 import SwiftUI
+import Network
 
 // Central app state & orchestration hub. Domain logic is split into extensions:
 //   AppModel+Proxies.swift      — groups / nodes / selection / latency
@@ -92,6 +93,10 @@ import SwiftUI
     // Toast
     @Published var toast: String?
 
+    private var pathMonitor: NWPathMonitor?
+    private var signalSources: [AnyObject] = []
+    private var networkOnline = true
+
     private var trafficWS: WSHandle?
     private var connWS: WSHandle?
     private var logWS: WSHandle?
@@ -118,6 +123,8 @@ import SwiftUI
             Task { @MainActor in self?.flushLogs() }
         }
         Task { await reconnect() }
+        startNetworkMonitor()
+        installSignalHandlers()
     }
 
     func reconnect() async {
@@ -209,5 +216,45 @@ import SwiftUI
     func showToast(_ s: String) {
         toast = s
         Task { try? await Task.sleep(nanoseconds: 2_400_000_000); toast = nil }
+    }
+
+    private func startNetworkMonitor() {
+        let monitor = NWPathMonitor()
+        monitor.pathUpdateHandler = { [weak self] path in
+            let online = path.status == .satisfied
+            Task { [weak self] in
+                await self?.handleNetworkChange(online: online)
+            }
+        }
+        monitor.start(queue: .global(qos: .background))
+        pathMonitor = monitor
+    }
+
+    @MainActor private func handleNetworkChange(online: Bool) {
+        guard networkOnline != online else { return }
+        networkOnline = online
+        if !online && systemProxyOn {
+            // Network offline: disable system proxy immediately to prevent
+            // all traffic being blocked by a proxy pointing to a dead kernel.
+            let port = (configs["mixed-port"] as? Int) ?? (configs["port"] as? Int) ?? 7890
+            Task {
+                _ = await engine.setSystemProxy(enabled: false, port: port)
+                systemProxyOn = false
+                showToast("网络断开，已自动关闭系统代理")
+            }
+        }
+    }
+
+    private func installSignalHandlers() {
+        for sig in [SIGTERM, SIGINT] {
+            signal(sig, SIG_IGN)
+            let src = DispatchSource.makeSignalSource(signal: sig, queue: .global())
+            src.setEventHandler {
+                AppDelegate.performCleanup()
+                exit(0)
+            }
+            src.resume()
+            signalSources.append(src)
+        }
     }
 }

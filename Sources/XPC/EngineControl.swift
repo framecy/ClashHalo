@@ -4,6 +4,9 @@ import SwiftUI
 
 @MainActor final class EngineControl: ObservableObject {
     static let shared = EngineControl()
+    /// Expected version of the installed helper. When the running helper reports a
+    /// different version the app auto-reinstalls it (new binary = new permissions fix).
+    static let kExpectedHelperVersion = "1.0.5"
     let api = MihomoClient.shared
 
     @Published var present = false
@@ -59,11 +62,13 @@ import SwiftUI
     }
 
     /// Check via pgrep whether mihomo is owned by root and set the flag accordingly.
+    /// Uses exact name match (-x) to avoid false positives from similarly named binaries.
     /// Blocks the calling thread briefly — only call from Tasks, not the main run loop.
     private func syncRunningAsRootIfNeeded() {
+        guard !runningAsRoot else { return }
         let p = Process()
         p.executableURL = URL(fileURLWithPath: "/usr/bin/pgrep")
-        p.arguments = ["-u", "root", "mihomo"]
+        p.arguments = ["-u", "root", "-x", "mihomo"]
         p.standardOutput = Pipe()
         try? p.run(); p.waitUntilExit()
         if p.terminationStatus == 0 { runningAsRoot = true }
