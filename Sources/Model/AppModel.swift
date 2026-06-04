@@ -185,10 +185,14 @@ import SwiftUI
     // MARK: Stream handlers
 
     private func onTraffic(_ t: TrafficTick) {
-        // Only publish when the rounded rate actually changes, to avoid churning
-        // the whole view tree every tick. The chart itself reads the mmap file.
+        // Publish the rounded rate only when it changes, to avoid churning the
+        // whole view tree every tick.
         if t.up != curUp { curUp = t.up }
         if t.down != curDown { curDown = t.down }
+        // Rolling window feeding the dashboard sparkline (replaces the removed
+        // mmap-backed Metal chart of the old engine).
+        downSeries.append(Double(t.down)); if downSeries.count > 120 { downSeries.removeFirst() }
+        upSeries.append(Double(t.up)); if upSeries.count > 120 { upSeries.removeFirst() }
     }
 
     private func onConnections(_ s: ConnectionsSnapshot) {
