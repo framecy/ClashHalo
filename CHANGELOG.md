@@ -2,6 +2,30 @@
 
 本项目所有重要变更记录于此。格式参考 [Keep a Changelog](https://keepachangelog.com/),版本遵循语义化版本。
 
+## [0.4.1] - 2026-06-04
+
+继 v0.4.0 的稳定性大修后,完成 Helper 交互、内核管理、功能可用性与界面的一轮打磨。
+
+### Added
+- **默认内置官方 mihomo 内核**,开箱即用;内核管理可一键切回内置内核并显示版本。
+- 侧栏头部展示 App 版本号。
+
+### Changed
+- 概览页顶部三个快捷开关(系统代理/TUN/核心)移除,**统一由侧栏底部控制**,消除重复。
+- Helper 安装/卸载增加 loading 态、防重复点击与失败原因提示;关于页版本号动态化、描述更新。
+- 规则页改为只读展示内核真实规则,编辑引导至配置 YAML。
+
+### Fixed
+- **规则页此前不可用**:从 `/configs` 读规则恒为空、PATCH rules 被内核忽略;改为读 `/rules` 端点(实测 156 条可读)。
+- 移除 DNS 页硬编码假统计(平均解析/Fake-IP 池/缓存,无数据源)。
+- Helper 日志写入修复(原 fallback 覆盖整文件导致"进程在跑却无日志")。
+
+### Removed
+- 死代码清理:`ConfigEditor/Pages.swift`(2144 行)、`EngineStatusRPC`、`RuleEditSheet`、`HeadSwitch`。
+
+### Internal
+- 连接监控接入单连接断开;XPC 层(EngineControl/XPCManager)不再引用 `AppModel.shared`,改注入日志通道(降耦合);源码编译 0 警告。
+
 ## [0.4.0] - 2026-06-04
 
 原生架构稳定性与安全大修:从严格自测出发,修复内核交互、TUN、Helper 权限三大类严重缺陷,并经 clean 端到端自愈验证。
