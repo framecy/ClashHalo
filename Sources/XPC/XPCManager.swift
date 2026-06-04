@@ -110,6 +110,7 @@ public class XPCManager {
         chown root:wheel "\(plistDst)"; \
         chmod 644 "\(plistDst)"; \
         launchctl bootout system "\(plistDst)" 2>/dev/null || true; \
+        launchctl enable system/com.clashpow.helper; \
         launchctl bootstrap system "\(plistDst)"; \
         launchctl kickstart -k system/com.clashpow.helper
         """
@@ -125,8 +126,12 @@ public class XPCManager {
         let plistDst = "/Library/LaunchDaemons/com.clashpow.helper.plist"
         let helperDst = "/Library/PrivilegedHelperTools/com.clashpow.helper"
         
+        // Use bootout (NOT `unload -w`): the -w flag persistently writes the
+        // service into launchd's disabled database, after which a later
+        // bootstrap loads the plist but launchd refuses to start it. bootout
+        // tears down without poisoning future installs.
         let script = """
-        launchctl unload -w "\(plistDst)"; \
+        launchctl bootout system "\(plistDst)" 2>/dev/null || true; \
         rm -f "\(plistDst)"; \
         rm -f "\(helperDst)"
         """
