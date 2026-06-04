@@ -23,6 +23,12 @@ APP="$BUILD/dd/Build/Products/Release/ClashPow.app"
 echo "[3/4] Bundling Helper Tool + Geodata…"
 RES="$APP/Contents/Resources"
 mkdir -p "$APP/Contents/MacOS"
+
+# Clean manually-bundled artifacts from any previous incremental build so stale
+# files (a removed plist, a 0-byte geodata) never linger in the shipped bundle.
+rm -rf "$APP/Contents/Library/LaunchDaemons"
+rm -f "$RES/GeoSite.dat" "$RES/geoip.metadb" "$RES/ASN.mmdb"
+
 cp "$BUILD/com.clashpow.helper" "$APP/Contents/MacOS/com.clashpow.helper"
 # B7: the LaunchDaemon plist is generated at install time by XPCManager.installDaemon
 # (single source of truth). Bundling a separate plist here was dead/misleading config.
