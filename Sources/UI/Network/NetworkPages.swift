@@ -389,32 +389,6 @@ struct NList: View {
     private func commit() { Task { await M.patch([parent: [sub: items]]) } }
 }
 
-// MARK: - Rule editor sheet
-
-struct RuleEditSheet: View {
-    let title: String
-    @State var text: String
-    let onSave: (String) -> Void
-    let onCancel: () -> Void
-    init(title: String, initial: String, onSave: @escaping (String) -> Void, onCancel: @escaping () -> Void) {
-        self.title = title; self._text = State(initialValue: initial); self.onSave = onSave; self.onCancel = onCancel
-    }
-    var body: some View {
-        VStack(spacing: 14) {
-            Text(title).font(.headline)
-            TextField("DOMAIN-SUFFIX,example.com,Proxy", text: $text)
-                .textFieldStyle(.roundedBorder).font(.callout.monospaced()).frame(width: 360)
-            Text("格式：类型,内容,策略[,参数]  例如 IP-CIDR,10.0.0.0/8,DIRECT,no-resolve")
-                .font(.caption2).foregroundColor(.secondary)
-            HStack {
-                Button("取消") { onCancel() }
-                Spacer()
-                Button("保存") { onSave(text) }.buttonStyle(.borderedProminent).disabled(text.isEmpty)
-            }
-        }.padding(20).frame(width: 420)
-    }
-}
-
 // MARK: - Kernel Management Page
 
 struct KernelMgmtPage: View {

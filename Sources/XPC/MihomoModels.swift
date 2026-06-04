@@ -79,22 +79,6 @@ enum MihomoError: LocalizedError {
 
 
 
-struct EngineStatusRPC: Decodable {
-    let running: Bool
-    let tunEnabled: Bool
-    let connections: Int
-    let uptimeSec: Int64
-    let version: String
-    let controllerAddr: String
-    let controllerSecret: String
-    let isRoot: Bool
-    enum CodingKeys: String, CodingKey {
-        case running, tunEnabled = "tun_enabled", connections
-        case uptimeSec = "uptime_sec", version
-        case controllerAddr = "controller_addr", controllerSecret = "controller_secret"
-        case isRoot = "is_root"
-    }
-}
 
 
 

@@ -18,26 +18,29 @@ public class XPCManager {
     public static let shared = XPCManager()
 
     private var connection: NSXPCConnection?
+    /// Injected log sink (set by AppModel). Lets this layer report XPC events
+    /// without referencing AppModel directly (decouples helper layer from GUI).
+    public var onLog: (@Sendable (String) -> Void)?
 
     private init() {}
-    
+
     public func helper() -> HelperProtocol? {
         if connection == nil {
             let conn = NSXPCConnection(machServiceName: "com.clashpow.helper", options: .privileged)
             conn.remoteObjectInterface = NSXPCInterface(with: HelperProtocol.self)
             conn.interruptionHandler = { [weak self] in
-                Task { @MainActor in AppModel.shared.logKernel("XPC 通讯中断") }
+                self?.onLog?("XPC 通讯中断")
                 self?.connection = nil
             }
             conn.invalidationHandler = { [weak self] in
-                Task { @MainActor in AppModel.shared.logKernel("XPC 通讯失效") }
+                self?.onLog?("XPC 通讯失效")
                 self?.connection = nil
             }
             conn.resume()
             connection = conn
         }
         return connection?.remoteObjectProxyWithErrorHandler({ [weak self] error in
-            Task { @MainActor in AppModel.shared.logKernel("XPC 错误: \(error.localizedDescription)") }
+            self?.onLog?("XPC 错误: \(error.localizedDescription)")
             self?.connection = nil
         }) as? HelperProtocol
     }
