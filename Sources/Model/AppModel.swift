@@ -125,6 +125,11 @@ import Network
         Task { await reconnect() }
         startNetworkMonitor()
         installSignalHandlers()
+        // Check helper version after initial pollStatus has had time to fetch it
+        Task {
+            try? await Task.sleep(nanoseconds: 4_000_000_000)
+            await engine.checkAndUpgradeHelperIfNeeded()
+        }
     }
 
     func reconnect() async {
