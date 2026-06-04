@@ -121,6 +121,10 @@ struct GeneralPage: View {
                                         Group {
                                             if helperBusy {
                                                 ProgressView().controlSize(.small)
+                                            } else if helperNeedsUpdate {
+                                                Text("更新")
+                                                    .foregroundColor(.white)
+                                                    .fontWeight(.medium)
                                             } else {
                                                 Text(engine.isRoot ? "卸载" : "安装")
                                                     .foregroundColor(engine.isRoot ? .red : .white)
@@ -132,7 +136,8 @@ struct GeneralPage: View {
                                         .padding(.vertical, 6)
                                         .background(
                                             RoundedRectangle(cornerRadius: 6)
-                                                .fill(engine.isRoot ? Color.red.opacity(0.15) : M.accent)
+                                                .fill(helperNeedsUpdate ? Color.orange :
+                                                      engine.isRoot ? Color.red.opacity(0.15) : M.accent)
                                         )
                                     }
                                     .buttonStyle(.plain)
@@ -145,9 +150,18 @@ struct GeneralPage: View {
                                     Text("版本")
                                         .font(.subheadline)
                                     Spacer()
-                                    Text(engine.helperVersion)
-                                        .font(.subheadline.monospaced())
-                                        .foregroundColor(.secondary)
+                                    if helperNeedsUpdate {
+                                        Text("\(engine.helperVersion) → \(EngineControl.kExpectedHelperVersion)")
+                                            .font(.subheadline.monospaced())
+                                            .foregroundColor(.orange)
+                                        Image(systemName: "exclamationmark.triangle.fill")
+                                            .foregroundColor(.orange)
+                                            .font(.caption)
+                                    } else {
+                                        Text(engine.helperVersion)
+                                            .font(.subheadline.monospaced())
+                                            .foregroundColor(.secondary)
+                                    }
                                     Button(action: {
                                         engine.refreshHelperVersion()
                                         M.showToast(engine.isRoot ? "Helper 连通正常 · v\(engine.helperVersion)" : "Helper 未连通")
@@ -275,11 +289,36 @@ struct GeneralPage: View {
     }
     func colorFor(_ s: String) -> Color { ["green":.green,"blue":.blue,"purple":.purple,"orange":.orange][s] ?? .green }
 
-    /// Install or uninstall the privileged helper with progress + clear feedback.
+    /// True when helper is installed but its version is below the expected version.
+    private var helperNeedsUpdate: Bool {
+        engine.isRoot &&
+        engine.helperVersion != "?" &&
+        !engine.helperVersion.isEmpty &&
+        engine.helperVersion != EngineControl.kExpectedHelperVersion
+    }
+
+    /// Install / uninstall / upgrade the privileged helper with progress + clear feedback.
+    /// - Installed + outdated → upgrade (uninstall then reinstall, full cycle)
+    /// - Installed + current → uninstall
+    /// - Not installed → install
     private func toggleHelper() async {
         helperBusy = true
         defer { helperBusy = false }
-        if engine.isRoot {
+        if engine.isRoot && helperNeedsUpdate {
+            // Upgrade path: full uninstall → install to replace stale binary
+            M.showToast("正在升级特权服务（v\(engine.helperVersion) → v\(EngineControl.kExpectedHelperVersion)）…")
+            let ok = await XPCManager.shared.upgradeDaemon()
+            guard ok else { M.showToast("升级失败或已取消授权"); return }
+            engine.isRoot = true
+            var connected = false
+            for _ in 0..<12 {
+                if await XPCManager.shared.verifyConnectivity() { connected = true; break }
+                try? await Task.sleep(nanoseconds: 500_000_000)
+            }
+            engine.refreshHelperVersion()
+            await M.reconnect()
+            M.showToast(connected ? "特权服务已升级并就绪" : "升级完成，但连通确认超时，请稍后重试")
+        } else if engine.isRoot {
             M.showToast("正在请求授权卸载特权服务…")
             let ok = await engine.uninstallPrivileged()
             await M.reconnect()
@@ -288,7 +327,6 @@ struct GeneralPage: View {
             M.showToast("正在请求授权安装特权服务…")
             let ok = await engine.installPrivileged()
             guard ok else { M.showToast("安装失败或已取消授权"); return }
-            // 轮询直到 helper 被 launchd 拉起并可连通(最多 ~6s), 替代固定等待
             var connected = false
             for _ in 0..<12 {
                 if await XPCManager.shared.verifyConnectivity() { connected = true; break }

@@ -278,6 +278,30 @@ import SwiftUI
         }
     }
 
+    /// Check whether the installed helper is outdated and upgrade it automatically.
+    /// Returns true if helper is at the expected version (already up to date or just upgraded).
+    @discardableResult
+    func checkAndUpgradeHelperIfNeeded() async -> Bool {
+        guard isRoot else { return true }
+        guard helperVersion != "?", !helperVersion.isEmpty else { return true }
+        guard helperVersion != Self.kExpectedHelperVersion else { return true }
+        onLog?("特权服务 v\(helperVersion) 低于预期 v\(Self.kExpectedHelperVersion)，开始自动升级（卸载→安装）…")
+        let ok = await XPCManager.shared.upgradeDaemon()
+        if ok {
+            isRoot = true
+            // Wait for new helper to come up and fetch fresh version
+            for _ in 0..<8 {
+                try? await Task.sleep(nanoseconds: 500_000_000)
+                if await XPCManager.shared.verifyConnectivity() { break }
+            }
+            refreshHelperVersion()
+            onLog?("特权服务已升级至 v\(Self.kExpectedHelperVersion)")
+        } else {
+            onLog?("特权服务自动升级失败，请前往「设置→权限」手动更新")
+        }
+        return ok
+    }
+
     /// Refresh status via REST API
     @discardableResult
     func refresh() async -> (addr: String, secret: String)? {
