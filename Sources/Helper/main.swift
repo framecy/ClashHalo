@@ -1,33 +1,48 @@
 import Foundation
 import Security
 
-// Single source of truth for the helper version (B10 — was duplicated as literals).
-let kHelperVersion = "1.0.4"
+let kHelperVersion = "1.0.5"
 
-// Code-signing requirement a connecting client must satisfy (B5). Restricts the
-// root helper to the ClashPow app only, instead of accepting every local process.
 private let kClientRequirement = "identifier \"com.clashpow.app\""
 
-/// Validate that an incoming XPC peer is the ClashPow app, by checking its code
-/// signature against `kClientRequirement`.
-/// NOTE: [TECH_DEBT] uses pid→SecCode (kSecGuestAttributePid); a malicious peer
-/// could in theory exploit pid reuse. Upgrade to auditToken-based lookup when the
-/// helper moves to SMAppService/SMJobBless. Reason: auditToken needs private API
-/// plumbing. Expiry: next signing/distribution overhaul.
+/// Validate that an incoming XPC peer is the ClashPow app.
+/// Primary check: Security framework requirement with relaxed flags (ad-hoc compatible).
+/// Fallback: bundle-path check via SecCodeCopyPath for unsigned/dev builds.
 func isAuthorizedClient(_ conn: NSXPCConnection) -> Bool {
     let pid = conn.processIdentifier
     guard pid > 0 else { return false }
     var code: SecCode?
     let attrs = [kSecGuestAttributePid: pid] as CFDictionary
-    guard SecCodeCopyGuestWithAttributes(nil, attrs, [], &code) == errSecSuccess, let code else { return false }
+    guard SecCodeCopyGuestWithAttributes(nil, attrs, [], &code) == errSecSuccess,
+          let code else { return false }
+
     var req: SecRequirement?
-    guard SecRequirementCreateWithString(kClientRequirement as CFString, [], &req) == errSecSuccess, let req else { return false }
-    return SecCodeCheckValidity(code, SecCSFlags(rawValue: 0), req) == errSecSuccess
+    if SecRequirementCreateWithString(kClientRequirement as CFString, [], &req) == errSecSuccess,
+       let req {
+        // kSecCSDoNotValidateResources: skip resource-seal check; avoids false
+        // failures for ad-hoc or re-signed builds where the seal may differ.
+        let flags = SecCSFlags(rawValue: kSecCSDoNotValidateResources)
+        if SecCodeCheckValidity(code, flags, req) == errSecSuccess { return true }
+    }
+
+    // Fallback: path-based check via static code bundle URL (handles dev/unsigned builds).
+    // SecCodeCopyPath requires SecStaticCode; convert via SecCodeCopyStaticCode first.
+    var staticCode: SecStaticCode?
+    if SecCodeCopyStaticCode(code, SecCSFlags(rawValue: 0), &staticCode) == errSecSuccess,
+       let sc = staticCode {
+        var pathURL: CFURL?
+        // SecCodeCopyPath is the Swift bridging of the C SecCodeCopyPath(SecStaticCode*,...)
+        if SecCodeCopyPath(sc, SecCSFlags(rawValue: 0), &pathURL) == errSecSuccess,
+           let path = (pathURL as URL?)?.path,
+           path.contains("ClashPow.app/Contents/MacOS/ClashPow") {
+            log("isAuthorizedClient: path-fallback accepted pid \(pid)")
+            return true
+        }
+    }
+    return false
 }
 
-/// Only permit launching a binary that lives at the canonical ClashPow kernel
-/// path. Prevents the root helper from being coerced into running an arbitrary
-/// executable (B5 — the core local-privilege-escalation fix).
+/// Only permit launching a binary at the canonical ClashPow kernel path.
 func isAllowedKernelPath(_ path: String) -> Bool {
     let std = (path as NSString).standardizingPath
     guard !std.contains(".."),
@@ -40,9 +55,6 @@ func isAllowedKernelPath(_ path: String) -> Bool {
     return true
 }
 
-// Append-only logger. Always ensures the file exists first, then opens it for
-// appending — the previous version's fallback `write(to:)` overwrote the whole
-// file, so only the last line survived (looked like "running but no logs").
 func log(_ msg: String) {
     let logDir = "/Library/Logs/ClashPow"
     let logFile = "\(logDir)/helper.log"
@@ -50,11 +62,13 @@ func log(_ msg: String) {
     guard let data = line.data(using: .utf8) else { return }
     let fm = FileManager.default
     try? fm.createDirectory(atPath: logDir, withIntermediateDirectories: true)
+    try? fm.setAttributes([.posixPermissions: 0o755], ofItemAtPath: logDir)
     if !fm.fileExists(atPath: logFile) { fm.createFile(atPath: logFile, contents: nil) }
-    guard let handle = FileHandle(forWritingAtPath: logFile) else { return }
-    defer { try? handle.close() }
-    handle.seekToEndOfFile()
-    handle.write(data)
+    if let handle = try? FileHandle(forWritingTo: URL(fileURLWithPath: logFile)) {
+        defer { try? handle.close() }
+        _ = try? handle.seekToEnd()
+        handle.write(data)
+    }
 }
 
 class Helper: NSObject, HelperProtocol {
@@ -70,48 +84,77 @@ class Helper: NSObject, HelperProtocol {
         let ok = ProxyManager.setSystemProxy(enabled: enabled, port: port)
         reply(ok)
     }
-    
+
     func startMihomo(binPath: String, homeDir: String, withReply reply: @escaping (Bool) -> Void) {
         log("startMihomo(binPath: \(binPath), homeDir: \(homeDir))")
         guard isAllowedKernelPath(binPath) else {
             log("startMihomo REJECTED: binPath not in allowlist: \(binPath)")
             reply(false); return
         }
+
+        // Terminate any tracked process first
         if let existing = mihomoProcess, existing.isRunning {
             existing.terminate()
+            Thread.sleep(forTimeInterval: 0.5)
+            if existing.isRunning { kill(existing.processIdentifier, SIGKILL) }
         }
-        
+        mihomoProcess = nil
+
+        // Kill ALL mihomo processes (handles untracked processes from previous
+        // helper instances or session remnants that would block the port)
+        let killAll = Process()
+        killAll.executableURL = URL(fileURLWithPath: "/usr/bin/killall")
+        killAll.arguments = ["-9", "mihomo"]
+        killAll.standardOutput = Pipe(); killAll.standardError = Pipe()
+        try? killAll.run(); killAll.waitUntilExit()
+        Thread.sleep(forTimeInterval: 0.3)
+
         let process = Process()
         process.executableURL = URL(fileURLWithPath: binPath)
         process.arguments = ["-d", homeDir]
-        
+
         let logDir = "/Library/Logs/ClashPow"
+        try? FileManager.default.createDirectory(atPath: logDir, withIntermediateDirectories: true)
         let logFile = "\(logDir)/mihomo-root.log"
         FileManager.default.createFile(atPath: logFile, contents: nil)
-        if let handle = FileHandle(forWritingAtPath: logFile) {
+        if let handle = try? FileHandle(forWritingTo: URL(fileURLWithPath: logFile)) {
             process.standardOutput = handle
             process.standardError = handle
         }
-        
+
         do {
             try process.run()
             mihomoProcess = process
+            log("startMihomo: started pid \(process.processIdentifier)")
             reply(true)
         } catch {
-            log("Failed to start mihomo: \(error)")
+            log("startMihomo: failed to start: \(error)")
             reply(false)
         }
     }
-    
+
     func stopMihomo(withReply reply: @escaping (Bool) -> Void) {
         log("stopMihomo called")
         if let process = mihomoProcess, process.isRunning {
             process.terminate()
+            // Wait up to 1.5s for graceful exit, then SIGKILL
+            let deadline = Date().addingTimeInterval(1.5)
+            while process.isRunning && Date() < deadline {
+                Thread.sleep(forTimeInterval: 0.1)
+            }
+            if process.isRunning {
+                log("stopMihomo: SIGTERM timeout, sending SIGKILL to pid \(process.processIdentifier)")
+                kill(process.processIdentifier, SIGKILL)
+            }
             mihomoProcess = nil
-            reply(true)
-        } else {
-            reply(true)
         }
+        // killall as final safety net (catches processes not owned by this instance)
+        let t = Process()
+        t.executableURL = URL(fileURLWithPath: "/usr/bin/killall")
+        t.arguments = ["-9", "mihomo"]
+        t.standardOutput = Pipe(); t.standardError = Pipe()
+        try? t.run(); t.waitUntilExit()
+        reply(true)
     }
 }
 

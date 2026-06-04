@@ -67,14 +67,17 @@ else echo "      WARN: no mihomo bundled; app will download on first run."; fi
 
 echo "[4/4] Ad-hoc signing + DMG…"
 xattr -cr "$APP"
-# Sign helper tool first
+# Sign helper tool
 codesign --force --sign - "$APP/Contents/MacOS/com.clashpow.helper"
-# Sign mihomo if present
+# Sign mihomo WITHOUT --options runtime: hardened runtime blocks AF_SYSTEM sockets
+# (utun device creation) that mihomo needs for TUN mode even when running as root.
+# Pre-signing before the bundle step prevents --deep from overriding this.
 if [ -f "$APP/Contents/MacOS/mihomo" ]; then
     codesign --force --sign - "$APP/Contents/MacOS/mihomo"
 fi
-# Sign the whole app deeply
-codesign --force --deep --options runtime --sign - "$APP"
+# Sign the app bundle WITHOUT --deep (--deep would re-sign mihomo with runtime,
+# breaking TUN). Pre-signed nested binaries are preserved in the bundle seal.
+codesign --force --options runtime --sign - "$APP"
 # Assemble DMG staging: the app + an /Applications shortcut + a usage guide,
 # so users can drag-install and read how to bypass Gatekeeper (ad-hoc signed).
 STAGE="$BUILD/dmg"
