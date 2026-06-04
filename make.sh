@@ -43,6 +43,28 @@ for f in GeoSite.dat geoip.metadb ASN.mmdb; do
     done
 done
 
+# Bundle a default mihomo kernel so the app works out of the box. Reuse a local
+# kernel if present, otherwise download the official darwin-arm64 release.
+MIHOMO_DST="$APP/Contents/MacOS/mihomo"
+if [ ! -s "$MIHOMO_DST" ]; then
+    for src in "$HOME/Library/Application Support/ClashPow/bin/mihomo" \
+               "$HOME/Library/Application Support/ClashPow/kernels"/*/mihomo \
+               "$HOME/.config/mihomo/mihomo"; do
+        [ -s "$src" ] && cp "$src" "$MIHOMO_DST" && echo "      Reused local mihomo: $src" && break
+    done
+fi
+if [ ! -s "$MIHOMO_DST" ]; then
+    echo "      Downloading official mihomo (darwin-arm64)…"
+    URL=$(curl -fsSL https://api.github.com/repos/MetaCubeX/mihomo/releases/latest \
+        | grep -oE '"browser_download_url"[^,]*darwin-arm64[^"]*\.gz"' \
+        | grep -vE 'compatible|go1' | head -1 | sed -E 's/.*"(https[^"]+)".*/\1/' || true)
+    if [ -n "${URL:-}" ]; then
+        curl -fsSL "$URL" | gunzip > "$MIHOMO_DST" 2>/dev/null || true
+    fi
+fi
+if [ -s "$MIHOMO_DST" ]; then chmod 755 "$MIHOMO_DST"; echo "      mihomo kernel bundled ✓"
+else echo "      WARN: no mihomo bundled; app will download on first run."; fi
+
 echo "[4/4] Ad-hoc signing + DMG…"
 xattr -cr "$APP"
 # Sign helper tool first
@@ -79,10 +101,10 @@ ClashPow 使用说明
 方法三（终端，彻底清除隔离属性）：
        xattr -dr com.apple.quarantine /Applications/ClashPow.app
 
-【准备内核】
-本应用编排官方 mihomo (Clash.Meta) 内核，需提供 darwin-arm64 二进制：
- · 应用内「内核管理」可直接从 GitHub 下载并启用；或
- · 手动放置到：~/Library/Application Support/ClashPow/bin/mihomo
+【内核】
+本应用已内置官方 mihomo (Clash.Meta) 内核，开箱即用，无需额外配置。
+如需更新或切换版本，在「设置 → 高级设置 → 内核管理」下载并启用，
+亦可随时切回内置内核。
 
 【基本使用】
 1. 打开应用后会自动启动内核并连接（控制端口绑定回环 127.0.0.1）。
@@ -113,5 +135,8 @@ echo ""
 echo "=== Done ==="
 echo "App: $APP"
 echo "DMG: $DMG  ($(du -h "$DMG" | cut -f1))"
-echo ""
-echo "NOTE: Official 'mihomo' binary must be placed at $APP/Contents/MacOS/mihomo before final distribution."
+if [ -s "$APP/Contents/MacOS/mihomo" ]; then
+    echo "Kernel: bundled mihomo ✓ ($(du -h "$APP/Contents/MacOS/mihomo" | cut -f1))"
+else
+    echo "Kernel: NONE bundled — app will download on first run"
+fi
