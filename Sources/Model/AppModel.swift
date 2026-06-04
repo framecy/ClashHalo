@@ -376,7 +376,12 @@ import SwiftUI
         }
         configs = c
         if let m = c["mode"] as? String { mode = m }
-        if let tun = c["tun"] as? [String: Any] { tunOn = (tun["enable"] as? Bool) == true }
+        // B9: a user-mode kernel cannot create the utun device (operation not
+        // permitted), so even if the config declares tun.enable=true it is not
+        // actually active. Reflect the real state instead of the declared one.
+        if let tun = c["tun"] as? [String: Any] {
+            tunOn = (tun["enable"] as? Bool) == true && engine.runningAsRoot
+        }
     }
 
     // Master switches
