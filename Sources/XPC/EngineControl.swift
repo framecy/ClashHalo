@@ -98,6 +98,44 @@ import SwiftUI
         }
 
         hardenControllerConfig()
+        normalizeGeoxURL()
+    }
+
+    /// Replace the known-unreliable geodata.kelee.one geox-url entries with the
+    /// jsdelivr/Loyalsoldier mirrors *before* the kernel starts (B12). The old
+    /// source returns empty files, which makes mihomo fatal on geosite:cn rules;
+    /// and the existing runtime PATCH fix can never run because the kernel never
+    /// comes up — a deadlock. Rewriting the config file up front breaks it. Only
+    /// kelee.one lines are touched, so a user's working geox-url is left intact.
+    func normalizeGeoxURL() {
+        let path = configFilePath
+        guard let text = try? String(contentsOfFile: path, encoding: .utf8),
+              text.contains("geodata.kelee.one") else { return }
+        let replacements = [
+            "mmdb": "https://cdn.jsdelivr.net/gh/Loyalsoldier/v2ray-rules-dat@release/country.mmdb",
+            "asn": "https://github.com/P3TERX/GeoLite.mmdb/raw/download/GeoLite2-ASN.mmdb",
+            "geosite": "https://cdn.jsdelivr.net/gh/Loyalsoldier/v2ray-rules-dat@release/geosite.dat",
+            "geoip": "https://cdn.jsdelivr.net/gh/Loyalsoldier/v2ray-rules-dat@release/geoip.dat"
+        ]
+        var lines = text.components(separatedBy: "\n")
+        var inGeox = false, changed = false
+        for i in lines.indices {
+            let line = lines[i]
+            if !line.hasPrefix(" ") && !line.hasPrefix("\t") {
+                inGeox = line.hasPrefix("geox-url:")
+                continue
+            }
+            guard inGeox, line.contains("geodata.kelee.one") else { continue }
+            let trimmed = line.trimmingCharacters(in: .whitespaces)
+            for (k, v) in replacements where trimmed.hasPrefix("\(k):") {
+                let indent = String(line.prefix(while: { $0 == " " || $0 == "\t" }))
+                lines[i] = "\(indent)\(k): \(v)"
+                changed = true
+            }
+        }
+        if changed {
+            try? lines.joined(separator: "\n").write(toFile: path, atomically: true, encoding: .utf8)
+        }
     }
 
     /// Force the kernel's REST control plane to bind loopback only, and replace a
