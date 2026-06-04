@@ -312,18 +312,20 @@ import SwiftUI
             _ = try? await URLSession.shared.data(for: req)
         }
         
-        // Kill stray processes if API didn't work or for good measure
-        if isRoot {
-            if let helper = XPCManager.shared.helper() {
-                _ = await withCheckedContinuation { (cont: CheckedContinuation<Bool, Never>) in
-                    helper.stopMihomo { ok in cont.resume(returning: ok) }
-                }
+        // Kill stray processes. A root kernel can only be stopped by the helper;
+        // but when upgrading user→root the *old* kernel was started by the app
+        // via Process (the helper never managed it, so stopMihomo can't kill it).
+        // So always run killall as a fallback — otherwise the old user-mode kernel
+        // survives, ensureRunning sees it still reachable and early-returns, and
+        // the root upgrade silently never happens (then TUN can't be created).
+        if isRoot, let helper = XPCManager.shared.helper() {
+            _ = await withCheckedContinuation { (cont: CheckedContinuation<Bool, Never>) in
+                helper.stopMihomo { ok in cont.resume(returning: ok) }
             }
-        } else {
-            let t = Process(); t.executableURL = URL(fileURLWithPath: "/usr/bin/killall")
-            t.arguments = ["-9", "mihomo"]
-            try? t.run(); t.waitUntilExit()
         }
+        let t = Process(); t.executableURL = URL(fileURLWithPath: "/usr/bin/killall")
+        t.arguments = ["-9", "mihomo"]
+        try? t.run(); t.waitUntilExit()
         
         // Give it a moment to release ports
         try? await Task.sleep(nanoseconds: 500_000_000)
