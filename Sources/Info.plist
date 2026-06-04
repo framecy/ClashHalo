@@ -31,8 +31,8 @@
 	</dict>
 	<key>SMPrivilegedExecutables</key>
 	<dict>
-		<key>dev.clashpow.helper</key>
-		<string>identifier "dev.clashpow.helper"</string>
+		<key>com.clashpow.helper</key>
+		<string>identifier "com.clashpow.helper"</string>
 	</dict>
 </dict>
 </plist>
