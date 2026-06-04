@@ -104,6 +104,7 @@ public class XPCManager {
         let script = """
         mkdir -p /Library/PrivilegedHelperTools; \
         mkdir -p /Library/Logs/ClashPow; \
+        chmod 755 /Library/Logs/ClashPow; \
         cp "\(helperSrc)" "\(helperDst)"; \
         xattr -rd com.apple.quarantine "\(helperDst)" 2>/dev/null || true; \
         xattr -cr "\(helperDst)" 2>/dev/null || true; \
