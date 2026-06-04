@@ -21,7 +21,7 @@ git config core.hooksPath .githooks
 
 - 部署目标 macOS 14.0，仅 `arm64`，Swift 5，Bundle ID `com.clashpow.app`。
 - 运行前需将官方 `mihomo` (darwin-arm64) 二进制放入 `<App>/Contents/MacOS/mihomo`；首次启动会被复制到 `~/Library/Application Support/ClashPow/bin/mihomo`。也可在应用内「内核管理」从 GitHub 下载（见 `KernelManager`）。
-- 没有测试套件；`Scripts/`（build/install/notarize/package/verify_helper）是分发脚本。
+- 没有测试套件；`make.sh` 是主打包脚本（编译 + 签名 + DMG）；`Scripts/`（package/notarize）是正式签名+公证分发脚手架（需 Apple 开发者证书）。
 
 ## 架构（big picture）
 

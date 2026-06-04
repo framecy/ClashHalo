@@ -49,13 +49,6 @@
             ReferencedContainer = "container:ClashPow.xcodeproj">
          </BuildableReference>
       </BuildableProductRunnable>
-      <EnvironmentVariables>
-         <EnvironmentVariable
-            key = "CLASHPOW_ENGINE_PATH"
-            value = "$(SRCROOT)/Engine/build/clashpow-engine"
-            isEnabled = "YES">
-         </EnvironmentVariable>
-      </EnvironmentVariables>
    </LaunchAction>
    <ProfileAction
       buildConfiguration = "Release"
