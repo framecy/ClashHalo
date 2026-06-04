@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## 项目概述
 
-ClashPow 是 macOS 14+ (Apple Silicon) 原生 SwiftUI 代理客户端。**已彻底移除自研 Go 引擎**（见 git status 中被删除的 `Engine/`），改为直接编排官方 `mihomo` (Clash.Meta) 内核：GUI 通过 REST + WebSocket 与内核通信，特权操作交给独立签名的 Helper。
+ClashPow 是 macOS 14+ (Apple Silicon) 原生 SwiftUI 代理客户端,直接编排官方 `mihomo` (Clash.Meta) 内核:GUI 通过 REST + WebSocket 与内核通信,特权操作交给独立签名的 Helper。纯 Swift,无自研引擎。
 
 ## 构建与运行
 
@@ -56,7 +56,7 @@ git config core.hooksPath .githooks
 - **连接快照单遍聚合**：`AppModel.computeDash` 每个 `/connections` 快照只算一次，结果存 `dash`，UI 直接读——不要在 SwiftUI render 里重新遍历 `conns`。
 - **日志批量刷新**：日志先进 `logBuffer`，0.5s 定时器一次性 flush 到 `@Published logs`，避免每行重渲染。
 - **traffic 仅在取整速率变化时发布**，减少 view tree 抖动。
-- `Sources/Metal/IOSurfaceReader.swift` 的 `StatsReader` mmap `/tmp/clashpow-stats.bin`，注释指向已删除的 `Engine/stats/pusher.go`——属旧引擎遗留，新架构下无生产者，改 traffic 图前先确认其是否仍在用。
+- **流量图**：仪表盘 `TrafficSparkline`（`DashboardView.swift`）读 `AppModel.downSeries`/`upSeries`——由 `onTraffic` 维护的滚动窗口（来自 `/traffic` WS）。旧引擎遗留的 Metal/mmap 流量图已移除。
 
 ## 约束（叠加于全局 CLAUDE.md）
 

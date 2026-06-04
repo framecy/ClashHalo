@@ -28,7 +28,6 @@
 		AE6635A9ACB74E5DB66892EA /* GeneralPage.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8CBAE68653724149A087BBEE /* GeneralPage.swift */; };
 		BA90C1F3406546599706585F /* NetworkPages.swift in Sources */ = {isa = PBXBuildFile; fileRef = A8B1C01AAFB044E986219D24 /* NetworkPages.swift */; };
 		A006 /* Models.swift in Sources */ = {isa = PBXBuildFile; fileRef = B006; };
-		A008 /* IOSurfaceReader.swift in Sources */ = {isa = PBXBuildFile; fileRef = B008; };
 		A015 /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = B015; };
 		AABBCCDD0000000000000001 /* HelperProtocol.swift in Sources */ = {isa = PBXBuildFile; fileRef = AABBCCDD0000000000000002 /* HelperProtocol.swift */; };
 		AABBCCDD0000000000000003 /* XPCManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = AABBCCDD0000000000000004 /* XPCManager.swift */; };
@@ -57,7 +56,6 @@
 		8CBAE68653724149A087BBEE /* GeneralPage.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Sources/UI/Settings/GeneralPage.swift; sourceTree = "SOURCE_ROOT"; };
 		A8B1C01AAFB044E986219D24 /* NetworkPages.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Sources/UI/Network/NetworkPages.swift; sourceTree = "SOURCE_ROOT"; };
 		B006 /* Models.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Models.swift; sourceTree = "<group>"; };
-		B008 /* IOSurfaceReader.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = IOSurfaceReader.swift; sourceTree = "<group>"; };
 		B015 /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
 		F010 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = Info.plist; sourceTree = "<group>"; };
 		AABBCCDD0000000000000002 /* HelperProtocol.swift */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.swift; path = Sources/XPC/HelperProtocol.swift; sourceTree = "<group>"; };
@@ -70,13 +68,12 @@
 
 /* Begin PBXGroup section */
 		G_ROOT = {isa = PBXGroup; children = (G_SOURCES, G_PRODUCTS); sourceTree = "<group>"; };
-		G_SOURCES = {isa = PBXGroup; children = (G_APP, G_UI, G_XPC, G_METAL, G_MODEL, G_RESOURCES, G_INFOPLIST); path = Sources; sourceTree = "<group>"; };
+		G_SOURCES = {isa = PBXGroup; children = (G_APP, G_UI, G_XPC, G_MODEL, G_RESOURCES, G_INFOPLIST); path = Sources; sourceTree = "<group>"; };
 		G_APP = {isa = PBXGroup; children = (B001, B002); name = App; path = App; sourceTree = "<group>"; };
 		G_UI = {isa = PBXGroup; children = (G_UI_DASHBOARD, G_UI_CONFIGEDITOR); name = UI; path = UI; sourceTree = "<group>"; };
 		G_UI_DASHBOARD = {isa = PBXGroup; children = (B004); name = Dashboard; path = Dashboard; sourceTree = "<group>"; };
 		G_UI_CONFIGEDITOR = {isa = PBXGroup; children = (BF9832249132493A9E51C30C, A3F21F03B19F4760A795864C, 50A6FB0C0B7141B0A804F1A9, 932DCE667C4747EEB24EB3B1, 87F1015549B149CD80A68FBC, 2A173B69A3BD4DDA8F992A68, 5C1B022FFD034AE592948756, 3D2C04980A2D415390C45937, 8CBAE68653724149A087BBEE, A8B1C01AAFB044E986219D24); name = ConfigEditor; path = ConfigEditor; sourceTree = "<group>"; };
 		G_XPC = {isa = PBXGroup; children = (40F5A17CAAA24A5BBC54C15E, 43A486CB7FAA4FBBAEBFCCE6, A4311730377D47748FC5F9D5, A3BB008E2BF84DF5A2895FBC); name = XPC; path = XPC; sourceTree = "<group>"; };
-		G_METAL = {isa = PBXGroup; children = (B008); name = Metal; path = Metal; sourceTree = "<group>"; };
 		G_MODEL = {isa = PBXGroup; children = (B006, A7EFEC0FDBC0406AA6A9D774, 9641FF3F733D4D03A5FC9B70, 06A576D2F0DE48B7BA1A37D7); name = Model; path = Model; sourceTree = "<group>"; };
 		G_RESOURCES = {isa = PBXGroup; children = (B015); name = Resources; path = Resources; sourceTree = "<group>"; };
 		G_INFOPLIST = {isa = PBXGroup; children = (F010); name = "Supporting Files"; sourceTree = "<group>"; };
@@ -96,7 +93,7 @@
 /* End PBXResourcesBuildPhase section */
 
 /* Begin PBXSourcesBuildPhase section */
-		PHASE_SOURCES = {isa = PBXSourcesBuildPhase; buildActionMask = 2147483647; files = (AABBCCDD0000000000000001, AABBCCDD0000000000000003, A001, A002, A004, 94B14BD55C274919B82F3C5E, 8BC3EAE990F64B20BA6FA269, 52A040A2184744959929CD76, 394E7B0C59764680BB4D9507, B1F3682AEF4F4C8AB5A97582, DD035B63A0B144F2BE7205A4, 71D6AA8BB9A64328A01B5364, F0458DF12625404DA930506D, 4FE025F9B3A84B9A9563DC03, D03CD0CC2A8E4B34ACE8FB5A, 9F1A5AD4866E444CB21D6A9A, C762A449C2434390BD3E8BF2, 5C790C4A1B3744679E83ADA0, 4F219760BD14466DA838B50A, 61523827C4D44A56AB8FA9E9, AE6635A9ACB74E5DB66892EA, BA90C1F3406546599706585F, A006, A008); };
+		PHASE_SOURCES = {isa = PBXSourcesBuildPhase; buildActionMask = 2147483647; files = (AABBCCDD0000000000000001, AABBCCDD0000000000000003, A001, A002, A004, 94B14BD55C274919B82F3C5E, 8BC3EAE990F64B20BA6FA269, 52A040A2184744959929CD76, 394E7B0C59764680BB4D9507, B1F3682AEF4F4C8AB5A97582, DD035B63A0B144F2BE7205A4, 71D6AA8BB9A64328A01B5364, F0458DF12625404DA930506D, 4FE025F9B3A84B9A9563DC03, D03CD0CC2A8E4B34ACE8FB5A, 9F1A5AD4866E444CB21D6A9A, C762A449C2434390BD3E8BF2, 5C790C4A1B3744679E83ADA0, 4F219760BD14466DA838B50A, 61523827C4D44A56AB8FA9E9, AE6635A9ACB74E5DB66892EA, BA90C1F3406546599706585F, A006); };
 /* End PBXSourcesBuildPhase section */
 
 /* Begin XCBuildConfiguration section */

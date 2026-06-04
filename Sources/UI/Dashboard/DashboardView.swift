@@ -71,7 +71,7 @@ struct DashboardPage: View {
                                             .font(.system(size: 12, weight: .bold, design: .monospaced))
                                         Spacer()
                                     }.padding(.bottom, 6)
-                                    MetalTrafficView(accent: NSColor(M.accent)).frame(height: 144)
+                                    TrafficSparkline(down: M.downSeries, up: M.upSeries, accent: M.accent).frame(height: 144)
                                 }
                             }
                             .frame(height: 224)
@@ -408,5 +408,40 @@ struct HeadSwitch: View {
         .frame(height: 32)
         .background(RoundedRectangle(cornerRadius: 8).fill(Color(red: 0x2A/255.0, green: 0x2A/255.0, blue: 0x2A/255.0)))
         .overlay(RoundedRectangle(cornerRadius: 8).stroke(Color.primary.opacity(0.1), lineWidth: 1.0))
+    }
+}
+
+// MARK: - Traffic sparkline
+// Lightweight SwiftUI line chart fed by AppModel's live downSeries/upSeries
+// (from the /traffic WebSocket). Replaces the removed mmap-backed Metal chart
+// that depended on the old self-built engine's stats producer.
+
+struct TrafficSparkline: View {
+    let down: [Double]
+    let up: [Double]
+    let accent: Color
+
+    var body: some View {
+        GeometryReader { geo in
+            let maxV = max(down.max() ?? 1, up.max() ?? 1, 1)
+            ZStack {
+                spark(down, size: geo.size, maxV: maxV)
+                    .stroke(Color.red.opacity(0.9), style: StrokeStyle(lineWidth: 1.5, lineJoin: .round))
+                spark(up, size: geo.size, maxV: maxV)
+                    .stroke(accent, style: StrokeStyle(lineWidth: 1.5, lineJoin: .round))
+            }
+        }
+    }
+
+    private func spark(_ data: [Double], size: CGSize, maxV: Double) -> Path {
+        Path { p in
+            guard data.count > 1, size.width > 0 else { return }
+            let stepX = size.width / CGFloat(data.count - 1)
+            for (i, v) in data.enumerated() {
+                let x = CGFloat(i) * stepX
+                let y = size.height * (1 - CGFloat(min(max(v / maxV, 0), 1)))
+                if i == 0 { p.move(to: CGPoint(x: x, y: y)) } else { p.addLine(to: CGPoint(x: x, y: y)) }
+            }
+        }
     }
 }
