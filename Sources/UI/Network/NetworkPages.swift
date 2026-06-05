@@ -45,7 +45,7 @@ struct NetworkPage: View {
                         .font(.caption2).foregroundColor(.secondary).padding(.top, 6)
                 }
                 Spacer(minLength: 0)
-            }.padding(18)
+            }.padding(DS.Spacing.xl)
         }
     }
 }
@@ -76,7 +76,7 @@ struct TunPage: View {
                 }
                 }
                 Spacer(minLength: 0)
-            }.padding(18)
+            }.padding(DS.Spacing.xl)
         }
     }
 }
@@ -100,7 +100,7 @@ struct SnifferPage: View {
                 }
                 }
                 Spacer(minLength: 0)
-            }.padding(18)
+            }.padding(DS.Spacing.xl)
         }
     }
 }
@@ -398,7 +398,7 @@ struct KernelMgmtPage: View {
                             } else {
                                 ForEach(M.kernelLogs.indices, id: \.self) { i in
                                     Text(M.kernelLogs[i])
-                                        .font(.system(size: 11, design: .monospaced))
+                                        .font(.dsMono)
                                         .foregroundColor(M.kernelLogs[i].contains("错误") ? .red : .primary)
                                 }
                             }
@@ -406,7 +406,7 @@ struct KernelMgmtPage: View {
                     }
                 }
                 Spacer(minLength: 0)
-            }.padding(18)
+            }.padding(DS.Spacing.xl)
         }
     }
 }

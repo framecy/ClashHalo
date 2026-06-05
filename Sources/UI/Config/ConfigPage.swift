@@ -216,7 +216,7 @@ private struct FormEditor: View {
                 Text("结构化表单为只读概览；如需修改请用 YAML 源码模式编辑后「应用并热重载」。")
                     .font(.caption2).foregroundColor(.secondary)
                 Spacer(minLength: 0)
-            }.padding(18)
+            }.padding(DS.Spacing.xl)
         }
     }
     private func kv(_ l: String, _ v: String) -> some View {

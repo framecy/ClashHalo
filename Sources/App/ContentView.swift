@@ -16,6 +16,7 @@ struct ContentView: View {
     private let proxyTabs: [Tab] = [
         .init(id: "proxies", label: "代理",     icon: "diamond.fill"),
         .init(id: "rules",   label: "分流规则", icon: "line.3.horizontal.decrease"),
+        .init(id: "subscriptions", label: "订阅", icon: "icloud.and.arrow.down"),
     ]
     // 配置：profile 与偏好
     private let configTabs: [Tab] = [
@@ -122,6 +123,7 @@ struct ContentView: View {
                 case "connections": ConnectionsPage()
                 case "proxies": ProxiesPage()
                 case "rules": RulesPage()
+                case "subscriptions": SubscriptionsPage()
                 case "config": ConfigPage()
                 case "logs": LogsPage()
                 case "general": GeneralPage()
