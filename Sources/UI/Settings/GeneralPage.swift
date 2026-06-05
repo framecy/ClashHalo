@@ -189,7 +189,7 @@ struct GeneralPage: View {
                         aboutView
                     }
                 }
-                .padding(18)
+                .padding(DS.Spacing.xl)
             }
         }
     }
