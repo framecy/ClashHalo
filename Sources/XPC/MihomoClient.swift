@@ -130,11 +130,16 @@ import SwiftUI
         _ = try await session.data(for: req)
     }
 
-    /// Reload config from a file path (force).
+    /// Reload config from a file path (force). Surfaces mihomo's error message
+    /// (e.g. a bad proxy-group reference) instead of silently "succeeding".
     func reloadConfig(path: String) async throws {
         let data = try JSONSerialization.data(withJSONObject: ["path": path])
         guard let req = request("/configs?force=true", method: "PUT", body: data) else { throw MihomoError.badURL }
-        _ = try await session.data(for: req)
+        let (respData, resp) = try await session.data(for: req)
+        if let h = resp as? HTTPURLResponse, h.statusCode >= 400 {
+            let msg = (try? JSONSerialization.jsonObject(with: respData) as? [String: Any])?["message"] as? String
+            throw MihomoError.reload(msg ?? "HTTP \(h.statusCode)")
+        }
     }
 
     /// Close all active connections.
