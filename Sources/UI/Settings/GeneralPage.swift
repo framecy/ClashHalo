@@ -103,7 +103,7 @@ struct GeneralPage: View {
                             VStack(alignment: .leading, spacing: 16) {
                                 HStack(spacing: 12) {
                                     Image(systemName: engine.isRoot ? "shield.checkmark.fill" : "shield.fill")
-                                        .font(.system(size: 24))
+                                        .font(.system(size: DS.Icon.lg))
                                         .foregroundColor(engine.isRoot ? .green : .secondary)
                                     
                                     VStack(alignment: .leading, spacing: 2) {
@@ -220,7 +220,7 @@ struct GeneralPage: View {
         return Button(action: { selectedTab = tag }) {
             VStack(spacing: 6) {
                 Image(systemName: active ? activeIcon : inactiveIcon)
-                    .font(.system(size: 20))
+                    .font(.system(size: DS.Icon.md))
                     .foregroundColor(active ? M.accent : .secondary)
                 Text(label)
                     .font(.system(size: 12, weight: active ? .semibold : .regular))
@@ -240,7 +240,7 @@ struct GeneralPage: View {
     private var aboutView: some View {
         VStack(spacing: 20) {
             Image(systemName: "bolt.fill")
-                .font(.system(size: 60))
+                .font(.system(size: DS.Icon.hero))
                 .foregroundColor(M.accent)
                 .padding(.top, 20)
             
@@ -386,7 +386,7 @@ struct ContentUnavailable: View {
     init(_ t: String, _ i: String) { text = t; icon = i }
     var body: some View {
         VStack(spacing: 10) {
-            Image(systemName: icon).font(.system(size: 34)).foregroundColor(.secondary.opacity(0.5))
+            Image(systemName: icon).font(.system(size: DS.Icon.xl)).foregroundColor(.secondary.opacity(0.5))
             Text(text).font(.callout).foregroundColor(.secondary)
                 .multilineTextAlignment(.center).fixedSize(horizontal: false, vertical: true)
         }.frame(maxWidth: .infinity, minHeight: 160).padding(40)
