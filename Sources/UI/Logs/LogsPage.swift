@@ -44,7 +44,7 @@ struct LogsPage: View {
             ScrollViewReader { sp in
                 ScrollView {
                     LazyVStack(alignment: .leading, spacing: 2) {
-                        ForEach(rows) { l in
+                        ForEach(rows.reversed()) { l in
                             HStack(alignment: .top, spacing: 8) {
                                 Text(l.time).font(.system(size: 12, design: .monospaced)).foregroundColor(.secondary)
                                 Text(l.level.uppercased()).font(.system(size: 12, weight: .bold))
@@ -58,7 +58,8 @@ struct LogsPage: View {
                     }.padding(.vertical, 6)
                 }
                 .onChange(of: M.logs.count) {
-                    if !paused, let last = rows.last { withAnimation { sp.scrollTo(last.id, anchor: .bottom) } }
+                    // Newest-first: keep the latest line pinned to the top.
+                    if !paused, let newest = rows.last { withAnimation { sp.scrollTo(newest.id, anchor: .top) } }
                 }
             }
             if source.isEmpty {
