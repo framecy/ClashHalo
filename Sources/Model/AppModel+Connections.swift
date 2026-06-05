@@ -18,7 +18,10 @@ extension AppModel {
 
     func onConnections(_ s: ConnectionsSnapshot) {
         uploadTotal = s.uploadTotal; downloadTotal = s.downloadTotal
-        if let m = s.memory { memory = m }
+        // Only update on a real value; the snapshot's memory mirrors mihomo's
+        // internal counter which is 0 until the /memory stream warms it up (see
+        // startStreams). Guarding against 0 avoids flicker back to "0 B".
+        if let m = s.memory, m > 0 { memory = m }
         let items = s.connections ?? []
         var next: [Conn] = []
         var bytes: [String: (up: Int64, down: Int64)] = [:]

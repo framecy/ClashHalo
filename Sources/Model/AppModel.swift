@@ -100,6 +100,7 @@ import Network
     private var trafficWS: WSHandle?
     private var connWS: WSHandle?
     private var logWS: WSHandle?
+    private var memWS: WSHandle?
     private var pollTask: Task<Void, Never>?
 
     private static let logDF: DateFormatter = { let f = DateFormatter(); f.dateFormat = "HH:mm:ss"; return f }()
@@ -168,6 +169,12 @@ import Network
         logWS = api.stream("/logs?level=\(logLevel)", type: LogTick.self) { [weak self] l in
             Task { @MainActor in self?.onLog(l) }
         }
+        // mihomo only computes runtime memory while /memory is being subscribed;
+        // without this stream the kernel reports memory=0 (both here and in the
+        // /connections snapshot). First frame is 0, subsequent frames are real.
+        memWS = api.stream("/memory", type: MemoryTick.self) { [weak self] m in
+            Task { @MainActor in if m.inuse > 0 { self?.memory = m.inuse } }
+        }
     }
 
     /// Change the log subscription level (server-side filter) and reconnect just
@@ -185,8 +192,8 @@ import Network
     }
 
     private func stopStreams() {
-        trafficWS?.cancel(); connWS?.cancel(); logWS?.cancel()
-        trafficWS = nil; connWS = nil; logWS = nil
+        trafficWS?.cancel(); connWS?.cancel(); logWS?.cancel(); memWS?.cancel()
+        trafficWS = nil; connWS = nil; logWS = nil; memWS = nil
         pollTask?.cancel(); pollTask = nil
     }
 

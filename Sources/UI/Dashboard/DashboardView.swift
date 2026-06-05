@@ -45,7 +45,10 @@ struct DashboardPage: View {
                     }
 
                     // Row 2: Chart + memory column (height 224 = 64*3+16*2, 3:1 width ratio)
-                    Grid(horizontalSpacing: 16) {
+                    // verticalSpacing 0: the empty sizing row below only defines 4 equal
+                    // columns; without this, Grid's default row spacing adds a stray gap
+                    // between Row 1 and the chart (breaking the 16px rhythm).
+                    Grid(horizontalSpacing: 16, verticalSpacing: 0) {
                         GridRow {
                             Color.clear.frame(height: 0).frame(maxWidth: .infinity)
                             Color.clear.frame(height: 0).frame(maxWidth: .infinity)
