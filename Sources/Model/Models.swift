@@ -231,7 +231,7 @@ func fmtBytes(_ b: Double) -> String {
     return "\(Int(b)) B"
 }
 func fmtDelay(_ ms: Int) -> String { ms > 0 ? "\(ms)" : "—" }
-func delayColor(_ ms: Int) -> Color { ms <= 0 ? .secondary : ms < 100 ? .green : ms < 250 ? .orange : .red }
+func delayColor(_ ms: Int) -> Color { ms <= 0 ? .secondary : ms < 100 ? DS.Palette.ok : ms < 250 ? DS.Palette.warn : DS.Palette.error }
 func modeLabel(_ m: String) -> String { ["rule":"规则","global":"全局","direct":"直连"][m] ?? m }
 
 // MARK: - Extensions

@@ -72,8 +72,8 @@ struct ConfigPage: View {
         }
         .padding(16)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background(RoundedRectangle(cornerRadius: 12).fill(Color(red: 0x2A/255.0, green: 0x2A/255.0, blue: 0x2A/255.0)))
-        .overlay(RoundedRectangle(cornerRadius: 12).stroke(active ? M.accent.opacity(0.4) : Color(red: 0x2C/255.0, green: 0x2C/255.0, blue: 0x2C/255.0), lineWidth: active ? 1.5 : 1))
+        .background(RoundedRectangle(cornerRadius: 12).fill(DS.Palette.cardBg))
+        .overlay(RoundedRectangle(cornerRadius: 12).stroke(active ? M.accent.opacity(0.4) : DS.Palette.cardBgAlt, lineWidth: active ? 1.5 : 1))
         .contentShape(Rectangle())
         .onTapGesture { if !active { M.activateProfile(p.id) } }
         .contextMenu {

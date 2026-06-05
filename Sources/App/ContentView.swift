@@ -92,7 +92,7 @@ struct ContentView: View {
             statusToggle("TUN 模式", icon: "shield.lefthalf.filled", isOn: Binding(get: { M.tunOn }, set: { _ in M.toggleTUN() }), accent: true)
             
             HStack {
-                Circle().fill(M.reachable ? Color.green : Color.red).frame(width: 6, height: 6)
+                Circle().fill(M.reachable ? DS.Palette.ok : DS.Palette.error).frame(width: 6, height: 6)
                 Text(M.reachable ? "核心已就绪" : "核心已停止").font(.system(size: 12)).foregroundColor(.secondary)
                 Spacer()
                 if M.reachable {
@@ -106,7 +106,7 @@ struct ContentView: View {
 
     private func statusToggle(_ label: String, icon: String, isOn: Binding<Bool>, accent: Bool) -> some View {
         HStack(spacing: 8) {
-            Circle().fill(isOn.wrappedValue ? (accent ? M.accent : Color.green) : Color.secondary.opacity(0.3)).frame(width: 6, height: 6)
+            Circle().fill(isOn.wrappedValue ? (accent ? M.accent : DS.Palette.ok) : Color.secondary.opacity(0.3)).frame(width: 6, height: 6)
             Text(label).font(.system(size: 12, weight: .medium)).foregroundColor(isOn.wrappedValue ? .primary : .secondary)
             Spacer()
             Toggle("", isOn: isOn).toggleStyle(.switch).controlSize(.mini).labelsHidden()
@@ -203,7 +203,7 @@ struct Card<Content: View>: View {
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
         .clipped()
-        .background(RoundedRectangle(cornerRadius: 12).fill(Color(red: 0x2A/255.0, green: 0x2A/255.0, blue: 0x2A/255.0)))
-        .overlay(RoundedRectangle(cornerRadius: 12).stroke(Color(red: 0x2C/255.0, green: 0x2C/255.0, blue: 0x2C/255.0)))
+        .background(RoundedRectangle(cornerRadius: 12).fill(DS.Palette.cardBg))
+        .overlay(RoundedRectangle(cornerRadius: 12).stroke(DS.Palette.cardBgAlt))
     }
 }
