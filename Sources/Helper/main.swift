@@ -1,7 +1,7 @@
 import Foundation
 import Security
 
-let kHelperVersion = "1.0.5"
+let kHelperVersion = "1.0.6"
 
 private let kClientRequirement = "identifier \"com.clashpow.app\""
 

@@ -81,7 +81,7 @@ extension AppModel {
         engine.isBusy = true
         Task {
             defer { engine.isBusy = false }
-            let overrides: [String: Any] = [
+            var overrides: [String: Any] = [
                 "tun": [
                     "enable": want,
                     "stack": (configs["tun"] as? [String:Any])?["stack"] ?? "gvisor",
@@ -89,6 +89,18 @@ extension AppModel {
                     "auto-detect-interface": true
                 ]
             ]
+            // Pin the outbound interface to the real default-route NIC when enabling
+            // TUN. auto-detect-interface alone loses a startup race — auto-route
+            // hijacks the default route before the monitor identifies the NIC, so
+            // every dial fails "interface not found" until it catches up, black-holing
+            // traffic. An explicit interface-name gives egress a concrete NIC at once;
+            // the monitor still updates it on later network changes. Clear it on
+            // disable so non-TUN egress returns to fully automatic selection.
+            if want, let iface = EngineControl.defaultInterface() {
+                overrides["interface-name"] = iface
+            } else if !want {
+                overrides["interface-name"] = ""
+            }
 
             // TUN requires root.
             if want && !engine.runningAsRoot {

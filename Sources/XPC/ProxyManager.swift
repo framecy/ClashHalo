@@ -2,60 +2,66 @@ import Foundation
 import SystemConfiguration
 
 public class ProxyManager {
+    /// Set/clear the macOS system proxy via `networksetup`.
+    ///
+    /// Replaces the previous SCPreferences implementation: a root LaunchDaemon is
+    /// not attached to the user's GUI/preferences session, so SCPreferences
+    /// commit/apply ran but never took effect (helper logged the call, yet
+    /// `scutil --proxy` stayed HTTPEnable:0 and the call returned false →
+    /// "系统代理设置失败"). `networksetup` mutates the same preferences reliably
+    /// from any root context and applies immediately.
     public static func setSystemProxy(enabled: Bool, port: Int) -> Bool {
-        // nil authorization is fine since the helper runs as root; but guard the
-        // optional instead of force-unwrapping to avoid a crash if it ever fails.
-        guard let prefRef = SCPreferencesCreateWithAuthorization(kCFAllocatorDefault, "ClashPow" as CFString, nil, nil) else { return false }
-        guard let currentSet = SCNetworkSetCopyCurrent(prefRef) else { return false }
-        guard let services = SCNetworkSetCopyServices(currentSet) as? [SCNetworkService] else { return false }
-        
-        var success = false
-        for service in services {
-            // Only apply to IPv4/IPv6 capable interfaces (exclude virtual or irrelevant ones)
-            guard let interface = SCNetworkServiceGetInterface(service),
-                  let bsdName = SCNetworkInterfaceGetBSDName(interface) as? String else { continue }
-            
-            // Skip bridge/awdl/llw
-            if bsdName.hasPrefix("bridge") || bsdName.hasPrefix("awdl") || bsdName.hasPrefix("llw") { continue }
-            
-            guard let proxyProtocol = SCNetworkServiceCopyProtocol(service, kSCNetworkProtocolTypeProxies) else { continue }
-            
-            let proxyDict = (SCNetworkProtocolGetConfiguration(proxyProtocol) as? [String: Any]) ?? [:]
-            var newProxies = proxyDict
-            
+        let services = enabledNetworkServices()
+        guard !services.isEmpty else { return false }
+        var anyOK = false
+        for svc in services {
+            let ok: Bool
             if enabled {
-                newProxies[kCFNetworkProxiesHTTPEnable as String] = 1
-                newProxies[kCFNetworkProxiesHTTPProxy as String] = "127.0.0.1"
-                newProxies[kCFNetworkProxiesHTTPPort as String] = port
-                
-                newProxies[kCFNetworkProxiesHTTPSEnable as String] = 1
-                newProxies[kCFNetworkProxiesHTTPSProxy as String] = "127.0.0.1"
-                newProxies[kCFNetworkProxiesHTTPSPort as String] = port
-                
-                newProxies[kCFNetworkProxiesSOCKSEnable as String] = 1
-                newProxies[kCFNetworkProxiesSOCKSProxy as String] = "127.0.0.1"
-                newProxies[kCFNetworkProxiesSOCKSPort as String] = port
-                
-                newProxies[kCFNetworkProxiesExcludeSimpleHostnames as String] = 1
+                ok = run(["-setwebproxy", svc, "127.0.0.1", "\(port)"])
+                    && run(["-setsecurewebproxy", svc, "127.0.0.1", "\(port)"])
+                    && run(["-setsocksfirewallproxy", svc, "127.0.0.1", "\(port)"])
+                    && run(["-setproxybypassdomains", svc, "localhost", "127.0.0.1", "*.local"])
             } else {
-                newProxies[kCFNetworkProxiesHTTPEnable as String] = 0
-                newProxies[kCFNetworkProxiesHTTPSEnable as String] = 0
-                newProxies[kCFNetworkProxiesSOCKSEnable as String] = 0
+                ok = run(["-setwebproxystate", svc, "off"])
+                    && run(["-setsecurewebproxystate", svc, "off"])
+                    && run(["-setsocksfirewallproxystate", svc, "off"])
             }
-            
-            if SCNetworkProtocolSetConfiguration(proxyProtocol, newProxies as CFDictionary) {
-                success = true
-            }
+            if ok { anyOK = true }
         }
-        
-        if success {
-            if !SCPreferencesCommitChanges(prefRef) {
-                success = false
-            } else {
-                SCPreferencesApplyChanges(prefRef)
-            }
+        return anyOK
+    }
+
+    /// All enabled network services (skips the header line and `*`-disabled ones).
+    private static func enabledNetworkServices() -> [String] {
+        guard let out = runOutput(["-listallnetworkservices"]) else { return [] }
+        return out.split(separator: "\n").compactMap { line -> String? in
+            let s = String(line)
+            if s.hasPrefix("An asterisk") { return nil }   // header
+            if s.hasPrefix("*") { return nil }             // disabled service
+            let t = s.trimmingCharacters(in: .whitespaces)
+            return t.isEmpty ? nil : t
         }
-        return success
+    }
+
+    @discardableResult
+    private static func run(_ args: [String]) -> Bool {
+        let p = Process()
+        p.executableURL = URL(fileURLWithPath: "/usr/sbin/networksetup")
+        p.arguments = args
+        p.standardOutput = Pipe(); p.standardError = Pipe()
+        do { try p.run(); p.waitUntilExit(); return p.terminationStatus == 0 }
+        catch { return false }
+    }
+
+    private static func runOutput(_ args: [String]) -> String? {
+        let p = Process()
+        p.executableURL = URL(fileURLWithPath: "/usr/sbin/networksetup")
+        p.arguments = args
+        let pipe = Pipe(); p.standardOutput = pipe; p.standardError = Pipe()
+        do { try p.run() } catch { return nil }
+        let data = pipe.fileHandleForReading.readDataToEndOfFile()
+        p.waitUntilExit()
+        return String(data: data, encoding: .utf8)
     }
 
     /// Read the effective system proxy state (no root required). Returns true
