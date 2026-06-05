@@ -114,7 +114,7 @@ struct SdwanTopologyView: View {
 
                 // Nodes
                 VStack(spacing: 4) {
-                    Image(systemName: "laptopcomputer").font(.system(size: 16))
+                    Image(systemName: "laptopcomputer").font(.system(size: DS.Icon.sm))
                     Text("本机 (Host)").font(.dsBodyBold)
                 }
                 .frame(width: 80, height: 48)

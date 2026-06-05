@@ -74,11 +74,11 @@ struct ContentView: View {
             RoundedRectangle(cornerRadius: 10, style: .continuous)
                 .fill(LinearGradient(colors: [M.accent, M.accent.opacity(0.7)], startPoint: .topLeading, endPoint: .bottomTrailing))
                 .frame(width: 32, height: 32)
-                .overlay(Image(systemName: "bolt.fill").font(.system(size: 15, weight: .bold)).foregroundColor(.white))
+                .overlay(Image(systemName: "bolt.fill").font(.system(size: DS.Icon.sm, weight: .bold)).foregroundColor(.white))
             VStack(alignment: .leading, spacing: 0) {
                 HStack(spacing: 5) {
                     Text("ClashPow").font(.dsLabelBold)
-                    Text("v\(Self.appVersion)").font(.system(size: 10, weight: .medium)).foregroundColor(.secondary)
+                    Text("v\(Self.appVersion)").font(.dsBodyMedium).foregroundColor(.secondary)
                 }
             }
             Spacer()
