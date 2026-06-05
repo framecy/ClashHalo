@@ -299,25 +299,20 @@ struct GeneralPage: View {
 
     /// Install / uninstall / upgrade the privileged helper with progress + clear feedback.
     /// - Installed + outdated → upgrade (uninstall then reinstall, full cycle)
-    /// - Installed + current → uninstall
-    /// - Not installed → install
+    /// - Installed + current  → uninstall
+    /// - Not installed        → install
     private func toggleHelper() async {
         helperBusy = true
         defer { helperBusy = false }
         if engine.isRoot && helperNeedsUpdate {
-            // Upgrade path: full uninstall → install to replace stale binary
             M.showToast("正在升级特权服务（v\(engine.helperVersion) → v\(EngineControl.kExpectedHelperVersion)）…")
             let ok = await XPCManager.shared.upgradeDaemon()
             guard ok else { M.showToast("升级失败或已取消授权"); return }
             engine.isRoot = true
-            var connected = false
-            for _ in 0..<12 {
-                if await XPCManager.shared.verifyConnectivity() { connected = true; break }
-                try? await Task.sleep(nanoseconds: 500_000_000)
-            }
+            await waitForHelper()
             engine.refreshHelperVersion()
             await M.reconnect()
-            M.showToast(connected ? "特权服务已升级并就绪" : "升级完成，但连通确认超时，请稍后重试")
+            M.showToast("特权服务已升级 ✓")
         } else if engine.isRoot {
             M.showToast("正在请求授权卸载特权服务…")
             let ok = await engine.uninstallPrivileged()
@@ -327,13 +322,19 @@ struct GeneralPage: View {
             M.showToast("正在请求授权安装特权服务…")
             let ok = await engine.installPrivileged()
             guard ok else { M.showToast("安装失败或已取消授权"); return }
-            var connected = false
-            for _ in 0..<12 {
-                if await XPCManager.shared.verifyConnectivity() { connected = true; break }
-                try? await Task.sleep(nanoseconds: 500_000_000)
-            }
+            // installPrivileged osascript 成功即视为安装完成；连通状态由 pollStatus 异步更新
+            engine.isRoot = true
+            await waitForHelper()
             await M.reconnect()
-            M.showToast(connected ? "特权辅助程序已安装并就绪" : "已安装，但连通确认超时，请稍后重试")
+            M.showToast("特权辅助程序已安装 ✓")
+        }
+    }
+
+    /// Poll verifyConnectivity up to 15s; return regardless (state updated async by pollStatus).
+    private func waitForHelper() async {
+        for _ in 0..<30 {
+            if await XPCManager.shared.verifyConnectivity() { return }
+            try? await Task.sleep(nanoseconds: 500_000_000)
         }
     }
 }

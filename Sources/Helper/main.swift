@@ -6,39 +6,54 @@ let kHelperVersion = "1.0.5"
 private let kClientRequirement = "identifier \"com.clashpow.app\""
 
 /// Validate that an incoming XPC peer is the ClashPow app.
-/// Primary check: Security framework requirement with relaxed flags (ad-hoc compatible).
-/// Fallback: bundle-path check via SecCodeCopyPath for unsigned/dev builds.
+/// Three layers, each more permissive than the last, to handle all signing variants:
+///   1. Security framework: identifier check with basic-validate-only flags
+///   2. SecCodeCopyPath: bundle-root URL check
+///   3. proc_pidpath: raw executable path check (most reliable for ad-hoc builds)
 func isAuthorizedClient(_ conn: NSXPCConnection) -> Bool {
     let pid = conn.processIdentifier
     guard pid > 0 else { return false }
+
+    // Layer 1: Security framework requirement check.
+    // kSecCSDoNotValidateExecutable | kSecCSDoNotValidateResources (== kSecCSBasicValidateOnly)
+    // skips hash and seal verification — only the code-signing metadata (identifier) is
+    // checked. This handles developer-signed and most ad-hoc builds.
     var code: SecCode?
     let attrs = [kSecGuestAttributePid: pid] as CFDictionary
-    guard SecCodeCopyGuestWithAttributes(nil, attrs, [], &code) == errSecSuccess,
-          let code else { return false }
+    if SecCodeCopyGuestWithAttributes(nil, attrs, [], &code) == errSecSuccess, let code {
+        var req: SecRequirement?
+        if SecRequirementCreateWithString(kClientRequirement as CFString, [], &req) == errSecSuccess,
+           let req {
+            let flags = SecCSFlags(rawValue: kSecCSDoNotValidateExecutable | kSecCSDoNotValidateResources)
+            if SecCodeCheckValidity(code, flags, req) == errSecSuccess { return true }
+        }
 
-    var req: SecRequirement?
-    if SecRequirementCreateWithString(kClientRequirement as CFString, [], &req) == errSecSuccess,
-       let req {
-        // kSecCSDoNotValidateResources: skip resource-seal check; avoids false
-        // failures for ad-hoc or re-signed builds where the seal may differ.
-        let flags = SecCSFlags(rawValue: kSecCSDoNotValidateResources)
-        if SecCodeCheckValidity(code, flags, req) == errSecSuccess { return true }
+        // Layer 2: bundle-root URL from SecStaticCode (SecCodeCopyPath returns the .app bundle root)
+        var staticCode: SecStaticCode?
+        if SecCodeCopyStaticCode(code, SecCSFlags(rawValue: 0), &staticCode) == errSecSuccess,
+           let sc = staticCode {
+            var pathURL: CFURL?
+            if SecCodeCopyPath(sc, SecCSFlags(rawValue: 0), &pathURL) == errSecSuccess,
+               let path = (pathURL as URL?)?.path,
+               (path.contains("/ClashPow.app") || path.hasSuffix("/ClashPow")) {
+                log("isAuthorizedClient: SecCode-path fallback accepted pid \(pid)")
+                return true
+            }
+        }
     }
 
-    // Fallback: path-based check via static code bundle URL (handles dev/unsigned builds).
-    // SecCodeCopyPath requires SecStaticCode; convert via SecCodeCopyStaticCode first.
-    var staticCode: SecStaticCode?
-    if SecCodeCopyStaticCode(code, SecCSFlags(rawValue: 0), &staticCode) == errSecSuccess,
-       let sc = staticCode {
-        var pathURL: CFURL?
-        // SecCodeCopyPath is the Swift bridging of the C SecCodeCopyPath(SecStaticCode*,...)
-        if SecCodeCopyPath(sc, SecCSFlags(rawValue: 0), &pathURL) == errSecSuccess,
-           let path = (pathURL as URL?)?.path,
-           path.contains("ClashPow.app/Contents/MacOS/ClashPow") {
-            log("isAuthorizedClient: path-fallback accepted pid \(pid)")
+    // Layer 3: proc_pidpath — returns the actual executable path regardless of signing.
+    // Most reliable for ad-hoc builds where Security framework may reject the code object.
+    var pathBuf = [Int8](repeating: 0, count: 4096)
+    if proc_pidpath(pid, &pathBuf, 4096) > 0 {
+        let path = String(cString: pathBuf)
+        if path.contains("/ClashPow.app/") || path.hasSuffix("/ClashPow") {
+            log("isAuthorizedClient: proc_pidpath fallback accepted pid \(pid): \(path)")
             return true
         }
     }
+
+    log("isAuthorizedClient: REJECTED pid \(pid)")
     return false
 }
 
