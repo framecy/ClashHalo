@@ -106,6 +106,13 @@ extension AppModel {
                         if await XPCManager.shared.verifyConnectivity() { break }
                     }
                     engine.refreshHelperVersion()
+                    // upgradeDaemon goes through XPCManager directly (not
+                    // installPrivileged), so it doesn't set isRoot. pollStatus would
+                    // eventually re-sync it, but restart() below runs immediately and
+                    // reads isRoot to choose root-vs-user launch — without this the
+                    // 2s pollStatus window (isRoot=false during uninstall) could make
+                    // it launch user-mode and TUN would fail.
+                    engine.isRoot = true
                 }
 
                 showToast("正在以 Root 权限重启核心…")
