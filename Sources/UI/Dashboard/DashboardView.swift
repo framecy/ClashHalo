@@ -290,8 +290,8 @@ struct StatBox: View {
         }
         .padding(16)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background(RoundedRectangle(cornerRadius: 12).fill(Color(red: 0x2A/255.0, green: 0x2A/255.0, blue: 0x2A/255.0)))
-        .overlay(RoundedRectangle(cornerRadius: 12).stroke(accent ? M.accent.opacity(0.3) : Color(red: 0x2C/255.0, green: 0x2C/255.0, blue: 0x2C/255.0)))
+        .background(RoundedRectangle(cornerRadius: 12).fill(DS.Palette.cardBg))
+        .overlay(RoundedRectangle(cornerRadius: 12).stroke(accent ? M.accent.opacity(0.3) : DS.Palette.cardBgAlt))
     }
 }
 
@@ -310,8 +310,8 @@ struct BarStat: View {
         .padding(.horizontal, 16)
         .frame(height: 64)
         .frame(maxWidth: .infinity)
-        .background(RoundedRectangle(cornerRadius: 8).fill(Color(red: 0x2A/255.0, green: 0x2A/255.0, blue: 0x2A/255.0)))
-        .overlay(RoundedRectangle(cornerRadius: 8).stroke(Color(red: 0x2C/255.0, green: 0x2C/255.0, blue: 0x2C/255.0)))
+        .background(RoundedRectangle(cornerRadius: 8).fill(DS.Palette.cardBg))
+        .overlay(RoundedRectangle(cornerRadius: 8).stroke(DS.Palette.cardBgAlt))
     }
 }
 
@@ -338,8 +338,8 @@ struct MiniStat: View {
         .frame(maxWidth: .infinity, alignment: .leading)
         .padding(.horizontal, 16).padding(.vertical, 12)
         .frame(height: 64)
-        .background(RoundedRectangle(cornerRadius: 8).fill(Color(red: 0x2A/255.0, green: 0x2A/255.0, blue: 0x2A/255.0)))
-        .overlay(RoundedRectangle(cornerRadius: 8).stroke(Color(red: 0x2C/255.0, green: 0x2C/255.0, blue: 0x2C/255.0)))
+        .background(RoundedRectangle(cornerRadius: 8).fill(DS.Palette.cardBg))
+        .overlay(RoundedRectangle(cornerRadius: 8).stroke(DS.Palette.cardBgAlt))
     }
 }
 
