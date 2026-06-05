@@ -35,7 +35,7 @@ struct SubscriptionsPage: View {
                     Text(p.name).font(.callout).fontWeight(.semibold)
                     Text("\(p.proxies?.count ?? 0) 节点").font(.caption2)
                         .padding(.horizontal, 6).padding(.vertical, 1)
-                        .background(Capsule().fill(Color.primary.opacity(0.08)))
+                        .background(Capsule().fill(DS.Palette.hairline))
                     Spacer()
                     if busy.contains(p.name) {
                         ProgressView().controlSize(.small)

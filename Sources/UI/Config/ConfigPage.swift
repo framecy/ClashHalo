@@ -26,7 +26,7 @@ struct ConfigPage: View {
                         ForEach(M.store.profiles) { p in profileCard(p) }
                     }
                 }
-                .padding(.horizontal, 20).padding(.bottom, 24)
+                .padding(.horizontal, DS.Spacing.xl).padding(.bottom, DS.Spacing.xxl)
             }
         }
         .sheet(isPresented: $showImportRemote) { ImportRemoteSheet() }
@@ -43,37 +43,37 @@ struct ConfigPage: View {
         return VStack(alignment: .leading, spacing: 10) {
             HStack(spacing: 8) {
                 Image(systemName: p.source == "remote" ? "icloud.fill" : "doc.fill")
-                    .font(.system(size: 14))
+                    .font(.dsLabel)
                     .foregroundColor(active ? M.accent : .secondary)
-                Text(p.name).font(.system(size: 14, weight: .bold)).lineLimit(1)
+                Text(p.name).font(.dsLabelBold).lineLimit(1)
                 Spacer()
                 if active {
-                    Text("生效中").font(.system(size: 12, weight: .bold)).foregroundColor(M.accent)
+                    Text("生效中").font(.dsBodyBold).foregroundColor(M.accent)
                         .padding(.horizontal, 6).padding(.vertical, 2)
                         .background(Capsule().fill(M.accent.opacity(0.12)))
                 } else {
                     Circle().stroke(Color.secondary.opacity(0.3), lineWidth: 1.5).frame(width: 12, height: 12)
                 }
             }
-            Text(p.source == "remote" ? "远程订阅" : "本地文件").font(.system(size: 12)).foregroundColor(.secondary)
+            Text(p.source == "remote" ? "远程订阅" : "本地文件").font(.dsBody).foregroundColor(.secondary)
             
             Divider().opacity(0.4).padding(.vertical, 2)
             
             HStack {
-                Text(relTime(p.updatedAt)).font(.system(size: 12)).foregroundColor(.secondary)
+                Text(relTime(p.updatedAt)).font(.dsBody).foregroundColor(.secondary)
                 Spacer()
                 if active {
-                    Image(systemName: "checkmark.circle.fill").foregroundColor(M.accent).font(.system(size: 14))
+                    Image(systemName: "checkmark.circle.fill").foregroundColor(M.accent).font(.dsLabel)
                 } else {
                     Button("设为活动") { M.activateProfile(p.id) }
-                        .buttonStyle(.plain).font(.system(size: 12, weight: .semibold)).foregroundColor(.accentColor)
+                        .buttonStyle(.plain).font(.dsBodySemibold).foregroundColor(.accentColor)
                 }
             }
         }
-        .padding(16)
+        .padding(DS.Spacing.l)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background(RoundedRectangle(cornerRadius: 12).fill(DS.Palette.cardBg))
-        .overlay(RoundedRectangle(cornerRadius: 12).stroke(active ? M.accent.opacity(0.4) : DS.Palette.cardBgAlt, lineWidth: active ? 1.5 : 1))
+        .background(RoundedRectangle(cornerRadius: DS.Radius.card).fill(DS.Palette.cardBg))
+        .overlay(RoundedRectangle(cornerRadius: DS.Radius.card).stroke(active ? M.accent.opacity(0.4) : DS.Palette.cardBgAlt, lineWidth: active ? 1.5 : 1))
         .contentShape(Rectangle())
         .onTapGesture { if !active { M.activateProfile(p.id) } }
         .contextMenu {
@@ -115,7 +115,7 @@ struct ImportRemoteSheet: View {
                 Button { Task { await go() } } label: { if busy { ProgressView().controlSize(.small) } else { Text("导入") } }
                     .buttonStyle(.borderedProminent).disabled(url.isEmpty || busy)
             }
-        }.padding(20).frame(width: 440)
+        }.padding(DS.Spacing.xl).frame(width: 440)
     }
     private func go() async {
         busy = true; err = ""
@@ -139,7 +139,7 @@ struct AddLocalSheet: View {
                 Spacer()
                 Button("取消") { dismiss() }
             }
-        }.padding(20).frame(width: 400)
+        }.padding(DS.Spacing.xl).frame(width: 400)
     }
     private func pickFile() {
         let panel = NSOpenPanel()

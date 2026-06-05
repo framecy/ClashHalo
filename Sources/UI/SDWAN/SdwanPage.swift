@@ -115,11 +115,11 @@ struct SdwanTopologyView: View {
                 // Nodes
                 VStack(spacing: 4) {
                     Image(systemName: "laptopcomputer").font(.system(size: 16))
-                    Text("本机 (Host)").font(.system(size: 12, weight: .bold))
+                    Text("本机 (Host)").font(.dsBodyBold)
                 }
                 .frame(width: 80, height: 48)
-                .background(RoundedRectangle(cornerRadius: 8).fill(DS.Palette.cardBg))
-                .overlay(RoundedRectangle(cornerRadius: 8).stroke(M.accent, lineWidth: 1.2))
+                .background(RoundedRectangle(cornerRadius: DS.Radius.control).fill(DS.Palette.cardBg))
+                .overlay(RoundedRectangle(cornerRadius: DS.Radius.control).stroke(M.accent, lineWidth: 1.2))
                 .position(hostPt)
 
                 ForEach(0..<activeIfaces.count, id: \.self) { idx in
@@ -132,15 +132,15 @@ struct SdwanTopologyView: View {
                             .font(.system(size: 14))
                             .frame(width: 16)
                         VStack(alignment: .leading, spacing: 2) {
-                            Text(iface.name).font(.system(size: 12, design: .monospaced)).fontWeight(.bold).lineLimit(1)
-                            Text(iface.primaryIP).font(.system(size: 12, design: .monospaced)).foregroundColor(.secondary).lineLimit(1)
+                            Text(iface.name).font(.dsMono).fontWeight(.bold).lineLimit(1)
+                            Text(iface.primaryIP).font(.dsMono).foregroundColor(.secondary).lineLimit(1)
                         }
                         Spacer(minLength: 0)
                     }
                     .padding(.horizontal, 10).padding(.vertical, 6)
                     .frame(width: 144, alignment: .leading)
-                    .background(RoundedRectangle(cornerRadius: 8).fill(DS.Palette.cardBg))
-                    .overlay(RoundedRectangle(cornerRadius: 8).stroke(color.opacity(0.7), lineWidth: 1.0))
+                    .background(RoundedRectangle(cornerRadius: DS.Radius.control).fill(DS.Palette.cardBg))
+                    .overlay(RoundedRectangle(cornerRadius: DS.Radius.control).stroke(color.opacity(0.7), lineWidth: 1.0))
                     .position(pt)
                 }
 
@@ -148,22 +148,22 @@ struct SdwanTopologyView: View {
                     let dest = dests[idx]
                     let pt = destPoints[idx].1
                     HStack(spacing: 6) {
-                        Image(systemName: "arrow.up.right.circle.fill").foregroundColor(.secondary).font(.system(size: 12))
-                        Text(dest).font(.system(size: 12, design: .monospaced)).lineLimit(1)
+                        Image(systemName: "arrow.up.right.circle.fill").foregroundColor(.secondary).font(.dsBody)
+                        Text(dest).font(.dsMono).lineLimit(1)
                         Spacer(minLength: 0)
                     }
                     .padding(.horizontal, 10).padding(.vertical, 6)
                     .frame(width: 110, alignment: .leading)
-                    .background(RoundedRectangle(cornerRadius: 8).fill(DS.Palette.cardBg))
-                    .overlay(RoundedRectangle(cornerRadius: 8).stroke(Color.primary.opacity(0.12), lineWidth: 1.0))
+                    .background(RoundedRectangle(cornerRadius: DS.Radius.control).fill(DS.Palette.cardBg))
+                    .overlay(RoundedRectangle(cornerRadius: DS.Radius.control).stroke(Color.primary.opacity(0.12), lineWidth: 1.0))
                     .position(pt)
                 }
             }
         }
         .frame(height: calculatedHeight)
         .padding(10)
-        .background(VisualEffectView(material: .underWindowBackground, blendingMode: .withinWindow).cornerRadius(12))
-        .overlay(RoundedRectangle(cornerRadius: 12).stroke(Color.primary.opacity(0.06)))
+        .background(VisualEffectView(material: .underWindowBackground, blendingMode: .withinWindow).cornerRadius(DS.Radius.card))
+        .overlay(RoundedRectangle(cornerRadius: DS.Radius.card).stroke(Color.primary.opacity(0.06)))
         .clipped()
     }
 
@@ -210,13 +210,13 @@ struct SdwanPage: View {
                     HStack(spacing: 12) {
                         Image(systemName: "shield.lefthalf.filled").font(.title).foregroundColor(hasDefaultViaTun ? .orange : M.accent)
                         VStack(alignment: .leading, spacing: 3) {
-                            Text(hasDefaultViaTun ? "检测到 TUN 默认路由冲突" : "智能路由隔离已生效").font(.system(size: 14, weight: .bold))
+                            Text(hasDefaultViaTun ? "检测到 TUN 默认路由冲突" : "智能路由隔离已生效").font(.dsLabelBold)
                             if hasDefaultViaTun, let conflictIface = routes.first(where: { $0.dest == "default" || $0.dest.contains("0.0.0.0/0") })?.iface {
                                 Text("接口 \(conflictIface) 接管了全局默认路由，与 SD-WAN 原生路由冲突。建议关闭自动路由。")
-                                    .font(.system(size: 12)).foregroundColor(.secondary)
+                                    .font(.dsBody).foregroundColor(.secondary)
                             } else {
                                 Text("代理仅注入精确网段，未抢占默认路由；\(sdwanCount) 个 SD-WAN 接口路由保持完整。")
-                                    .font(.system(size: 12)).foregroundColor(.secondary)
+                                    .font(.dsBody).foregroundColor(.secondary)
                             }
                         }
                         Spacer()
@@ -239,13 +239,13 @@ struct SdwanPage: View {
                             VStack {
                                 Text("0").font(.system(size: 24, weight: .bold, design: .monospaced))
                                     .foregroundColor(M.accent)
-                                Text("路由冲突").font(.system(size: 12)).foregroundColor(.secondary)
+                                Text("路由冲突").font(.dsBody).foregroundColor(.secondary)
                             }
                         }
                     }
-                    .padding(16)
-                    .background(RoundedRectangle(cornerRadius: 12).fill(DS.Palette.cardBg))
-                    .overlay(RoundedRectangle(cornerRadius: 12).stroke(DS.Palette.cardBgAlt))
+                    .padding(DS.Spacing.l)
+                    .background(RoundedRectangle(cornerRadius: DS.Radius.card).fill(DS.Palette.cardBg))
+                    .overlay(RoundedRectangle(cornerRadius: DS.Radius.card).stroke(DS.Palette.cardBgAlt))
 
                     // Topology view of the network routing relation map
                     SdwanTopologyView(ifaces: ifaces, routes: routes)
@@ -253,7 +253,7 @@ struct SdwanPage: View {
                     // interfaces
                     Card(title: "网络接口拓扑 · \(ifaces.count)", icon: "network") {
                         VStack(spacing: 4) {
-                            if ifaces.isEmpty { Text("正在扫描接口…").font(.system(size: 12)).foregroundColor(.secondary).padding() }
+                            if ifaces.isEmpty { Text("正在扫描接口…").font(.dsBody).foregroundColor(.secondary).padding() }
                             ForEach(ifaces.indices, id: \.self) { idx in
                                 ifaceRow(ifaces[idx]).padding(.vertical, 4)
                                 if idx < ifaces.count - 1 {
@@ -266,13 +266,13 @@ struct SdwanPage: View {
                     // utun routes
                     Card(title: "UTUN 路由表 · \(routes.count)", icon: "list.bullet.indent") {
                         VStack(spacing: 4) {
-                            if routes.isEmpty { Text("无 utun 路由").font(.system(size: 12)).foregroundColor(.secondary).padding() }
+                            if routes.isEmpty { Text("无 utun 路由").font(.dsBody).foregroundColor(.secondary).padding() }
                             ForEach(routes.indices, id: \.self) { idx in
                                 HStack {
-                                    Text(routes[idx].dest).font(.system(size: 12, design: .monospaced))
+                                    Text(routes[idx].dest).font(.dsMono)
                                     Spacer()
-                                    Image(systemName: "arrow.right").font(.system(size: 12)).foregroundColor(.secondary)
-                                    Text(routes[idx].iface).font(.system(size: 12, design: .monospaced)).foregroundColor(M.accent)
+                                    Image(systemName: "arrow.right").font(.dsBody).foregroundColor(.secondary)
+                                    Text(routes[idx].iface).font(.dsMono).foregroundColor(M.accent)
                                 }
                                 .padding(.vertical, 4)
                                 if idx < routes.count - 1 {
@@ -283,10 +283,10 @@ struct SdwanPage: View {
                     }
 
                     Label("进程级分流 (SO_USER_COOKIE + PF) 与路由注入需特权 Helper（代码签名后于 v1.0 启用）",
-                          systemImage: "lock.shield").font(.system(size: 12)).foregroundColor(.secondary)
+                          systemImage: "lock.shield").font(.dsBody).foregroundColor(.secondary)
                     Spacer(minLength: 0)
                 }
-                .padding(.horizontal, 20).padding(.bottom, 24)
+                .padding(.horizontal, DS.Spacing.xl).padding(.bottom, DS.Spacing.xxl)
             }
         }
         .onAppear { rescan() }

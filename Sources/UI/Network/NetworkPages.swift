@@ -238,7 +238,7 @@ struct StringListRow: View {
             }
             if !draftValid {
                 Text("格式无效 — 请检查输入（如 IP/CIDR: 10.0.0.0/8, URL: https://...）")
-                    .font(.system(size: 12)).foregroundColor(.red)
+                    .font(.dsBody).foregroundColor(.red)
             }
         }
         .padding(.vertical, 5)
@@ -274,7 +274,7 @@ struct GeoURLRow: View {
         HStack {
             Text(label).font(.callout).frame(width: 70, alignment: .leading)
             TextField("https://…", text: $text)
-                .textFieldStyle(.roundedBorder).font(.system(size: 12, design: .monospaced))
+                .textFieldStyle(.roundedBorder).font(.dsMono)
                 .onSubmit { Task { await M.patch(["geox-url": [sub: text]]) } }
         }
         .padding(.vertical, 5)
