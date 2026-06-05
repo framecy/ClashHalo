@@ -76,8 +76,11 @@ extension AppModel {
     }
 
     func toggleTUN() {
+        guard !engine.isBusy else { showToast("内核操作进行中，请稍候…"); return }
         let want = !tunOn
+        engine.isBusy = true
         Task {
+            defer { engine.isBusy = false }
             let overrides: [String: Any] = [
                 "tun": [
                     "enable": want,
@@ -175,8 +178,11 @@ extension AppModel {
     }
 
     func toggleEngine() {
+        guard !engine.isBusy else { showToast("内核操作进行中，请稍候…"); return }
         let want = !reachable
+        engine.isBusy = true
         Task {
+            defer { engine.isBusy = false }
             if want {
                 logKernel("正在请求启动核心...")
                 showToast("正在启动核心...")

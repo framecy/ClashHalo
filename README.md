@@ -1,6 +1,6 @@
 # ClashPow
 
-> macOS 14+ (Apple Silicon) 原生 SwiftUI 代理客户端，直接编排官方 `mihomo` (Clash.Meta) 内核。当前版本 **v0.4.3**。
+> macOS 14+ (Apple Silicon) 原生 SwiftUI 代理客户端，直接编排官方 `mihomo` (Clash.Meta) 内核。当前版本 **v0.4.4**。
 
 ClashPow 是「原生编排器」架构：GUI 通过 REST + WebSocket 与官方内核通信，特权操作交给独立签名的 Helper。纯 Swift、零中间层、完全兼容官方内核特性。
 
