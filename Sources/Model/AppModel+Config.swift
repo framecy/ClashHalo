@@ -10,6 +10,8 @@ extension AppModel {
         guard let content = store.makeActiveContent(id) else { showToast("配置为空"); return }
         let name = store.profiles.first { $0.id == id }?.name ?? ""
         Task {
+            // hardenControllerConfig is called inside setConfig, which writes
+            // to config.yaml → hardens → reloads — correct ordering.
             let (ok, err) = await engine.setConfig(content)
             showToast(ok ? "已切换配置「\(name)」" : "配置错误：\(err ?? "")，已回滚")
             if ok { await reconnect() }
@@ -93,13 +95,17 @@ extension AppModel {
                     guard ok else { showToast("授权失败，TUN 未启用"); return }
                 } else if engine.helperVersion != EngineControl.kExpectedHelperVersion,
                           engine.helperVersion != "?" {
-                    // Installed helper is outdated — reinstall transparently so the new
-                    // permission fixes (isAuthorizedClient, stopMihomo) take effect.
-                    showToast("特权服务需要更新，正在自动重新安装…")
-                    let ok = await engine.installPrivileged()
-                    if !ok { showToast("Helper 更新失败，TUN 可能无法启用") }
-                    // Brief pause for helper to come up before continuing
-                    try? await Task.sleep(nanoseconds: 1_500_000_000)
+                    // Installed helper is outdated — full upgrade (uninstall → install)
+                    // so the old process is properly removed before the new one starts.
+                    showToast("特权服务需要更新，正在自动升级…")
+                    let ok = await XPCManager.shared.upgradeDaemon()
+                    guard ok else { showToast("Helper 升级失败，TUN 未启用"); return }
+                    // Wait for new helper to come up
+                    for _ in 0..<6 {
+                        try? await Task.sleep(nanoseconds: 500_000_000)
+                        if await XPCManager.shared.verifyConnectivity() { break }
+                    }
+                    engine.refreshHelperVersion()
                 }
 
                 showToast("正在以 Root 权限重启核心…")
@@ -180,21 +186,28 @@ extension AppModel {
                     }
                     logKernel("等待核心响应... (\(i)/5)")
                 }
-                logKernel("错误：核心启动超时或权限不足")
-                showToast("核心启动失败，请检查设置")
+                // Not reachable after retries — surface the REAL reason. A bad
+                // config makes mihomo exit immediately on start, which looks
+                // identical to a timeout; previously this was misreported as
+                // "权限不足", sending users to needlessly reinstall the helper.
+                if let cfgErr = await engine.validateConfig() {
+                    logKernel("配置错误，核心无法启动：\(cfgErr)")
+                    showToast("配置错误：\(cfgErr)")
+                } else {
+                    logKernel("错误：核心未响应（启动超时或权限不足）")
+                    showToast("核心启动失败，请检查内核与权限")
+                }
             } else {
                 logKernel("正在停止核心...")
-                // stop engine
-                if engine.isRoot {
-                    if let helper = XPCManager.shared.helper() {
-                        helper.stopMihomo { _ in }
-                    }
-                } else {
-                    let t = Process(); t.executableURL = URL(fileURLWithPath: "/usr/bin/killall")
-                    t.arguments = ["-9", "mihomo"]
-                    try? t.run(); t.waitUntilExit()
-                }
+                await engine.stopKernel()   // proper async stop (SIGTERM → wait → SIGKILL)
                 reachable = false
+                tunOn = false   // 核心停止 → TUN 必然失效，复位开关避免状态卡 on
+                // Clear system proxy so traffic isn't black-holed to a dead kernel
+                if systemProxyOn {
+                    let port = (configs["mixed-port"] as? Int) ?? (configs["port"] as? Int) ?? 7890
+                    _ = await engine.setSystemProxy(enabled: false, port: port)
+                    systemProxyOn = false
+                }
                 logKernel("核心已停止")
                 showToast("核心已停止")
             }

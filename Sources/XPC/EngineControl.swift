@@ -29,8 +29,10 @@ import SwiftUI
     private let rootPlistPath = "/Library/LaunchDaemons/com.clashpow.mihomo.plist"
 
     init() {
-        // Start polling helper status
-        Timer.scheduledTimer(withTimeInterval: 2.0, repeats: true) { [weak self] _ in
+        // Poll helper status — 5s is sufficient since helper state changes are
+        // rare (install/uninstall/upgrade) and verifyConnectivity creates a
+        // throwaway XPC connection each cycle.
+        Timer.scheduledTimer(withTimeInterval: 5.0, repeats: true) { [weak self] _ in
             Task { @MainActor in self?.pollStatus() }
         }
     }
@@ -346,10 +348,40 @@ import SwiftUI
     }
 
     /// Set config via REST API (reload from path or direct patch)
+    /// Validate the on-disk config via `mihomo -d <dir> -t`. Returns the first
+    /// error message (e.g. a bad proxy-group reference) or nil if valid. Lets the
+    /// app surface the *real* reason a kernel won't start instead of a generic
+    /// "timeout / permission" message.
+    func validateConfig() async -> String? {
+        let bin = kernelPath, dir = appSupport
+        guard FileManager.default.fileExists(atPath: bin) else { return nil }
+        return await withCheckedContinuation { (cont: CheckedContinuation<String?, Never>) in
+            DispatchQueue.global().async {
+                let p = Process()
+                p.executableURL = URL(fileURLWithPath: bin)
+                p.arguments = ["-d", dir, "-t"]
+                let pipe = Pipe(); p.standardOutput = pipe; p.standardError = pipe
+                do { try p.run() } catch { cont.resume(returning: nil); return }
+                let data = pipe.fileHandleForReading.readDataToEndOfFile()
+                p.waitUntilExit()
+                if p.terminationStatus == 0 { cont.resume(returning: nil); return }
+                let out = String(data: data, encoding: .utf8) ?? ""
+                let errLine = out.split(separator: "\n").last { $0.contains("level=error") }
+                if let line = errLine,
+                   let r = line.range(of: #"msg="[^"]+""#, options: .regularExpression) {
+                    cont.resume(returning: String(line[r].dropFirst(5).dropLast()))
+                } else {
+                    cont.resume(returning: errLine.map(String.init) ?? "配置校验失败")
+                }
+            }
+        }
+    }
+
     func setConfig(_ yaml: String) async -> (ok: Bool, error: String?) {
-        let path = appSupport + "/active_config.yaml"
+        let path = configFilePath
         do {
             try yaml.write(toFile: path, atomically: true, encoding: .utf8)
+            hardenControllerConfig()   // ensure controller binds loopback + strong secret
             try await api.reloadConfig(path: path)
             return (true, nil)
         } catch {
