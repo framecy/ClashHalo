@@ -14,7 +14,7 @@ graph TD
         A --> AD[AppDelegate]
     end
 
-    subgraph XPC [Privileged Helper Layer v1.0.5]
+    subgraph XPC [Privileged Helper Layer v1.0.6]
         E[Helper] --> F[ProxyManager]
         E --> G[startMihomo]
         E --> AU[isAuthorizedClient]
@@ -27,7 +27,7 @@ graph TD
     B -- REST / WebSocket --> H
     C -- XPC --> E
     G -- spawn as root --> H
-    F -- SystemConfiguration --> System[macOS Network]
+    F -- networksetup --> System[macOS Network]
     N -- offline --> F
     AD -- exit cleanup --> H
     AU -. SecurityFramework / SecCodeCopyPath / proc_pidpath .-> AU
@@ -47,7 +47,7 @@ graph TD
 
 ### 2. 特权 Helper 层（`Sources/Helper/` + `Sources/XPC/`）
 
-- 独立编译的 LaunchDaemon（**v1.0.5**），Mach service `com.clashpow.helper`，经 `HelperProtocol` 做 XPC。
+- 独立编译的 LaunchDaemon（**v1.0.6**），Mach service `com.clashpow.helper`，经 `HelperProtocol` 做 XPC。
 - 能力：`getVersion` / `setSystemProxy` / `startMihomo` / `stopMihomo`。
 - **`isAuthorizedClient` 三层鉴权**：
   1. `SecCodeCheckValidity(kSecCSBasicValidateOnly, identifier "com.clashpow.app")` — 跳过可执行+资源校验，兼容 ad-hoc 签名

@@ -19,6 +19,12 @@
 - Helper 版本提升至 **v1.0.6**(`kHelperVersion` / `Helper-Info.plist` / `kExpectedHelperVersion` 三处同步)。
 - App 版本提升至 0.4.5。
 
+### Design System(UI 统一,第3–5批)
+- **全量迁移到 `DesignTokens`**:颜色/间距/圆角/字号刻度集中于 `DS.Palette` / `DS.Spacing` / `DS.Radius` / `DS.Icon` 与 `Font.ds*`,改设计语言只需动一个文件。
+- **字号刻度归一**:`system(size:)` 与语义字体(`.callout/.caption/.caption2/.headline/.subheadline/.title2`,共 ~91 处)统一到 24/20/14/12 刻度;离群尺寸(10/15/16/18/22/34/60)snap 到最近档,新增 `DS.Icon`(sm/md/lg/xl/hero)分离图标尺寸,`dsStatValue` 统一仪表盘大数字。
+- **间距/圆角/语义色**:on-grid padding → `DS.Spacing.*`;`cornerRadius` → `DS.Radius.card/control`;hairline 与状态色 → `DS.Palette.hairline/ok/warn/error`。
+- **网络入站页布局修复**:修正 `VStack` 括号错位导致的卡片间距不一致(仅首卡在容器内);卡片间距统一到 `DS.Spacing.l`;`StringListRow`/`NList` 的已有项改为 chip 背景,与新增输入框明确分隔。
+
 ## [0.4.4] - 2026-06-05
 
 并发安全:内核操作互斥 + TUN 升级时序竞争修复(功能冲突审查批次)。
