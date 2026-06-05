@@ -26,7 +26,7 @@ struct DashboardPage: View {
                 }
 
                 VStack(alignment: .leading, spacing: 16) {
-                    Text(greeting()).font(.system(size: 20, weight: .bold)).padding(.horizontal, 4)
+                    Text(greeting()).font(.dsSection).padding(.horizontal, DS.Spacing.xs)
 
                     // Row 1: Top stats bar (4 columns, height 64)
                     HStack(spacing: 16) {
@@ -61,10 +61,10 @@ struct DashboardPage: View {
                                     HStack(spacing: 18) {
                                         Label(fmtRate(Double(M.curDown)), systemImage: "arrow.down")
                                             .foregroundColor(.red)
-                                            .font(.system(size: 12, weight: .bold, design: .monospaced))
+                                            .font(.dsMonoBold)
                                         Label(fmtRate(Double(M.curUp)), systemImage: "arrow.up")
                                             .foregroundColor(M.accent)
-                                            .font(.system(size: 12, weight: .bold, design: .monospaced))
+                                            .font(.dsMonoBold)
                                         Spacer()
                                     }.padding(.bottom, 6)
                                     TrafficSparkline(down: M.downSeries, up: M.upSeries, accent: M.accent).frame(height: 144)
@@ -138,7 +138,7 @@ struct DashboardPage: View {
                         .frame(maxWidth: .infinity)
                     }
                 }
-                .padding(.horizontal, 16).padding(.bottom, 16)
+                .padding(.horizontal, DS.Spacing.l).padding(.bottom, DS.Spacing.l)
             }
         }
     }
@@ -251,17 +251,17 @@ struct RankList: View {
         let mx = max(rows.first?.value ?? 1, 1)
         VStack(spacing: 10) {
             if rows.isEmpty {
-                Text("暂无活跃数据").font(.system(size: 12)).foregroundColor(.secondary)
+                Text("暂无活跃数据").font(.dsBody).foregroundColor(.secondary)
                     .frame(maxWidth: .infinity, minHeight: 120, alignment: .center)
             }
             ForEach(Array(rows.enumerated()), id: \.offset) { i, r in
                 VStack(spacing: 4) {
                     HStack(spacing: 8) {
-                        Text("\(i+1)").font(.system(size: 12, design: .monospaced)).foregroundColor(.secondary).frame(width: 14, alignment: .leading)
-                        Text(r.name).font(.system(size: 12)).lineLimit(1).truncationMode(.middle)
+                        Text("\(i+1)").font(.dsMono).foregroundColor(.secondary).frame(width: 14, alignment: .leading)
+                        Text(r.name).font(.dsBody).lineLimit(1).truncationMode(.middle)
                         Spacer()
                         Text(mode == .bytes ? fmtBytes(r.value) : "\(Int(r.value))")
-                            .font(.system(size: 12, design: .monospaced)).foregroundColor(.secondary)
+                            .font(.dsMono).foregroundColor(.secondary)
                     }
                     GeometryReader { g in
                         ZStack(alignment: .leading) {
@@ -280,18 +280,18 @@ struct StatBox: View {
     @EnvironmentObject var M: AppModel
     var body: some View {
         VStack(alignment: .leading, spacing: 4) {
-            Text(label).font(.system(size: 12)).foregroundColor(.secondary)
+            Text(label).font(.dsBody).foregroundColor(.secondary)
             HStack(alignment: .firstTextBaseline, spacing: 2) {
                 Text(value).font(.system(size: 22, weight: .bold, design: .rounded))
                     .foregroundColor(accent ? M.accent : .primary)
-                if let unit { Text(unit).font(.system(size: 12, weight: .semibold)).foregroundColor(.secondary) }
+                if let unit { Text(unit).font(.dsBodySemibold).foregroundColor(.secondary) }
             }
-            Text(sub).font(.system(size: 12)).foregroundColor(.secondary).lineLimit(1)
+            Text(sub).font(.dsBody).foregroundColor(.secondary).lineLimit(1)
         }
-        .padding(16)
+        .padding(DS.Spacing.l)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background(RoundedRectangle(cornerRadius: 12).fill(DS.Palette.cardBg))
-        .overlay(RoundedRectangle(cornerRadius: 12).stroke(accent ? M.accent.opacity(0.3) : DS.Palette.cardBgAlt))
+        .background(RoundedRectangle(cornerRadius: DS.Radius.card).fill(DS.Palette.cardBg))
+        .overlay(RoundedRectangle(cornerRadius: DS.Radius.card).stroke(accent ? M.accent.opacity(0.3) : DS.Palette.cardBgAlt))
     }
 }
 
@@ -302,16 +302,16 @@ struct BarStat: View {
         HStack(spacing: 12) {
             Image(systemName: icon).font(.system(size: 20)).foregroundColor(color)
             VStack(alignment: .leading, spacing: 2) {
-                Text(label).font(.system(size: 12)).foregroundColor(.secondary)
+                Text(label).font(.dsBody).foregroundColor(.secondary)
                 Text(value).font(.system(size: 18, weight: .bold, design: .rounded))
             }
             Spacer()
         }
-        .padding(.horizontal, 16)
+        .padding(.horizontal, DS.Spacing.l)
         .frame(height: 64)
         .frame(maxWidth: .infinity)
-        .background(RoundedRectangle(cornerRadius: 8).fill(DS.Palette.cardBg))
-        .overlay(RoundedRectangle(cornerRadius: 8).stroke(DS.Palette.cardBgAlt))
+        .background(RoundedRectangle(cornerRadius: DS.Radius.control).fill(DS.Palette.cardBg))
+        .overlay(RoundedRectangle(cornerRadius: DS.Radius.control).stroke(DS.Palette.cardBgAlt))
     }
 }
 
@@ -323,23 +323,23 @@ struct MiniStat: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
             HStack(spacing: 6) {
-                Image(systemName: icon).font(.system(size: 12)).foregroundColor(color)
-                Text(title).font(.system(size: 12, weight: .medium)).foregroundColor(.secondary)
+                Image(systemName: icon).font(.dsBody).foregroundColor(color)
+                Text(title).font(.dsBodyMedium).foregroundColor(.secondary)
             }
             Spacer(minLength: 0)
             HStack(alignment: .firstTextBaseline) {
                 Text(value).font(.system(size: 18, weight: .bold, design: .rounded))
                 if let sub {
                     Spacer()
-                    Text(sub).font(.system(size: 12)).foregroundColor(.secondary)
+                    Text(sub).font(.dsBody).foregroundColor(.secondary)
                 }
             }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
-        .padding(.horizontal, 16).padding(.vertical, 12)
+        .padding(.horizontal, DS.Spacing.l).padding(.vertical, DS.Spacing.m)
         .frame(height: 64)
-        .background(RoundedRectangle(cornerRadius: 8).fill(DS.Palette.cardBg))
-        .overlay(RoundedRectangle(cornerRadius: 8).stroke(DS.Palette.cardBgAlt))
+        .background(RoundedRectangle(cornerRadius: DS.Radius.control).fill(DS.Palette.cardBg))
+        .overlay(RoundedRectangle(cornerRadius: DS.Radius.control).stroke(DS.Palette.cardBgAlt))
     }
 }
 
