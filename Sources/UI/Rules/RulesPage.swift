@@ -54,9 +54,9 @@ struct RulesPage: View {
     private func row(_ r: RuleEntry) -> some View {
         Group {
             HStack(spacing: 10) {
-                Text(r.type).font(.system(size: 12, weight: .medium))
+                Text(r.type).font(.dsBodyMedium)
                     .padding(.horizontal, 6).padding(.vertical, 2)
-                    .background(Capsule().fill(Color.primary.opacity(0.08)))
+                    .background(Capsule().fill(DS.Palette.hairline))
                     .frame(width: 150, alignment: .leading)
                 Text(r.payload.isEmpty ? "—" : r.payload).font(.caption.monospaced()).lineLimit(1)
                 Spacer()

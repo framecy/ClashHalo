@@ -39,12 +39,12 @@ struct ProxiesPage: View {
                         LazyVGrid(columns: [GridItem(.flexible(), spacing: 10), GridItem(.flexible(), spacing: 10)], spacing: 10) {
                             ForEach(M.groups) { g in gridGroupCard(g) }
                         }
-                        .padding(.horizontal, 20).padding(.bottom, 24)
+                        .padding(.horizontal, DS.Spacing.xl).padding(.bottom, DS.Spacing.xxl)
                     } else {
                         LazyVStack(spacing: 12) {
                             ForEach(M.groups) { g in groupCard(g) }
                         }
-                        .padding(.horizontal, 20).padding(.bottom, 24)
+                        .padding(.horizontal, DS.Spacing.xl).padding(.bottom, DS.Spacing.xxl)
                     }
                 }
             }
@@ -71,11 +71,11 @@ struct ProxiesPage: View {
         return Card {
             VStack(alignment: .leading, spacing: 6) {
                 HStack(spacing: 6) {
-                    Image(systemName: groupIcon(g.type)).font(.system(size: 12)).foregroundColor(c).frame(width: 14)
-                    Text(g.name).font(.system(size: 12, weight: .semibold)).lineLimit(1)
+                    Image(systemName: groupIcon(g.type)).font(.dsBody).foregroundColor(c).frame(width: 14)
+                    Text(g.name).font(.dsBodySemibold).lineLimit(1)
                     Spacer()
                     Button { M.testGroup(g) } label: { Image(systemName: "bolt") }
-                        .buttonStyle(.borderless).controlSize(.small).font(.system(size: 12))
+                        .buttonStyle(.borderless).controlSize(.small).font(.dsBody)
                 }
 
                 HStack(spacing: 4) {
@@ -96,9 +96,9 @@ struct ProxiesPage: View {
                         }
                     } label: {
                         HStack(spacing: 4) {
-                            Text(cur).font(.system(size: 12, weight: .medium)).foregroundColor(c).lineLimit(1)
+                            Text(cur).font(.dsBodyMedium).foregroundColor(c).lineLimit(1)
                             if curDelay > 0 {
-                                Text("\(curDelay)ms").font(.system(size: 12, design: .monospaced)).foregroundColor(delayColor(curDelay))
+                                Text("\(curDelay)ms").font(.dsMono).foregroundColor(delayColor(curDelay))
                             }
                             if busy {
                                 ProgressView().controlSize(.mini).scaleEffect(0.5)
@@ -108,7 +108,7 @@ struct ProxiesPage: View {
                     .menuStyle(.borderlessButton)
                     .controlSize(.small)
                     Spacer()
-                    Text("\(g.all.count) 节点").font(.system(size: 12)).foregroundColor(.secondary)
+                    Text("\(g.all.count) 节点").font(.dsBody).foregroundColor(.secondary)
                 }
             }
             .padding(.vertical, 2)
@@ -133,13 +133,13 @@ struct ProxiesPage: View {
                         VStack(alignment: .leading, spacing: 2) {
                             HStack(spacing: 6) {
                                 Text(g.name).font(.callout).fontWeight(.semibold)
-                                Text(g.type).font(.system(size: 12)).foregroundColor(.secondary)
+                                Text(g.type).font(.dsBody).foregroundColor(.secondary)
                                     .padding(.horizontal, 5).padding(.vertical, 1)
-                                    .background(Capsule().fill(Color.primary.opacity(0.08)))
+                                    .background(Capsule().fill(DS.Palette.hairline))
                             }
                             HStack(spacing: 5) {
                                 Text(cur).font(.caption).foregroundColor(M.accent).lineLimit(1)
-                                if curDelay > 0 { Text("\(curDelay)ms").font(.system(size: 12, design: .monospaced)).foregroundColor(delayColor(curDelay)) }
+                                if curDelay > 0 { Text("\(curDelay)ms").font(.dsMono).foregroundColor(delayColor(curDelay)) }
                             }
                         }
                         Spacer()
@@ -147,7 +147,7 @@ struct ProxiesPage: View {
                             .buttonStyle(.borderless).controlSize(.small).help("测速")
                         Text("\(g.all.count)").font(.caption2)
                             .padding(.horizontal, 7).padding(.vertical, 2)
-                            .background(Capsule().fill(Color.primary.opacity(0.08)))
+                            .background(Capsule().fill(DS.Palette.hairline))
                     }
                     .contentShape(Rectangle())
                 }
@@ -180,21 +180,21 @@ struct ProxiesPage: View {
                     if on { Image(systemName: "checkmark.circle.fill").font(.caption2).foregroundColor(M.accent) }
                 }
                 HStack(spacing: 6) {
-                    Text(isGroup ? "组" : (node?.type ?? "—")).font(.system(size: 12)).foregroundColor(.secondary)
+                    Text(isGroup ? "组" : (node?.type ?? "—")).font(.dsBody).foregroundColor(.secondary)
                     Spacer(minLength: 2)
                     if busy {
                         ProgressView().controlSize(.mini).scaleEffect(0.55)
                     } else if !isGroup {
                         Circle().fill(delayColor(delay)).frame(width: 5, height: 5)
-                        Text(fmtDelay(delay)).font(.system(size: 12, design: .monospaced)).foregroundColor(delayColor(delay))
+                        Text(fmtDelay(delay)).font(.dsMono).foregroundColor(delayColor(delay))
                     } else {
-                        Image(systemName: "chevron.right.circle").font(.system(size: 12)).foregroundColor(.secondary)
+                        Image(systemName: "chevron.right.circle").font(.dsBody).foregroundColor(.secondary)
                     }
                 }
             }
             .padding(.horizontal, 10).padding(.vertical, 7)
-            .background(RoundedRectangle(cornerRadius: 8).fill(on ? M.accent.opacity(0.12) : Color.primary.opacity(0.04)))
-            .overlay(RoundedRectangle(cornerRadius: 8).stroke(on ? M.accent.opacity(0.45) : Color.clear, lineWidth: 1))
+            .background(RoundedRectangle(cornerRadius: DS.Radius.control).fill(on ? M.accent.opacity(0.12) : Color.primary.opacity(0.04)))
+            .overlay(RoundedRectangle(cornerRadius: DS.Radius.control).stroke(on ? M.accent.opacity(0.45) : Color.clear, lineWidth: 1))
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)

@@ -22,8 +22,8 @@ struct GeneralPage: View {
                 tabButton("权限", icon: "shield", tag: "privilege")
                 tabButton("关于", icon: "info.circle", tag: "about")
             }
-            .padding(.horizontal, 24)
-            .padding(.bottom, 16)
+            .padding(.horizontal, DS.Spacing.xxl)
+            .padding(.bottom, DS.Spacing.l)
 
             Divider().opacity(0.4)
 
@@ -132,7 +132,7 @@ struct GeneralPage: View {
                                             }
                                         }
                                         .frame(minWidth: 44)
-                                        .padding(.horizontal, 16)
+                                        .padding(.horizontal, DS.Spacing.l)
                                         .padding(.vertical, 6)
                                         .background(
                                             RoundedRectangle(cornerRadius: 6)
@@ -230,7 +230,7 @@ struct GeneralPage: View {
             .padding(.vertical, 8)
             .contentShape(Rectangle())
             .background(
-                RoundedRectangle(cornerRadius: 8)
+                RoundedRectangle(cornerRadius: DS.Radius.control)
                     .fill(active ? Color.primary.opacity(0.06) : Color.clear)
             )
         }
