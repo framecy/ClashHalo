@@ -87,7 +87,11 @@ func log(_ msg: String) {
 }
 
 class Helper: NSObject, HelperProtocol {
-    private var mihomoProcess: Process?
+    /// Shared across all XPC connection instances — NSXPCListener creates a new
+    /// Helper() per connection, so an instance var would always be nil on stop.
+    private static var mihomoProcess: Process?
+    /// Guards concurrent access to mihomoProcess from parallel XPC connections.
+    private static let processLock = NSLock()
 
     func getVersion(withReply reply: @escaping (String) -> Void) {
         log("getVersion called")
@@ -107,13 +111,16 @@ class Helper: NSObject, HelperProtocol {
             reply(false); return
         }
 
+        Self.processLock.lock()
+        defer { Self.processLock.unlock() }
+
         // Terminate any tracked process first
-        if let existing = mihomoProcess, existing.isRunning {
+        if let existing = Self.mihomoProcess, existing.isRunning {
             existing.terminate()
             Thread.sleep(forTimeInterval: 0.5)
             if existing.isRunning { kill(existing.processIdentifier, SIGKILL) }
         }
-        mihomoProcess = nil
+        Self.mihomoProcess = nil
 
         // Kill ALL mihomo processes (handles untracked processes from previous
         // helper instances or session remnants that would block the port)
@@ -139,7 +146,7 @@ class Helper: NSObject, HelperProtocol {
 
         do {
             try process.run()
-            mihomoProcess = process
+            Self.mihomoProcess = process
             log("startMihomo: started pid \(process.processIdentifier)")
             reply(true)
         } catch {
@@ -150,7 +157,9 @@ class Helper: NSObject, HelperProtocol {
 
     func stopMihomo(withReply reply: @escaping (Bool) -> Void) {
         log("stopMihomo called")
-        if let process = mihomoProcess, process.isRunning {
+        Self.processLock.lock()
+        defer { Self.processLock.unlock() }
+        if let process = Self.mihomoProcess, process.isRunning {
             process.terminate()
             // Wait up to 1.5s for graceful exit, then SIGKILL
             let deadline = Date().addingTimeInterval(1.5)
@@ -161,7 +170,7 @@ class Helper: NSObject, HelperProtocol {
                 log("stopMihomo: SIGTERM timeout, sending SIGKILL to pid \(process.processIdentifier)")
                 kill(process.processIdentifier, SIGKILL)
             }
-            mihomoProcess = nil
+            Self.mihomoProcess = nil
         }
         // killall as final safety net (catches processes not owned by this instance)
         let t = Process()

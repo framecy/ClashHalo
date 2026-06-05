@@ -2,6 +2,7 @@ import Foundation
 import Combine
 import SwiftUI
 import Network
+import SystemConfiguration
 
 // Central app state & orchestration hub. Domain logic is split into extensions:
 //   AppModel+Proxies.swift      — groups / nodes / selection / latency
@@ -102,6 +103,7 @@ import Network
     private var logWS: WSHandle?
     private var memWS: WSHandle?
     private var pollTask: Task<Void, Never>?
+    private var reconnectTask: Task<Void, Never>?
 
     private static let logDF: DateFormatter = { let f = DateFormatter(); f.dateFormat = "HH:mm:ss"; return f }()
 
@@ -120,6 +122,7 @@ import Network
         engine.ensureRunning()   // Auto-start kernel if not responding
         store.load()
         history.load()
+        syncSystemProxyState()   // Read actual macOS proxy state so the toggle matches reality
         logFlushTimer = Timer.scheduledTimer(withTimeInterval: 0.5, repeats: true) { [weak self] _ in
             Task { @MainActor in self?.flushLogs() }
         }
@@ -147,14 +150,22 @@ import Network
         version = api.version
 
         guard reachable else {
-            // Silently retry in the background every 3 seconds if not reachable
-            Task {
+            // Core unreachable — TUN can't be active, so clear the switch to keep
+            // the UI consistent (tunOn is normally driven by refreshConfigs, which
+            // won't run while disconnected, leaving the toggle stuck "on").
+            tunOn = false
+            // Cancel any previous retry to avoid parallel reconnect races.
+            reconnectTask?.cancel()
+            reconnectTask = Task { [weak self] in
                 try? await Task.sleep(nanoseconds: 3_000_000_000)
-                await reconnect()
+                guard !Task.isCancelled else { return }
+                await self?.reconnect()
             }
             return
         }
+        reconnectTask = nil   // connected — no retry pending
 
+        syncSystemProxyState()   // re-sync after reconnect in case proxy was toggled externally
         startStreams()
         startPolling()
     }
@@ -255,6 +266,19 @@ import Network
                 showToast("网络断开，已自动关闭系统代理")
             }
         }
+    }
+
+    /// Read the current macOS system proxy state and sync the toggle. Uses
+    /// SCDynamicStoreCopyProxies which works without root — reads the effective
+    /// merged proxy settings for the primary interface.
+    private func syncSystemProxyState() {
+        // Read the effective macOS proxy state (no root) so the toggle matches
+        // reality on launch / reconnect. GUI-side inline of the helper's
+        // readCurrentState — ProxyManager is only in the Helper target.
+        guard let dict = SCDynamicStoreCopyProxies(nil) as? [String: Any] else { return }
+        let httpOn = dict[kCFNetworkProxiesHTTPEnable as String] as? Int == 1
+        let httpHost = dict[kCFNetworkProxiesHTTPProxy as String] as? String
+        systemProxyOn = httpOn && httpHost == "127.0.0.1"
     }
 
     private func installSignalHandlers() {

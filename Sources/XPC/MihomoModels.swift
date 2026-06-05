@@ -65,12 +65,13 @@ struct ConnMeta: Decodable {
 
 
 enum MihomoError: LocalizedError {
-    case badURL, http(Int), notRunning
+    case badURL, http(Int), notRunning, reload(String)
     var errorDescription: String? {
         switch self {
         case .badURL: return "无效的 API 地址"
         case .http(let c): return "HTTP \(c)"
         case .notRunning: return "内核未运行或地址错误"
+        case .reload(let m): return m
         }
     }
 }

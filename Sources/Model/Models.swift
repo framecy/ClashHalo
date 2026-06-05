@@ -5,7 +5,7 @@
 //   - WebSocket /connections → live connection list + totals + memory
 //   - WebSocket /logs        → live log stream
 //   - Poll /proxies (3s)     → groups, nodes, selections, latencies
-//   - Poll /configs (5s)     → mode, ports, dns, tun
+//   - Poll /configs (3s)     → mode, ports, dns, tun
 
 import Foundation
 import SwiftUI
