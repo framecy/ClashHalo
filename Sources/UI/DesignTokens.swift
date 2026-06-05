@@ -53,12 +53,25 @@ enum DS {
         static let card:    CGFloat = 12
         static let control: CGFloat = 8
     }
+
+    // MARK: Icon sizes (SF Symbols) — separate from the text type scale.
+    // Icons legitimately need their own sizes; outlier glyph sizes (15/16/34/60)
+    // were snapped to the nearest step here so icon sizing is consistent too.
+
+    enum Icon {
+        static let sm:   CGFloat = 16   // was 15/16 (logo bolt, inline glyphs)
+        static let md:   CGFloat = 20   // toolbar / stat icons
+        static let lg:   CGFloat = 24
+        static let xl:   CGFloat = 32   // was 34 (empty-state)
+        static let hero: CGFloat = 56   // was 60 (about splash)
+    }
 }
 
 // MARK: - Type scale
 //
-// 24 page title · 20 section · 14 emphasis · 12 body (baseline) · 12 mono.
-// Outlier sizes (11/13/16/22/34) should be migrated onto the nearest step.
+// 24 page title · 20 section · 14 emphasis · 12 body (baseline) · 12 mono · 20 stat.
+// Former outlier sizes (10/18/22) have been snapped onto these steps; icon glyph
+// sizes live separately in DS.Icon.
 
 extension Font {
     static let dsPageTitle    = Font.system(size: 24, weight: .bold)        // PageHead title
@@ -74,4 +87,7 @@ extension Font {
     static let dsBodyBold     = Font.system(size: 12, weight: .bold)
     static let dsMono         = Font.system(size: 12, design: .monospaced)  // numbers / latency / ports
     static let dsMonoBold     = Font.system(size: 12, weight: .bold, design: .monospaced)
+    // Display — dashboard hero stat numbers (was an inconsistent 18 / 22; unified
+    // onto the 20 step, rounded for the numeric look).
+    static let dsStatValue    = Font.system(size: 20, weight: .bold, design: .rounded)
 }

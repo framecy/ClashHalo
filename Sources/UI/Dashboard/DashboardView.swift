@@ -282,7 +282,7 @@ struct StatBox: View {
         VStack(alignment: .leading, spacing: 4) {
             Text(label).font(.dsBody).foregroundColor(.secondary)
             HStack(alignment: .firstTextBaseline, spacing: 2) {
-                Text(value).font(.system(size: 22, weight: .bold, design: .rounded))
+                Text(value).font(.dsStatValue)
                     .foregroundColor(accent ? M.accent : .primary)
                 if let unit { Text(unit).font(.dsBodySemibold).foregroundColor(.secondary) }
             }
@@ -300,10 +300,10 @@ struct BarStat: View {
     init(_ l: String, _ v: String, _ i: String, _ c: Color) { label = l; value = v; icon = i; color = c }
     var body: some View {
         HStack(spacing: 12) {
-            Image(systemName: icon).font(.system(size: 20)).foregroundColor(color)
+            Image(systemName: icon).font(.system(size: DS.Icon.md)).foregroundColor(color)
             VStack(alignment: .leading, spacing: 2) {
                 Text(label).font(.dsBody).foregroundColor(.secondary)
-                Text(value).font(.system(size: 18, weight: .bold, design: .rounded))
+                Text(value).font(.dsStatValue)
             }
             Spacer()
         }
@@ -328,7 +328,7 @@ struct MiniStat: View {
             }
             Spacer(minLength: 0)
             HStack(alignment: .firstTextBaseline) {
-                Text(value).font(.system(size: 18, weight: .bold, design: .rounded))
+                Text(value).font(.dsStatValue)
                 if let sub {
                     Spacer()
                     Text(sub).font(.dsBody).foregroundColor(.secondary)
