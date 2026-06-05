@@ -16,7 +16,7 @@ struct DnsPage: View {
             }
 
             ScrollView {
-                VStack(spacing: 14) {
+                VStack(spacing: DS.Spacing.l) {
                     // DNS settings (editable) — 顶部曾有硬编码的假统计(平均解析/池/缓存),
                     // mihomo 无对应统计端点, 已移除以免误导; 真实信息见下方 Fake-IP 映射。
                     Card(title: "DNS 服务器", icon: "server.rack") {

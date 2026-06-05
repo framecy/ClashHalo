@@ -18,11 +18,11 @@ struct ConfigPage: View {
             }
 
             ScrollView {
-                VStack(alignment: .leading, spacing: 14) {
+                VStack(alignment: .leading, spacing: DS.Spacing.l) {
                     if M.store.profiles.isEmpty {
                         ContentUnavailable("暂无配置，点击右上角“+”导入", "doc.text")
                     }
-                    LazyVGrid(columns: [GridItem(.adaptive(minimum: 280), spacing: 14)], spacing: 14) {
+                    LazyVGrid(columns: [GridItem(.adaptive(minimum: 280), spacing: DS.Spacing.l)], spacing: DS.Spacing.l) {
                         ForEach(M.store.profiles) { p in profileCard(p) }
                     }
                 }
@@ -104,11 +104,11 @@ struct ImportRemoteSheet: View {
     @Environment(\.dismiss) var dismiss
     @State private var name = ""; @State private var url = ""; @State private var busy = false; @State private var err = ""
     var body: some View {
-        VStack(alignment: .leading, spacing: 14) {
-            Text("导入远程配置或订阅").font(.headline)
+        VStack(alignment: .leading, spacing: DS.Spacing.l) {
+            Text("导入远程配置或订阅").font(.dsCardLabel)
             TextField("名称", text: $name).textFieldStyle(.roundedBorder)
-            TextField("https://…/clash 或订阅链接", text: $url).textFieldStyle(.roundedBorder).font(.callout.monospaced())
-            if !err.isEmpty { Text(err).font(.caption).foregroundColor(.red) }
+            TextField("https://…/clash 或订阅链接", text: $url).textFieldStyle(.roundedBorder).font(.dsMono)
+            if !err.isEmpty { Text(err).font(.dsBody).foregroundColor(.red) }
             HStack {
                 Button("取消") { dismiss() }
                 Spacer()
@@ -131,8 +131,8 @@ struct AddLocalSheet: View {
     @Environment(\.dismiss) var dismiss
     @State private var name = ""
     var body: some View {
-        VStack(alignment: .leading, spacing: 14) {
-            Text("添加本地配置").font(.headline)
+        VStack(alignment: .leading, spacing: DS.Spacing.l) {
+            Text("添加本地配置").font(.dsCardLabel)
             TextField("名称", text: $name).textFieldStyle(.roundedBorder)
             HStack {
                 Button("从文件导入…") { pickFile() }
@@ -164,7 +164,7 @@ struct ProfileEditSheet: View {
     var body: some View {
         VStack(spacing: 0) {
             HStack {
-                Text("编辑配置").font(.headline)
+                Text("编辑配置").font(.dsCardLabel)
                 Spacer()
                 Button("取消") { dismiss() }
                 Button("保存并应用") {
@@ -188,7 +188,7 @@ private struct FormEditor: View {
     let accent: Color
     var body: some View {
         ScrollView {
-            VStack(spacing: 14) {
+            VStack(spacing: DS.Spacing.l) {
                 Card(title: "入站端口") {
                     VStack(spacing: 9) {
                         kv("混合端口", str(configs["mixed-port"]))
@@ -214,13 +214,13 @@ private struct FormEditor: View {
                     }
                 }
                 Text("结构化表单为只读概览；如需修改请用 YAML 源码模式编辑后「应用并热重载」。")
-                    .font(.caption2).foregroundColor(.secondary)
+                    .font(.dsBody).foregroundColor(.secondary)
                 Spacer(minLength: 0)
             }.padding(DS.Spacing.xl)
         }
     }
     private func kv(_ l: String, _ v: String) -> some View {
-        HStack { Text(l).font(.caption).foregroundColor(.secondary); Spacer(); Text(v).font(.caption.monospaced()) }
+        HStack { Text(l).font(.dsBody).foregroundColor(.secondary); Spacer(); Text(v).font(.dsMono) }
     }
     private func str(_ v: Any?) -> String { v.map { "\($0)" } ?? "—" }
     private func bool(_ v: Any?) -> String { (v as? Bool) == true ? "是" : "否" }
