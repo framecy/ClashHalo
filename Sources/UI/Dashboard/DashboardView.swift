@@ -21,7 +21,7 @@ struct DashboardPage: View {
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 0) {
-                PageHead(title: "仪表盘", desc: "流量趋势 · 实时统计 · 策略组排行 · 访问目标分析") {
+                PageHead(title: "仪表盘", desc: nil) {
                     rangePicker
                 }
 
@@ -128,23 +128,8 @@ struct DashboardPage: View {
                         .frame(height: 208)
                         .frame(maxWidth: .infinity)
 
-                        Card(title: "客户端源 IP", icon: "desktopcomputer") {
-                            RankList(rows: topSources, accent: .green, mode: .bytes)
-                        }
-                        .frame(height: 208)
-                        .frame(maxWidth: .infinity)
-                    }
-
-                    // Row 7: Rank lists (each spans 2, height 208)
-                    HStack(spacing: 16) {
                         Card(title: "热门进程", icon: "app.badge") {
                             RankList(rows: topProcs, accent: .blue, mode: .bytes)
-                        }
-                        .frame(height: 208)
-                        .frame(maxWidth: .infinity)
-
-                        Card(title: "目标分类", icon: "globe.asia.australia.fill") {
-                            RankList(rows: targetClass, accent: .pink, mode: .bytes)
                         }
                         .frame(height: 208)
                         .frame(maxWidth: .infinity)
@@ -161,10 +146,8 @@ struct DashboardPage: View {
     private var policyGroupRows: [Rank] { M.dash.policyGroups }
     private var topHosts: [Rank] { M.dash.hosts }
     private var topNodes: [Rank] { M.dash.nodes }
-    private var topSources: [Rank] { M.dash.sources }
     private var topProcs: [Rank] { M.dash.procs }
     private var topRules: [Rank] { M.dash.rules }
-    private var targetClass: [Rank] { M.dash.targets }
 
     struct TrafficSlice: Identifiable {
         let name: String
@@ -252,10 +235,8 @@ struct DashStats {
     var policyGroups: [Rank] = []
     var hosts: [Rank] = []
     var nodes: [Rank] = []
-    var sources: [Rank] = []
     var procs: [Rank] = []
     var rules: [Rank] = []
-    var targets: [Rank] = []
     var directBytes = 0.0, proxyBytes = 0.0, rejectBytes = 0.0
     var uniqueHosts = 0
 }

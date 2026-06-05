@@ -68,32 +68,24 @@ extension AppModel {
     /// not per SwiftUI render — the key fix for dashboard stutter).
     static func computeDash(_ conns: [Conn]) -> DashStats {
         var pg = [String: Double](), hosts = [String: Double](), nodes = [String: Double]()
-        var srcs = [String: Double](), procs = [String: Double](), rules = [String: Double]()
-        var targets = [String: Double]()
+        var procs = [String: Double](), rules = [String: Double]()
         var direct = 0.0, proxy = 0.0, reject = 0.0
         var hostSet = Set<String>()
-        func isPrivate(_ ip: String) -> Bool {
-            ip.hasPrefix("10.") || ip.hasPrefix("192.168.") || ip.hasPrefix("172.16.") ||
-            ip.hasPrefix("198.18.") || ip.hasPrefix("127.") || ip.hasPrefix("fd") || ip == "?"
-        }
         for c in conns {
             let b = Double(c.up + c.down)
             if c.group != "?" && !c.group.isEmpty { pg[c.group, default: 0] += b }
             if c.host != "?" { hosts[c.host, default: 0] += b; hostSet.insert(c.host) }
             if c.node != "?" { nodes[c.node, default: 0] += b }
-            if c.srcIP != "?" { srcs[c.srcIP, default: 0] += b }
             if c.process != "—" { procs[c.process, default: 0] += b }
             rules[c.ruleType, default: 0] += 1
             switch c.category { case "direct": direct += b; case "reject": reject += b; default: proxy += b }
-            let tk = c.category == "reject" ? "拦截" : (isPrivate(c.dstIP) ? "内网" : "公网")
-            targets[tk, default: 0] += b
         }
         func top(_ m: [String: Double]) -> [Rank] {
             m.sorted { $0.value > $1.value }.prefix(5).map { Rank(name: $0.key, value: $0.value) }
         }
         var d = DashStats()
         d.policyGroups = top(pg); d.hosts = top(hosts); d.nodes = top(nodes)
-        d.sources = top(srcs); d.procs = top(procs); d.rules = top(rules); d.targets = top(targets)
+        d.procs = top(procs); d.rules = top(rules)
         d.directBytes = direct; d.proxyBytes = proxy; d.rejectBytes = reject
         d.uniqueHosts = hostSet.count
         return d
