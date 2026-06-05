@@ -15,6 +15,10 @@ import SwiftUI
     @Published var helperVersion = "?"
     @Published var isRoot = false          // helper is installed
     @Published var runningAsRoot = false   // current process was started via helper
+    /// A kernel-lifecycle operation (toggle TUN/engine, restart, activate) is in
+    /// progress. UI entry points guard on this to prevent interleaving the long
+    /// multi-await flows (e.g. TUN root-switch) with another start/stop/swap.
+    @Published var isBusy = false
 
     /// Injected log sink (set by AppModel) — avoids referencing AppModel here.
     var onLog: ((String) -> Void)?

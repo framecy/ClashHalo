@@ -425,7 +425,12 @@ struct KernelCard: View {
                     Spacer()
                     if M.reachable {
                         Button("重启内核", systemImage: "arrow.triangle.2.circlepath") {
-                            Task { await M.engine.restart(); try? await Task.sleep(nanoseconds: 3_000_000_000); await M.reconnect(); M.showToast("内核已重启") }
+                            guard !M.engine.isBusy else { M.showToast("内核操作进行中，请稍候…"); return }
+                            M.engine.isBusy = true
+                            Task {
+                                defer { M.engine.isBusy = false }
+                                await M.engine.restart(); try? await Task.sleep(nanoseconds: 3_000_000_000); await M.reconnect(); M.showToast("内核已重启")
+                            }
                         }.buttonStyle(.bordered).tint(.orange).controlSize(.small)
                     }
                 }
@@ -498,7 +503,14 @@ struct KernelCard: View {
                 Label("使用中", systemImage: "checkmark.circle.fill")
                     .font(.caption2).foregroundColor(M.accent).frame(width: 160, alignment: .trailing)
             } else {
-                Button("启用") { Task { await km.activate(tag); try? await Task.sleep(nanoseconds: 3_500_000_000); await M.reconnect() } }
+                Button("启用") {
+                    guard !M.engine.isBusy else { M.showToast("内核操作进行中，请稍候…"); return }
+                    M.engine.isBusy = true
+                    Task {
+                        defer { M.engine.isBusy = false }
+                        await km.activate(tag); try? await Task.sleep(nanoseconds: 3_500_000_000); await M.reconnect()
+                    }
+                }
                     .buttonStyle(.bordered).controlSize(.small).frame(width: 160, alignment: .trailing)
             }
         }

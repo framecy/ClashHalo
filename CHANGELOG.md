@@ -2,6 +2,16 @@
 
 本项目所有重要变更记录于此。格式参考 [Keep a Changelog](https://keepachangelog.com/),版本遵循语义化版本。
 
+## [0.4.4] - 2026-06-05
+
+并发安全:内核操作互斥 + TUN 升级时序竞争修复(功能冲突审查批次)。
+
+### Fixed
+- **TUN 升级 helper 时 `isRoot` 时序竞争**:`toggleTUN` 的 `upgradeDaemon` 分支经 XPCManager 直接升级,不设 `engine.isRoot`;升级走 osascript 授权(>2s)期间 `pollStatus`(2s) 在 helper 卸载瞬间把 `isRoot` 置 false,紧接的 `restart`→`ensureRunning` 据此**误以用户态启动内核** → TUN 无法创建 utun。修复:升级确认连通后显式 `engine.isRoot = true`,消除对 pollStatus 异步同步的依赖。
+
+### Added
+- **内核操作互斥锁**(`EngineControl.isBusy`):`toggleTUN` / `toggleEngine` / 重启内核 / 切换内核 四个入口在操作进行中互斥,防止长流程(TUN root 切换含多个 await)与另一次启停/切换交错产生竞争。
+
 ## [0.4.3] - 2026-06-05
 
 核心稳定性与错误反馈修复:解决"配置错误被误报为权限不足"等一系列误导性故障。

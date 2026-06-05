@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## 项目概述
 
-ClashPow 是 macOS 14+ (Apple Silicon) 原生 SwiftUI 代理客户端，直接编排官方 `mihomo` (Clash.Meta) 内核：GUI 通过 REST + WebSocket 与内核通信，特权操作交给独立签名的 Helper。纯 Swift，无自研引擎。当前版本 v0.4.3。
+ClashPow 是 macOS 14+ (Apple Silicon) 原生 SwiftUI 代理客户端，直接编排官方 `mihomo` (Clash.Meta) 内核：GUI 通过 REST + WebSocket 与内核通信，特权操作交给独立签名的 Helper。纯 Swift，无自研引擎。当前版本 v0.4.4。
 
 ## 构建与运行
 
