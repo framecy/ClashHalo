@@ -2,6 +2,22 @@
 
 本项目所有重要变更记录于此。格式参考 [Keep a Changelog](https://keepachangelog.com/),版本遵循语义化版本。
 
+## [0.4.3] - 2026-06-05
+
+核心稳定性与错误反馈修复:解决"配置错误被误报为权限不足"等一系列误导性故障。
+
+### Fixed
+- **配置错误被误报为「权限不足」**:编辑 yaml 引入错误(如 proxy-group 用 `proxies:` 引用了应当用 `use:` 的 provider)使 mihomo 加载失败时,app 笼统报"核心启动超时或权限不足",误导用户去反复重装 helper。新增 `EngineControl.validateConfig()`(跑 `mihomo -t`),启动失败时显示**真实配置错误**;`reloadConfig` 检查 HTTP 响应并抛出 mihomo 的错误消息(`MihomoError.reload`),编辑/切换配置失败时如实反馈。
+- **核心停止后 TUN 开关卡在 on**:`reconnect` 与 `toggleEngine` 在核心不可达/停止时复位 `tunOn`,消除状态不一致。
+- **系统代理状态不同步**(#4):启动/重连时用 `SCDynamicStoreCopyProxies` 读真实系统代理状态同步开关(GUI 侧内联,无需 root)。
+- **手动停核心不清系统代理 → 断网**(#2):停核心后若系统代理开启则一并关闭。
+- **停核心 XPC fire-and-forget**(#3):改用 `await engine.stopKernel()` 正确等待 XPC + killall。
+- **Helper 进程跟踪失效**(#10):`mihomoProcess` 改 `static` + `NSLock`(NSXPCListener 每连接新建 Helper 实例导致实例变量恒 nil),`stopMihomo` 的 SIGTERM→等待→SIGKILL 现在生效。
+- **TUN 升级 Helper 走错路径**(#1):改用 `XPCManager.upgradeDaemon()` 卸载旧 helper + 轮询等待新 helper 上线 + 升级失败 guard。
+- **切 profile 不 harden 控制面**(#8):`activateProfile` 在 `setConfig` 前重新 `hardenControllerConfig()`,防止新 profile 暴露 `0.0.0.0` 控制面。
+- **reconnect 无限递归**(#5):新增 `reconnectTask`,新重试取消旧重试。
+- **ProxyManager 强制解包**(#11):`SCPreferencesCreateWithAuthorization` 改 `guard` 防崩溃。
+
 ## [0.4.2] - 2026-06-05
 
 TUN 权限根本原因修复、Helper 自动升级机制、退出清理与网络断开保护。
