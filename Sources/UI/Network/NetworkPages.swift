@@ -44,16 +44,6 @@ struct NetworkPage: View {
                     Text("开启“允许局域网”可将代理共享给同 Wi-Fi 下的其他设备；可用 IP 网段与认证做严格审查。")
                         .font(.caption2).foregroundColor(.secondary).padding(.top, 6)
                 }
-                Card(title: "系统代理", icon: "globe.badge.chevron.backward") {
-                    HStack {
-                        Text("系统代理总开关").font(.caption)
-                        Spacer()
-                        Toggle("", isOn: Binding(get: { M.systemProxyOn }, set: { _ in M.toggleSystemProxy() }))
-                            .toggleStyle(.switch).labelsHidden()
-                    }
-                    Text("开启后将本机 HTTP/HTTPS/SOCKS 系统代理指向 ClashPow（需特权 Helper，见“通用”页授权）。")
-                        .font(.caption2).foregroundColor(.secondary).padding(.top, 6)
-                }
                 Spacer(minLength: 0)
             }.padding(18)
         }

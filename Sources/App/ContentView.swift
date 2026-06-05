@@ -4,34 +4,33 @@ import SwiftUI
 struct ContentView: View {
     @EnvironmentObject var M: AppModel
 
-    // grouped navigation (matches prototype layout)
     struct Tab { let id, label, icon: String }
-    private let dashTabs: [Tab] = [
-        .init(id: "dashboard", label: "仪表盘", icon: "gauge"),
-    ]
-    private let proxyTabs: [Tab] = [
-        .init(id: "proxies", label: "代理", icon: "diamond.fill"),
+
+    // 监控：实时状态与数据
+    private let monitorTabs: [Tab] = [
+        .init(id: "dashboard",   label: "仪表盘",   icon: "gauge"),
         .init(id: "connections", label: "连接监控", icon: "link"),
-        .init(id: "map", label: "SD-WAN 共存", icon: "shareplay"),
-        .init(id: "kernel", label: "内核管理", icon: "cpu"),
+        .init(id: "logs",        label: "日志",     icon: "doc.plaintext.fill"),
     ]
-
-    private let netTabs: [Tab] = [
-        .init(id: "dns", label: "DNS 缓存", icon: "server.rack"),
-        .init(id: "logs", label: "日志", icon: "doc.plaintext.fill"),
-        .init(id: "rules", label: "分流规则", icon: "line.3.horizontal.decrease"),
+    // 代理：规则与节点
+    private let proxyTabs: [Tab] = [
+        .init(id: "proxies", label: "代理",     icon: "diamond.fill"),
+        .init(id: "rules",   label: "分流规则", icon: "line.3.horizontal.decrease"),
     ]
-
+    // 配置：profile 与偏好
     private let configTabs: [Tab] = [
-        .init(id: "config", label: "配置编辑", icon: "slider.horizontal.3"),
+        .init(id: "config",  label: "配置编辑", icon: "slider.horizontal.3"),
         .init(id: "general", label: "通用设置", icon: "gearshape.fill"),
     ]
-
-    private let titles: [String: String] = [
-        "dashboard":"仪表盘","connections":"连接监控","proxies":"代理","rules":"分流规则",
-        "config":"配置编辑","logs":"实时日志","general":"通用设置","network":"网络入站",
-        "dns":"DNS 缓存","tun":"TUN 模式","sniffer":"流量嗅探","map":"SD-WAN 共存",
-        "kernel":"内核管理"
+    // 工具：内核与扩展
+    private let toolTabs: [Tab] = [
+        .init(id: "kernel", label: "内核管理",  icon: "cpu"),
+        .init(id: "map",    label: "SD-WAN 共存", icon: "shareplay"),
+    ]
+    // 内核底层：网络接入与 TUN
+    private let kernelTabs: [Tab] = [
+        .init(id: "network", label: "网络入站", icon: "network"),
+        .init(id: "tun",     label: "TUN 模式", icon: "shield.lefthalf.filled"),
     ]
 
     /// App 版本号(随 MARKETING_VERSION),展示于侧栏头部与关于页。
@@ -50,16 +49,11 @@ struct ContentView: View {
             appHeader
             Divider().opacity(0.4)
             List(selection: $M.route) {
-                Section("概览") { rows(dashTabs) }
+                Section("监控") { rows(monitorTabs) }
                 Section("代理") { rows(proxyTabs) }
-                Section("网络") { rows(netTabs) }
                 Section("配置") { rows(configTabs) }
-                
-                Section("引擎底层") {
-                    Label("网络入站", systemImage: "network").tag("network")
-                    Label("TUN 模式", systemImage: "shield.lefthalf.filled").tag("tun")
-                    Label("流量嗅探", systemImage: "scope").tag("sniffer")
-                }
+                Section("工具") { rows(toolTabs) }
+                Section("内核") { rows(kernelTabs) }
             }
             .listStyle(.sidebar)
             .scrollContentBackground(.hidden)
@@ -85,8 +79,6 @@ struct ContentView: View {
                     Text("ClashPow").font(.system(size: 14, weight: .bold))
                     Text("v\(Self.appVersion)").font(.system(size: 10, weight: .medium)).foregroundColor(.secondary)
                 }
-                Text(M.reachable ? "mihomo \(M.version)" : "未连接")
-                    .font(.system(size: 12)).foregroundColor(.secondary)
             }
             Spacer()
         }
@@ -134,9 +126,7 @@ struct ContentView: View {
                 case "logs": LogsPage()
                 case "general": GeneralPage()
                 case "network": NetworkPage()
-                case "dns": DnsPage()
                 case "tun": TunPage()
-                case "sniffer": SnifferPage()
                 case "map": SdwanPage()
                 case "kernel": KernelMgmtPage()
                 default: DashboardPage()
