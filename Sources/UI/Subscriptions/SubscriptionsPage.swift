@@ -32,8 +32,8 @@ struct SubscriptionsPage: View {
             VStack(alignment: .leading, spacing: 8) {
                 HStack {
                     Image(systemName: "icloud.fill").foregroundColor(M.accent)
-                    Text(p.name).font(.callout).fontWeight(.semibold)
-                    Text("\(p.proxies?.count ?? 0) 节点").font(.caption2)
+                    Text(p.name).font(.dsBody).fontWeight(.semibold)
+                    Text("\(p.proxies?.count ?? 0) 节点").font(.dsBody)
                         .padding(.horizontal, 6).padding(.vertical, 1)
                         .background(Capsule().fill(DS.Palette.hairline))
                     Spacer()
@@ -50,17 +50,17 @@ struct SubscriptionsPage: View {
                     VStack(alignment: .leading, spacing: 3) {
                         ProgressView(value: frac).tint(frac > 0.85 ? .red : M.accent)
                         HStack {
-                            Text("\(fmtBytes(Double(used))) / \(fmtBytes(Double(total)))").font(.caption2.monospaced()).foregroundColor(.secondary)
+                            Text("\(fmtBytes(Double(used))) / \(fmtBytes(Double(total)))").font(.dsMono).foregroundColor(.secondary)
                             Spacer()
                             if let exp = s.Expire, exp > 0 {
-                                Text("到期 " + dateStr(exp)).font(.caption2.monospaced()).foregroundColor(.secondary)
+                                Text("到期 " + dateStr(exp)).font(.dsMono).foregroundColor(.secondary)
                             }
                         }
                     }
                 }
                 if let u = p.updatedAt, !u.hasPrefix("0001") {
                     Text("更新于 " + String(u.prefix(19)).replacingOccurrences(of: "T", with: " "))
-                        .font(.caption2).foregroundColor(.secondary)
+                        .font(.dsBody).foregroundColor(.secondary)
                 }
             }
         }

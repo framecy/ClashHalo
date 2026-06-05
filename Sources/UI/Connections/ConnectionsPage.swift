@@ -18,7 +18,7 @@ struct ConnectionsPage: View {
                 Image(systemName: "magnifyingglass").foregroundColor(.secondary)
                 TextField("搜索域名 / 进程 / 规则", text: $q).textFieldStyle(.plain)
                 Spacer()
-                Text("\(M.conns.filter { matches($0) }.count) 匹配").font(.caption).foregroundColor(.secondary)
+                Text("\(M.conns.filter { matches($0) }.count) 匹配").font(.dsBody).foregroundColor(.secondary)
             }
             .padding(.horizontal, 14).padding(.vertical, 10)
             .background(Color(nsColor: .windowBackgroundColor).opacity(0.3))

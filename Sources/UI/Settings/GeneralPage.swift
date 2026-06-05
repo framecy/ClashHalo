@@ -34,7 +34,7 @@ struct GeneralPage: View {
                         Card(title: "外观", icon: "paintbrush") {
                             VStack(spacing: 10) {
                                 HStack {
-                                    Text("深色模式").font(.callout)
+                                    Text("深色模式").font(.dsBody)
                                     Spacer()
                                     Toggle("", isOn: $M.dark)
                                         .toggleStyle(.switch)
@@ -42,7 +42,7 @@ struct GeneralPage: View {
                                         .frame(width: 160, alignment: .trailing)
                                 }
                                 HStack {
-                                    Text("强调色").font(.callout)
+                                    Text("强调色").font(.dsBody)
                                     Spacer()
                                     HStack(spacing: 8) {
                                         ForEach(["green","blue","purple","orange"], id: \.self) { c in
@@ -65,7 +65,7 @@ struct GeneralPage: View {
                                 NumRow("更新间隔 (小时)", key: "geo-update-interval")
                             }
                             Text("DAT 模式使用 v2ray (.dat) 替代 MaxMind (.mmdb) 进行 GeoIP 匹配，文件更小；推荐“内存优先”加载器以降低后台占用。")
-                                .font(.caption2).foregroundColor(.secondary).padding(.top, 6)
+                                .font(.dsBody).foregroundColor(.secondary).padding(.top, 6)
                         }
                     } else if selectedTab == "advanced" {
                         // 路由与连接
@@ -81,7 +81,7 @@ struct GeneralPage: View {
                                 ToggleRow("禁用 Keep-Alive", key: "disable-keep-alive")
                             }
                             Text("TCP 并发能极大加快多节点测速；统一延迟将握手时间计入以反映真实体感延迟；进程匹配使 macOS 能按 App 名分流。")
-                                .font(.caption2).foregroundColor(.secondary).padding(.top, 6)
+                                .font(.dsBody).foregroundColor(.secondary).padding(.top, 6)
                         }
 
                         // GEO 下载源
@@ -93,7 +93,7 @@ struct GeneralPage: View {
                                 GeoURLRow("ASN", sub: "asn", defaultURL: "https://github.com/P3TERX/GeoLite.mmdb/raw/download/GeoLite2-ASN.mmdb")
                             }
                             Text("修改下载源 URL 后会在下次更新时生效。")
-                                .font(.caption2).foregroundColor(.secondary).padding(.top, 6)
+                                .font(.dsBody).foregroundColor(.secondary).padding(.top, 6)
                         }
 
                         // 内核管理
@@ -108,10 +108,10 @@ struct GeneralPage: View {
                                     
                                     VStack(alignment: .leading, spacing: 2) {
                                         Text("特权辅助程序")
-                                            .font(.headline)
+                                            .font(.dsCardLabel)
                                             .foregroundColor(engine.isRoot ? .green : .primary)
                                         Text(engine.isRoot ? "已启用特权服务，日常操作免密" : "未安装或未启用特权服务")
-                                            .font(.subheadline)
+                                            .font(.dsBody)
                                             .foregroundColor(.secondary)
                                     }
                                     
@@ -148,18 +148,18 @@ struct GeneralPage: View {
                                 
                                 HStack {
                                     Text("版本")
-                                        .font(.subheadline)
+                                        .font(.dsBody)
                                     Spacer()
                                     if helperNeedsUpdate {
                                         Text("\(engine.helperVersion) → \(EngineControl.kExpectedHelperVersion)")
-                                            .font(.subheadline.monospaced())
+                                            .font(.dsMono)
                                             .foregroundColor(.orange)
                                         Image(systemName: "exclamationmark.triangle.fill")
                                             .foregroundColor(.orange)
-                                            .font(.caption)
+                                            .font(.dsBody)
                                     } else {
                                         Text(engine.helperVersion)
-                                            .font(.subheadline.monospaced())
+                                            .font(.dsMono)
                                             .foregroundColor(.secondary)
                                     }
                                     Button(action: {
@@ -181,7 +181,7 @@ struct GeneralPage: View {
                         }
 
                         Text("ClashPow 需要“特权辅助程序”才能安全地为您接管系统网络路由及代理设置。")
-                            .font(.caption)
+                            .font(.dsBody)
                             .foregroundColor(.secondary)
                             .padding(.horizontal, 4)
                             .padding(.top, 4)
@@ -246,15 +246,15 @@ struct GeneralPage: View {
             
             VStack(spacing: 4) {
                 Text("ClashPow")
-                    .font(.title2)
+                    .font(.dsSection)
                     .fontWeight(.bold)
                 Text("Version \(Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "—")")
-                    .font(.subheadline)
+                    .font(.dsBody)
                     .foregroundColor(.secondary)
             }
 
             Text("ClashPow 是一个基于 mihomo (Clash.Meta) 内核的 macOS 原生代理客户端。采用原生 SwiftUI 编写，通过独立特权 Helper (XPC) 进行权限分离，订阅凭据经 Keychain 安全存储。")
-                .font(.callout)
+                .font(.dsBody)
                 .multilineTextAlignment(.center)
                 .foregroundColor(.secondary)
                 .padding(.horizontal, 40)
@@ -263,7 +263,7 @@ struct GeneralPage: View {
             VStack(spacing: 8) {
                 Link(destination: URL(string: "https://github.com/MetaCubeX/mihomo")!) {
                     Label("mihomo (Clash.Meta) 核心", systemImage: "link")
-                        .font(.subheadline)
+                        .font(.dsBody)
                         .foregroundColor(M.accent)
                 }
             }
@@ -272,7 +272,7 @@ struct GeneralPage: View {
             Spacer()
             
             Text("© 2026 ClashPow Dev Team. All rights reserved.")
-                .font(.caption2)
+                .font(.dsBody)
                 .foregroundColor(.secondary)
                 .padding(.bottom, 20)
         }
@@ -284,7 +284,7 @@ struct GeneralPage: View {
         return "已连接 · mihomo \(M.version)"
     }
     func field(_ l: String, text: Binding<String>, placeholder: String) -> some View {
-        HStack { Text(l).font(.caption).foregroundColor(.secondary).frame(width: 50, alignment: .leading)
+        HStack { Text(l).font(.dsBody).foregroundColor(.secondary).frame(width: 50, alignment: .leading)
             TextField(placeholder, text: text).textFieldStyle(.roundedBorder) }
     }
     func colorFor(_ s: String) -> Color { ["green":.green,"blue":.blue,"purple":.purple,"orange":.orange][s] ?? .green }
@@ -351,7 +351,7 @@ struct MenuBarPanel: View {
                     Text("ClashPow").fontWeight(.semibold)
                     HStack(spacing: 4) {
                         Circle().fill(M.reachable ? Color.green : Color.red).frame(width: 5, height: 5)
-                        Text(M.reachable ? "mihomo \(M.version)" : "未连接").font(.caption2).foregroundColor(.secondary)
+                        Text(M.reachable ? "mihomo \(M.version)" : "未连接").font(.dsBody).foregroundColor(.secondary)
                     }
                 }
                 Spacer()
@@ -359,14 +359,14 @@ struct MenuBarPanel: View {
             Divider()
             VStack(spacing: 8) {
                 HStack {
-                    Label(fmtRate(Double(M.curDown)), systemImage: "arrow.down").font(.caption.monospaced())
+                    Label(fmtRate(Double(M.curDown)), systemImage: "arrow.down").font(.dsMono)
                     Spacer()
-                    Label(fmtRate(Double(M.curUp)), systemImage: "arrow.up").font(.caption.monospaced()).foregroundColor(.secondary)
+                    Label(fmtRate(Double(M.curUp)), systemImage: "arrow.up").font(.dsMono).foregroundColor(.secondary)
                 }
                 HStack {
-                    Text("出口").font(.caption2).foregroundColor(.secondary)
+                    Text("出口").font(.dsBody).foregroundColor(.secondary)
                     Spacer()
-                    Text(M.currentProxyName()).font(.caption).foregroundColor(M.accent)
+                    Text(M.currentProxyName()).font(.dsBody).foregroundColor(M.accent)
                 }
                 Picker("", selection: Binding(get: { M.mode }, set: { M.setMode($0) })) {
                     Text("规则").tag("rule"); Text("全局").tag("global"); Text("直连").tag("direct")
@@ -374,7 +374,7 @@ struct MenuBarPanel: View {
             }.padding(14)
             Divider()
             Button("退出 ClashPow") { NSApplication.shared.terminate(nil) }
-                .buttonStyle(.plain).font(.caption).padding(12)
+                .buttonStyle(.plain).font(.dsBody).padding(12)
         }.frame(width: 260)
     }
 }
@@ -387,7 +387,7 @@ struct ContentUnavailable: View {
     var body: some View {
         VStack(spacing: 10) {
             Image(systemName: icon).font(.system(size: DS.Icon.xl)).foregroundColor(.secondary.opacity(0.5))
-            Text(text).font(.callout).foregroundColor(.secondary)
+            Text(text).font(.dsBody).foregroundColor(.secondary)
                 .multilineTextAlignment(.center).fixedSize(horizontal: false, vertical: true)
         }.frame(maxWidth: .infinity, minHeight: 160).padding(40)
     }
