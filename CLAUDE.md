@@ -51,6 +51,10 @@ git config core.hooksPath .githooks
 - `XPCManager`（`XPC/XPCManager.swift`）—— GUI 侧连接管理 + `installDaemon()`/`uninstallDaemon()`/`upgradeDaemon()`（先卸载再安装的完整升级流）。
 - `ProxyManager`（`XPC/ProxyManager.swift`）—— Helper 内用 `SystemConfiguration` 改系统代理。
 - **版本管理**：`EngineControl.kExpectedHelperVersion = "1.0.5"`。`AppModel.start()` 启动 4s 后调用 `checkAndUpgradeHelperIfNeeded()`，版本低于预期时自动走 `upgradeDaemon()` 升级，无需用户手动操作。UI「设置→权限」tab 版本过旧时按钮显示「更新」（橙色）。
+- **`isAuthorizedClient` 三层鉴权**（`Helper/main.swift`）：
+  1. `SecCodeCheckValidity(kSecCSBasicValidateOnly)` —— 跳过可执行+资源校验，仅验 identifier，兼容 ad-hoc 签名
+  2. `SecCodeCopyStaticCode` + `SecCodeCopyPath` —— bundle 根路径回退
+  3. `proc_pidpath` —— 直接读取进程真实可执行路径，不依赖签名框架；ad-hoc 必然通过
 
 **3. 内核层** —— 官方 `mihomo`。GUI 仅展示与控制，不碰网络报文。
 
@@ -100,3 +104,5 @@ git config core.hooksPath .githooks
 - pre-commit 钩子会 BLOCK 硬编码 secret/token/UUID（疑似节点信息），并对订阅 URL、IP 地址 WARN。勿提交真实订阅/节点数据。
 - 项目文件用 Xcode 工程（`ClashPow.xcodeproj`），新增 Swift 文件需加入对应 PBXGroup/Sources phase，否则不参与编译。
 - **Helper 版本变更**后需同步更新 `Helper-Info.plist` 的 `CFBundleVersion` 与 `kHelperVersion` 常量，以及 `EngineControl.kExpectedHelperVersion`，三处必须一致。
+- **`isAuthorizedClient` 修改**时须保留三层鉴权结构（SecurityFramework → SecCodeCopyPath → proc_pidpath），任何一层都可能是某签名类型的唯一通路。
+- **`toggleHelper()` 成功判据**：以 `installPrivileged()` osascript 返回 0 为成功，不依赖 `verifyConnectivity()` 超时；连通状态由 `pollStatus()` 异步更新 `isRoot`。
