@@ -61,10 +61,17 @@ enum DS {
 // Outlier sizes (11/13/16/22/34) should be migrated onto the nearest step.
 
 extension Font {
-    static let dsPageTitle  = Font.system(size: 24, weight: .bold)        // PageHead title
-    static let dsSection    = Font.system(size: 20, weight: .bold)        // section heading
-    static let dsCardLabel  = Font.system(size: 14, weight: .semibold)    // card / emphasis
-    static let dsBody       = Font.system(size: 12)                       // baseline body / label
-    static let dsBodyMedium = Font.system(size: 12, weight: .medium)
-    static let dsMono       = Font.system(size: 12, design: .monospaced)  // numbers / latency / ports
+    static let dsPageTitle    = Font.system(size: 24, weight: .bold)        // PageHead title
+    static let dsSection      = Font.system(size: 20, weight: .bold)        // section heading
+    // 14 — emphasis step (regular / semibold / bold weight variants).
+    static let dsLabel        = Font.system(size: 14)
+    static let dsCardLabel    = Font.system(size: 14, weight: .semibold)    // card / emphasis
+    static let dsLabelBold    = Font.system(size: 14, weight: .bold)
+    // 12 — baseline body step (regular / medium / semibold / bold + mono).
+    static let dsBody         = Font.system(size: 12)                       // baseline body / label
+    static let dsBodyMedium   = Font.system(size: 12, weight: .medium)
+    static let dsBodySemibold = Font.system(size: 12, weight: .semibold)
+    static let dsBodyBold     = Font.system(size: 12, weight: .bold)
+    static let dsMono         = Font.system(size: 12, design: .monospaced)  // numbers / latency / ports
+    static let dsMonoBold     = Font.system(size: 12, weight: .bold, design: .monospaced)
 }

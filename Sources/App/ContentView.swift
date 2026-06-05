@@ -77,13 +77,13 @@ struct ContentView: View {
                 .overlay(Image(systemName: "bolt.fill").font(.system(size: 15, weight: .bold)).foregroundColor(.white))
             VStack(alignment: .leading, spacing: 0) {
                 HStack(spacing: 5) {
-                    Text("ClashPow").font(.system(size: 14, weight: .bold))
+                    Text("ClashPow").font(.dsLabelBold)
                     Text("v\(Self.appVersion)").font(.system(size: 10, weight: .medium)).foregroundColor(.secondary)
                 }
             }
             Spacer()
         }
-        .padding(.horizontal, 16).padding(.vertical, 14)
+        .padding(.horizontal, DS.Spacing.l).padding(.vertical, 14)
     }
 
     private var statusFooter: some View {
@@ -94,21 +94,21 @@ struct ContentView: View {
             
             HStack {
                 Circle().fill(M.reachable ? DS.Palette.ok : DS.Palette.error).frame(width: 6, height: 6)
-                Text(M.reachable ? "核心已就绪" : "核心已停止").font(.system(size: 12)).foregroundColor(.secondary)
+                Text(M.reachable ? "核心已就绪" : "核心已停止").font(.dsBody).foregroundColor(.secondary)
                 Spacer()
                 if M.reachable {
-                    Text(M.version).font(.system(size: 12, design: .monospaced)).foregroundColor(.secondary)
+                    Text(M.version).font(.dsMono).foregroundColor(.secondary)
                 }
             }
-            .padding(.top, 4)
+            .padding(.top, DS.Spacing.xs)
         }
-        .padding(16)
+        .padding(DS.Spacing.l)
     }
 
     private func statusToggle(_ label: String, icon: String, isOn: Binding<Bool>, accent: Bool) -> some View {
         HStack(spacing: 8) {
             Circle().fill(isOn.wrappedValue ? (accent ? M.accent : DS.Palette.ok) : Color.secondary.opacity(0.3)).frame(width: 6, height: 6)
-            Text(label).font(.system(size: 12, weight: .medium)).foregroundColor(isOn.wrappedValue ? .primary : .secondary)
+            Text(label).font(.dsBodyMedium).foregroundColor(isOn.wrappedValue ? .primary : .secondary)
             Spacer()
             Toggle("", isOn: isOn).toggleStyle(.switch).controlSize(.mini).labelsHidden()
         }
@@ -138,7 +138,7 @@ struct ContentView: View {
         }
         .overlay(alignment: .bottom) {
             if let t = M.toast {
-                Text(t).font(.callout).padding(.horizontal, 16).padding(.vertical, 9)
+                Text(t).font(.callout).padding(.horizontal, DS.Spacing.l).padding(.vertical, 9)
                     .background(.ultraThinMaterial, in: Capsule())
                     .overlay(Capsule().stroke(Color.primary.opacity(0.1)))
                     .padding(.bottom, 26)
@@ -159,9 +159,9 @@ struct PageHead<Actions: View>: View {
     var body: some View {
         HStack(alignment: .center) {
             VStack(alignment: .leading, spacing: 4) {
-                Text(title).font(.system(size: 24, weight: .bold))
+                Text(title).font(.dsPageTitle)
                 if let desc {
-                    Text(desc).font(.system(size: 12)).foregroundColor(.secondary)
+                    Text(desc).font(.dsBody).foregroundColor(.secondary)
                 }
             }
             Spacer()
@@ -169,7 +169,7 @@ struct PageHead<Actions: View>: View {
                 actions()
             }
         }
-        .padding(.horizontal, 16).padding(.top, 16).padding(.bottom, 16)
+        .padding(.horizontal, DS.Spacing.l).padding(.top, DS.Spacing.l).padding(.bottom, DS.Spacing.l)
     }
 }
 
@@ -190,22 +190,22 @@ struct Card<Content: View>: View {
         VStack(alignment: .leading, spacing: 0) {
             if let title {
                 HStack(spacing: 6) {
-                    if let icon { Image(systemName: icon).font(.system(size: 12)).foregroundColor(.secondary) }
-                    Text(title).font(.system(size: 12, weight: .bold)).foregroundColor(.secondary)
+                    if let icon { Image(systemName: icon).font(.dsBody).foregroundColor(.secondary) }
+                    Text(title).font(.dsBodyBold).foregroundColor(.secondary)
                     Spacer()
                 }
-                .padding(.horizontal, 16).padding(.top, 12).padding(.bottom, 8)
+                .padding(.horizontal, DS.Spacing.l).padding(.top, DS.Spacing.m).padding(.bottom, DS.Spacing.s)
             }
             content()
                 .frame(maxWidth: .infinity, alignment: .leading)
-                .padding(.horizontal, pad ? 16 : 0)
-                .padding(.bottom, pad ? 16 : 0)
-                .padding(.top, (title == nil && pad) ? 16 : 0)
+                .padding(.horizontal, pad ? DS.Spacing.l : 0)
+                .padding(.bottom, pad ? DS.Spacing.l : 0)
+                .padding(.top, (title == nil && pad) ? DS.Spacing.l : 0)
             Spacer(minLength: 0)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
         .clipped()
-        .background(RoundedRectangle(cornerRadius: 12).fill(DS.Palette.cardBg))
-        .overlay(RoundedRectangle(cornerRadius: 12).stroke(DS.Palette.cardBgAlt))
+        .background(RoundedRectangle(cornerRadius: DS.Radius.card).fill(DS.Palette.cardBg))
+        .overlay(RoundedRectangle(cornerRadius: DS.Radius.card).stroke(DS.Palette.cardBgAlt))
     }
 }

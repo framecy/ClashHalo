@@ -32,20 +32,20 @@ struct ConnectionsPage: View {
                 Table(rows) {
                     TableColumn("目标") { c in
                         VStack(alignment: .leading, spacing: 1) {
-                            Text(c.host).font(.system(size: 12, weight: .medium)).lineLimit(1)
-                            Text("\(c.dstIP):\(c.port)").font(.system(size: 12, design: .monospaced)).foregroundColor(.secondary)
+                            Text(c.host).font(.dsBodyMedium).lineLimit(1)
+                            Text("\(c.dstIP):\(c.port)").font(.dsMono).foregroundColor(.secondary)
                         }
                     }.width(min: 180, ideal: 240)
-                    TableColumn("进程") { c in Text(c.process).font(.system(size: 12)).foregroundColor(.secondary).lineLimit(1) }.width(min: 80, ideal: 120)
-                    TableColumn("规则") { c in Text(c.rule).font(.system(size: 12, design: .monospaced)).foregroundColor(.secondary).lineLimit(1) }.width(min: 100, ideal: 150)
+                    TableColumn("进程") { c in Text(c.process).font(.dsBody).foregroundColor(.secondary).lineLimit(1) }.width(min: 80, ideal: 120)
+                    TableColumn("规则") { c in Text(c.rule).font(.dsMono).foregroundColor(.secondary).lineLimit(1) }.width(min: 100, ideal: 150)
                     TableColumn("链路") { c in
                         HStack(spacing: 4) {
-                            Text(c.chain).font(.system(size: 12, weight: .semibold)).foregroundColor(c.category == "proxy" ? M.accent : .secondary).lineLimit(1)
-                            Text(c.node).font(.system(size: 12, design: .monospaced)).foregroundColor(.secondary)
+                            Text(c.chain).font(.dsBodySemibold).foregroundColor(c.category == "proxy" ? M.accent : .secondary).lineLimit(1)
+                            Text(c.node).font(.dsMono).foregroundColor(.secondary)
                         }
                     }.width(min: 120, ideal: 180)
-                    TableColumn("↓") { c in Text(fmtRate(Double(c.downRate))).font(.system(size: 12, design: .monospaced)) }.width(70)
-                    TableColumn("↑") { c in Text(fmtRate(Double(c.upRate))).font(.system(size: 12, design: .monospaced)).foregroundColor(.secondary) }.width(70)
+                    TableColumn("↓") { c in Text(fmtRate(Double(c.downRate))).font(.dsMono) }.width(70)
+                    TableColumn("↑") { c in Text(fmtRate(Double(c.upRate))).font(.dsMono).foregroundColor(.secondary) }.width(70)
                     TableColumn("") { c in
                         Button { M.closeConnection(id: c.id) } label: { Image(systemName: "xmark.circle") }
                             .buttonStyle(.borderless).foregroundColor(.secondary).help("断开此连接")

@@ -35,7 +35,7 @@ struct LogsPage: View {
                 Spacer()
                 HStack(spacing: 6) {
                     Circle().fill(paused ? Color.secondary : M.accent).frame(width: 6, height: 6)
-                    Text("\(rows.count) 行").font(.system(size: 12, design: .monospaced)).foregroundColor(.secondary)
+                    Text("\(rows.count) 行").font(.dsMono).foregroundColor(.secondary)
                 }
             }
             .padding(.horizontal, 14).padding(.vertical, 10)
@@ -46,10 +46,10 @@ struct LogsPage: View {
                     LazyVStack(alignment: .leading, spacing: 2) {
                         ForEach(rows.reversed()) { l in
                             HStack(alignment: .top, spacing: 8) {
-                                Text(l.time).font(.system(size: 12, design: .monospaced)).foregroundColor(.secondary)
-                                Text(l.level.uppercased()).font(.system(size: 12, weight: .bold))
+                                Text(l.time).font(.dsMono).foregroundColor(.secondary)
+                                Text(l.level.uppercased()).font(.dsBodyBold)
                                     .foregroundColor(logColor(l.level)).frame(width: 46, alignment: .leading)
-                                Text(l.text).font(.system(size: 12, design: .monospaced)).textSelection(.enabled)
+                                Text(l.text).font(.dsMono).textSelection(.enabled)
                                 Spacer(minLength: 0)
                             }
                             .padding(.horizontal, 14).padding(.vertical, 1)
@@ -79,7 +79,7 @@ struct LogsPage: View {
         }
     }
     private func logColor(_ l: String) -> Color {
-        switch l { case "warning": return .orange; case "error": return .red; case "debug": return .secondary; default: return .blue }
+        switch l { case "warning": return DS.Palette.warn; case "error": return DS.Palette.error; case "debug": return .secondary; default: return .blue }
     }
 }
 

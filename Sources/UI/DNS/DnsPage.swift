@@ -30,7 +30,7 @@ struct DnsPage: View {
                             NList("Fake-IP 过滤", "dns", "fake-ip-filter", placeholder: "*.lan")
                         }
                         Text("Fake-IP 为代理域名返回保留段虚拟 IP，避免 DNS 泄漏；上游支持 DoH/DoT/DoQ/UDP。")
-                            .font(.system(size: 12)).foregroundColor(.secondary).padding(.top, 6)
+                            .font(.dsBody).foregroundColor(.secondary).padding(.top, 6)
                     }
 
                     Card(title: "DNS 解析测试", icon: "magnifyingglass") {
@@ -44,7 +44,7 @@ struct DnsPage: View {
                                 }.disabled(query.isEmpty || resolving)
                             }
                             if !result.isEmpty {
-                                Text(result).font(.system(size: 12, design: .monospaced)).foregroundColor(.secondary)
+                                Text(result).font(.dsMono).foregroundColor(.secondary)
                                     .textSelection(.enabled).frame(maxWidth: .infinity, alignment: .leading)
                             }
                         }
@@ -55,14 +55,14 @@ struct DnsPage: View {
                     Card(title: "Fake-IP 映射 · \(fakeip.count)（来自活跃连接）") {
                         if fakeip.isEmpty {
                             Text("当前无 Fake-IP 连接（需内核启用 dns.enhanced-mode: fake-ip 且有代理流量）")
-                                .font(.system(size: 12)).foregroundColor(.secondary)
+                                .font(.dsBody).foregroundColor(.secondary)
                         } else {
                             VStack(spacing: 4) {
                                 ForEach(fakeip.prefix(50)) { c in
                                     HStack {
-                                        Text(c.host).font(.system(size: 12)).lineLimit(1)
+                                        Text(c.host).font(.dsBody).lineLimit(1)
                                         Spacer()
-                                        Text(c.dstIP).font(.system(size: 12, design: .monospaced)).foregroundColor(M.accent)
+                                        Text(c.dstIP).font(.dsMono).foregroundColor(M.accent)
                                     }
                                 }
                             }
@@ -70,7 +70,7 @@ struct DnsPage: View {
                     }
                     Spacer(minLength: 0)
                 }
-                .padding(.horizontal, 20).padding(.bottom, 24)
+                .padding(.horizontal, DS.Spacing.xl).padding(.bottom, DS.Spacing.xxl)
             }
         }
     }
