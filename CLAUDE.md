@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## 项目概述
 
-ClashPow 是 macOS 14+ (Apple Silicon) 原生 SwiftUI 代理客户端，直接编排官方 `mihomo` (Clash.Meta) 内核：GUI 通过 REST + WebSocket 与内核通信，特权操作交给独立签名的 Helper。纯 Swift，无自研引擎。当前版本 v0.4.4。
+ClashPow 是 macOS 14+ (Apple Silicon) 原生 SwiftUI 代理客户端，直接编排官方 `mihomo` (Clash.Meta) 内核：GUI 通过 REST + WebSocket 与内核通信，特权操作交给独立签名的 Helper。纯 Swift，无自研引擎。当前版本 v0.4.5。
 
 ## 构建与运行
 
@@ -46,11 +46,11 @@ git config core.hooksPath .githooks
 - UI 按功能分目录于 `Sources/UI/`，路由是 `AppModel.route` 字符串（见 `App/ContentView.swift` 侧栏 tab）。
 
 **2. 特权 Helper 层（`Sources/Helper/main.swift` + `Sources/XPC/`）**
-- 独立编译的 LaunchDaemon，Mach service `com.clashpow.helper`，通过 `HelperProtocol`（`XPC/HelperProtocol.swift`）做 XPC。当前版本 `kHelperVersion = "1.0.5"`。
+- 独立编译的 LaunchDaemon，Mach service `com.clashpow.helper`，通过 `HelperProtocol`（`XPC/HelperProtocol.swift`）做 XPC。当前版本 `kHelperVersion = "1.0.6"`。
 - 4 个 XPC 能力：`getVersion` / `setSystemProxy` / `startMihomo` / `stopMihomo`。
 - `XPCManager`（`XPC/XPCManager.swift`）—— GUI 侧连接管理 + `installDaemon()`/`uninstallDaemon()`/`upgradeDaemon()`（先卸载再安装的完整升级流）。
-- `ProxyManager`（`XPC/ProxyManager.swift`）—— Helper 内用 `SystemConfiguration` 改系统代理。
-- **版本管理**：`EngineControl.kExpectedHelperVersion = "1.0.5"`。`AppModel.start()` 启动 4s 后调用 `checkAndUpgradeHelperIfNeeded()`，版本低于预期时自动走 `upgradeDaemon()` 升级，无需用户手动操作。UI「设置→权限」tab 版本过旧时按钮显示「更新」（橙色）。
+- `ProxyManager`（`XPC/ProxyManager.swift`）—— Helper 内用 `networksetup` 改系统代理（SCPreferences 在 root daemon 会话不生效，已弃用）；状态读取仍用只读 `SCDynamicStoreCopyProxies`。
+- **版本管理**：`EngineControl.kExpectedHelperVersion = "1.0.6"`。`AppModel.start()` 启动 4s 后调用 `checkAndUpgradeHelperIfNeeded()`，版本低于预期时自动走 `upgradeDaemon()` 升级，无需用户手动操作。UI「设置→权限」tab 版本过旧时按钮显示「更新」（橙色）。
 - **`isAuthorizedClient` 三层鉴权**（`Helper/main.swift`）：
   1. `SecCodeCheckValidity(kSecCSBasicValidateOnly)` —— 跳过可执行+资源校验，仅验 identifier，兼容 ad-hoc 签名
   2. `SecCodeCopyStaticCode` + `SecCodeCopyPath` —— bundle 根路径回退

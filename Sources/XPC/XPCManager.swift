@@ -75,6 +75,35 @@ public class XPCManager {
         }
     }
     
+    /// Set the macOS system proxy via the helper over a *fresh* connection.
+    /// Returns true/false on a real helper reply, or nil if the helper is
+    /// unreachable / errored / timed out (so the caller can fall back).
+    ///
+    /// Uses a throwaway connection instead of the cached `helper()` proxy: the
+    /// cached connection silently drops calls in practice (the helper logs the
+    /// 5 s getVersion handshakes from verifyConnectivity's fresh connections, but
+    /// never the setSystemProxy sent over the cached one), so a fresh connection
+    /// — the same pattern verifyConnectivity proves reliable — is used here too.
+    public func callSystemProxy(enabled: Bool, port: Int, timeout: TimeInterval = 5.0) async -> Bool? {
+        guard checkStatus() == .enabled else { return nil }
+        let conn = NSXPCConnection(machServiceName: "com.clashpow.helper", options: .privileged)
+        conn.remoteObjectInterface = NSXPCInterface(with: HelperProtocol.self)
+        conn.resume()
+        return await withCheckedContinuation { (cont: CheckedContinuation<Bool?, Never>) in
+            let lock = NSLock(); var done = false
+            let finish: (Bool?) -> Void = { v in
+                lock.lock(); defer { lock.unlock() }
+                if !done { done = true; cont.resume(returning: v); conn.invalidate() }
+            }
+            guard let proxy = conn.remoteObjectProxyWithErrorHandler({ [weak self] error in
+                self?.onLog?("setSystemProxy XPC 错误: \(error.localizedDescription)")
+                finish(nil)
+            }) as? HelperProtocol else { finish(nil); return }
+            proxy.setSystemProxy(enabled: enabled, port: port) { ok in finish(ok) }
+            DispatchQueue.global().asyncAfter(deadline: .now() + timeout) { finish(nil) }
+        }
+    }
+
     public func installDaemon() async -> Bool {
         let bundlePath = Bundle.main.bundlePath
         let helperSrc = "\(bundlePath)/Contents/MacOS/com.clashpow.helper"
