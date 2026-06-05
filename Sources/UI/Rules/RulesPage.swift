@@ -26,7 +26,7 @@ struct RulesPage: View {
                 Image(systemName: "magnifyingglass").foregroundColor(.secondary)
                 TextField("搜索规则类型 / 内容 / 策略", text: $q).textFieldStyle(.plain)
                 Spacer()
-                Text("\(rows.count) 匹配").font(.caption).foregroundColor(.secondary)
+                Text("\(rows.count) 匹配").font(.dsBody).foregroundColor(.secondary)
             }
             .padding(.horizontal, 14).padding(.vertical, 10)
             .background(Color(nsColor: .windowBackgroundColor).opacity(0.3))
@@ -42,7 +42,7 @@ struct RulesPage: View {
                     }
                 }
                 Text("规则为内核当前生效集合（含 rule-providers 展开）。如需增删改，请在「配置编辑」修改 YAML 后热重载。")
-                    .font(.caption2).foregroundColor(.secondary)
+                    .font(.dsBody).foregroundColor(.secondary)
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .padding(.horizontal, 14).padding(.vertical, 8)
                     .background(Color(nsColor: .windowBackgroundColor).opacity(0.3))
@@ -58,9 +58,9 @@ struct RulesPage: View {
                     .padding(.horizontal, 6).padding(.vertical, 2)
                     .background(Capsule().fill(DS.Palette.hairline))
                     .frame(width: 150, alignment: .leading)
-                Text(r.payload.isEmpty ? "—" : r.payload).font(.caption.monospaced()).lineLimit(1)
+                Text(r.payload.isEmpty ? "—" : r.payload).font(.dsMono).lineLimit(1)
                 Spacer()
-                Text(r.proxy).font(.caption).foregroundColor(M.accent)
+                Text(r.proxy).font(.dsBody).foregroundColor(M.accent)
             }
             .padding(.horizontal, 14).padding(.vertical, 6)
             .contentShape(Rectangle())

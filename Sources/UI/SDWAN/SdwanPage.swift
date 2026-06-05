@@ -297,13 +297,13 @@ struct SdwanPage: View {
             Image(systemName: icon(i.kind)).foregroundColor(color(i.kind)).frame(width: 22)
             VStack(alignment: .leading, spacing: 1) {
                 HStack(spacing: 6) {
-                    Text(i.name).font(.callout.monospaced()).fontWeight(.medium)
-                    Text(i.kind.rawValue).font(.caption2)
+                    Text(i.name).font(.dsMono).fontWeight(.medium)
+                    Text(i.kind.rawValue).font(.dsBody)
                         .padding(.horizontal, 6).padding(.vertical, 1)
                         .background(Capsule().fill(color(i.kind).opacity(0.15))).foregroundColor(color(i.kind))
                 }
                 Text(i.ipv4.joined(separator: ", ").isEmpty ? "无 IPv4" : i.ipv4.joined(separator: ", "))
-                    .font(.caption2.monospaced()).foregroundColor(.secondary)
+                    .font(.dsMono).foregroundColor(.secondary)
             }
             Spacer()
             Circle().fill(i.isUp ? Color.green : Color.secondary.opacity(0.4)).frame(width: 7, height: 7)

@@ -198,7 +198,7 @@ struct DashboardPage: View {
             .frame(width: 120, height: 120) // slight buffer
 
             // Right side: Legends
-            VStack(spacing: 14) {
+            VStack(spacing: DS.Spacing.l) {
                 legendRow("直连", fmtBytes(direct), .cyan)
                 legendRow("代理", fmtBytes(proxy), M.accent)
                 legendRow("拦截", fmtBytes(reject), .red)

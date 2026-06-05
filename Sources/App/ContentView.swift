@@ -138,7 +138,7 @@ struct ContentView: View {
         }
         .overlay(alignment: .bottom) {
             if let t = M.toast {
-                Text(t).font(.callout).padding(.horizontal, DS.Spacing.l).padding(.vertical, 9)
+                Text(t).font(.dsBody).padding(.horizontal, DS.Spacing.l).padding(.vertical, 9)
                     .background(.ultraThinMaterial, in: Capsule())
                     .overlay(Capsule().stroke(Color.primary.opacity(0.1)))
                     .padding(.bottom, 26)

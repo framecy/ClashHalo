@@ -127,25 +127,25 @@ struct ProxiesPage: View {
                     }
                 } label: {
                     HStack(spacing: 10) {
-                        Image(systemName: "chevron.right").font(.caption2).foregroundColor(.secondary)
+                        Image(systemName: "chevron.right").font(.dsBody).foregroundColor(.secondary)
                             .rotationEffect(.degrees(isOpen ? 90 : 0))
-                        Image(systemName: groupIcon(g.type)).font(.callout).foregroundColor(M.accent).frame(width: 20)
+                        Image(systemName: groupIcon(g.type)).font(.dsBody).foregroundColor(M.accent).frame(width: 20)
                         VStack(alignment: .leading, spacing: 2) {
                             HStack(spacing: 6) {
-                                Text(g.name).font(.callout).fontWeight(.semibold)
+                                Text(g.name).font(.dsBody).fontWeight(.semibold)
                                 Text(g.type).font(.dsBody).foregroundColor(.secondary)
                                     .padding(.horizontal, 5).padding(.vertical, 1)
                                     .background(Capsule().fill(DS.Palette.hairline))
                             }
                             HStack(spacing: 5) {
-                                Text(cur).font(.caption).foregroundColor(M.accent).lineLimit(1)
+                                Text(cur).font(.dsBody).foregroundColor(M.accent).lineLimit(1)
                                 if curDelay > 0 { Text("\(curDelay)ms").font(.dsMono).foregroundColor(delayColor(curDelay)) }
                             }
                         }
                         Spacer()
                         Button { M.testGroup(g) } label: { Image(systemName: "bolt") }
                             .buttonStyle(.borderless).controlSize(.small).help("测速")
-                        Text("\(g.all.count)").font(.caption2)
+                        Text("\(g.all.count)").font(.dsBody)
                             .padding(.horizontal, 7).padding(.vertical, 2)
                             .background(Capsule().fill(DS.Palette.hairline))
                     }
@@ -174,10 +174,10 @@ struct ProxiesPage: View {
         } label: {
             VStack(alignment: .leading, spacing: 5) {
                 HStack(spacing: 6) {
-                    Text(name).font(.caption).fontWeight(on ? .semibold : .regular)
+                    Text(name).font(.dsBody).fontWeight(on ? .semibold : .regular)
                         .foregroundColor(on ? M.accent : .primary).lineLimit(1)
                     Spacer(minLength: 2)
-                    if on { Image(systemName: "checkmark.circle.fill").font(.caption2).foregroundColor(M.accent) }
+                    if on { Image(systemName: "checkmark.circle.fill").font(.dsBody).foregroundColor(M.accent) }
                 }
                 HStack(spacing: 6) {
                     Text(isGroup ? "组" : (node?.type ?? "—")).font(.dsBody).foregroundColor(.secondary)
