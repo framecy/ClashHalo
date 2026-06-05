@@ -118,7 +118,7 @@ struct SdwanTopologyView: View {
                     Text("本机 (Host)").font(.system(size: 12, weight: .bold))
                 }
                 .frame(width: 80, height: 48)
-                .background(RoundedRectangle(cornerRadius: 8).fill(Color(red: 0x2A/255.0, green: 0x2A/255.0, blue: 0x2A/255.0)))
+                .background(RoundedRectangle(cornerRadius: 8).fill(DS.Palette.cardBg))
                 .overlay(RoundedRectangle(cornerRadius: 8).stroke(M.accent, lineWidth: 1.2))
                 .position(hostPt)
 
@@ -139,7 +139,7 @@ struct SdwanTopologyView: View {
                     }
                     .padding(.horizontal, 10).padding(.vertical, 6)
                     .frame(width: 144, alignment: .leading)
-                    .background(RoundedRectangle(cornerRadius: 8).fill(Color(red: 0x2A/255.0, green: 0x2A/255.0, blue: 0x2A/255.0)))
+                    .background(RoundedRectangle(cornerRadius: 8).fill(DS.Palette.cardBg))
                     .overlay(RoundedRectangle(cornerRadius: 8).stroke(color.opacity(0.7), lineWidth: 1.0))
                     .position(pt)
                 }
@@ -154,7 +154,7 @@ struct SdwanTopologyView: View {
                     }
                     .padding(.horizontal, 10).padding(.vertical, 6)
                     .frame(width: 110, alignment: .leading)
-                    .background(RoundedRectangle(cornerRadius: 8).fill(Color(red: 0x2A/255.0, green: 0x2A/255.0, blue: 0x2A/255.0)))
+                    .background(RoundedRectangle(cornerRadius: 8).fill(DS.Palette.cardBg))
                     .overlay(RoundedRectangle(cornerRadius: 8).stroke(Color.primary.opacity(0.12), lineWidth: 1.0))
                     .position(pt)
                 }
@@ -244,8 +244,8 @@ struct SdwanPage: View {
                         }
                     }
                     .padding(16)
-                    .background(RoundedRectangle(cornerRadius: 12).fill(Color(red: 0x2A/255.0, green: 0x2A/255.0, blue: 0x2A/255.0)))
-                    .overlay(RoundedRectangle(cornerRadius: 12).stroke(Color(red: 0x2C/255.0, green: 0x2C/255.0, blue: 0x2C/255.0)))
+                    .background(RoundedRectangle(cornerRadius: 12).fill(DS.Palette.cardBg))
+                    .overlay(RoundedRectangle(cornerRadius: 12).stroke(DS.Palette.cardBgAlt))
 
                     // Topology view of the network routing relation map
                     SdwanTopologyView(ifaces: ifaces, routes: routes)
