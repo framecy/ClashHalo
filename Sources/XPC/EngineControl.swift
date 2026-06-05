@@ -6,7 +6,7 @@ import SwiftUI
     static let shared = EngineControl()
     /// Expected version of the installed helper. When the running helper reports a
     /// different version the app auto-reinstalls it (new binary = new permissions fix).
-    static let kExpectedHelperVersion = "1.0.5"
+    static let kExpectedHelperVersion = "1.0.6"
     let api = MihomoClient.shared
 
     @Published var present = false
@@ -131,6 +131,64 @@ import SwiftUI
 
         hardenControllerConfig()
         normalizeGeoxURL()
+        forceTUNDisabled()   // TUN is runtime-only (root) — never auto-enable from disk
+    }
+
+    /// Force `tun.enable: false` in the on-disk config. TUN requires root and must
+    /// only ever be turned on through `toggleTUN` (which performs the user→root
+    /// kernel switch). If the persisted config carries `tun.enable: true`, a plain
+    /// `ensureRunning` start — which is usually user-mode — brings TUN up without
+    /// privilege: the utun device can't be created, traffic is black-holed, and the
+    /// kernel is left half-dead. Editing only the `enable:` scalar inside the `tun:`
+    /// block keeps the rest of the user's TUN settings (stack/dns-hijack/...) intact.
+    func forceTUNDisabled() {
+        let path = configFilePath
+        guard let text = try? String(contentsOfFile: path, encoding: .utf8) else { return }
+        var lines = text.components(separatedBy: "\n")
+        var inTun = false, changed = false
+        for i in lines.indices {
+            let line = lines[i]
+            // Top-level key (no leading whitespace) ends the previous block.
+            if !line.hasPrefix(" ") && !line.hasPrefix("\t") {
+                inTun = line.hasPrefix("tun:")
+                continue
+            }
+            guard inTun else { continue }
+            let trimmed = line.trimmingCharacters(in: .whitespaces)
+            if trimmed.hasPrefix("enable:") {
+                let indent = String(line.prefix(while: { $0 == " " || $0 == "\t" }))
+                let want = "\(indent)enable: false"
+                if line != want { lines[i] = want; changed = true }
+                inTun = false   // only the first enable: under tun:
+            }
+        }
+        if changed {
+            try? lines.joined(separator: "\n").write(toFile: path, atomically: true, encoding: .utf8)
+        }
+    }
+
+    /// The BSD name of the current default-route interface (e.g. `en0`), or nil.
+    /// Used to pin mihomo's outbound `interface-name` when enabling TUN so proxy
+    /// egress has a concrete physical NIC immediately, instead of relying solely on
+    /// `auto-detect-interface` which loses a race at TUN startup (auto-route hijacks
+    /// the default route before the monitor identifies the NIC → "interface not found").
+    static func defaultInterface() -> String? {
+        let p = Process()
+        p.executableURL = URL(fileURLWithPath: "/sbin/route")
+        p.arguments = ["-n", "get", "default"]
+        let pipe = Pipe(); p.standardOutput = pipe; p.standardError = Pipe()
+        do { try p.run() } catch { return nil }
+        let data = pipe.fileHandleForReading.readDataToEndOfFile()
+        p.waitUntilExit()
+        guard let out = String(data: data, encoding: .utf8) else { return nil }
+        for line in out.split(separator: "\n") {
+            let t = line.trimmingCharacters(in: .whitespaces)
+            if t.hasPrefix("interface:") {
+                let name = t.dropFirst("interface:".count).trimmingCharacters(in: .whitespaces)
+                return name.isEmpty ? nil : name
+            }
+        }
+        return nil
     }
 
     /// Replace the known-unreliable geodata.kelee.one geox-url entries with the
@@ -288,7 +346,19 @@ import SwiftUI
     /// Returns true if helper is at the expected version (already up to date or just upgraded).
     @discardableResult
     func checkAndUpgradeHelperIfNeeded() async -> Bool {
+        // isRoot is set by pollStatus (every 5s); this check fires at 4s, before
+        // the first poll, so it would skip on every fresh launch. Actively verify
+        // connectivity here so the guard reflects reality, not poll timing.
+        if !isRoot {
+            isRoot = await XPCManager.shared.verifyConnectivity()
+        }
         guard isRoot else { return true }
+        // The version may not be fetched yet (pollStatus runs every 5s; this check
+        // fires at 4s). Actively fetch it first so a needed upgrade isn't skipped
+        // by the "?" guard and silently deferred forever.
+        if helperVersion == "?" || helperVersion.isEmpty {
+            if let v = await fetchHelperVersion() { helperVersion = v }
+        }
         guard helperVersion != "?", !helperVersion.isEmpty else { return true }
         guard helperVersion != Self.kExpectedHelperVersion else { return true }
         onLog?("特权服务 v\(helperVersion) 低于预期 v\(Self.kExpectedHelperVersion)，开始自动升级（卸载→安装）…")
@@ -386,6 +456,7 @@ import SwiftUI
         do {
             try yaml.write(toFile: path, atomically: true, encoding: .utf8)
             hardenControllerConfig()   // ensure controller binds loopback + strong secret
+            forceTUNDisabled()         // TUN is runtime-only — don't let a profile auto-enable it
             try await api.reloadConfig(path: path)
             return (true, nil)
         } catch {
@@ -436,8 +507,28 @@ import SwiftUI
 
     /// Re-probe the helper for its version (manual "检查" button feedback).
     func refreshHelperVersion() {
-        XPCManager.shared.helper()?.getVersion { v in
-            Task { @MainActor in if !v.isEmpty { self.helperVersion = v } }
+        Task { @MainActor in if let v = await fetchHelperVersion() { self.helperVersion = v } }
+    }
+
+    /// Fetch the helper version over a fresh connection (reliable, unlike the
+    /// cached helper() proxy). Returns nil if unreachable / timed out.
+    func fetchHelperVersion(timeout: TimeInterval = 2.0) async -> String? {
+        await withCheckedContinuation { (cont: CheckedContinuation<String?, Never>) in
+            Task {
+                let conn = NSXPCConnection(machServiceName: "com.clashpow.helper", options: .privileged)
+                conn.remoteObjectInterface = NSXPCInterface(with: HelperProtocol.self)
+                conn.resume()
+                let lock = NSLock(); var done = false
+                let finish: (String?) -> Void = { v in
+                    lock.lock(); defer { lock.unlock() }
+                    if !done { done = true; cont.resume(returning: v); conn.invalidate() }
+                }
+                guard let proxy = conn.remoteObjectProxyWithErrorHandler({ _ in finish(nil) }) as? HelperProtocol else {
+                    finish(nil); return
+                }
+                proxy.getVersion { v in finish(v.isEmpty ? nil : v) }
+                DispatchQueue.global().asyncAfter(deadline: .now() + timeout) { finish(nil) }
+            }
         }
     }
 
@@ -458,15 +549,14 @@ import SwiftUI
 
     @discardableResult
     func setSystemProxy(enabled: Bool, port: Int) async -> Bool {
-        guard let helper = XPCManager.shared.helper() else {
-            // Fallback to osascript if helper not available
-            return await Self.setSystemProxyFallback(enabled: enabled, port: port)
+        // Go through a fresh helper connection (callSystemProxy). The cached
+        // helper() proxy silently dropped these calls — the helper never logged
+        // them — so the toggle reported "系统代理设置失败". A nil result means the
+        // helper was unreachable / errored / timed out; fall back to osascript.
+        if let ok = await XPCManager.shared.callSystemProxy(enabled: enabled, port: port) {
+            return ok
         }
-        return await withCheckedContinuation { cont in
-            helper.setSystemProxy(enabled: enabled, port: port) { ok in
-                cont.resume(returning: ok)
-            }
-        }
+        return await Self.setSystemProxyFallback(enabled: enabled, port: port)
     }
 
     /// Set/clear the macOS system HTTP/HTTPS/SOCKS proxy via osascript fallback.

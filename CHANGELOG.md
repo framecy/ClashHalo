@@ -2,6 +2,23 @@
 
 本项目所有重要变更记录于此。格式参考 [Keep a Changelog](https://keepachangelog.com/),版本遵循语义化版本。
 
+## [0.4.5] - 2026-06-05
+
+系统代理彻底修复、TUN 不再自动拉起、启动竞态消除,以及日志展示与 Helper 自动升级时序修复。
+
+### Fixed
+- **打开内核后自动启动 TUN**:`config.yaml` 持久化的 `tun.enable: true` 会在每次 `ensureRunning`(通常用户态)启动时被读盘拉起 TUN,而用户态无权创建 utun → 流量黑洞、内核半死。新增 `EngineControl.forceTUNDisabled()`,在 `ensureInstalled()` 与 `setConfig()` 仅改写 `tun:` 块内 `enable:` 标量为 `false`(保留 stack/dns-hijack 等)。TUN 自此**只能经 `toggleTUN` 以 root 在运行时开启**。
+- **系统代理设置无效**(三层根因):
+  1. 经缓存 XPC 连接 `helper()` 的调用被静默丢弃(helper 收不到)→ 改用全新连接 + 守护 continuation 的 `XPCManager.callSystemProxy`(reply/error/超时只 resume 一次)。
+  2. 调用到达 helper 后,**root LaunchDaemon 会话内 `SCPreferences` 不生效**(返回 false、`scutil` 仍 `HTTPEnable:0`)→ `ProxyManager` 改用 `networksetup`,枚举启用的网络服务逐个设/清 web/secure/socks 代理。
+  3. Helper 自动升级因 **4s 检查早于首次 `pollStatus`(5s)**,`isRoot`/`helperVersion` 未就绪而被 guard 跳过 → 升级检查内主动 `verifyConnectivity()` + `fetchHelperVersion()`。
+- **TUN 启动瞬间「interface not found」**:`auto-route` 劫持默认路由后 `auto-detect-interface` 探测不到物理网卡,出口被黑洞直到路由监视器追上。`toggleTUN` 启用时用 `route -n get default` 探测真实默认网卡并显式 PATCH `interface-name`(关闭时清空)。
+
+### Changed
+- **实时日志改为最新在顶部**(`LogsPage` 倒序展示,新日志滚动至顶部)。
+- Helper 版本提升至 **v1.0.6**(`kHelperVersion` / `Helper-Info.plist` / `kExpectedHelperVersion` 三处同步)。
+- App 版本提升至 0.4.5。
+
 ## [0.4.4] - 2026-06-05
 
 并发安全:内核操作互斥 + TUN 升级时序竞争修复(功能冲突审查批次)。
