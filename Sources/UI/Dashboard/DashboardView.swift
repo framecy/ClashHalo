@@ -187,7 +187,7 @@ struct DashboardPage: View {
 
                 // Center Text
                 VStack(spacing: 2) {
-                    Text("总计").font(.system(size: 11)).foregroundColor(.secondary)
+                    Text("总计").font(.dsBody).foregroundColor(.secondary)
                     Text(fmtBytes(direct + proxy + reject))
                         .font(.system(size: 14, weight: .bold, design: .rounded))
                         .lineLimit(1)
@@ -211,7 +211,7 @@ struct DashboardPage: View {
     private func legendRow(_ l: String, _ v: String, _ c: Color) -> some View {
         HStack(spacing: 12) {
             Circle().fill(c).frame(width: 8, height: 8)
-            Text(l).font(.system(size: 13, weight: .medium)).foregroundColor(.secondary).fixedSize()
+            Text(l).font(.dsBodyMedium).foregroundColor(.secondary).fixedSize()
             Spacer()
             Text(v).font(.system(size: 14, weight: .bold, design: .monospaced)).fixedSize()
         }

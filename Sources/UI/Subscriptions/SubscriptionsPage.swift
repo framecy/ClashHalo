@@ -8,20 +8,21 @@ struct SubscriptionsPage: View {
     @State private var busy: Set<String> = []
 
     var body: some View {
-        ScrollView {
-            VStack(spacing: 12) {
-                HStack {
-                    Text("\(providers.count) 个订阅").font(.caption).foregroundColor(.secondary)
-                    Spacer()
-                    Button { Task { await updateAll() } } label: { Label("全部更新", systemImage: "arrow.clockwise") }
-                        .controlSize(.small)
-                }
-                if providers.isEmpty {
-                    ContentUnavailable("无 HTTP 订阅 (proxy-providers)", "icloud")
-                }
-                ForEach(providers, id: \.name) { p in card(p) }
+        VStack(spacing: 0) {
+            PageHead(title: "订阅", desc: "\(providers.count) 个 proxy-providers · 节点来源") {
+                Button { Task { await updateAll() } } label: { Label("全部更新", systemImage: "arrow.clockwise") }
+                    .controlSize(.small)
             }
-            .padding(18)
+            ScrollView {
+                VStack(spacing: DS.Spacing.m) {
+                    if providers.isEmpty {
+                        ContentUnavailable("无 HTTP 订阅 (proxy-providers)", "icloud")
+                            .frame(maxHeight: .infinity)
+                    }
+                    ForEach(providers, id: \.name) { p in card(p) }
+                }
+                .padding(DS.Spacing.xl)
+            }
         }
         .task { await reload() }
     }
