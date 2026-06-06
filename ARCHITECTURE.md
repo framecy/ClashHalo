@@ -87,3 +87,10 @@ graph TD
 
 ## 默认连接参数
 external-controller 绑回环 `127.0.0.1`，secret 启动时规范化为强随机值。数据目录 `~/Library/Application Support/ClashPow`。Helper 日志：`/Library/Logs/ClashPow/helper.log`；mihomo root 日志：`/Library/Logs/ClashPow/mihomo-root.log`。
+
+## 设计系统 (DesignTokens)
+`Sources/UI/DesignTokens.swift` 是 UI 单一真相源：`DS.Palette`（表面/状态/中性填充边框）、`DS.Spacing`（8pt 栅格）、`DS.Radius`、`DS.Icon`（图标尺寸,独立于文本刻度）、`DS.Layout`（复用固定尺寸）+ `Font.ds*`（24/20/14/12 类型刻度）。所有 UI 一律读 token，不写裸字面量。
+- **暗色锁定**：`cardBg/cardBgAlt` 是暗色固定值,App 锁 `.preferredColorScheme(.dark)`；要支持浅色需先把表面色改为随 scheme 自适应（Asset Catalog 或 `Color(nsColor:)` 动态色）。
+- **防回归**：`.githooks/pre-commit` 对 UI 文件里裸 `.font(.system(size: N))` 与脱离刻度的语义字体 `.caption/.callout/…` 给 **DS-WARN**（不阻断）。
+- **可视化自检**：`DesignTokens.swift` 内含 `#Preview "Design Tokens"` token 画廊；`NetworkPage`/`DashboardPage`/`GeneralPage` 各有 `#Preview`,可在 Xcode 画布快速核对布局。
+- **后续**：完整快照回归测试需新增 XCTest target + `swift-snapshot-testing`（受当前 `.xcodeproj` 无测试 target 限制,留作后续）。

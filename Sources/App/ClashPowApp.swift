@@ -44,7 +44,11 @@ struct ClashPowApp: App {
             ContentView()
                 .environmentObject(model)
                 .frame(minWidth: 940, minHeight: 620)
-                .preferredColorScheme(model.dark ? .dark : .light)
+                // Locked to dark: the design tokens (DS.Palette.cardBg/…) are
+                // dark-only fixed colors, so a light scheme would render dark
+                // cards on a light background. Re-introduce a light theme only
+                // once the palette uses scheme-adaptive colors.
+                .preferredColorScheme(.dark)
                 .onAppear { model.start() }
         }
         .defaultSize(width: 1180, height: 780)

@@ -55,6 +55,28 @@ check_pattern '\b([0-9]{1,3}\.){3}[0-9]{1,3}\b' 'IP address' WARN
 # These are filtered in the grep above — but as a WARN, they pass through
 # with a message. The developer can review and decide.
 
+# ── Design-system lint (WARN) ───────────────────────────────────
+# UI should read from DesignTokens, not raw font/literals. Flags re-introduced
+# ad-hoc fonts so the design language doesn't drift back. WARN only — never blocks.
+UI_FILES=$(echo "$FILES" | grep -E '^Sources/(UI|App)/.*\.swift$' || true)
+if [ -n "$UI_FILES" ]; then
+    ds_check() {
+        local pattern="$1"; local label="$2"
+        local matches=$(grep -nE "$pattern" $UI_FILES 2>/dev/null || true)
+        if [ -n "$matches" ]; then
+            echo -e "  ${RED}[DS-WARN]${NC} ${label} — 请改用 DesignTokens (Font.ds* / DS.*):"
+            echo "$matches" | while IFS= read -r line; do
+                if [ ${#line} -gt 120 ]; then line="${line:0:120}..."; fi
+                echo "    $line"
+            done
+        fi
+    }
+    # Raw numeric point-size fonts (icon-size tokens like DS.Icon.* are allowed).
+    ds_check '\.font\(\.system\(size: ?[0-9]' 'raw numeric .font(.system(size: N…))'
+    # Semantic fonts that are off the 12/14/20/24 type scale.
+    ds_check '\.font\(\.(callout|caption2|caption|headline|subheadline|title2|title3|footnote|body)\b' 'semantic font off the scale'
+fi
+
 # ── Result ──────────────────────────────────────────────────────
 if [ "$VIOLATIONS" -gt 0 ]; then
     echo ""

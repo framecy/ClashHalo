@@ -2,18 +2,19 @@ import SwiftUI
 
 // MARK: - Design Tokens
 //
-// Single source of truth for the design system: colors, type scale, spacing and
-// radii. Use these instead of hardcoded literals so the design language stays
-// consistent and theming adapts in one place.
+// Single source of truth for the design system: colors, type scale, spacing,
+// radii, icon sizes and layout constants. Use these instead of hardcoded
+// literals so the design language stays consistent and adapts in one place.
 //
-// Values are taken from the audited current majority (12pt body, 16 card pad,
-// radius 12 card / 8 control, accent + secondary), so adopting them is a no-op
-// visually — the goal of this first step is to *centralize*, then migrate
-// outlier call sites (hardcoded 0x2A/0x2C bg, 11/13/16pt, padding 18-vs-20) onto
-// these tokens incrementally.
+// Coverage: all UI now reads from these tokens — fonts (DS / Font.ds*), spacing,
+// radius, icon sizes, neutral fills/borders and status colors are centralized;
+// former outlier sizes have been snapped onto the scale.
 //
-// NOTE: the dynamic theme/accent color stays in `AppModel.accent` (user-selectable);
-// these tokens cover the static parts of the system.
+// NOTES:
+// - The dynamic theme/accent color stays in `AppModel.accent` (user-selectable).
+// - Surfaces (`cardBg`/`cardBgAlt`) are DARK-ONLY fixed colors; the app is locked
+//   to the dark color scheme. To support a light theme, switch these to
+//   scheme-adaptive colors (Asset Catalog or `Color(nsColor:)` dynamic colors).
 
 enum DS {
 
@@ -32,8 +33,13 @@ enum DS {
         static let warn  = Color.orange  // warning / medium latency / outdated
         static let info  = Color.cyan    // neutral info / category accent
 
-        /// Hairline separators / subtle fills (was `Color.primary.opacity(0.08)`).
-        static let hairline = Color.primary.opacity(0.08)
+        /// Neutral fills & borders — semantic opacity ramp over `Color.primary`,
+        /// replacing the scattered `primary.opacity(0.03…0.12)` literals.
+        static let track    = Color.primary.opacity(0.03)  // progress / bar tracks
+        static let fillFaint = Color.primary.opacity(0.04) // faint chip fill
+        static let fill     = Color.primary.opacity(0.06)  // subtle active fill
+        static let hairline = Color.primary.opacity(0.08)  // separators / chip fill
+        static let border   = Color.primary.opacity(0.12)  // visible hairline border
     }
 
     // MARK: Spacing — 8pt grid (with 4 as the micro step)
@@ -65,6 +71,14 @@ enum DS {
         static let xl:   CGFloat = 32   // was 34 (empty-state)
         static let hero: CGFloat = 56   // was 60 (about splash)
     }
+
+    // MARK: Layout — recurring fixed dimensions (form controls, stat cards).
+
+    enum Layout {
+        static let fieldTrailing: CGFloat = 160   // trailing control column in form rows
+        static let statHeight:    CGFloat = 64    // dashboard stat bar / mini-stat height
+        static let cardRow:       CGFloat = 208   // dashboard equal-height card row
+    }
 }
 
 // MARK: - Type scale
@@ -90,4 +104,55 @@ extension Font {
     // Display — dashboard hero stat numbers (was an inconsistent 18 / 22; unified
     // onto the 20 step, rounded for the numeric look).
     static let dsStatValue    = Font.system(size: 20, weight: .bold, design: .rounded)
+}
+
+// MARK: - Token gallery (visual self-check)
+//
+// A single canvas that renders every token. Open in Xcode Previews to eyeball the
+// design system in one place and catch drift — the lightweight stand-in for full
+// snapshot tests (which need a dedicated XCTest target; see ARCHITECTURE.md).
+
+#Preview("Design Tokens") {
+    ScrollView {
+        VStack(alignment: .leading, spacing: DS.Spacing.l) {
+            Group {
+                Text("Type scale").font(.dsSection)
+                Text("dsPageTitle 24").font(.dsPageTitle)
+                Text("dsSection 20").font(.dsSection)
+                Text("dsStatValue 20").font(.dsStatValue)
+                Text("dsLabelBold / dsCardLabel / dsLabel 14").font(.dsLabel)
+                Text("dsBody / Medium / Semibold / Bold 12").font(.dsBody)
+                Text("dsMono 0123456789 ms").font(.dsMono)
+            }
+            Divider()
+            Text("Palette").font(.dsSection)
+            HStack(spacing: DS.Spacing.s) {
+                ForEach(Array([
+                    ("cardBg", DS.Palette.cardBg), ("cardBgAlt", DS.Palette.cardBgAlt),
+                    ("ok", DS.Palette.ok), ("warn", DS.Palette.warn),
+                    ("error", DS.Palette.error), ("info", DS.Palette.info)
+                ].enumerated()), id: \.offset) { _, item in
+                    VStack(spacing: DS.Spacing.xs) {
+                        RoundedRectangle(cornerRadius: DS.Radius.control)
+                            .fill(item.1).frame(width: 56, height: 40)
+                            .overlay(RoundedRectangle(cornerRadius: DS.Radius.control).stroke(DS.Palette.border))
+                        Text(item.0).font(.dsMono)
+                    }
+                }
+            }
+            Divider()
+            Text("Icons (sm/md/lg/xl/hero)").font(.dsSection)
+            HStack(spacing: DS.Spacing.l) {
+                Image(systemName: "bolt.fill").font(.system(size: DS.Icon.sm))
+                Image(systemName: "bolt.fill").font(.system(size: DS.Icon.md))
+                Image(systemName: "bolt.fill").font(.system(size: DS.Icon.lg))
+                Image(systemName: "bolt.fill").font(.system(size: DS.Icon.xl))
+                Image(systemName: "bolt.fill").font(.system(size: DS.Icon.hero))
+            }
+        }
+        .padding(DS.Spacing.xl)
+    }
+    .frame(width: 460, height: 620)
+    .background(DS.Palette.cardBg)
+    .preferredColorScheme(.dark)
 }

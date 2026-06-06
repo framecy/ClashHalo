@@ -31,16 +31,16 @@ struct DashboardPage: View {
                     // Row 1: Top stats bar (4 columns, height 64)
                     HStack(spacing: 16) {
                         BarStat("总下载", fmtBytes(Double(M.downloadTotal)), "arrow.down.circle.fill", M.accent)
-                            .frame(height: 64)
+                            .frame(height: DS.Layout.statHeight)
                             .frame(maxWidth: .infinity)
                         BarStat("总上传", fmtBytes(Double(M.uploadTotal)), "arrow.up.circle.fill", .red)
-                            .frame(height: 64)
+                            .frame(height: DS.Layout.statHeight)
                             .frame(maxWidth: .infinity)
                         BarStat("连接数", "\(M.conns.count)", "link.circle.fill", .cyan)
-                            .frame(height: 64)
+                            .frame(height: DS.Layout.statHeight)
                             .frame(maxWidth: .infinity)
                         BarStat("访问目标", "\(uniqueHosts)", "scope", .orange)
-                            .frame(height: 64)
+                            .frame(height: DS.Layout.statHeight)
                             .frame(maxWidth: .infinity)
                     }
 
@@ -75,11 +75,11 @@ struct DashboardPage: View {
 
                             VStack(spacing: 16) {
                                 MiniStat("活跃连接", "\(M.conns.count)", sub: "已关闭 \(M.closedConns)", icon: "link", color: .cyan)
-                                    .frame(height: 64)
+                                    .frame(height: DS.Layout.statHeight)
                                 MiniStat("核心内存", fmtBytes(Double(M.memory)), sub: nil, icon: "memorychip", color: .purple)
-                                    .frame(height: 64)
+                                    .frame(height: DS.Layout.statHeight)
                                 MiniStat("应用内存", String(format: "%.0f MB", M.appMemoryMB), sub: nil, icon: "app.dashed", color: .orange)
-                                    .frame(height: 64)
+                                    .frame(height: DS.Layout.statHeight)
                             }
                             .frame(height: 224)
                             .gridCellColumns(1)
@@ -91,13 +91,13 @@ struct DashboardPage: View {
                         Card(title: "流量分布", icon: "chart.pie.fill") {
                             distribution
                         }
-                        .frame(height: 208)
+                        .frame(height: DS.Layout.cardRow)
                         .frame(maxWidth: .infinity)
 
                         Card(title: "策略组排名", icon: "rectangle.3.group.fill") {
                             RankList(rows: policyGroupRows, accent: M.accent, mode: .bytes)
                         }
-                        .frame(height: 208)
+                        .frame(height: DS.Layout.cardRow)
                         .frame(maxWidth: .infinity)
                     }
 
@@ -113,13 +113,13 @@ struct DashboardPage: View {
                         Card(title: "高频规则", icon: "list.number") {
                             RankList(rows: topRules, accent: .red, mode: .count)
                         }
-                        .frame(height: 208)
+                        .frame(height: DS.Layout.cardRow)
                         .frame(maxWidth: .infinity)
 
                         Card(title: "热门域名", icon: "globe") {
                             RankList(rows: topHosts, accent: .cyan, mode: .bytes)
                         }
-                        .frame(height: 208)
+                        .frame(height: DS.Layout.cardRow)
                         .frame(maxWidth: .infinity)
                     }
 
@@ -128,13 +128,13 @@ struct DashboardPage: View {
                         Card(title: "热门节点", icon: "bolt.horizontal.fill") {
                             RankList(rows: topNodes, accent: .orange, mode: .bytes)
                         }
-                        .frame(height: 208)
+                        .frame(height: DS.Layout.cardRow)
                         .frame(maxWidth: .infinity)
 
                         Card(title: "热门进程", icon: "app.badge") {
                             RankList(rows: topProcs, accent: .blue, mode: .bytes)
                         }
-                        .frame(height: 208)
+                        .frame(height: DS.Layout.cardRow)
                         .frame(maxWidth: .infinity)
                     }
                 }
@@ -165,10 +165,12 @@ struct DashboardPage: View {
         let proxy  = day.proxy
         let reject = day.reject
 
+        // Traffic categories use the shared semantic palette: direct = info,
+        // reject = error; proxy = the dynamic user accent.
         let data: [TrafficSlice] = [
-            TrafficSlice(name: "直连", value: Double(direct), color: .cyan),
+            TrafficSlice(name: "直连", value: Double(direct), color: DS.Palette.info),
             TrafficSlice(name: "代理", value: Double(proxy), color: M.accent),
-            TrafficSlice(name: "拦截", value: Double(reject), color: .red)
+            TrafficSlice(name: "拦截", value: Double(reject), color: DS.Palette.error)
         ]
 
         return HStack(spacing: 32) {
@@ -199,9 +201,9 @@ struct DashboardPage: View {
 
             // Right side: Legends
             VStack(spacing: DS.Spacing.l) {
-                legendRow("直连", fmtBytes(direct), .cyan)
+                legendRow("直连", fmtBytes(direct), DS.Palette.info)
                 legendRow("代理", fmtBytes(proxy), M.accent)
-                legendRow("拦截", fmtBytes(reject), .red)
+                legendRow("拦截", fmtBytes(reject), DS.Palette.error)
             }
         }
         .padding(.vertical, 8)
@@ -265,7 +267,7 @@ struct RankList: View {
                     }
                     GeometryReader { g in
                         ZStack(alignment: .leading) {
-                            Capsule().fill(Color.primary.opacity(0.03)).frame(height: 2)
+                            Capsule().fill(DS.Palette.track).frame(height: 2)
                             Capsule().fill(accent.opacity(0.6)).frame(width: max(2, g.size.width * r.value/mx), height: 2)
                         }
                     }.frame(height: 2)
@@ -308,7 +310,7 @@ struct BarStat: View {
             Spacer()
         }
         .padding(.horizontal, DS.Spacing.l)
-        .frame(height: 64)
+        .frame(height: DS.Layout.statHeight)
         .frame(maxWidth: .infinity)
         .background(RoundedRectangle(cornerRadius: DS.Radius.control).fill(DS.Palette.cardBg))
         .overlay(RoundedRectangle(cornerRadius: DS.Radius.control).stroke(DS.Palette.cardBgAlt))
@@ -337,7 +339,7 @@ struct MiniStat: View {
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         .padding(.horizontal, DS.Spacing.l).padding(.vertical, DS.Spacing.m)
-        .frame(height: 64)
+        .frame(height: DS.Layout.statHeight)
         .background(RoundedRectangle(cornerRadius: DS.Radius.control).fill(DS.Palette.cardBg))
         .overlay(RoundedRectangle(cornerRadius: DS.Radius.control).stroke(DS.Palette.cardBgAlt))
     }
@@ -394,4 +396,9 @@ struct TrafficSparkline: View {
             }
         }
     }
+}
+
+#Preview("Dashboard") {
+    DashboardPage().environmentObject(AppModel.shared)
+        .frame(width: 1000, height: 760).preferredColorScheme(.dark)
 }
