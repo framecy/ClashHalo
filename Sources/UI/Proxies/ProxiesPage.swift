@@ -193,7 +193,7 @@ struct ProxiesPage: View {
                 }
             }
             .padding(.horizontal, 10).padding(.vertical, 7)
-            .background(RoundedRectangle(cornerRadius: DS.Radius.control).fill(on ? M.accent.opacity(0.12) : Color.primary.opacity(0.04)))
+            .background(RoundedRectangle(cornerRadius: DS.Radius.control).fill(on ? M.accent.opacity(0.12) : DS.Palette.fillFaint))
             .overlay(RoundedRectangle(cornerRadius: DS.Radius.control).stroke(on ? M.accent.opacity(0.45) : Color.clear, lineWidth: 1))
             .contentShape(Rectangle())
         }

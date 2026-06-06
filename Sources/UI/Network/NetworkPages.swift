@@ -127,7 +127,7 @@ struct NumRow: View {
                 .multilineTextAlignment(.trailing)
                 .frame(width: 90)
                 .onSubmit { commit() }
-                .frame(width: 160, alignment: .trailing)
+                .frame(width: DS.Layout.fieldTrailing, alignment: .trailing)
         }
         .padding(.vertical, 5)
         .onAppear { text = intStr(M.configs[key]) }
@@ -156,7 +156,7 @@ struct ToggleRow: View {
             ))
             .toggleStyle(.switch)
             .labelsHidden()
-            .frame(width: 160, alignment: .trailing)
+            .frame(width: DS.Layout.fieldTrailing, alignment: .trailing)
         }
         .padding(.vertical, 5)
     }
@@ -177,7 +177,7 @@ struct TextRow: View {
                 .font(.dsMono)
                 .multilineTextAlignment(.trailing)
                 .onSubmit { Task { await M.patch([key: text]) } }
-                .frame(width: 160, alignment: .trailing)
+                .frame(width: DS.Layout.fieldTrailing, alignment: .trailing)
         }
         .padding(.vertical, 5)
         .onAppear { text = (M.configs[key] as? String) ?? "" }
@@ -203,7 +203,7 @@ struct PickerRow: View {
                 ForEach(options, id: \.0) { Text($0.1).tag($0.0) }
             }
             .labelsHidden()
-            .frame(width: 160, alignment: .trailing)
+            .frame(width: DS.Layout.fieldTrailing, alignment: .trailing)
         }
         .padding(.vertical, 5)
     }
@@ -313,7 +313,7 @@ struct NToggle: View {
             ))
             .toggleStyle(.switch)
             .labelsHidden()
-            .frame(width: 160, alignment: .trailing)
+            .frame(width: DS.Layout.fieldTrailing, alignment: .trailing)
         }.padding(.vertical, 5)
     }
 }
@@ -335,7 +335,7 @@ struct NPicker: View {
                 set: { v in Task { await M.patch([parent: [sub: v]]) } }
             )) { ForEach(options, id: \.0) { Text($0.1).tag($0.0) } }
             .labelsHidden()
-            .frame(width: 160, alignment: .trailing)
+            .frame(width: DS.Layout.fieldTrailing, alignment: .trailing)
         }.padding(.vertical, 5)
     }
 }
@@ -355,7 +355,7 @@ struct NText: View {
                 .font(.dsMono)
                 .multilineTextAlignment(.trailing)
                 .onSubmit { Task { await M.patch([parent: [sub: text]]) } }
-                .frame(width: 160, alignment: .trailing)
+                .frame(width: DS.Layout.fieldTrailing, alignment: .trailing)
         }.padding(.vertical, 5)
         .onAppear { text = (nestedDict(M, parent)[sub] as? String) ?? "" }
     }
@@ -458,7 +458,7 @@ struct KernelCard: View {
                     }
                     .pickerStyle(.segmented)
                     .labelsHidden()
-                    .frame(width: 160, alignment: .trailing)
+                    .frame(width: DS.Layout.fieldTrailing, alignment: .trailing)
                 }
                 HStack {
                     if km.checking { ProgressView().controlSize(.small) }
@@ -485,7 +485,7 @@ struct KernelCard: View {
                             .disabled(km.downloading)
                         }
                     }
-                    .frame(width: 160, alignment: .trailing)
+                    .frame(width: DS.Layout.fieldTrailing, alignment: .trailing)
                 }
                 Divider()
                 HStack { Text("内核版本").font(.dsBody); Spacer() }
@@ -516,7 +516,7 @@ struct KernelCard: View {
             Spacer()
             if km.activeTag == tag {
                 Label("使用中", systemImage: "checkmark.circle.fill")
-                    .font(.dsBody).foregroundColor(M.accent).frame(width: 160, alignment: .trailing)
+                    .font(.dsBody).foregroundColor(M.accent).frame(width: DS.Layout.fieldTrailing, alignment: .trailing)
             } else {
                 Button("启用") {
                     guard !M.engine.isBusy else { M.showToast("内核操作进行中，请稍候…"); return }
@@ -526,9 +526,14 @@ struct KernelCard: View {
                         await km.activate(tag); try? await Task.sleep(nanoseconds: 3_500_000_000); await M.reconnect()
                     }
                 }
-                    .buttonStyle(.bordered).controlSize(.small).frame(width: 160, alignment: .trailing)
+                    .buttonStyle(.bordered).controlSize(.small).frame(width: DS.Layout.fieldTrailing, alignment: .trailing)
             }
         }
         .padding(.vertical, 2)
     }
+}
+
+#Preview("Network 入站") {
+    NetworkPage().environmentObject(AppModel.shared)
+        .frame(width: 900, height: 720).preferredColorScheme(.dark)
 }
