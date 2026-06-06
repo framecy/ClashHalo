@@ -155,7 +155,7 @@ struct SdwanTopologyView: View {
                     .padding(.horizontal, 10).padding(.vertical, 6)
                     .frame(width: 110, alignment: .leading)
                     .background(RoundedRectangle(cornerRadius: DS.Radius.control).fill(DS.Palette.cardBg))
-                    .overlay(RoundedRectangle(cornerRadius: DS.Radius.control).stroke(Color.primary.opacity(0.12), lineWidth: 1.0))
+                    .overlay(RoundedRectangle(cornerRadius: DS.Radius.control).stroke(DS.Palette.border, lineWidth: 1.0))
                     .position(pt)
                 }
             }
@@ -163,7 +163,7 @@ struct SdwanTopologyView: View {
         .frame(height: calculatedHeight)
         .padding(10)
         .background(VisualEffectView(material: .underWindowBackground, blendingMode: .withinWindow).cornerRadius(DS.Radius.card))
-        .overlay(RoundedRectangle(cornerRadius: DS.Radius.card).stroke(Color.primary.opacity(0.06)))
+        .overlay(RoundedRectangle(cornerRadius: DS.Radius.card).stroke(DS.Palette.fill))
         .clipped()
     }
 

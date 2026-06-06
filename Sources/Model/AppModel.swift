@@ -19,7 +19,6 @@ import SystemConfiguration
 
     // Navigation + theme
     @Published var route = "dashboard"
-    @AppStorage("ui.dark") var dark = true
     @AppStorage("ui.accent") var accentRaw = "green"
     var accent: Color {
         let colors: [String: Color] = [

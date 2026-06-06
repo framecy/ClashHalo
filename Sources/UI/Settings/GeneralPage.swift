@@ -34,14 +34,6 @@ struct GeneralPage: View {
                         Card(title: "外观", icon: "paintbrush") {
                             VStack(spacing: 10) {
                                 HStack {
-                                    Text("深色模式").font(.dsBody)
-                                    Spacer()
-                                    Toggle("", isOn: $M.dark)
-                                        .toggleStyle(.switch)
-                                        .labelsHidden()
-                                        .frame(width: 160, alignment: .trailing)
-                                }
-                                HStack {
                                     Text("强调色").font(.dsBody)
                                     Spacer()
                                     HStack(spacing: 8) {
@@ -51,7 +43,7 @@ struct GeneralPage: View {
                                                 .onTapGesture { M.accentRaw = c }
                                         }
                                     }
-                                    .frame(width: 160, alignment: .trailing)
+                                    .frame(width: DS.Layout.fieldTrailing, alignment: .trailing)
                                 }
                             }
                         }
@@ -231,7 +223,7 @@ struct GeneralPage: View {
             .contentShape(Rectangle())
             .background(
                 RoundedRectangle(cornerRadius: DS.Radius.control)
-                    .fill(active ? Color.primary.opacity(0.06) : Color.clear)
+                    .fill(active ? DS.Palette.fill : Color.clear)
             )
         }
         .buttonStyle(.plain)
@@ -393,3 +385,8 @@ struct ContentUnavailable: View {
     }
 }
 
+
+#Preview("Settings") {
+    GeneralPage().environmentObject(AppModel.shared)
+        .frame(width: 900, height: 720).preferredColorScheme(.dark)
+}
