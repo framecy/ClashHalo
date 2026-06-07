@@ -18,20 +18,12 @@ struct ContentView: View {
         .init(id: "rules",   label: "分流规则", icon: "line.3.horizontal.decrease"),
         .init(id: "subscriptions", label: "订阅", icon: "icloud.and.arrow.down"),
     ]
-    // 配置：profile 与偏好
+    // 配置：profile · 网络(入站/TUN/DNS/嗅探/内核) · SD-WAN · 偏好
     private let configTabs: [Tab] = [
         .init(id: "config",  label: "配置编辑", icon: "slider.horizontal.3"),
+        .init(id: "network", label: "网络",     icon: "network"),
+        .init(id: "map",     label: "SD-WAN 共存", icon: "shareplay"),
         .init(id: "general", label: "通用设置", icon: "gearshape.fill"),
-    ]
-    // 工具：内核与扩展
-    private let toolTabs: [Tab] = [
-        .init(id: "kernel", label: "内核管理",  icon: "cpu"),
-        .init(id: "map",    label: "SD-WAN 共存", icon: "shareplay"),
-    ]
-    // 内核底层：网络接入与 TUN
-    private let kernelTabs: [Tab] = [
-        .init(id: "network", label: "网络入站", icon: "network"),
-        .init(id: "tun",     label: "TUN 模式", icon: "shield.lefthalf.filled"),
     ]
 
     /// App 版本号(随 MARKETING_VERSION),展示于侧栏头部与关于页。
@@ -53,8 +45,6 @@ struct ContentView: View {
                 Section("监控") { rows(monitorTabs) }
                 Section("代理") { rows(proxyTabs) }
                 Section("配置") { rows(configTabs) }
-                Section("工具") { rows(toolTabs) }
-                Section("内核") { rows(kernelTabs) }
             }
             .listStyle(.sidebar)
             .scrollContentBackground(.hidden)
@@ -127,10 +117,8 @@ struct ContentView: View {
                 case "config": ConfigPage()
                 case "logs": LogsPage()
                 case "general": GeneralPage()
-                case "network": NetworkPage()
-                case "tun": TunPage()
+                case "network": NetworkHubPage()
                 case "map": SdwanPage()
-                case "kernel": KernelMgmtPage()
                 default: DashboardPage()
                 }
             }

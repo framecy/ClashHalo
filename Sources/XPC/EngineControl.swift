@@ -141,7 +141,13 @@ import SwiftUI
     /// privilege: the utun device can't be created, traffic is black-holed, and the
     /// kernel is left half-dead. Editing only the `enable:` scalar inside the `tun:`
     /// block keeps the rest of the user's TUN settings (stack/dns-hijack/...) intact.
-    func forceTUNDisabled() {
+    func forceTUNDisabled() { setTunEnabled(false) }
+
+    /// Set `tun.enable` on disk to a specific value (editing only the `enable:`
+    /// scalar inside the `tun:` block). Used by `forceTUNDisabled()` at launch, and
+    /// to *preserve* the current runtime TUN state across a config reload (a reload
+    /// re-reads the file, so without this a reload would drop a running root TUN).
+    func setTunEnabled(_ on: Bool) {
         let path = configFilePath
         guard let text = try? String(contentsOfFile: path, encoding: .utf8) else { return }
         var lines = text.components(separatedBy: "\n")
@@ -157,7 +163,7 @@ import SwiftUI
             let trimmed = line.trimmingCharacters(in: .whitespaces)
             if trimmed.hasPrefix("enable:") {
                 let indent = String(line.prefix(while: { $0 == " " || $0 == "\t" }))
-                let want = "\(indent)enable: false"
+                let want = "\(indent)enable: \(on)"
                 if line != want { lines[i] = want; changed = true }
                 inTun = false   // only the first enable: under tun:
             }
@@ -165,6 +171,103 @@ import SwiftUI
         if changed {
             try? lines.joined(separator: "\n").write(toFile: path, atomically: true, encoding: .utf8)
         }
+    }
+
+    /// Set/insert top-level scalar keys in the on-disk config (bool/int/string).
+    /// For load-time-only settings (geodata-*, unified-delay, keep-alive…) that
+    /// mihomo silently ignores on a runtime `/configs` PATCH — write + reload instead.
+    func setTopLevelScalars(_ kv: [String: Any]) {
+        let path = configFilePath
+        guard let text = try? String(contentsOfFile: path, encoding: .utf8) else { return }
+        var lines = text.components(separatedBy: "\n")
+        func render(_ v: Any) -> String {
+            if let b = v as? Bool { return b ? "true" : "false" }
+            if let i = v as? Int { return "\(i)" }
+            return "\(v)"
+        }
+        for (key, value) in kv {
+            let val = render(value)
+            var found = false
+            for i in lines.indices {
+                let line = lines[i]
+                guard !line.hasPrefix(" "), !line.hasPrefix("\t"), line.hasPrefix(key) else { continue }
+                if line.dropFirst(key.count).first == ":" {
+                    lines[i] = "\(key): \(val)"; found = true; break
+                }
+            }
+            if !found { lines.insert("\(key): \(val)", at: 0) }
+        }
+        try? lines.joined(separator: "\n").write(toFile: path, atomically: true, encoding: .utf8)
+    }
+
+    // MARK: - proxy-providers (config.yaml editing)
+
+    /// Parse the `proxy-providers:` block into (name, url) pairs. Only the
+    /// provider's own 4-space `url:` is read (health-check's 6-space url ignored).
+    func proxyProviders() -> [(name: String, url: String)] {
+        guard let text = try? String(contentsOfFile: configFilePath, encoding: .utf8) else { return [] }
+        var result: [(String, String)] = []
+        var inBlock = false, curIdx = -1
+        for line in text.components(separatedBy: "\n") {
+            if !line.hasPrefix(" ") && !line.hasPrefix("\t") {
+                inBlock = line.hasPrefix("proxy-providers:"); curIdx = -1; continue
+            }
+            guard inBlock else { continue }
+            if line.hasPrefix("  ") && !line.hasPrefix("   ") {       // 2-space provider name
+                let t = line.trimmingCharacters(in: .whitespaces)
+                if t.hasSuffix(":") { result.append((String(t.dropLast()), "")); curIdx = result.count - 1 }
+            } else if curIdx >= 0 && line.hasPrefix("    url:") {     // 4-space own url
+                result[curIdx].1 = line.trimmingCharacters(in: .whitespaces).dropFirst(4).trimmingCharacters(in: .whitespaces)
+            }
+        }
+        return result.map { (name: $0.0, url: $0.1) }
+    }
+
+    /// Rewrite the whole `proxy-providers:` block from the given list (HTTP type +
+    /// standard health-check template), and sync the first `use:`-based group to
+    /// reference exactly these providers. Returns false on read failure.
+    @discardableResult
+    func writeProxyProviders(_ providers: [(name: String, url: String)]) -> Bool {
+        guard let text = try? String(contentsOfFile: configFilePath, encoding: .utf8) else { return false }
+        var lines = text.components(separatedBy: "\n")
+
+        // Build the new block.
+        var block: [String] = []
+        if !providers.isEmpty {
+            block.append("proxy-providers:")
+            for p in providers {
+                block += [
+                    "  \(p.name):",
+                    "    type: http",
+                    "    url: \(p.url)",
+                    "    interval: 3600",
+                    "    health-check:",
+                    "      enable: true",
+                    "      url: http://www.gstatic.com/generate_204",
+                    "      interval: 300",
+                    "      lazy: true",
+                ]
+            }
+        }
+        // Replace existing proxy-providers block, else insert before proxy-groups.
+        if let start = lines.firstIndex(where: { $0.hasPrefix("proxy-providers:") }) {
+            var end = start + 1
+            while end < lines.count, lines[end].isEmpty || lines[end].hasPrefix(" ") || lines[end].hasPrefix("\t") { end += 1 }
+            lines.replaceSubrange(start..<end, with: block)
+        } else if !block.isEmpty {
+            let at = lines.firstIndex(where: { $0.hasPrefix("proxy-groups:") }) ?? lines.count
+            lines.insert(contentsOf: block + [""], at: at)
+        }
+
+        // Sync the first group that uses `use:` to reference all provider names.
+        if let u = lines.firstIndex(where: { $0.hasPrefix("    use:") }) {
+            var j = u + 1
+            while j < lines.count, lines[j].hasPrefix("      ") { j += 1 }   // existing 6-space items
+            lines.replaceSubrange((u + 1)..<j, with: providers.map { "      - \($0.name)" })
+        }
+
+        try? lines.joined(separator: "\n").write(toFile: configFilePath, atomically: true, encoding: .utf8)
+        return true
     }
 
     /// The BSD name of the current default-route interface (e.g. `en0`), or nil.

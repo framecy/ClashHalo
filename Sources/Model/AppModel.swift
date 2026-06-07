@@ -340,6 +340,7 @@ import ServiceManagement
         guard reachable else { showToast("内核未连接，无法重载"); return }
         showToast("正在重载配置…")
         Task {
+            engine.setTunEnabled(tunOn)   // preserve running TUN across the reload
             do {
                 try await api.reloadConfig(path: engine.configFilePath)
                 await refreshConfigs()

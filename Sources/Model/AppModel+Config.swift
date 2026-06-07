@@ -189,6 +189,51 @@ extension AppModel {
         }
     }
 
+    /// Apply load-time-only settings that mihomo ignores on a runtime PATCH
+    /// (geodata-*, unified-delay, keep-alive…): write them to config.yaml and
+    /// reload. The current runtime TUN state is written back first so the reload
+    /// (which re-reads the file) doesn't drop a running root TUN.
+    func patchPersistent(_ overrides: [String: Any]) async {
+        guard reachable else { showToast("内核未连接，无法修改配置"); return }
+        engine.setTopLevelScalars(overrides)
+        engine.setTunEnabled(tunOn)
+        do {
+            try await api.reloadConfig(path: engine.configFilePath)
+            await refreshConfigs()
+            showToast("配置已更新")
+        } catch {
+            showToast("更新失败：\(error.localizedDescription)")
+        }
+    }
+
+    /// Safely persist the proxy-providers list to config.yaml + reference them in
+    /// the primary group, then reload. Backs up first and validates with
+    /// `mihomo -t`; on any error the original config is restored (never corrupts a
+    /// working subscription). Returns true on success.
+    @discardableResult
+    func saveProxyProviders(_ providers: [(name: String, url: String)]) async -> Bool {
+        let path = engine.configFilePath
+        let backup = try? String(contentsOfFile: path, encoding: .utf8)
+        engine.writeProxyProviders(providers)
+        engine.setTunEnabled(tunOn)   // preserve running TUN across reload
+        if let err = await engine.validateConfig() {
+            if let b = backup { try? b.write(toFile: path, atomically: true, encoding: .utf8) }
+            showToast("配置无效，已回滚：\(err)")
+            return false
+        }
+        do {
+            try await api.reloadConfig(path: path)
+            await refreshConfigs()
+            await refreshProxies()
+            showToast("订阅已保存")
+            return true
+        } catch {
+            if let b = backup { try? b.write(toFile: path, atomically: true, encoding: .utf8) }
+            showToast("保存失败，已回滚：\(error.localizedDescription)")
+            return false
+        }
+    }
+
     func toggleEngine() {
         guard !engine.isBusy else { showToast("内核操作进行中，请稍候…"); return }
         let want = !reachable

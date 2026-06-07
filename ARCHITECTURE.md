@@ -88,6 +88,13 @@ graph TD
 ## 默认连接参数
 external-controller 绑回环 `127.0.0.1`，secret 启动时规范化为强随机值。数据目录 `~/Library/Application Support/ClashPow`。Helper 日志：`/Library/Logs/ClashPow/helper.log`；mihomo root 日志：`/Library/Logs/ClashPow/mihomo-root.log`。
 
+## UI 信息架构
+侧栏 3 组:监控(仪表盘/连接/日志)· 代理(代理/规则/订阅)· 配置(配置编辑/网络/SD-WAN/通用设置)。
+「网络」是聚合页(`NetworkHubPage`),内部 tab 切换 入站/TUN/DNS/嗅探/内核;内核管理唯一入口在此。
+菜单栏 `MenuBarPanel` 提供开关/节点/配置/快捷/导航/自启与 Dock,主窗口为单实例 `Window` scene。
+
+**配置写入两条路径**:运行时可改的 key 走 `AppModel.patch`(`/configs` PATCH);加载期 key(geodata-*/unified-delay/keep-alive…)走 `patchPersistent`(写 config.yaml + reload,reload 前回写 TUN 态)。proxy-provider 增删改经 `saveProxyProviders`(备份→`mihomo -t`→失败回滚→reload)。
+
 ## 设计系统 (DesignTokens)
 `Sources/UI/DesignTokens.swift` 是 UI 单一真相源：`DS.Palette`（表面/状态/中性填充边框）、`DS.Spacing`（8pt 栅格）、`DS.Radius`、`DS.Icon`（图标尺寸,独立于文本刻度）、`DS.Layout`（复用固定尺寸）+ `Font.ds*`（24/20/14/12 类型刻度）。所有 UI 一律读 token，不写裸字面量。
 - **暗色锁定**：`cardBg/cardBgAlt` 是暗色固定值,App 锁 `.preferredColorScheme(.dark)`；要支持浅色需先把表面色改为随 scheme 自适应（Asset Catalog 或 `Color(nsColor:)` 动态色）。
