@@ -81,87 +81,107 @@ extension AppModel {
         engine.isBusy = true
         Task {
             defer { engine.isBusy = false }
-            var overrides: [String: Any] = [
-                "tun": [
-                    "enable": want,
-                    "stack": (configs["tun"] as? [String:Any])?["stack"] ?? "gvisor",
-                    "auto-route": true,
-                    "auto-detect-interface": true
-                ]
+            await applyTUNState(want)
+        }
+    }
+
+    /// Re-establish the user's TUN state after a kernel (re)start (restart button /
+    /// kernel version switch / reinstall). A restart re-reads config.yaml where
+    /// `tun.enable` is always false — TUN is a runtime-only PATCH that never
+    /// persists — and may even come up user-mode, so a previously active TUN
+    /// silently dies. Callers capture `tunOn` *before* the restart (reconnect
+    /// resets it) and pass it here; we re-run the full enable flow (root switch +
+    /// PATCH + interface pin) only if TUN was on. No-op otherwise.
+    func reapplyTUN(wasOn: Bool) async {
+        guard wasOn else { return }
+        await applyTUNState(true)
+    }
+
+    /// Core TUN enable/disable: root-mode kernel switch (when enabling without an
+    /// already-root kernel) + runtime PATCH of `tun.enable`/interface pin, then
+    /// reconcile `tunOn` from the kernel's *actual* state. The shared body behind
+    /// `toggleTUN` and `reapplyTUN`. Caller owns `engine.isBusy`.
+    func applyTUNState(_ want: Bool) async {
+        var overrides: [String: Any] = [
+            "tun": [
+                "enable": want,
+                "stack": (configs["tun"] as? [String:Any])?["stack"] ?? "gvisor",
+                "auto-route": true,
+                "auto-detect-interface": true
             ]
-            // Pin the outbound interface to the real default-route NIC when enabling
-            // TUN. auto-detect-interface alone loses a startup race — auto-route
-            // hijacks the default route before the monitor identifies the NIC, so
-            // every dial fails "interface not found" until it catches up, black-holing
-            // traffic. An explicit interface-name gives egress a concrete NIC at once;
-            // the monitor still updates it on later network changes. Clear it on
-            // disable so non-TUN egress returns to fully automatic selection.
-            if want, let iface = EngineControl.defaultInterface() {
-                overrides["interface-name"] = iface
-            } else if !want {
-                overrides["interface-name"] = ""
+        ]
+        // Pin the outbound interface to the real default-route NIC when enabling
+        // TUN. auto-detect-interface alone loses a startup race — auto-route
+        // hijacks the default route before the monitor identifies the NIC, so
+        // every dial fails "interface not found" until it catches up, black-holing
+        // traffic. An explicit interface-name gives egress a concrete NIC at once;
+        // the monitor still updates it on later network changes. Clear it on
+        // disable so non-TUN egress returns to fully automatic selection.
+        if want, let iface = EngineControl.defaultInterface() {
+            overrides["interface-name"] = iface
+        } else if !want {
+            overrides["interface-name"] = ""
+        }
+
+        // TUN requires root.
+        if want && !engine.runningAsRoot {
+            if !engine.isRoot {
+                showToast("启用 TUN 需要管理员授权以安装特权服务…")
+                let ok = await engine.installPrivileged()
+                guard ok else { showToast("授权失败，TUN 未启用"); return }
+            } else if engine.helperVersion != EngineControl.kExpectedHelperVersion,
+                      engine.helperVersion != "?" {
+                // Installed helper is outdated — full upgrade (uninstall → install)
+                // so the old process is properly removed before the new one starts.
+                showToast("特权服务需要更新，正在自动升级…")
+                let ok = await XPCManager.shared.upgradeDaemon()
+                guard ok else { showToast("Helper 升级失败，TUN 未启用"); return }
+                // Wait for new helper to come up
+                for _ in 0..<6 {
+                    try? await Task.sleep(nanoseconds: 500_000_000)
+                    if await XPCManager.shared.verifyConnectivity() { break }
+                }
+                engine.refreshHelperVersion()
+                // upgradeDaemon goes through XPCManager directly (not
+                // installPrivileged), so it doesn't set isRoot. pollStatus would
+                // eventually re-sync it, but restart() below runs immediately and
+                // reads isRoot to choose root-vs-user launch — without this the
+                // 2s pollStatus window (isRoot=false during uninstall) could make
+                // it launch user-mode and TUN would fail.
+                engine.isRoot = true
             }
 
-            // TUN requires root.
-            if want && !engine.runningAsRoot {
-                if !engine.isRoot {
-                    showToast("启用 TUN 需要管理员授权以安装特权服务…")
-                    let ok = await engine.installPrivileged()
-                    guard ok else { showToast("授权失败，TUN 未启用"); return }
-                } else if engine.helperVersion != EngineControl.kExpectedHelperVersion,
-                          engine.helperVersion != "?" {
-                    // Installed helper is outdated — full upgrade (uninstall → install)
-                    // so the old process is properly removed before the new one starts.
-                    showToast("特权服务需要更新，正在自动升级…")
-                    let ok = await XPCManager.shared.upgradeDaemon()
-                    guard ok else { showToast("Helper 升级失败，TUN 未启用"); return }
-                    // Wait for new helper to come up
-                    for _ in 0..<6 {
-                        try? await Task.sleep(nanoseconds: 500_000_000)
-                        if await XPCManager.shared.verifyConnectivity() { break }
-                    }
-                    engine.refreshHelperVersion()
-                    // upgradeDaemon goes through XPCManager directly (not
-                    // installPrivileged), so it doesn't set isRoot. pollStatus would
-                    // eventually re-sync it, but restart() below runs immediately and
-                    // reads isRoot to choose root-vs-user launch — without this the
-                    // 2s pollStatus window (isRoot=false during uninstall) could make
-                    // it launch user-mode and TUN would fail.
-                    engine.isRoot = true
-                }
-
-                showToast("正在以 Root 权限重启核心…")
-                await engine.restart()
-                // Poll until the root kernel is up — ensureRunning is fire-and-forget
-                // so the 2 s hardcoded sleep was a race: the startMihomo XPC callback
-                // (sets runningAsRoot) and mihomo startup both need variable time.
-                var rootReady = false
-                for _ in 0..<10 {
-                    try? await Task.sleep(nanoseconds: 1_000_000_000)
-                    await api.probe(timeout: 1.0)
-                    if api.reachable && engine.runningAsRoot { rootReady = true; break }
-                }
-                guard rootReady else { showToast("Root 内核启动超时，TUN 未启用"); return }
-                await self.reconnect()
+            showToast("正在以 Root 权限重启核心…")
+            await engine.restart()
+            // Poll until the root kernel is up — ensureRunning is fire-and-forget
+            // so the 2 s hardcoded sleep was a race: the startMihomo XPC callback
+            // (sets runningAsRoot) and mihomo startup both need variable time.
+            var rootReady = false
+            for _ in 0..<10 {
+                try? await Task.sleep(nanoseconds: 1_000_000_000)
+                await api.probe(timeout: 1.0)
+                if api.reachable && engine.runningAsRoot { rootReady = true; break }
             }
+            guard rootReady else { showToast("Root 内核启动超时，TUN 未启用"); return }
+            await self.reconnect()
+        }
 
-            let ok = await engine.patchConfig(overrides)
-            if ok {
-                // refreshConfigs sets tunOn from the *actual* kernel state
-                // (enable && runningAsRoot, per B9) — do not blindly set tunOn=want.
-                // A user-mode kernel accepts the PATCH (HTTP 200) but cannot create
-                // the utun device and silently reverts enable to false; reporting
-                // success there is the "succeeds but actually fails" bug.
-                await refreshConfigs()
-                if want && !tunOn {
-                    showToast("TUN 开启失败：内核未以管理员权限运行，无法创建 TUN 接口")
-                } else {
-                    showToast(want ? "TUN 模式已开启" : "TUN 模式已关闭")
-                }
+        let ok = await engine.patchConfig(overrides)
+        if ok {
+            // refreshConfigs sets tunOn from the *actual* kernel state
+            // (enable && runningAsRoot, per B9) — do not blindly set tunOn=want.
+            // A user-mode kernel accepts the PATCH (HTTP 200) but cannot create
+            // the utun device and silently reverts enable to false; reporting
+            // success there is the "succeeds but actually fails" bug.
+            await refreshConfigs()
+            if want && !tunOn {
+                showToast("TUN 开启失败：内核未以管理员权限运行，无法创建 TUN 接口")
             } else {
-                await api.probe()
-                if api.reachable { showToast(want ? "TUN 模式开启失败" : "TUN 模式关闭失败") }
+                showToast(want ? "TUN 模式已开启" : "TUN 模式已关闭")
             }
+        } else {
+            await api.probe()
+            if api.reachable { showToast(want ? "TUN 模式开启失败" : "TUN 模式关闭失败") }
         }
     }
 

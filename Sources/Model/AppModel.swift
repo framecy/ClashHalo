@@ -96,6 +96,10 @@ import ServiceManagement
     /// Show the per-policy-group node selectors in the menu-bar panel. Off keeps
     /// the panel compact when a profile has many groups.
     @AppStorage("ui.menuBarGroups") var menuBarGroups = true
+    /// When on, switching a proxy node closes all existing connections so live
+    /// traffic immediately re-dials through the newly selected node instead of
+    /// lingering on the old one.
+    @AppStorage("proxies.closeOnSwitch") var closeOnSwitch = false
 
     // Dashboard session aggregates
     @Published var closedConns = 0

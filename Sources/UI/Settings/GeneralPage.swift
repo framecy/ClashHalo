@@ -251,7 +251,7 @@ struct GeneralPage: View {
                 Text("ClashPow")
                     .font(.dsSection)
                     .fontWeight(.bold)
-                Text("Version \(Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "—")")
+                Text("Version \(Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "—") (build \(Bundle.main.infoDictionary?["CFBundleVersion"] as? String ?? "—"))")
                     .font(.dsBody)
                     .foregroundColor(.secondary)
             }

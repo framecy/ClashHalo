@@ -487,7 +487,10 @@ struct KernelCard: View {
                             M.engine.isBusy = true
                             Task {
                                 defer { M.engine.isBusy = false }
-                                await M.engine.restart(); try? await Task.sleep(nanoseconds: 3_000_000_000); await M.reconnect(); M.showToast("内核已重启")
+                                let wasTUN = M.tunOn   // restart re-reads disk (tun.enable=false) — preserve it
+                                await M.engine.restart(); try? await Task.sleep(nanoseconds: 3_000_000_000); await M.reconnect()
+                                await M.reapplyTUN(wasOn: wasTUN)
+                                M.showToast("内核已重启")
                             }
                         }.buttonStyle(.bordered).tint(.orange).controlSize(.small)
                     }
@@ -566,7 +569,9 @@ struct KernelCard: View {
                     M.engine.isBusy = true
                     Task {
                         defer { M.engine.isBusy = false }
+                        let wasTUN = M.tunOn   // kernel swap restarts the core from disk — preserve TUN
                         await km.activate(tag); try? await Task.sleep(nanoseconds: 3_500_000_000); await M.reconnect()
+                        await M.reapplyTUN(wasOn: wasTUN)
                     }
                 }
                     .buttonStyle(.bordered).controlSize(.small).frame(width: DS.Layout.fieldTrailing, alignment: .trailing)
