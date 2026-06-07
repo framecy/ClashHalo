@@ -109,13 +109,56 @@ private func kvRow(_ l: String, _ v: String) -> some View {
     HStack { Text(l).font(.dsBody); Spacer(); Text(v).font(.dsMono).foregroundColor(.secondary) }
 }
 
+// MARK: - Network hub (tabs: 入站 / TUN / DNS / 嗅探 / 内核)
+//
+// Consolidates the previously separate sidebar items into one page. DNS and
+// Sniffer were implemented but unrouted (orphan) before this; kernel management
+// lives here (single home, removed from Settings → 高级 to de-duplicate).
+
+struct NetworkHubPage: View {
+    @EnvironmentObject var M: AppModel
+    @State private var tab = "network"
+    private let tabs: [(String, String)] = [
+        ("入站", "network"), ("TUN", "tun"), ("DNS", "dns"), ("嗅探", "sniffer"), ("内核", "kernel")
+    ]
+
+    var body: some View {
+        VStack(spacing: 0) {
+            HStack(spacing: DS.Spacing.l) {
+                ForEach(tabs, id: \.1) { t in
+                    Button { tab = t.1 } label: {
+                        Text(t.0).font(.dsBodyMedium)
+                            .foregroundColor(tab == t.1 ? .primary : .secondary)
+                            .padding(.vertical, DS.Spacing.s)
+                            .overlay(alignment: .bottom) {
+                                Rectangle().fill(tab == t.1 ? M.accent : Color.clear).frame(height: 2)
+                            }
+                    }.buttonStyle(.plain)
+                }
+                Spacer()
+            }
+            .padding(.horizontal, DS.Spacing.xl).padding(.top, DS.Spacing.s)
+            Divider()
+            Group {
+                switch tab {
+                case "tun": TunPage()
+                case "dns": DnsPage()
+                case "sniffer": SnifferPage()
+                case "kernel": KernelMgmtPage()
+                default: NetworkPage()
+                }
+            }
+        }
+    }
+}
+
 // MARK: - Reusable config form rows (read M.configs, write via M.patch)
 
 /// Number field bound to a top-level config key.
 struct NumRow: View {
     @EnvironmentObject var M: AppModel
-    let label: String; let key: String
-    init(_ label: String, key: String) { self.label = label; self.key = key }
+    let label: String; let key: String; let persistent: Bool
+    init(_ label: String, key: String, persistent: Bool = false) { self.label = label; self.key = key; self.persistent = persistent }
     @State private var text = ""
     var body: some View {
         HStack {
@@ -137,22 +180,22 @@ struct NumRow: View {
     private func intStr(_ v: Any?) -> String { if let i = v as? Int { return "\(i)" }; if let d = v as? Double { return "\(Int(d))" }; return "0" }
     private func commit() {
         let n = Int(text) ?? 0
-        Task { await M.patch([key: n]) }
+        Task { if persistent { await M.patchPersistent([key: n]) } else { await M.patch([key: n]) } }
     }
 }
 
 /// Toggle bound to a top-level boolean config key.
 struct ToggleRow: View {
     @EnvironmentObject var M: AppModel
-    let label: String; let key: String
-    init(_ label: String, key: String) { self.label = label; self.key = key }
+    let label: String; let key: String; let persistent: Bool
+    init(_ label: String, key: String, persistent: Bool = false) { self.label = label; self.key = key; self.persistent = persistent }
     var body: some View {
         HStack {
             Text(label).font(.dsBody)
             Spacer()
             Toggle("", isOn: Binding(
                 get: { (M.configs[key] as? Bool) == true },
-                set: { v in Task { await M.patch([key: v]) } }
+                set: { v in Task { if persistent { await M.patchPersistent([key: v]) } else { await M.patch([key: v]) } } }
             ))
             .toggleStyle(.switch)
             .labelsHidden()
@@ -187,8 +230,8 @@ struct TextRow: View {
 /// Picker bound to a top-level string config key.
 struct PickerRow: View {
     @EnvironmentObject var M: AppModel
-    let label: String; let key: String; let options: [(String, String)]
-    init(_ label: String, key: String, options: [(String, String)]) { self.label = label; self.key = key; self.options = options }
+    let label: String; let key: String; let options: [(String, String)]; let persistent: Bool
+    init(_ label: String, key: String, options: [(String, String)], persistent: Bool = false) { self.label = label; self.key = key; self.options = options; self.persistent = persistent }
     var body: some View {
         HStack {
             Text(label).font(.dsBody)
@@ -198,7 +241,7 @@ struct PickerRow: View {
                     let val = (M.configs[key] as? String) ?? ""
                     return options.contains(where: { $0.0 == val }) ? val : (options.first?.0 ?? "")
                 },
-                set: { v in Task { await M.patch([key: v]) } }
+                set: { v in Task { if persistent { await M.patchPersistent([key: v]) } else { await M.patch([key: v]) } } }
             )) {
                 ForEach(options, id: \.0) { Text($0.1).tag($0.0) }
             }
