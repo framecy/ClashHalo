@@ -1,8 +1,10 @@
 import Foundation
 import Combine
 import SwiftUI
+import AppKit
 import Network
 import SystemConfiguration
+import ServiceManagement
 
 // Central app state & orchestration hub. Domain logic is split into extensions:
 //   AppModel+Proxies.swift      — groups / nodes / selection / latency
@@ -84,6 +86,17 @@ import SystemConfiguration
     @Published var systemProxyOn = false
     @Published var tunOn = false
 
+    // Menu-bar app preferences
+    /// Show the Dock icon (.regular) vs menu-bar-only (.accessory).
+    /// Toggle via `setShowDock(_:)` so the activation policy is re-applied — a
+    /// `didSet` here would not fire when written through the `$showDock` binding.
+    @AppStorage("ui.showDock") var showDock = true
+    /// Mirror of SMAppService launch-at-login state (not @Published by the system).
+    @Published var launchAtLoginOn = false
+    /// Show the per-policy-group node selectors in the menu-bar panel. Off keeps
+    /// the panel compact when a profile has many groups.
+    @AppStorage("ui.menuBarGroups") var menuBarGroups = true
+
     // Dashboard session aggregates
     @Published var closedConns = 0
     @Published var appMemoryMB = 0.0
@@ -116,6 +129,8 @@ import SystemConfiguration
         XPCManager.shared.onLog = { [weak self] msg in
             Task { @MainActor in self?.logKernel(msg) }
         }
+        applyActivationPolicy()        // Dock icon visibility per saved preference
+        refreshLaunchAtLogin()         // sync the launch-at-login mirror
         engine.ensureInstalled()
         api.applyController(fromConfigAt: engine.configFilePath)   // B1: discover endpoint before probing
         engine.ensureRunning()   // Auto-start kernel if not responding
@@ -278,6 +293,91 @@ import SystemConfiguration
         let httpOn = dict[kCFNetworkProxiesHTTPEnable as String] as? Int == 1
         let httpHost = dict[kCFNetworkProxiesHTTPProxy as String] as? String
         systemProxyOn = httpOn && httpHost == "127.0.0.1"
+    }
+
+    // MARK: Menu-bar app preferences
+
+    /// Apply the Dock-icon policy: `.regular` shows the Dock icon, `.accessory`
+    /// makes ClashPow a menu-bar-only app (no Dock icon / Cmd-Tab entry).
+    func applyActivationPolicy() {
+        NSApp.setActivationPolicy(showDock ? .regular : .accessory)
+    }
+
+    /// Persist the Dock-icon preference and apply it immediately.
+    func setShowDock(_ on: Bool) {
+        showDock = on
+        applyActivationPolicy()
+    }
+
+    /// Bring the app (and its main window) to the front from the menu bar.
+    /// Window (re)creation is handled by the caller via `openWindow(id:)`; this
+    /// activates the app and fronts any existing titled window (works in
+    /// `.accessory` mode too, where there is no Dock icon).
+    func activateApp() {
+        NSApp.activate(ignoringOtherApps: true)
+        for w in NSApp.windows where w.styleMask.contains(.titled) {
+            w.makeKeyAndOrderFront(nil)
+        }
+    }
+
+    /// Sync the launch-at-login mirror from the system service (macOS 13+).
+    func refreshLaunchAtLogin() {
+        launchAtLoginOn = (SMAppService.mainApp.status == .enabled)
+    }
+
+    /// Copy a shell snippet that points a terminal at the local proxy.
+    func copyProxyCommand() {
+        let port = (configs["mixed-port"] as? Int) ?? (configs["port"] as? Int) ?? 7890
+        let cmd = "export https_proxy=http://127.0.0.1:\(port) http_proxy=http://127.0.0.1:\(port) all_proxy=socks5://127.0.0.1:\(port)"
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(cmd, forType: .string)
+        showToast("已复制终端代理命令")
+    }
+
+    /// Hot-reload the config the kernel is actually running (config.yaml on disk),
+    /// via `/configs?force=true` — works whether or not a profile is managed.
+    func reloadActiveConfig() {
+        guard reachable else { showToast("内核未连接，无法重载"); return }
+        showToast("正在重载配置…")
+        Task {
+            do {
+                try await api.reloadConfig(path: engine.configFilePath)
+                await refreshConfigs()
+                await refreshProxies()
+                showToast("配置已重载")
+            } catch {
+                showToast("重载失败：\(error.localizedDescription)")
+            }
+        }
+    }
+
+    /// Update every remote (HTTP) subscription, then re-apply the active one.
+    func updateAllSubscriptions() {
+        let remotes = store.profiles.filter { $0.source == "remote" }
+        guard !remotes.isEmpty else { showToast("无远程订阅"); return }
+        showToast("正在更新订阅…")
+        Task {
+            for p in remotes { _ = await store.updateRemote(p.id) }
+            if !store.activeID.isEmpty { activateProfile(store.activeID) }
+            showToast("订阅已更新")
+        }
+    }
+
+    /// Reveal the data/config directory in Finder.
+    func openConfigDir() {
+        let dir = NSHomeDirectory() + "/Library/Application Support/ClashPow"
+        NSWorkspace.shared.open(URL(fileURLWithPath: dir))
+    }
+
+    /// Register/unregister the app as a login item via `SMAppService`.
+    func setLaunchAtLogin(_ on: Bool) {
+        do {
+            if on { try SMAppService.mainApp.register() }
+            else { try SMAppService.mainApp.unregister() }
+        } catch {
+            showToast("开机自启动设置失败：\(error.localizedDescription)")
+        }
+        refreshLaunchAtLogin()
     }
 
     private func installSignalHandlers() {
