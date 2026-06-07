@@ -21,6 +21,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         kill.standardOutput = Pipe(); kill.standardError = Pipe()
         try? kill.run(); kill.waitUntilExit()
 
+        // Restore system DNS if TUN had redirected it into the (now dead) tunnel —
+        // otherwise all DNS black-holes after quit. Synchronous; networksetup is fast.
+        let d = UserDefaults.standard
+        if d.bool(forKey: AppModel.kDNSOverriddenKey) {
+            let saved = (d.string(forKey: AppModel.kDNSSavedKey) ?? "")
+                .split(separator: ",").map(String.init)
+            EngineControl.applySystemDNS(saved)
+            d.set(false, forKey: AppModel.kDNSOverriddenKey)
+            d.removeObject(forKey: AppModel.kDNSSavedKey)
+        }
+
         // Clear system proxy via helper XPC (helper is a persistent daemon, survives app exit)
         let sema = DispatchSemaphore(value: 0)
         if let helper = XPCManager.shared.helper() {

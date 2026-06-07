@@ -55,6 +55,16 @@ extension AppModel {
         if let tun = c["tun"] as? [String: Any] {
             tunOn = (tun["enable"] as? Bool) == true && engine.runningAsRoot
         }
+        // Keep system DNS in sync with the real TUN state. This is the single
+        // point where tunOn is derived from reality, so it also recovers the
+        // correct DNS after an app restart (TUN survived → keep redirect; TUN
+        // died → restore). Both calls are idempotent and only act on a transition.
+        let dnsRedirected = UserDefaults.standard.bool(forKey: Self.kDNSOverriddenKey)
+        if tunOn && !dnsRedirected {
+            await enableTunnelDNS()
+        } else if !tunOn && dnsRedirected {
+            await restoreTunnelDNS()
+        }
     }
 
     // MARK: Master switches
@@ -173,6 +183,8 @@ extension AppModel {
             // A user-mode kernel accepts the PATCH (HTTP 200) but cannot create
             // the utun device and silently reverts enable to false; reporting
             // success there is the "succeeds but actually fails" bug.
+            // refreshConfigs reconciles system DNS with the real TUN state
+            // (redirect into tunnel when up, restore when down).
             await refreshConfigs()
             if want && !tunOn {
                 showToast("TUN 开启失败：内核未以管理员权限运行，无法创建 TUN 接口")
@@ -183,6 +195,61 @@ extension AppModel {
             await api.probe()
             if api.reachable { showToast(want ? "TUN 模式开启失败" : "TUN 模式关闭失败") }
         }
+    }
+
+    // MARK: TUN DNS redirection
+    //
+    // With TUN + fake-ip, macOS keeps sending DNS to the LAN gateway (e.g.
+    // 10.1.1.1), which the profile's `route-exclude-address` (10.0.0.0/8, …)
+    // excludes from the tunnel. So DNS bypasses mihomo entirely: it gets poisoned
+    // upstream answers, fake-ip never engages, and mihomo only ever sees real IPs
+    // — domain-based policy-group rules can never match and proxied traffic fails.
+    // The fix: while TUN is up, point the system DNS at the TUN gateway so queries
+    // enter the tunnel and hit mihomo's dns-hijack/fake-ip. Original DNS is saved
+    // and restored on disable/stop (and recovered at next launch after a crash).
+
+    static let kDNSOverriddenKey = "tun.dns.overridden"
+    static let kDNSSavedKey = "tun.dns.saved"
+
+    /// The TUN gateway to use as the system resolver. Prefers the live config's
+    /// `tun.inet4-address` gateway; falls back to mihomo's default fake-ip gateway.
+    private func tunnelDNSAddress() -> String {
+        if let tun = configs["tun"] as? [String: Any],
+           let addrs = tun["inet4-address"] as? [String],
+           let first = addrs.first {
+            let ip = String(first.split(separator: "/").first ?? "")
+            if !ip.isEmpty { return ip }
+        }
+        return "198.18.0.1"
+    }
+
+    /// Redirect system DNS into the tunnel (idempotent). Saves the pre-existing
+    /// DNS once so a manual user setting is restored later, not clobbered.
+    func enableTunnelDNS() async {
+        let gateway = tunnelDNSAddress()
+        await Task.detached {
+            let d = UserDefaults.standard
+            if !d.bool(forKey: Self.kDNSOverriddenKey) {
+                let original = EngineControl.currentSystemDNS()
+                d.set(original.joined(separator: ","), forKey: Self.kDNSSavedKey)
+                d.set(true, forKey: Self.kDNSOverriddenKey)
+            }
+            EngineControl.applySystemDNS([gateway])
+        }.value
+    }
+
+    /// Restore the system DNS saved before TUN took over (no-op if we never
+    /// overrode it). Idempotent — safe to call from every teardown path.
+    func restoreTunnelDNS() async {
+        await Task.detached {
+            let d = UserDefaults.standard
+            guard d.bool(forKey: Self.kDNSOverriddenKey) else { return }
+            let saved = (d.string(forKey: Self.kDNSSavedKey) ?? "")
+                .split(separator: ",").map(String.init)
+            EngineControl.applySystemDNS(saved)
+            d.set(false, forKey: Self.kDNSOverriddenKey)
+            d.removeObject(forKey: Self.kDNSSavedKey)
+        }.value
     }
 
     /// Deep-merge config overrides into the running config via the engine
@@ -292,6 +359,7 @@ extension AppModel {
                 await engine.stopKernel()   // proper async stop (SIGTERM → wait → SIGKILL)
                 reachable = false
                 tunOn = false   // 核心停止 → TUN 必然失效，复位开关避免状态卡 on
+                await restoreTunnelDNS()   // kernel gone → tunnel DNS would black-hole resolution
                 // Clear system proxy so traffic isn't black-holed to a dead kernel
                 if systemProxyOn {
                     let port = (configs["mixed-port"] as? Int) ?? (configs["port"] as? Int) ?? 7890
