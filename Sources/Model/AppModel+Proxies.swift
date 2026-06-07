@@ -69,6 +69,9 @@ extension AppModel {
         if let i = groups.firstIndex(where: { $0.id == group }) { groups[i].now = name }
         Task {
             try? await api.selectProxy(group: group, name: name)
+            // Optionally drop existing connections so live traffic re-dials through
+            // the freshly selected node instead of sticking to the old one.
+            if closeOnSwitch { try? await api.closeAllConnections() }
             await refreshProxies()
         }
     }
