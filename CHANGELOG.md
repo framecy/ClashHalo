@@ -27,6 +27,15 @@
 
 ### Changed
 - App 版本提升至 0.4.6。
+- **侧栏精简**:5 组 → 3 组(监控 / 代理 / 配置)。
+- **网络域聚合**:新增「网络」聚合页,顶部 tab 切换 **入站 / TUN / DNS / 嗅探 / 内核**;原 5 个独立侧栏项收为 1 个。`DnsPage`/`SnifferPage` 此前实现但不可达(孤儿),现已接回;内核管理去重(唯一入口移至「网络 → 内核」,从设置→高级移除)。
+- **SD-WAN 共存** 保留独立侧栏层级。
+
+### Fixed(续)
+- **GEO/路由 开关点击无效**:`geodata-mode`/`geo-auto-update`/`unified-delay`/`disable-keep-alive`/`find-process-mode`/`keep-alive-*` 是 mihomo 加载期设置,运行时 `/configs` PATCH 被静默忽略。改为**写入 config.yaml + 热重载**(`patchPersistent`);reload 前回写当前 TUN 运行态以免误关 TUN。
+
+### Added(续)
+- **订阅页 proxy-provider 增删改**:新增订阅(名称 + URL)自动写入 `proxy-providers:` 并加入主策略组 `use:` 引用;支持编辑、删除、更新。写入采用**备份 → `mihomo -t` 校验 → 失败自动回滚**的安全流程,绝不破坏可用配置。
 
 ## [0.4.5] - 2026-06-05
 

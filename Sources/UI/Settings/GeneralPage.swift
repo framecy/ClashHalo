@@ -64,10 +64,10 @@ struct GeneralPage: View {
                         // GEO 数据库
                         Card(title: "GEO 数据库", icon: "globe.asia.australia") {
                             VStack(spacing: 2) {
-                                ToggleRow("DAT 模式", key: "geodata-mode")
-                                PickerRow("加载器", key: "geodata-loader", options: [("memconservative","内存优先"),("standard","标准")])
-                                ToggleRow("自动更新", key: "geo-auto-update")
-                                NumRow("更新间隔 (小时)", key: "geo-update-interval")
+                                ToggleRow("DAT 模式", key: "geodata-mode", persistent: true)
+                                PickerRow("加载器", key: "geodata-loader", options: [("memconservative","内存优先"),("standard","标准")], persistent: true)
+                                ToggleRow("自动更新", key: "geo-auto-update", persistent: true)
+                                NumRow("更新间隔 (小时)", key: "geo-update-interval", persistent: true)
                             }
                             Text("DAT 模式使用 v2ray (.dat) 替代 MaxMind (.mmdb) 进行 GeoIP 匹配，文件更小；推荐“内存优先”加载器以降低后台占用。")
                                 .font(.dsBody).foregroundColor(.secondary).padding(.top, 6)
@@ -78,12 +78,12 @@ struct GeneralPage: View {
                             VStack(spacing: 2) {
                                 PickerRow("日志级别", key: "log-level", options: [("silent","静默"),("error","error"),("warning","warning"),("info","info"),("debug","debug")])
                                 ToggleRow("TCP 并发连接", key: "tcp-concurrent")
-                                ToggleRow("统一延迟测速", key: "unified-delay")
+                                ToggleRow("统一延迟测速", key: "unified-delay", persistent: true)
                                 TextRow("绑定网卡", key: "interface-name", placeholder: "自动")
-                                PickerRow("进程匹配", key: "find-process-mode", options: [("always","总是"),("strict","严格"),("off","关闭")])
-                                NumRow("Keep-Alive 间隔 (秒)", key: "keep-alive-interval")
-                                NumRow("Keep-Alive 空闲 (秒)", key: "keep-alive-idle")
-                                ToggleRow("禁用 Keep-Alive", key: "disable-keep-alive")
+                                PickerRow("进程匹配", key: "find-process-mode", options: [("always","总是"),("strict","严格"),("off","关闭")], persistent: true)
+                                NumRow("Keep-Alive 间隔 (秒)", key: "keep-alive-interval", persistent: true)
+                                NumRow("Keep-Alive 空闲 (秒)", key: "keep-alive-idle", persistent: true)
+                                ToggleRow("禁用 Keep-Alive", key: "disable-keep-alive", persistent: true)
                             }
                             Text("TCP 并发能极大加快多节点测速；统一延迟将握手时间计入以反映真实体感延迟；进程匹配使 macOS 能按 App 名分流。")
                                 .font(.dsBody).foregroundColor(.secondary).padding(.top, 6)
@@ -100,9 +100,7 @@ struct GeneralPage: View {
                             Text("修改下载源 URL 后会在下次更新时生效。")
                                 .font(.dsBody).foregroundColor(.secondary).padding(.top, 6)
                         }
-
-                        // 内核管理
-                        KernelCard()
+                        // 内核管理已移至「网络 → 内核」,此处不再重复。
                     } else if selectedTab == "privilege" {
                         Card(title: "系统权限", icon: "shield") {
                             VStack(alignment: .leading, spacing: 16) {
