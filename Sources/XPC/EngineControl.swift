@@ -275,7 +275,7 @@ import SwiftUI
     /// egress has a concrete physical NIC immediately, instead of relying solely on
     /// `auto-detect-interface` which loses a race at TUN startup (auto-route hijacks
     /// the default route before the monitor identifies the NIC → "interface not found").
-    static func defaultInterface() -> String? {
+    nonisolated static func defaultInterface() -> String? {
         let p = Process()
         p.executableURL = URL(fileURLWithPath: "/sbin/route")
         p.arguments = ["-n", "get", "default"]
@@ -292,6 +292,64 @@ import SwiftUI
             }
         }
         return nil
+    }
+
+    // MARK: - System DNS (TUN fake-ip routing)
+
+    /// The macOS network service name (e.g. "Wi-Fi"/"Ethernet") bound to the
+    /// current default-route interface, or nil. Needed because `networksetup`
+    /// DNS commands key off the *service* name, not the BSD device.
+    nonisolated static func defaultNetworkService() -> String? {
+        guard let dev = defaultInterface() else { return nil }
+        let p = Process()
+        p.executableURL = URL(fileURLWithPath: "/usr/sbin/networksetup")
+        p.arguments = ["-listnetworkserviceorder"]
+        let pipe = Pipe(); p.standardOutput = pipe; p.standardError = Pipe()
+        do { try p.run() } catch { return nil }
+        let data = pipe.fileHandleForReading.readDataToEndOfFile(); p.waitUntilExit()
+        guard let out = String(data: data, encoding: .utf8) else { return nil }
+        // Services come in line pairs: "(N) ServiceName" then
+        // "(Hardware Port: ..., Device: enX)". Find the device line, take the name above.
+        let lines = out.components(separatedBy: "\n")
+        for i in lines.indices where lines[i].contains("Device: \(dev))") && i > 0 {
+            let name = lines[i-1].replacingOccurrences(
+                of: #"^\(\d+\)\s*"#, with: "", options: .regularExpression)
+            let trimmed = name.trimmingCharacters(in: .whitespaces)
+            return trimmed.isEmpty ? nil : trimmed
+        }
+        return nil
+    }
+
+    /// Read the system DNS servers for the default service. Empty array means
+    /// "no manual servers" (DHCP), which `networksetup` prints as a sentence.
+    nonisolated static func currentSystemDNS() -> [String] {
+        guard let svc = defaultNetworkService() else { return [] }
+        let p = Process()
+        p.executableURL = URL(fileURLWithPath: "/usr/sbin/networksetup")
+        p.arguments = ["-getdnsservers", svc]
+        let pipe = Pipe(); p.standardOutput = pipe; p.standardError = Pipe()
+        do { try p.run() } catch { return [] }
+        let data = pipe.fileHandleForReading.readDataToEndOfFile(); p.waitUntilExit()
+        let out = String(data: data, encoding: .utf8) ?? ""
+        // A non-IP line ("There aren't any DNS Servers set on …") = DHCP.
+        let ips = out.split(separator: "\n")
+            .map { $0.trimmingCharacters(in: .whitespaces) }
+            .filter { $0.range(of: #"^[0-9a-fA-F:.]+$"#, options: .regularExpression) != nil }
+        return ips
+    }
+
+    /// Set the system DNS servers for the default service. An empty list resets
+    /// to DHCP (`networksetup … Empty`). Runs `networksetup` directly (works for
+    /// admin users without an auth prompt; sandbox is off). Returns success.
+    @discardableResult
+    nonisolated static func applySystemDNS(_ servers: [String]) -> Bool {
+        guard let svc = defaultNetworkService() else { return false }
+        let p = Process()
+        p.executableURL = URL(fileURLWithPath: "/usr/sbin/networksetup")
+        p.arguments = ["-setdnsservers", svc] + (servers.isEmpty ? ["Empty"] : servers)
+        p.standardOutput = Pipe(); p.standardError = Pipe()
+        do { try p.run(); p.waitUntilExit(); return p.terminationStatus == 0 }
+        catch { return false }
     }
 
     /// Replace the known-unreliable geodata.kelee.one geox-url entries with the

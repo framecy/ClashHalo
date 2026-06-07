@@ -172,6 +172,9 @@ import ServiceManagement
             // the UI consistent (tunOn is normally driven by refreshConfigs, which
             // won't run while disconnected, leaving the toggle stuck "on").
             tunOn = false
+            // Kernel gone and we're not mid-TUN-toggle: don't strand the system
+            // DNS pointing into a dead tunnel (refreshConfigs won't run to fix it).
+            if !engine.isBusy { await restoreTunnelDNS() }
             // Cancel any previous retry to avoid parallel reconnect races.
             reconnectTask?.cancel()
             reconnectTask = Task { [weak self] in
@@ -281,6 +284,9 @@ import ServiceManagement
             Task {
                 _ = await engine.setSystemProxy(enabled: false, port: port)
                 systemProxyOn = false
+                // Tunnel DNS points into a TUN device whose kernel is now
+                // unreachable — restore the real resolver so DNS keeps working.
+                await restoreTunnelDNS()
                 showToast("网络断开，已自动关闭系统代理")
             }
         }
