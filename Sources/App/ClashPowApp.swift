@@ -40,7 +40,11 @@ struct ClashPowApp: App {
     @StateObject private var model = AppModel.shared
 
     var body: some Scene {
-        WindowGroup {
+        // Single-instance window: `WindowGroup` spawns a NEW window on every
+        // openWindow(id:) call (it supports multiple windows), which piled up
+        // duplicate windows from the menu-bar navigation. `Window` is a singleton
+        // scene — openWindow(id:) fronts the existing one, or recreates it if closed.
+        Window("ClashPow", id: "main") {
             ContentView()
                 .environmentObject(model)
                 .frame(minWidth: 940, minHeight: 620)

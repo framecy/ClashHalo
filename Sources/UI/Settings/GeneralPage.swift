@@ -48,6 +48,19 @@ struct GeneralPage: View {
                             }
                         }
 
+                        // 菜单栏
+                        Card(title: "菜单栏", icon: "menubar.rectangle") {
+                            HStack {
+                                Text("显示策略组选择").font(.dsBody)
+                                Spacer()
+                                Toggle("", isOn: Binding(get: { M.menuBarGroups }, set: { M.menuBarGroups = $0 }))
+                                    .toggleStyle(.switch).labelsHidden()
+                                    .frame(width: DS.Layout.fieldTrailing, alignment: .trailing)
+                            }
+                            Text("开启后菜单栏面板内可逐组切换节点；策略组较多时可关闭以保持面板紧凑，节点切换仍可在「策略」页操作。")
+                                .font(.dsBody).foregroundColor(.secondary).padding(.top, 6)
+                        }
+
                         // GEO 数据库
                         Card(title: "GEO 数据库", icon: "globe.asia.australia") {
                             VStack(spacing: 2) {
@@ -335,39 +348,246 @@ struct GeneralPage: View {
 
 struct MenuBarPanel: View {
     @EnvironmentObject var M: AppModel
+    @Environment(\.openWindow) private var openWindow
+
     var body: some View {
-        VStack(alignment: .leading, spacing: 0) {
-            HStack(spacing: 9) {
-                Image(systemName: "bolt.fill").foregroundColor(M.accent)
+        VStack(alignment: .leading, spacing: DS.Spacing.s) {
+            // Header
+            HStack(spacing: DS.Spacing.s) {
+                Image(systemName: "bolt.fill").font(.system(size: DS.Icon.md)).foregroundColor(M.accent)
                 VStack(alignment: .leading, spacing: 1) {
-                    Text("ClashPow").fontWeight(.semibold)
-                    HStack(spacing: 4) {
-                        Circle().fill(M.reachable ? Color.green : Color.red).frame(width: 5, height: 5)
+                    Text("ClashPow").font(.dsCardLabel)
+                    HStack(spacing: DS.Spacing.xs) {
+                        Circle().fill(M.reachable ? DS.Palette.ok : DS.Palette.error).frame(width: 5, height: 5)
                         Text(M.reachable ? "mihomo \(M.version)" : "未连接").font(.dsBody).foregroundColor(.secondary)
                     }
                 }
                 Spacer()
-            }.padding(14)
-            Divider()
-            VStack(spacing: 8) {
-                HStack {
+            }
+            .padding(.horizontal, DS.Spacing.xs).padding(.top, DS.Spacing.xs)
+
+            // Switches card
+            card {
+                switchRow("系统代理", icon: "globe",
+                          isOn: Binding(get: { M.systemProxyOn }, set: { _ in M.toggleSystemProxy() }))
+                switchRow("TUN 模式", icon: "shield.lefthalf.filled", accent: true,
+                          isOn: Binding(get: { M.tunOn }, set: { _ in M.toggleTUN() }))
+                switchRow("核心运行", icon: "bolt.fill",
+                          isOn: Binding(get: { M.reachable }, set: { _ in M.toggleEngine() }))
+            }
+
+            // Proxy card: mode · per-group node selectors · live rate · test
+            card {
+                HStack(spacing: 0) {
+                    modeTab("规则", "rule")
+                    modeTab("全局", "global")
+                    modeTab("直连", "direct")
+                }
+                .padding(2)
+                .background(RoundedRectangle(cornerRadius: DS.Radius.control).fill(DS.Palette.fill))
+
+                if M.menuBarGroups {
+                    let selectable = M.groups.filter { $0.selectable }
+                    if selectable.isEmpty {
+                        Text(M.reachable ? "无可选策略组" : "未连接内核")
+                            .font(.dsBody).foregroundColor(.secondary)
+                    } else {
+                        VStack(spacing: 0) {
+                            ForEach(Array(selectable.enumerated()), id: \.element.id) { idx, g in
+                                groupSelector(g)
+                                if idx < selectable.count - 1 { Divider().opacity(0.25) }
+                            }
+                        }
+                    }
+                }
+
+                Divider().opacity(0.4)
+
+                HStack(spacing: DS.Spacing.s) {
                     Label(fmtRate(Double(M.curDown)), systemImage: "arrow.down").font(.dsMono)
                     Spacer()
                     Label(fmtRate(Double(M.curUp)), systemImage: "arrow.up").font(.dsMono).foregroundColor(.secondary)
                 }
-                HStack {
-                    Text("出口").font(.dsBody).foregroundColor(.secondary)
-                    Spacer()
-                    Text(M.currentProxyName()).font(.dsBody).foregroundColor(M.accent)
+                if M.menuBarGroups {
+                    Button { M.testAll() } label: {
+                        HStack(spacing: DS.Spacing.xs) {
+                            Image(systemName: "bolt.fill").font(.dsBody)
+                            Text("全部测速").font(.dsBody)
+                        }
+                        .frame(maxWidth: .infinity)
+                        .padding(.vertical, DS.Spacing.s)
+                        .background(RoundedRectangle(cornerRadius: DS.Radius.control).fill(DS.Palette.fill))
+                        .foregroundColor(M.accent)
+                    }.buttonStyle(.plain).disabled(M.groups.isEmpty)
                 }
-                Picker("", selection: Binding(get: { M.mode }, set: { M.setMode($0) })) {
-                    Text("规则").tag("rule"); Text("全局").tag("global"); Text("直连").tag("direct")
-                }.pickerStyle(.segmented).labelsHidden()
-            }.padding(14)
-            Divider()
-            Button("退出 ClashPow") { NSApplication.shared.terminate(nil) }
-                .buttonStyle(.plain).font(.dsBody).padding(12)
-        }.frame(width: 260)
+            }
+
+            // Config card: profile list (tap to switch) + update subscriptions
+            card {
+                HStack {
+                    Text("配置").font(.dsBodyMedium)
+                    Spacer()
+                    if M.store.profiles.contains(where: { $0.source == "remote" }) {
+                        Button { M.updateAllSubscriptions() } label: {
+                            HStack(spacing: DS.Spacing.xs) {
+                                Image(systemName: "arrow.clockwise").font(.dsBody)
+                                Text("更新订阅").font(.dsBody)
+                            }.foregroundColor(M.accent)
+                        }.buttonStyle(.plain)
+                    }
+                }
+                if M.store.profiles.isEmpty {
+                    Text("无配置，请在「配置编辑」导入").font(.dsBody).foregroundColor(.secondary)
+                } else {
+                    VStack(spacing: 0) {
+                        ForEach(Array(M.store.profiles.enumerated()), id: \.element.id) { idx, p in
+                            profileRow(p)
+                            if idx < M.store.profiles.count - 1 { Divider().opacity(0.25) }
+                        }
+                    }
+                }
+            }
+
+            // Quick actions (pill tiles)
+            HStack(spacing: DS.Spacing.s) {
+                pill("复制命令", "terminal") { M.copyProxyCommand() }
+                pill("重载", "arrow.clockwise") { M.reloadActiveConfig() }
+                pill("清 DNS", "trash") { M.clearAllCache() }
+            }
+            // Navigation (pill tiles)
+            HStack(spacing: DS.Spacing.s) {
+                pill("仪表盘", "gauge") { go("dashboard") }
+                pill("连接", "link") { go("connections") }
+                pill("日志", "doc.plaintext.fill") { go("logs") }
+                pill("目录", "folder") { M.openConfigDir() }
+            }
+
+            // Preferences card
+            card {
+                switchRow("开机自启动", icon: "power",
+                          isOn: Binding(get: { M.launchAtLoginOn }, set: { M.setLaunchAtLogin($0) }))
+                switchRow("显示 Dock 图标", icon: "dock.rectangle",
+                          isOn: Binding(get: { M.showDock }, set: { M.setShowDock($0) }))
+            }
+
+            Divider().padding(.vertical, DS.Spacing.xs)
+            // Action row — open main window / quit (Burrow-style)
+            HStack {
+                Button { go(M.route) } label: {
+                    Text("打开 ClashPow").font(.dsCardLabel)
+                }.buttonStyle(.plain)
+                Spacer()
+                Button { NSApplication.shared.terminate(nil) } label: {
+                    Image(systemName: "power").font(.system(size: DS.Icon.sm)).foregroundColor(.secondary)
+                }.buttonStyle(.plain).help("退出 ClashPow")
+            }.padding(.horizontal, DS.Spacing.xs)
+        }
+        .padding(DS.Spacing.m)
+        .frame(width: 300)
+    }
+
+    /// Open the main window focused on a given route.
+    private func go(_ route: String) {
+        M.route = route
+        M.activateApp()
+        openWindow(id: "main")
+    }
+
+    /// Rounded card container (Burrow-style elevated surface).
+    @ViewBuilder
+    private func card<C: View>(@ViewBuilder _ content: () -> C) -> some View {
+        VStack(alignment: .leading, spacing: DS.Spacing.s) { content() }
+            .padding(DS.Spacing.m)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(RoundedRectangle(cornerRadius: DS.Radius.card).fill(DS.Palette.cardBg))
+            .overlay(RoundedRectangle(cornerRadius: DS.Radius.card).stroke(DS.Palette.border))
+    }
+
+    /// Full-width segmented mode tab (equal thirds, selected = accent fill).
+    private func modeTab(_ label: String, _ tag: String) -> some View {
+        let on = M.mode == tag
+        return Button { M.setMode(tag) } label: {
+            Text(label).font(.dsBodyMedium)
+                .frame(maxWidth: .infinity)
+                .padding(.vertical, DS.Spacing.s - 2)
+                .background(RoundedRectangle(cornerRadius: DS.Radius.control - 2).fill(on ? M.accent : Color.clear))
+                .foregroundColor(on ? .white : .secondary)
+        }.buttonStyle(.plain)
+    }
+
+    /// One profile row: tap to activate; active = accent checkmark + primary text.
+    private func profileRow(_ p: Profile) -> some View {
+        let active = p.id == M.store.activeID
+        return Button { M.activateProfile(p.id) } label: {
+            HStack(spacing: DS.Spacing.s) {
+                Image(systemName: active ? "checkmark.circle.fill" : "circle")
+                    .font(.dsBody).foregroundColor(active ? M.accent : .secondary)
+                Image(systemName: p.source == "remote" ? "icloud.fill" : "doc.fill")
+                    .font(.dsBody).foregroundColor(.secondary).frame(width: 14)
+                Text(p.name).font(.dsBodyMedium).foregroundColor(active ? .primary : .secondary).lineLimit(1)
+                Spacer()
+            }
+            .padding(.vertical, DS.Spacing.xs)
+            .contentShape(Rectangle())
+        }.buttonStyle(.plain)
+    }
+
+    /// One policy-group row: name on the left, a menu of its nodes on the right
+    /// showing the current selection with a latency-coloured dot.
+    private func groupSelector(_ g: ProxyGroup) -> some View {
+        HStack(spacing: DS.Spacing.s) {
+            Text(g.name).font(.dsBody).foregroundColor(.secondary).lineLimit(1)
+            Spacer(minLength: DS.Spacing.s)
+            Menu {
+                ForEach(g.all, id: \.self) { name in
+                    Button { M.select(group: g.id, name: name) } label: {
+                        let d = M.nodes[name]?.delay ?? 0
+                        Text(name == g.now ? "✓ \(name)\(d > 0 ? "  \(d)ms" : "")"
+                                           : "\(name)\(d > 0 ? "  \(d)ms" : "")")
+                    }
+                }
+            } label: {
+                HStack(spacing: DS.Spacing.xs) {
+                    Circle().fill(delayColor(M.nodes[g.now]?.delay ?? 0)).frame(width: 6, height: 6)
+                    Text(g.now).font(.dsBodyMedium).foregroundColor(.primary).lineLimit(1)
+                    Image(systemName: "chevron.up.chevron.down").font(.dsBody).foregroundColor(.secondary)
+                }
+            }.menuStyle(.borderlessButton).fixedSize()
+        }
+        .padding(.vertical, DS.Spacing.xs)
+    }
+
+    /// Compact toggle row: status dot + icon + label + mini switch (DS-styled).
+    private func switchRow(_ label: String, icon: String, accent: Bool = false,
+                           isOn: Binding<Bool>) -> some View {
+        HStack(spacing: DS.Spacing.s) {
+            Circle()
+                .fill(isOn.wrappedValue ? (accent ? M.accent : DS.Palette.ok) : Color.secondary.opacity(0.3))
+                .frame(width: 6, height: 6)
+            Image(systemName: icon).font(.dsBody)
+                .foregroundColor(isOn.wrappedValue ? .primary : .secondary)
+                .frame(width: 16)
+            Text(label).font(.dsBodyMedium).foregroundColor(isOn.wrappedValue ? .primary : .secondary)
+            Spacer()
+            Toggle("", isOn: isOn).toggleStyle(.switch).controlSize(.mini).labelsHidden()
+        }
+    }
+
+    /// Equal-width action tile: icon over caption. Uses the same solid surface +
+    /// border as the cards (not a translucent fill) so every block reads identically
+    /// over the menu-bar's vibrancy background.
+    private func pill(_ label: String, _ icon: String, _ action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            VStack(spacing: DS.Spacing.xs) {
+                Image(systemName: icon).font(.dsBody)
+                Text(label).font(.dsBody)
+            }
+            .frame(maxWidth: .infinity)
+            .padding(.vertical, DS.Spacing.s)
+            .background(RoundedRectangle(cornerRadius: DS.Radius.control).fill(DS.Palette.cardBg))
+            .overlay(RoundedRectangle(cornerRadius: DS.Radius.control).stroke(DS.Palette.border))
+            .foregroundColor(.secondary)
+        }.buttonStyle(.plain)
     }
 }
 
