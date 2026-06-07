@@ -26,6 +26,14 @@ struct ProxiesPage: View {
                         .controlSize(.small)
                 }
 
+                Toggle(isOn: $M.closeOnSwitch) {
+                    Label("切换断连", systemImage: "bolt.horizontal.circle")
+                }
+                .toggleStyle(.button)
+                .controlSize(.small)
+                .tint(M.accent)
+                .help("切换节点时自动断开所有现有连接，使流量立即走新节点")
+
                 Button { M.testAll() } label: { Label("全部测速", systemImage: "bolt.fill") }
                     .controlSize(.small).tint(M.accent).buttonStyle(.borderedProminent)
             }
