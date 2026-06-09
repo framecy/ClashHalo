@@ -225,10 +225,17 @@ import SwiftUI
                 }
                 self.receiveLoop(task: task, path: path, type: T.self, handle: handle, onValue: onValue)
             case .failure:
-                // Reconnect after a short delay
+                // Reconnect after a short delay — but only if the API is
+                // reachable. After sleep/wake all 4 streams fail at once;
+                // blindly reconnecting creates a storm of parallel WebSocket
+                // connections. The main `reconnect()` flow re-establishes
+                // reachability and calls `startStreams()` which rebuilds all
+                // handles cleanly, so streams whose API is down simply stop.
                 Task { @MainActor in
                     try? await Task.sleep(nanoseconds: 2_000_000_000)
-                    if !handle.cancelled { self.connectStream(path, type: T.self, handle: handle, onValue: onValue) }
+                    guard !handle.cancelled else { return }
+                    guard self.reachable else { return }
+                    self.connectStream(path, type: T.self, handle: handle, onValue: onValue)
                 }
             }
         }

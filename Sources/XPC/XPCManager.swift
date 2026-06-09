@@ -30,6 +30,7 @@ public class XPCManager {
             conn.remoteObjectInterface = NSXPCInterface(with: HelperProtocol.self)
             conn.interruptionHandler = { [weak self] in
                 self?.onLog?("XPC 通讯中断")
+                self?.connection?.invalidate()
                 self?.connection = nil
             }
             conn.invalidationHandler = { [weak self] in
@@ -43,6 +44,13 @@ public class XPCManager {
             self?.onLog?("XPC 错误: \(error.localizedDescription)")
             self?.connection = nil
         }) as? HelperProtocol
+    }
+
+    /// Force-invalidate the cached connection. Called before sleep or after
+    /// wake to ensure stale Mach ports are torn down cleanly.
+    public func resetConnection() {
+        connection?.invalidate()
+        connection = nil
     }
     
     /// Whether the helper *plist* is installed on disk. NOTE: this is NOT proof
