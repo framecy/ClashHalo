@@ -37,6 +37,7 @@ struct Conn: Identifiable {
     let port: String
     let network: String   // tcp / udp
     let process: String
+    let processPath: String
     let chain: String     // "GroupA → node"
     let group: String     // first chain element (policy group)
     let node: String      // last chain element (leaf proxy)
