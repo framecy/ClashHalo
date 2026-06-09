@@ -7,114 +7,391 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
-		A001 /* ClashPowApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = B001; };
-		A002 /* ContentView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B002; };
-		A004 /* DashboardView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B004; };
-		94B14BD55C274919B82F3C5E /* AppModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = A7EFEC0FDBC0406AA6A9D774 /* AppModel.swift */; };
-		AMP1 /* AppModel+Proxies.swift in Sources */ = {isa = PBXBuildFile; fileRef = AMP2 /* AppModel+Proxies.swift */; };
-		AMC1 /* AppModel+Connections.swift in Sources */ = {isa = PBXBuildFile; fileRef = AMC2 /* AppModel+Connections.swift */; };
-		AMG1 /* AppModel+Config.swift in Sources */ = {isa = PBXBuildFile; fileRef = AMG2 /* AppModel+Config.swift */; };
-		8BC3EAE990F64B20BA6FA269 /* ConfigStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9641FF3F733D4D03A5FC9B70 /* ConfigStore.swift */; };
-		52A040A2184744959929CD76 /* TrafficHistory.swift in Sources */ = {isa = PBXBuildFile; fileRef = 06A576D2F0DE48B7BA1A37D7 /* TrafficHistory.swift */; };
+		04E0EC007CDC978C6D8D3024 /* YamlRuleASTEngine.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5E2B17CDA9711347F1C170EB /* YamlRuleASTEngine.swift */; };
+		0F32145D5136BC694424C663 /* RuleNode.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6293BDBC99DBD2AA6E7426F3 /* RuleNode.swift */; };
+		212075FD58BB63EBBCA8786A /* RuleEditorModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = C6DEDA31B7B33D5919A12DEB /* RuleEditorModel.swift */; };
 		394E7B0C59764680BB4D9507 /* MihomoClient.swift in Sources */ = {isa = PBXBuildFile; fileRef = 40F5A17CAAA24A5BBC54C15E /* MihomoClient.swift */; };
-		B1F3682AEF4F4C8AB5A97582 /* EngineControl.swift in Sources */ = {isa = PBXBuildFile; fileRef = 43A486CB7FAA4FBBAEBFCCE6 /* EngineControl.swift */; };
-		DD035B63A0B144F2BE7205A4 /* KernelManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = A4311730377D47748FC5F9D5 /* KernelManager.swift */; };
-		71D6AA8BB9A64328A01B5364 /* MihomoModels.swift in Sources */ = {isa = PBXBuildFile; fileRef = A3BB008E2BF84DF5A2895FBC /* MihomoModels.swift */; };
-		F0458DF12625404DA930506D /* ProxiesPage.swift in Sources */ = {isa = PBXBuildFile; fileRef = BF9832249132493A9E51C30C /* ProxiesPage.swift */; };
-		DST1 /* DesignTokens.swift in Sources */ = {isa = PBXBuildFile; fileRef = DST2 /* DesignTokens.swift */; };
-		4FE025F9B3A84B9A9563DC03 /* ConnectionsPage.swift in Sources */ = {isa = PBXBuildFile; fileRef = A3F21F03B19F4760A795864C /* ConnectionsPage.swift */; };
-		D03CD0CC2A8E4B34ACE8FB5A /* RulesPage.swift in Sources */ = {isa = PBXBuildFile; fileRef = 50A6FB0C0B7141B0A804F1A9 /* RulesPage.swift */; };
-		9F1A5AD4866E444CB21D6A9A /* LogsPage.swift in Sources */ = {isa = PBXBuildFile; fileRef = 932DCE667C4747EEB24EB3B1 /* LogsPage.swift */; };
-		C762A449C2434390BD3E8BF2 /* SubscriptionsPage.swift in Sources */ = {isa = PBXBuildFile; fileRef = 87F1015549B149CD80A68FBC /* SubscriptionsPage.swift */; };
-		5C790C4A1B3744679E83ADA0 /* DnsPage.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2A173B69A3BD4DDA8F992A68 /* DnsPage.swift */; };
 		4F219760BD14466DA838B50A /* SdwanPage.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5C1B022FFD034AE592948756 /* SdwanPage.swift */; };
+		4FE025F9B3A84B9A9563DC03 /* ConnectionsPage.swift in Sources */ = {isa = PBXBuildFile; fileRef = A3F21F03B19F4760A795864C /* ConnectionsPage.swift */; };
+		52A040A2184744959929CD76 /* TrafficHistory.swift in Sources */ = {isa = PBXBuildFile; fileRef = 06A576D2F0DE48B7BA1A37D7 /* TrafficHistory.swift */; };
+		5C790C4A1B3744679E83ADA0 /* DnsPage.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2A173B69A3BD4DDA8F992A68 /* DnsPage.swift */; };
 		61523827C4D44A56AB8FA9E9 /* ConfigPage.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3D2C04980A2D415390C45937 /* ConfigPage.swift */; };
-		AE6635A9ACB74E5DB66892EA /* GeneralPage.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8CBAE68653724149A087BBEE /* GeneralPage.swift */; };
-		BA90C1F3406546599706585F /* NetworkPages.swift in Sources */ = {isa = PBXBuildFile; fileRef = A8B1C01AAFB044E986219D24 /* NetworkPages.swift */; };
-		A006 /* Models.swift in Sources */ = {isa = PBXBuildFile; fileRef = B006; };
-		A015 /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = B015; };
+		71D6AA8BB9A64328A01B5364 /* MihomoModels.swift in Sources */ = {isa = PBXBuildFile; fileRef = A3BB008E2BF84DF5A2895FBC /* MihomoModels.swift */; };
+		8BC3EAE990F64B20BA6FA269 /* ConfigStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9641FF3F733D4D03A5FC9B70 /* ConfigStore.swift */; };
+		8F14ED3CECAC0F5F7C81C9A9 /* RuleValidator.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4ED2BED37C00E10C70F34AC9 /* RuleValidator.swift */; };
+		94B14BD55C274919B82F3C5E /* AppModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = A7EFEC0FDBC0406AA6A9D774 /* AppModel.swift */; };
+		9F1A5AD4866E444CB21D6A9A /* LogsPage.swift in Sources */ = {isa = PBXBuildFile; fileRef = 932DCE667C4747EEB24EB3B1 /* LogsPage.swift */; };
+		A001 /* ClashPowApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = B001 /* ClashPowApp.swift */; };
+		A002 /* ContentView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B002 /* ContentView.swift */; };
+		A004 /* DashboardView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B004 /* DashboardView.swift */; };
+		A006 /* Models.swift in Sources */ = {isa = PBXBuildFile; fileRef = B006 /* Models.swift */; };
+		A015 /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = B015 /* Assets.xcassets */; };
 		AABBCCDD0000000000000001 /* HelperProtocol.swift in Sources */ = {isa = PBXBuildFile; fileRef = AABBCCDD0000000000000002 /* HelperProtocol.swift */; };
 		AABBCCDD0000000000000003 /* XPCManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = AABBCCDD0000000000000004 /* XPCManager.swift */; };
+		AE6635A9ACB74E5DB66892EA /* GeneralPage.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8CBAE68653724149A087BBEE /* GeneralPage.swift */; };
+		AMC1 /* AppModel+Connections.swift in Sources */ = {isa = PBXBuildFile; fileRef = AMC2 /* AppModel+Connections.swift */; };
+		AMG1 /* AppModel+Config.swift in Sources */ = {isa = PBXBuildFile; fileRef = AMG2 /* AppModel+Config.swift */; };
+		AMP1 /* AppModel+Proxies.swift in Sources */ = {isa = PBXBuildFile; fileRef = AMP2 /* AppModel+Proxies.swift */; };
+		B1F3682AEF4F4C8AB5A97582 /* EngineControl.swift in Sources */ = {isa = PBXBuildFile; fileRef = 43A486CB7FAA4FBBAEBFCCE6 /* EngineControl.swift */; };
+		BA90C1F3406546599706585F /* NetworkPages.swift in Sources */ = {isa = PBXBuildFile; fileRef = A8B1C01AAFB044E986219D24 /* NetworkPages.swift */; };
+		C762A449C2434390BD3E8BF2 /* SubscriptionsPage.swift in Sources */ = {isa = PBXBuildFile; fileRef = 87F1015549B149CD80A68FBC /* SubscriptionsPage.swift */; };
+		D03CD0CC2A8E4B34ACE8FB5A /* RulesPage.swift in Sources */ = {isa = PBXBuildFile; fileRef = 50A6FB0C0B7141B0A804F1A9 /* RulesPage.swift */; };
+		DD035B63A0B144F2BE7205A4 /* KernelManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = A4311730377D47748FC5F9D5 /* KernelManager.swift */; };
+		DST1 /* DesignTokens.swift in Sources */ = {isa = PBXBuildFile; fileRef = DST2 /* DesignTokens.swift */; };
+		F0458DF12625404DA930506D /* ProxiesPage.swift in Sources */ = {isa = PBXBuildFile; fileRef = BF9832249132493A9E51C30C /* ProxiesPage.swift */; };
+		FD7AD16CD9DC6191C81AE1F5 /* RuleFormView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7DC2B59D23B0749A0B7CC125 /* RuleFormView.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
-		F001 /* ClashPow.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; path = ClashPow.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		06A576D2F0DE48B7BA1A37D7 /* TrafficHistory.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Sources/Model/TrafficHistory.swift; sourceTree = SOURCE_ROOT; };
+		2A173B69A3BD4DDA8F992A68 /* DnsPage.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Sources/UI/DNS/DnsPage.swift; sourceTree = SOURCE_ROOT; };
+		3D2C04980A2D415390C45937 /* ConfigPage.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Sources/UI/Config/ConfigPage.swift; sourceTree = SOURCE_ROOT; };
+		40F5A17CAAA24A5BBC54C15E /* MihomoClient.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Sources/XPC/MihomoClient.swift; sourceTree = SOURCE_ROOT; };
+		43A486CB7FAA4FBBAEBFCCE6 /* EngineControl.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Sources/XPC/EngineControl.swift; sourceTree = SOURCE_ROOT; };
+		4ED2BED37C00E10C70F34AC9 /* RuleValidator.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = RuleValidator.swift; path = Sources/Core/RuleValidator/RuleValidator.swift; sourceTree = "<group>"; };
+		50A6FB0C0B7141B0A804F1A9 /* RulesPage.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Sources/UI/Rules/RulesPage.swift; sourceTree = SOURCE_ROOT; };
+		5C1B022FFD034AE592948756 /* SdwanPage.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Sources/UI/SDWAN/SdwanPage.swift; sourceTree = SOURCE_ROOT; };
+		5E2B17CDA9711347F1C170EB /* YamlRuleASTEngine.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = YamlRuleASTEngine.swift; path = Sources/Core/YamlEditor/YamlRuleASTEngine.swift; sourceTree = "<group>"; };
+		6293BDBC99DBD2AA6E7426F3 /* RuleNode.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = RuleNode.swift; path = Sources/Model/RuleNode.swift; sourceTree = "<group>"; };
+		7DC2B59D23B0749A0B7CC125 /* RuleFormView.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = RuleFormView.swift; path = Sources/UI/Rules/RuleFormView.swift; sourceTree = "<group>"; };
+		87F1015549B149CD80A68FBC /* SubscriptionsPage.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Sources/UI/Subscriptions/SubscriptionsPage.swift; sourceTree = SOURCE_ROOT; };
+		8CBAE68653724149A087BBEE /* GeneralPage.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Sources/UI/Settings/GeneralPage.swift; sourceTree = SOURCE_ROOT; };
+		932DCE667C4747EEB24EB3B1 /* LogsPage.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Sources/UI/Logs/LogsPage.swift; sourceTree = SOURCE_ROOT; };
+		9641FF3F733D4D03A5FC9B70 /* ConfigStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Sources/Model/ConfigStore.swift; sourceTree = SOURCE_ROOT; };
+		A3BB008E2BF84DF5A2895FBC /* MihomoModels.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Sources/XPC/MihomoModels.swift; sourceTree = SOURCE_ROOT; };
+		A3F21F03B19F4760A795864C /* ConnectionsPage.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Sources/UI/Connections/ConnectionsPage.swift; sourceTree = SOURCE_ROOT; };
+		A4311730377D47748FC5F9D5 /* KernelManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Sources/XPC/KernelManager.swift; sourceTree = SOURCE_ROOT; };
+		A7EFEC0FDBC0406AA6A9D774 /* AppModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Sources/Model/AppModel.swift; sourceTree = SOURCE_ROOT; };
+		A8B1C01AAFB044E986219D24 /* NetworkPages.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Sources/UI/Network/NetworkPages.swift; sourceTree = SOURCE_ROOT; };
+		AABBCCDD0000000000000002 /* HelperProtocol.swift */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.swift; path = Sources/XPC/HelperProtocol.swift; sourceTree = "<group>"; };
+		AABBCCDD0000000000000004 /* XPCManager.swift */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.swift; path = Sources/XPC/XPCManager.swift; sourceTree = "<group>"; };
+		AMC2 /* AppModel+Connections.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "Sources/Model/AppModel+Connections.swift"; sourceTree = SOURCE_ROOT; };
+		AMG2 /* AppModel+Config.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "Sources/Model/AppModel+Config.swift"; sourceTree = SOURCE_ROOT; };
+		AMP2 /* AppModel+Proxies.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "Sources/Model/AppModel+Proxies.swift"; sourceTree = SOURCE_ROOT; };
 		B001 /* ClashPowApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ClashPowApp.swift; sourceTree = "<group>"; };
 		B002 /* ContentView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ContentView.swift; sourceTree = "<group>"; };
 		B004 /* DashboardView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DashboardView.swift; sourceTree = "<group>"; };
-		A7EFEC0FDBC0406AA6A9D774 /* AppModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Sources/Model/AppModel.swift; sourceTree = "SOURCE_ROOT"; };
-		AMP2 /* AppModel+Proxies.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "Sources/Model/AppModel+Proxies.swift"; sourceTree = "SOURCE_ROOT"; };
-		AMC2 /* AppModel+Connections.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "Sources/Model/AppModel+Connections.swift"; sourceTree = "SOURCE_ROOT"; };
-		AMG2 /* AppModel+Config.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "Sources/Model/AppModel+Config.swift"; sourceTree = "SOURCE_ROOT"; };
-		9641FF3F733D4D03A5FC9B70 /* ConfigStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Sources/Model/ConfigStore.swift; sourceTree = "SOURCE_ROOT"; };
-		06A576D2F0DE48B7BA1A37D7 /* TrafficHistory.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Sources/Model/TrafficHistory.swift; sourceTree = "SOURCE_ROOT"; };
-		40F5A17CAAA24A5BBC54C15E /* MihomoClient.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Sources/XPC/MihomoClient.swift; sourceTree = "SOURCE_ROOT"; };
-		43A486CB7FAA4FBBAEBFCCE6 /* EngineControl.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Sources/XPC/EngineControl.swift; sourceTree = "SOURCE_ROOT"; };
-		A4311730377D47748FC5F9D5 /* KernelManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Sources/XPC/KernelManager.swift; sourceTree = "SOURCE_ROOT"; };
-		A3BB008E2BF84DF5A2895FBC /* MihomoModels.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Sources/XPC/MihomoModels.swift; sourceTree = "SOURCE_ROOT"; };
-		BF9832249132493A9E51C30C /* ProxiesPage.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Sources/UI/Proxies/ProxiesPage.swift; sourceTree = "SOURCE_ROOT"; };
-		DST2 /* DesignTokens.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Sources/UI/DesignTokens.swift; sourceTree = "SOURCE_ROOT"; };
-		A3F21F03B19F4760A795864C /* ConnectionsPage.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Sources/UI/Connections/ConnectionsPage.swift; sourceTree = "SOURCE_ROOT"; };
-		50A6FB0C0B7141B0A804F1A9 /* RulesPage.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Sources/UI/Rules/RulesPage.swift; sourceTree = "SOURCE_ROOT"; };
-		932DCE667C4747EEB24EB3B1 /* LogsPage.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Sources/UI/Logs/LogsPage.swift; sourceTree = "SOURCE_ROOT"; };
-		87F1015549B149CD80A68FBC /* SubscriptionsPage.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Sources/UI/Subscriptions/SubscriptionsPage.swift; sourceTree = "SOURCE_ROOT"; };
-		2A173B69A3BD4DDA8F992A68 /* DnsPage.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Sources/UI/DNS/DnsPage.swift; sourceTree = "SOURCE_ROOT"; };
-		5C1B022FFD034AE592948756 /* SdwanPage.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Sources/UI/SDWAN/SdwanPage.swift; sourceTree = "SOURCE_ROOT"; };
-		3D2C04980A2D415390C45937 /* ConfigPage.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Sources/UI/Config/ConfigPage.swift; sourceTree = "SOURCE_ROOT"; };
-		8CBAE68653724149A087BBEE /* GeneralPage.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Sources/UI/Settings/GeneralPage.swift; sourceTree = "SOURCE_ROOT"; };
-		A8B1C01AAFB044E986219D24 /* NetworkPages.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Sources/UI/Network/NetworkPages.swift; sourceTree = "SOURCE_ROOT"; };
 		B006 /* Models.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Models.swift; sourceTree = "<group>"; };
 		B015 /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
+		BF9832249132493A9E51C30C /* ProxiesPage.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Sources/UI/Proxies/ProxiesPage.swift; sourceTree = SOURCE_ROOT; };
+		C6DEDA31B7B33D5919A12DEB /* RuleEditorModel.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = RuleEditorModel.swift; path = Sources/Core/RuleValidator/RuleEditorModel.swift; sourceTree = "<group>"; };
+		DST2 /* DesignTokens.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Sources/UI/DesignTokens.swift; sourceTree = SOURCE_ROOT; };
+		F001 /* ClashPow.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; path = ClashPow.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		F010 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = Info.plist; sourceTree = "<group>"; };
-		AABBCCDD0000000000000002 /* HelperProtocol.swift */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.swift; path = Sources/XPC/HelperProtocol.swift; sourceTree = "<group>"; };
-		AABBCCDD0000000000000004 /* XPCManager.swift */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.swift; path = Sources/XPC/XPCManager.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
-		FRAMEWORKS = {isa = PBXFrameworksBuildPhase; buildActionMask = 2147483647; files = (); runOnlyForDeploymentPostprocessing = 0; };
+		FRAMEWORKS /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
 /* End PBXFrameworksBuildPhase section */
 
 /* Begin PBXGroup section */
-		G_ROOT = {isa = PBXGroup; children = (G_SOURCES, G_PRODUCTS); sourceTree = "<group>"; };
-		G_SOURCES = {isa = PBXGroup; children = (G_APP, G_UI, G_XPC, G_MODEL, G_RESOURCES, G_INFOPLIST); path = Sources; sourceTree = "<group>"; };
-		G_APP = {isa = PBXGroup; children = (B001, B002); name = App; path = App; sourceTree = "<group>"; };
-		G_UI = {isa = PBXGroup; children = (G_UI_DASHBOARD, G_UI_CONFIGEDITOR); name = UI; path = UI; sourceTree = "<group>"; };
-		G_UI_DASHBOARD = {isa = PBXGroup; children = (B004); name = Dashboard; path = Dashboard; sourceTree = "<group>"; };
-		G_UI_CONFIGEDITOR = {isa = PBXGroup; children = (DST2, BF9832249132493A9E51C30C, A3F21F03B19F4760A795864C, 50A6FB0C0B7141B0A804F1A9, 932DCE667C4747EEB24EB3B1, 87F1015549B149CD80A68FBC, 2A173B69A3BD4DDA8F992A68, 5C1B022FFD034AE592948756, 3D2C04980A2D415390C45937, 8CBAE68653724149A087BBEE, A8B1C01AAFB044E986219D24); name = ConfigEditor; path = ConfigEditor; sourceTree = "<group>"; };
-		G_XPC = {isa = PBXGroup; children = (40F5A17CAAA24A5BBC54C15E, 43A486CB7FAA4FBBAEBFCCE6, A4311730377D47748FC5F9D5, A3BB008E2BF84DF5A2895FBC); name = XPC; path = XPC; sourceTree = "<group>"; };
-		G_MODEL = {isa = PBXGroup; children = (B006, A7EFEC0FDBC0406AA6A9D774, AMP2, AMC2, AMG2, 9641FF3F733D4D03A5FC9B70, 06A576D2F0DE48B7BA1A37D7); name = Model; path = Model; sourceTree = "<group>"; };
-		G_RESOURCES = {isa = PBXGroup; children = (B015); name = Resources; path = Resources; sourceTree = "<group>"; };
-		G_INFOPLIST = {isa = PBXGroup; children = (F010); name = "Supporting Files"; sourceTree = "<group>"; };
-		G_PRODUCTS = {isa = PBXGroup; children = (F001); name = Products; sourceTree = "<group>"; };
+		G_APP /* App */ = {
+			isa = PBXGroup;
+			children = (
+				B001 /* ClashPowApp.swift */,
+				B002 /* ContentView.swift */,
+			);
+			name = App;
+			path = App;
+			sourceTree = "<group>";
+		};
+		G_INFOPLIST /* Supporting Files */ = {
+			isa = PBXGroup;
+			children = (
+				F010 /* Info.plist */,
+			);
+			name = "Supporting Files";
+			sourceTree = "<group>";
+		};
+		G_MODEL /* Model */ = {
+			isa = PBXGroup;
+			children = (
+				B006 /* Models.swift */,
+				A7EFEC0FDBC0406AA6A9D774 /* AppModel.swift */,
+				AMP2 /* AppModel+Proxies.swift */,
+				AMC2 /* AppModel+Connections.swift */,
+				AMG2 /* AppModel+Config.swift */,
+				9641FF3F733D4D03A5FC9B70 /* ConfigStore.swift */,
+				06A576D2F0DE48B7BA1A37D7 /* TrafficHistory.swift */,
+			);
+			name = Model;
+			path = Model;
+			sourceTree = "<group>";
+		};
+		G_PRODUCTS /* Products */ = {
+			isa = PBXGroup;
+			children = (
+				F001 /* ClashPow.app */,
+			);
+			name = Products;
+			sourceTree = "<group>";
+		};
+		G_RESOURCES /* Resources */ = {
+			isa = PBXGroup;
+			children = (
+				B015 /* Assets.xcassets */,
+			);
+			name = Resources;
+			path = Resources;
+			sourceTree = "<group>";
+		};
+		G_ROOT = {
+			isa = PBXGroup;
+			children = (
+				G_SOURCES /* Sources */,
+				G_PRODUCTS /* Products */,
+				6293BDBC99DBD2AA6E7426F3 /* RuleNode.swift */,
+				4ED2BED37C00E10C70F34AC9 /* RuleValidator.swift */,
+				C6DEDA31B7B33D5919A12DEB /* RuleEditorModel.swift */,
+				5E2B17CDA9711347F1C170EB /* YamlRuleASTEngine.swift */,
+				7DC2B59D23B0749A0B7CC125 /* RuleFormView.swift */,
+			);
+			sourceTree = "<group>";
+		};
+		G_SOURCES /* Sources */ = {
+			isa = PBXGroup;
+			children = (
+				G_APP /* App */,
+				G_UI /* UI */,
+				G_XPC /* XPC */,
+				G_MODEL /* Model */,
+				G_RESOURCES /* Resources */,
+				G_INFOPLIST /* Supporting Files */,
+			);
+			path = Sources;
+			sourceTree = "<group>";
+		};
+		G_UI /* UI */ = {
+			isa = PBXGroup;
+			children = (
+				G_UI_DASHBOARD /* Dashboard */,
+				G_UI_CONFIGEDITOR /* ConfigEditor */,
+			);
+			name = UI;
+			path = UI;
+			sourceTree = "<group>";
+		};
+		G_UI_CONFIGEDITOR /* ConfigEditor */ = {
+			isa = PBXGroup;
+			children = (
+				DST2 /* DesignTokens.swift */,
+				BF9832249132493A9E51C30C /* ProxiesPage.swift */,
+				A3F21F03B19F4760A795864C /* ConnectionsPage.swift */,
+				50A6FB0C0B7141B0A804F1A9 /* RulesPage.swift */,
+				932DCE667C4747EEB24EB3B1 /* LogsPage.swift */,
+				87F1015549B149CD80A68FBC /* SubscriptionsPage.swift */,
+				2A173B69A3BD4DDA8F992A68 /* DnsPage.swift */,
+				5C1B022FFD034AE592948756 /* SdwanPage.swift */,
+				3D2C04980A2D415390C45937 /* ConfigPage.swift */,
+				8CBAE68653724149A087BBEE /* GeneralPage.swift */,
+				A8B1C01AAFB044E986219D24 /* NetworkPages.swift */,
+			);
+			name = ConfigEditor;
+			path = ConfigEditor;
+			sourceTree = "<group>";
+		};
+		G_UI_DASHBOARD /* Dashboard */ = {
+			isa = PBXGroup;
+			children = (
+				B004 /* DashboardView.swift */,
+			);
+			name = Dashboard;
+			path = Dashboard;
+			sourceTree = "<group>";
+		};
+		G_XPC /* XPC */ = {
+			isa = PBXGroup;
+			children = (
+				40F5A17CAAA24A5BBC54C15E /* MihomoClient.swift */,
+				43A486CB7FAA4FBBAEBFCCE6 /* EngineControl.swift */,
+				A4311730377D47748FC5F9D5 /* KernelManager.swift */,
+				A3BB008E2BF84DF5A2895FBC /* MihomoModels.swift */,
+			);
+			name = XPC;
+			path = XPC;
+			sourceTree = "<group>";
+		};
 /* End PBXGroup section */
 
 /* Begin PBXNativeTarget section */
-		TARGET_CLASHPOW = {isa = PBXNativeTarget; buildConfigurationList = BUILD_CONFIGS; buildPhases = (PHASE_SOURCES, PHASE_RESOURCES, FRAMEWORKS); name = ClashPow; productName = ClashPow; productReference = F001; productType = "com.apple.product-type.application"; };
+		TARGET_CLASHPOW /* ClashPow */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = BUILD_CONFIGS /* Build configuration list for PBXNativeTarget "ClashPow" */;
+			buildPhases = (
+				PHASE_SOURCES /* Sources */,
+				PHASE_RESOURCES /* Resources */,
+				FRAMEWORKS /* Frameworks */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+			);
+			name = ClashPow;
+			productName = ClashPow;
+			productReference = F001 /* ClashPow.app */;
+			productType = "com.apple.product-type.application";
+		};
 /* End PBXNativeTarget section */
 
 /* Begin PBXProject section */
-		PROJECT_ROOT = {isa = PBXProject; attributes = { BuildIndependentTargetsInParallel = 1; LastUpgradeCheck = 1740; }; buildConfigurationList = BUILD_CONFIGS_PROJECT; compatibilityVersion = "Xcode 15.0"; developmentRegion = en; mainGroup = G_ROOT; productRefGroup = G_PRODUCTS; projectDirPath = ""; targets = (TARGET_CLASHPOW); };
+		PROJECT_ROOT /* Project object */ = {
+			isa = PBXProject;
+			attributes = {
+				BuildIndependentTargetsInParallel = 1;
+				LastUpgradeCheck = 1740;
+			};
+			buildConfigurationList = BUILD_CONFIGS_PROJECT /* Build configuration list for PBXProject "ClashPow" */;
+			compatibilityVersion = "Xcode 15.0";
+			developmentRegion = en;
+			mainGroup = G_ROOT;
+			productRefGroup = G_PRODUCTS /* Products */;
+			projectDirPath = "";
+			targets = (
+				TARGET_CLASHPOW /* ClashPow */,
+			);
+		};
 /* End PBXProject section */
 
 /* Begin PBXResourcesBuildPhase section */
-		PHASE_RESOURCES = {isa = PBXResourcesBuildPhase; buildActionMask = 2147483647; files = (A015); };
+		PHASE_RESOURCES /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				A015 /* Assets.xcassets in Resources */,
+			);
+		};
 /* End PBXResourcesBuildPhase section */
 
 /* Begin PBXSourcesBuildPhase section */
-		PHASE_SOURCES = {isa = PBXSourcesBuildPhase; buildActionMask = 2147483647; files = (AABBCCDD0000000000000001, AABBCCDD0000000000000003, A001, A002, A004, 94B14BD55C274919B82F3C5E, 8BC3EAE990F64B20BA6FA269, 52A040A2184744959929CD76, 394E7B0C59764680BB4D9507, B1F3682AEF4F4C8AB5A97582, DD035B63A0B144F2BE7205A4, 71D6AA8BB9A64328A01B5364, F0458DF12625404DA930506D, 4FE025F9B3A84B9A9563DC03, D03CD0CC2A8E4B34ACE8FB5A, 9F1A5AD4866E444CB21D6A9A, C762A449C2434390BD3E8BF2, 5C790C4A1B3744679E83ADA0, 4F219760BD14466DA838B50A, 61523827C4D44A56AB8FA9E9, AE6635A9ACB74E5DB66892EA, BA90C1F3406546599706585F, A006, AMP1, AMC1, AMG1, DST1); };
+		PHASE_SOURCES /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				AABBCCDD0000000000000001 /* HelperProtocol.swift in Sources */,
+				AABBCCDD0000000000000003 /* XPCManager.swift in Sources */,
+				A001 /* ClashPowApp.swift in Sources */,
+				A002 /* ContentView.swift in Sources */,
+				A004 /* DashboardView.swift in Sources */,
+				94B14BD55C274919B82F3C5E /* AppModel.swift in Sources */,
+				8BC3EAE990F64B20BA6FA269 /* ConfigStore.swift in Sources */,
+				52A040A2184744959929CD76 /* TrafficHistory.swift in Sources */,
+				394E7B0C59764680BB4D9507 /* MihomoClient.swift in Sources */,
+				B1F3682AEF4F4C8AB5A97582 /* EngineControl.swift in Sources */,
+				DD035B63A0B144F2BE7205A4 /* KernelManager.swift in Sources */,
+				71D6AA8BB9A64328A01B5364 /* MihomoModels.swift in Sources */,
+				F0458DF12625404DA930506D /* ProxiesPage.swift in Sources */,
+				4FE025F9B3A84B9A9563DC03 /* ConnectionsPage.swift in Sources */,
+				D03CD0CC2A8E4B34ACE8FB5A /* RulesPage.swift in Sources */,
+				9F1A5AD4866E444CB21D6A9A /* LogsPage.swift in Sources */,
+				C762A449C2434390BD3E8BF2 /* SubscriptionsPage.swift in Sources */,
+				5C790C4A1B3744679E83ADA0 /* DnsPage.swift in Sources */,
+				4F219760BD14466DA838B50A /* SdwanPage.swift in Sources */,
+				61523827C4D44A56AB8FA9E9 /* ConfigPage.swift in Sources */,
+				AE6635A9ACB74E5DB66892EA /* GeneralPage.swift in Sources */,
+				BA90C1F3406546599706585F /* NetworkPages.swift in Sources */,
+				A006 /* Models.swift in Sources */,
+				AMP1 /* AppModel+Proxies.swift in Sources */,
+				AMC1 /* AppModel+Connections.swift in Sources */,
+				AMG1 /* AppModel+Config.swift in Sources */,
+				DST1 /* DesignTokens.swift in Sources */,
+				0F32145D5136BC694424C663 /* RuleNode.swift in Sources */,
+				8F14ED3CECAC0F5F7C81C9A9 /* RuleValidator.swift in Sources */,
+				212075FD58BB63EBBCA8786A /* RuleEditorModel.swift in Sources */,
+				04E0EC007CDC978C6D8D3024 /* YamlRuleASTEngine.swift in Sources */,
+				FD7AD16CD9DC6191C81AE1F5 /* RuleFormView.swift in Sources */,
+			);
+		};
 /* End PBXSourcesBuildPhase section */
 
 /* Begin XCBuildConfiguration section */
-		CFG_DEBUG = {isa = XCBuildConfiguration; buildSettings = { MACOSX_DEPLOYMENT_TARGET = 14.0; SDKROOT = macosx; SWIFT_OPTIMIZATION_LEVEL = "-Onone"; SWIFT_VERSION = 5.0; }; name = Debug; };
-		CFG_DEBUG_TARGET = {isa = XCBuildConfiguration; buildSettings = { ARCHS = arm64; CODE_SIGN_STYLE = Automatic; PRODUCT_BUNDLE_IDENTIFIER = com.clashpow.app; PRODUCT_NAME = ClashPow; INFOPLIST_FILE = Sources/Info.plist; GENERATE_INFOPLIST_FILE = YES; CURRENT_PROJECT_VERSION = 3; MARKETING_VERSION = 0.4.7; ENABLE_HARDENED_RUNTIME = YES; ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon; CODE_SIGN_ENTITLEMENTS = ClashPow.entitlements; LD_RUNPATH_SEARCH_PATHS = ("$(inherited)", "@executable_path/../Frameworks"); }; name = Debug; };
-		CFG_RELEASE = {isa = XCBuildConfiguration; buildSettings = { MACOSX_DEPLOYMENT_TARGET = 14.0; SDKROOT = macosx; SWIFT_OPTIMIZATION_LEVEL = "-O"; SWIFT_VERSION = 5.0; }; name = Release; };
-		CFG_RELEASE_TARGET = {isa = XCBuildConfiguration; buildSettings = { ARCHS = arm64; CODE_SIGN_STYLE = Automatic; PRODUCT_BUNDLE_IDENTIFIER = com.clashpow.app; PRODUCT_NAME = ClashPow; INFOPLIST_FILE = Sources/Info.plist; GENERATE_INFOPLIST_FILE = YES; CURRENT_PROJECT_VERSION = 3; MARKETING_VERSION = 0.4.7; ENABLE_HARDENED_RUNTIME = YES; ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon; CODE_SIGN_ENTITLEMENTS = ClashPow.entitlements; LD_RUNPATH_SEARCH_PATHS = ("$(inherited)", "@executable_path/../Frameworks"); }; name = Release; };
+		CFG_DEBUG /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				MACOSX_DEPLOYMENT_TARGET = 14.0;
+				SDKROOT = macosx;
+				SWIFT_OPTIMIZATION_LEVEL = "-Onone";
+				SWIFT_VERSION = 5.0;
+			};
+			name = Debug;
+		};
+		CFG_DEBUG_TARGET /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ARCHS = arm64;
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				CODE_SIGN_ENTITLEMENTS = ClashPow.entitlements;
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				ENABLE_HARDENED_RUNTIME = YES;
+				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_FILE = Sources/Info.plist;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/../Frameworks",
+				);
+				MARKETING_VERSION = 0.4.8;
+				PRODUCT_BUNDLE_IDENTIFIER = com.clashpow.app;
+				PRODUCT_NAME = ClashPow;
+			};
+			name = Debug;
+		};
+		CFG_RELEASE /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				MACOSX_DEPLOYMENT_TARGET = 14.0;
+				SDKROOT = macosx;
+				SWIFT_OPTIMIZATION_LEVEL = "-O";
+				SWIFT_VERSION = 5.0;
+			};
+			name = Release;
+		};
+		CFG_RELEASE_TARGET /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ARCHS = arm64;
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				CODE_SIGN_ENTITLEMENTS = ClashPow.entitlements;
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				ENABLE_HARDENED_RUNTIME = YES;
+				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_FILE = Sources/Info.plist;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/../Frameworks",
+				);
+				MARKETING_VERSION = 0.4.8;
+				PRODUCT_BUNDLE_IDENTIFIER = com.clashpow.app;
+				PRODUCT_NAME = ClashPow;
+			};
+			name = Release;
+		};
 /* End XCBuildConfiguration section */
 
 /* Begin XCConfigurationList section */
-		BUILD_CONFIGS = {isa = XCConfigurationList; buildConfigurations = (CFG_DEBUG_TARGET, CFG_RELEASE_TARGET); defaultConfigurationName = Release; };
-		BUILD_CONFIGS_PROJECT = {isa = XCConfigurationList; buildConfigurations = (CFG_DEBUG, CFG_RELEASE); defaultConfigurationName = Release; };
+		BUILD_CONFIGS /* Build configuration list for PBXNativeTarget "ClashPow" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				CFG_DEBUG_TARGET /* Debug */,
+				CFG_RELEASE_TARGET /* Release */,
+			);
+			defaultConfigurationName = Release;
+		};
+		BUILD_CONFIGS_PROJECT /* Build configuration list for PBXProject "ClashPow" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				CFG_DEBUG /* Debug */,
+				CFG_RELEASE /* Release */,
+			);
+			defaultConfigurationName = Release;
+		};
 /* End XCConfigurationList section */
 	};
-	rootObject = PROJECT_ROOT;
+	rootObject = PROJECT_ROOT /* Project object */;
 }
