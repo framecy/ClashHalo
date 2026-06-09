@@ -52,7 +52,7 @@ import SwiftUI
             // reachable but the flag is false, check the actual process owner so the
             // UI reflects reality without requiring a TUN toggle to fix the state.
             if active && !runningAsRoot && api.reachable {
-                syncRunningAsRootIfNeeded()
+                await syncRunningAsRootIfNeeded()
             }
 
             if active && (helperVersion == "?" || helperVersion.isEmpty) {
@@ -70,14 +70,19 @@ import SwiftUI
     /// Check via pgrep whether mihomo is owned by root and set the flag accordingly.
     /// Uses exact name match (-x) to avoid false positives from similarly named binaries.
     /// Blocks the calling thread briefly — only call from Tasks, not the main run loop.
-    private func syncRunningAsRootIfNeeded() {
+    private func syncRunningAsRootIfNeeded() async {
         guard !runningAsRoot else { return }
-        let p = Process()
-        p.executableURL = URL(fileURLWithPath: "/usr/bin/pgrep")
-        p.arguments = ["-u", "root", "-x", "mihomo"]
-        p.standardOutput = Pipe()
-        try? p.run(); p.waitUntilExit()
-        if p.terminationStatus == 0 { runningAsRoot = true }
+        let isRoot = await withCheckedContinuation { (cont: CheckedContinuation<Bool, Never>) in
+            DispatchQueue.global().async {
+                let p = Process()
+                p.executableURL = URL(fileURLWithPath: "/usr/bin/pgrep")
+                p.arguments = ["-u", "root", "-x", "mihomo"]
+                p.standardOutput = Pipe()
+                try? p.run(); p.waitUntilExit()
+                cont.resume(returning: p.terminationStatus == 0)
+            }
+        }
+        if isRoot { runningAsRoot = true }
     }
 
     /// Ensure the mihomo binary and configuration directory are set up.
@@ -468,7 +473,7 @@ import SwiftUI
                     // Before killing a working kernel, check the real process owner.
                     // If it's already root (e.g. app restarted after a root session),
                     // just set the flag instead of doing a needless restart.
-                    syncRunningAsRootIfNeeded()
+                    await syncRunningAsRootIfNeeded()
                     if !runningAsRoot {
                         print("ensureRunning: Upgrading to root process...")
                         await restart()
