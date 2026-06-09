@@ -26,6 +26,7 @@ extension AppModel {
         var next: [Conn] = []
         var bytes: [String: (up: Int64, down: Int64)] = [:]
         var activeIDs = Set<String>()
+        var nextConnsMap: [String: Conn] = [:]
         let hour = Calendar.current.component(.hour, from: Date())
         for c in items {
             activeIDs.insert(c.id); seenConnIDs.insert(c.id)
@@ -37,7 +38,7 @@ extension AppModel {
             let cat = (c.chains.first == "DIRECT" || c.chains.contains("DIRECT")) ? "direct"
                     : (c.chains.first == "REJECT" || c.chains.contains("REJECT")) ? "reject" : "proxy"
             history.record(category: cat, down: Int64(downRate), up: Int64(upRate), hour: hour)
-            next.append(Conn(
+            let conn = Conn(
                 id: c.id,
                 host: c.metadata.host?.isEmpty == false ? c.metadata.host! : (c.metadata.destinationIP ?? "?"),
                 dstIP: c.metadata.destinationIP ?? "?",
@@ -45,6 +46,7 @@ extension AppModel {
                 port: c.metadata.destinationPort ?? "",
                 network: c.metadata.network.uppercased(),
                 process: c.metadata.process ?? "—",
+                processPath: c.metadata.processPath ?? "—",
                 chain: c.chains.reversed().joined(separator: " → "),
                 group: c.chains.last ?? "?",
                 node: c.chains.first ?? "?",
@@ -53,9 +55,29 @@ extension AppModel {
                 up: c.upload, down: c.download,
                 upRate: upRate, downRate: downRate,
                 start: c.start
-            ))
+            )
+            next.append(conn)
+            nextConnsMap[c.id] = conn
         }
         prevConnBytes = bytes
+        
+        var newClosed = [Conn]()
+        for (id, conn) in prevConnsMap {
+            if !activeIDs.contains(id) {
+                var closedConn = conn
+                closedConn.upRate = 0
+                closedConn.downRate = 0
+                newClosed.append(closedConn)
+            }
+        }
+        if !newClosed.isEmpty {
+            closedConnections.insert(contentsOf: newClosed, at: 0)
+            if closedConnections.count > 500 {
+                closedConnections.removeLast(closedConnections.count - 500)
+            }
+        }
+        prevConnsMap = nextConnsMap
+        
         conns = next.sorted { $0.downRate + $0.upRate > $1.downRate + $1.upRate }
         dash = Self.computeDash(next)   // single pass, once per snapshot
 
