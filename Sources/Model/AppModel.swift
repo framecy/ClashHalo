@@ -113,6 +113,9 @@ import ServiceManagement
     private var pathMonitor: NWPathMonitor?
     private var signalSources: [AnyObject] = []
     private var networkOnline = true
+    /// True while the system is sleeping — gates background activity so
+    /// wake-up callbacks don't race with half-restored subsystems.
+    private var sleeping = false
 
     private var trafficWS: WSHandle?
     private var connWS: WSHandle?
@@ -147,6 +150,7 @@ import ServiceManagement
         Task { await reconnect() }
         startNetworkMonitor()
         installSignalHandlers()
+        observeSleepWake()
         // Check helper version after initial pollStatus has had time to fetch it
         Task {
             try? await Task.sleep(nanoseconds: 4_000_000_000)
@@ -274,7 +278,41 @@ import ServiceManagement
         pathMonitor = monitor
     }
 
+    // MARK: Sleep / Wake lifecycle
+
+    private func observeSleepWake() {
+        let ws = NSWorkspace.shared.notificationCenter
+        ws.addObserver(forName: NSWorkspace.willSleepNotification, object: nil, queue: .main) { [weak self] _ in
+            self?.prepareForSleep()
+        }
+        ws.addObserver(forName: NSWorkspace.didWakeNotification, object: nil, queue: .main) { [weak self] _ in
+            Task { @MainActor in self?.recoverFromWake() }
+        }
+    }
+
+    /// Gracefully suspend background activity before the system sleeps.
+    /// Prevents reconnect storms and stale-proxy crashes on wake.
+    private func prepareForSleep() {
+        sleeping = true
+        stopStreams()       // cancel WS — avoids 4× reconnect race on wake
+        reconnectTask?.cancel()
+        reconnectTask = nil
+    }
+
+    /// Re-establish connectivity after system wake. Delays briefly to let
+    /// the network stack come back up, then forces a clean reconnect.
+    private func recoverFromWake() {
+        sleeping = false
+        XPCManager.shared.resetConnection()   // tear down stale Mach ports
+        Task {
+            // Network interfaces need a moment to re-associate after wake
+            try? await Task.sleep(nanoseconds: 2_000_000_000)
+            await reconnect()
+        }
+    }
+
     @MainActor private func handleNetworkChange(online: Bool) {
+        guard !sleeping else { return }   // ignore transient state during sleep/wake
         guard networkOnline != online else { return }
         networkOnline = online
         if !online && systemProxyOn {
