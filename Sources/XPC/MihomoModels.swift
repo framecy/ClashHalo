@@ -58,6 +58,7 @@ struct ConnMeta: Decodable {
     let type: String?
     let host: String?
     let process: String?
+    let processPath: String?
     let sourceIP: String?
     let destinationIP: String?
     let destinationPort: String?

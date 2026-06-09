@@ -47,8 +47,11 @@ import ServiceManagement
 
     // Connections (prevConnBytes/seenConnIDs/lastDownTotal are read in AppModel+Connections)
     @Published var conns: [Conn] = []
+    @Published var closedConnections: [Conn] = []
     @Published var dash = DashStats()   // precomputed once per snapshot (perf)
     var prevConnBytes: [String: (up: Int64, down: Int64)] = [:]
+    var prevConnsMap: [String: Conn] = [:]
+    var seenConnIDs = Set<String>()
 
     // Logs
     @Published var logs: [Log] = []
@@ -104,7 +107,6 @@ import ServiceManagement
     // Dashboard session aggregates
     @Published var closedConns = 0
     @Published var appMemoryMB = 0.0
-    var seenConnIDs = Set<String>()
     var lastDownTotal: Int64 = 0
 
     // Toast
