@@ -48,6 +48,10 @@ import SwiftUI
     }
     func save() {
         dirty = false; lastSave = Date()
+        // prune older than 60 days before saving
+        let cutoff = Calendar.current.date(byAdding: .day, value: -60, to: Date())!
+        let f = DateFormatter(); f.dateFormat = "yyyy-MM-dd"
+        days = days.filter { (f.date(from: $0.key) ?? .distantPast) >= cutoff }
         if let data = try? JSONEncoder().encode(days) { try? data.write(to: URL(fileURLWithPath: path)) }
     }
 

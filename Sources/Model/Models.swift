@@ -201,20 +201,28 @@ enum NetScanner {
     }
 
     /// Routes touching utun interfaces (netstat, no root). Returns (dest, iface).
-    static func tunRoutes() -> [(dest: String, iface: String)] {
-        let task = Process(); task.executableURL = URL(fileURLWithPath: "/usr/sbin/netstat")
-        task.arguments = ["-rn", "-f", "inet"]
-        let pipe = Pipe(); task.standardOutput = pipe
-        try? task.run(); task.waitUntilExit()
-        let out = String(data: pipe.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? ""
-        var rows: [(String, String)] = []
-        for line in out.split(separator: "\n") {
-            let cols = line.split(whereSeparator: { $0 == " " || $0 == "\t" }).map(String.init)
-            guard cols.count >= 4 else { continue }
-            let iface = cols.last ?? ""
-            if iface.hasPrefix("utun") { rows.append((cols[0], iface)) }
-        }
-        return rows
+    static func tunRoutes() async -> [(dest: String, iface: String)] {
+        await Task.detached(priority: .userInitiated) {
+            let task = Process(); task.executableURL = URL(fileURLWithPath: "/usr/sbin/netstat")
+            task.arguments = ["-rn", "-f", "inet"]
+            let pipe = Pipe(); task.standardOutput = pipe
+            do {
+                try task.run()
+                let data = pipe.fileHandleForReading.readDataToEndOfFile()
+                task.waitUntilExit()
+                let out = String(data: data, encoding: .utf8) ?? ""
+                var rows: [(String, String)] = []
+                for line in out.split(separator: "\n") {
+                    let cols = line.split(whereSeparator: { $0 == " " || $0 == "\t" }).map(String.init)
+                    guard cols.count >= 4 else { continue }
+                    let iface = cols.last ?? ""
+                    if iface.hasPrefix("utun") { rows.append((cols[0], iface)) }
+                }
+                return rows
+            } catch {
+                return []
+            }
+        }.value
     }
 }
 
