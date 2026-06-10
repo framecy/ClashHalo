@@ -21,15 +21,26 @@ extension AppModel {
         // Only update on a real value; the snapshot's memory mirrors mihomo's
         // internal counter which is 0 until the /memory stream warms it up (see
         // startStreams). Guarding against 0 avoids flicker back to "0 B".
-        if let m = s.memory, m > 0 { memory = m }
+        if let m = s.memory, m > 0 {
+            memory = m
+            // Core Memory Guard: If core usage > 512MB, flush caches (max once per 30 mins)
+            if m > 512 * 1024 * 1024 && Date().timeIntervalSince(lastCacheFlush) > 1800 {
+                lastCacheFlush = Date()
+                clearAllCache()
+                logKernel("核心内存占用过高 (\(m / 1_000_000)MB)，已自动清空 DNS 与 Fake‑IP 缓存")
+            }
+        }
+        
         let items = s.connections ?? []
         var next: [Conn] = []
         var bytes: [String: (up: Int64, down: Int64)] = [:]
         var activeIDs = Set<String>()
         var nextConnsMap: [String: Conn] = [:]
         let hour = Calendar.current.component(.hour, from: Date())
+        
         for c in items {
-            activeIDs.insert(c.id); seenConnIDs.insert(c.id)
+            activeIDs.insert(c.id)
+            if prevConnsMap[c.id] == nil { totalConnsCount += 1 }
             let prev = prevConnBytes[c.id]
             let upRate = prev.map { max(0, c.upload - $0.up) } ?? 0
             let downRate = prev.map { max(0, c.download - $0.down) } ?? 0
@@ -81,8 +92,8 @@ extension AppModel {
         conns = next.sorted { $0.downRate + $0.upRate > $1.downRate + $1.upRate }
         dash = Self.computeDash(next)   // single pass, once per snapshot
 
-        // closed-connection count (this session) = seen − currently-active
-        closedConns = max(0, seenConnIDs.count - activeIDs.count)
+        // closed-connection count (this session) = total seen − currently-active
+        closedConns = max(0, totalConnsCount - activeIDs.count)
         history.flushIfNeeded()
         lastDownTotal = s.downloadTotal
         // app RSS

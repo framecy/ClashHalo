@@ -313,7 +313,10 @@ struct SdwanPage: View {
 
     private func rescan() {
         ifaces = NetScanner.interfaces()
-        routes = NetScanner.tunRoutes()
+        Task {
+            let r = await NetScanner.tunRoutes()
+            await MainActor.run { routes = r }
+        }
     }
     private func icon(_ k: IfaceKind) -> String {
         switch k {

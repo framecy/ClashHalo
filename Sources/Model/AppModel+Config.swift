@@ -127,7 +127,7 @@ extension AppModel {
         // traffic. An explicit interface-name gives egress a concrete NIC at once;
         // the monitor still updates it on later network changes. Clear it on
         // disable so non-TUN egress returns to fully automatic selection.
-        if want, let iface = EngineControl.defaultInterface() {
+        if want, let iface = await EngineControl.defaultInterface() {
             overrides["interface-name"] = iface
         } else if !want {
             overrides["interface-name"] = ""
@@ -227,29 +227,25 @@ extension AppModel {
     /// DNS once so a manual user setting is restored later, not clobbered.
     func enableTunnelDNS() async {
         let gateway = tunnelDNSAddress()
-        await Task.detached {
-            let d = UserDefaults.standard
-            if !d.bool(forKey: Self.kDNSOverriddenKey) {
-                let original = EngineControl.currentSystemDNS()
-                d.set(original.joined(separator: ","), forKey: Self.kDNSSavedKey)
-                d.set(true, forKey: Self.kDNSOverriddenKey)
-            }
-            EngineControl.applySystemDNS([gateway])
-        }.value
+        let d = UserDefaults.standard
+        if !d.bool(forKey: Self.kDNSOverriddenKey) {
+            let original = await EngineControl.currentSystemDNS()
+            d.set(original.joined(separator: ","), forKey: Self.kDNSSavedKey)
+            d.set(true, forKey: Self.kDNSOverriddenKey)
+        }
+        await EngineControl.applySystemDNS([gateway])
     }
 
     /// Restore the system DNS saved before TUN took over (no-op if we never
     /// overrode it). Idempotent — safe to call from every teardown path.
     func restoreTunnelDNS() async {
-        await Task.detached {
-            let d = UserDefaults.standard
-            guard d.bool(forKey: Self.kDNSOverriddenKey) else { return }
-            let saved = (d.string(forKey: Self.kDNSSavedKey) ?? "")
-                .split(separator: ",").map(String.init)
-            EngineControl.applySystemDNS(saved)
-            d.set(false, forKey: Self.kDNSOverriddenKey)
-            d.removeObject(forKey: Self.kDNSSavedKey)
-        }.value
+        let d = UserDefaults.standard
+        guard d.bool(forKey: Self.kDNSOverriddenKey) else { return }
+        let saved = (d.string(forKey: Self.kDNSSavedKey) ?? "")
+            .split(separator: ",").map(String.init)
+        await EngineControl.applySystemDNS(saved)
+        d.set(false, forKey: Self.kDNSOverriddenKey)
+        d.removeObject(forKey: Self.kDNSSavedKey)
     }
 
     /// Deep-merge config overrides into the running config via the engine
