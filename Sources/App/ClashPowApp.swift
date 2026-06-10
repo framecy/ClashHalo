@@ -22,12 +22,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         try? kill.run(); kill.waitUntilExit()
 
         // Restore system DNS if TUN had redirected it into the (now dead) tunnel —
-        // otherwise all DNS black-holes after quit. Synchronous; networksetup is fast.
+        // otherwise all DNS black-holes after quit. Synchronous wrapper for async call.
         let d = UserDefaults.standard
         if d.bool(forKey: AppModel.kDNSOverriddenKey) {
             let saved = (d.string(forKey: AppModel.kDNSSavedKey) ?? "")
                 .split(separator: ",").map(String.init)
-            EngineControl.applySystemDNS(saved)
+            
+            let sema = DispatchSemaphore(value: 0)
+            Task {
+                await EngineControl.applySystemDNS(saved)
+                sema.signal()
+            }
+            _ = sema.wait(timeout: .now() + 2)
+            
             d.set(false, forKey: AppModel.kDNSOverriddenKey)
             d.removeObject(forKey: AppModel.kDNSSavedKey)
         }

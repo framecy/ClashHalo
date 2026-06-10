@@ -276,85 +276,82 @@ import SwiftUI
     }
 
     /// The BSD name of the current default-route interface (e.g. `en0`), or nil.
-    /// Used to pin mihomo's outbound `interface-name` when enabling TUN so proxy
-    /// egress has a concrete physical NIC immediately, instead of relying solely on
-    /// `auto-detect-interface` which loses a race at TUN startup (auto-route hijacks
-    /// the default route before the monitor identifies the NIC → "interface not found").
-    nonisolated static func defaultInterface() -> String? {
-        let p = Process()
-        p.executableURL = URL(fileURLWithPath: "/sbin/route")
-        p.arguments = ["-n", "get", "default"]
-        let pipe = Pipe(); p.standardOutput = pipe; p.standardError = Pipe()
-        do { try p.run() } catch { return nil }
-        let data = pipe.fileHandleForReading.readDataToEndOfFile()
-        p.waitUntilExit()
-        guard let out = String(data: data, encoding: .utf8) else { return nil }
-        for line in out.split(separator: "\n") {
-            let t = line.trimmingCharacters(in: .whitespaces)
-            if t.hasPrefix("interface:") {
-                let name = t.dropFirst("interface:".count).trimmingCharacters(in: .whitespaces)
-                return name.isEmpty ? nil : name
+    nonisolated static func defaultInterface() async -> String? {
+        await Task.detached(priority: .userInitiated) {
+            let p = Process()
+            p.executableURL = URL(fileURLWithPath: "/sbin/route")
+            p.arguments = ["-n", "get", "default"]
+            let pipe = Pipe(); p.standardOutput = pipe; p.standardError = Pipe()
+            do { try p.run() } catch { return nil }
+            let data = pipe.fileHandleForReading.readDataToEndOfFile()
+            p.waitUntilExit()
+            guard let out = String(data: data, encoding: .utf8) else { return nil }
+            for line in out.split(separator: "\n") {
+                let t = line.trimmingCharacters(in: .whitespaces)
+                if t.hasPrefix("interface:") {
+                    let name = t.dropFirst("interface:".count).trimmingCharacters(in: .whitespaces)
+                    return name.isEmpty ? nil : name
+                }
             }
-        }
-        return nil
+            return nil
+        }.value
     }
 
     // MARK: - System DNS (TUN fake-ip routing)
 
     /// The macOS network service name (e.g. "Wi-Fi"/"Ethernet") bound to the
-    /// current default-route interface, or nil. Needed because `networksetup`
-    /// DNS commands key off the *service* name, not the BSD device.
-    nonisolated static func defaultNetworkService() -> String? {
-        guard let dev = defaultInterface() else { return nil }
-        let p = Process()
-        p.executableURL = URL(fileURLWithPath: "/usr/sbin/networksetup")
-        p.arguments = ["-listnetworkserviceorder"]
-        let pipe = Pipe(); p.standardOutput = pipe; p.standardError = Pipe()
-        do { try p.run() } catch { return nil }
-        let data = pipe.fileHandleForReading.readDataToEndOfFile(); p.waitUntilExit()
-        guard let out = String(data: data, encoding: .utf8) else { return nil }
-        // Services come in line pairs: "(N) ServiceName" then
-        // "(Hardware Port: ..., Device: enX)". Find the device line, take the name above.
-        let lines = out.components(separatedBy: "\n")
-        for i in lines.indices where lines[i].contains("Device: \(dev))") && i > 0 {
-            let name = lines[i-1].replacingOccurrences(
-                of: #"^\(\d+\)\s*"#, with: "", options: .regularExpression)
-            let trimmed = name.trimmingCharacters(in: .whitespaces)
-            return trimmed.isEmpty ? nil : trimmed
-        }
-        return nil
+    /// current default-route interface, or nil.
+    nonisolated static func defaultNetworkService() async -> String? {
+        guard let dev = await defaultInterface() else { return nil }
+        return await Task.detached(priority: .userInitiated) {
+            let p = Process()
+            p.executableURL = URL(fileURLWithPath: "/usr/sbin/networksetup")
+            p.arguments = ["-listnetworkserviceorder"]
+            let pipe = Pipe(); p.standardOutput = pipe; p.standardError = Pipe()
+            do { try p.run() } catch { return nil }
+            let data = pipe.fileHandleForReading.readDataToEndOfFile(); p.waitUntilExit()
+            guard let out = String(data: data, encoding: .utf8) else { return nil }
+            let lines = out.components(separatedBy: "\n")
+            for i in lines.indices where lines[i].contains("Device: \(dev))") && i > 0 {
+                let name = lines[i-1].replacingOccurrences(
+                    of: #"^\(\d+\)\s*"#, with: "", options: .regularExpression)
+                let trimmed = name.trimmingCharacters(in: .whitespaces)
+                return trimmed.isEmpty ? nil : trimmed
+            }
+            return nil
+        }.value
     }
 
-    /// Read the system DNS servers for the default service. Empty array means
-    /// "no manual servers" (DHCP), which `networksetup` prints as a sentence.
-    nonisolated static func currentSystemDNS() -> [String] {
-        guard let svc = defaultNetworkService() else { return [] }
-        let p = Process()
-        p.executableURL = URL(fileURLWithPath: "/usr/sbin/networksetup")
-        p.arguments = ["-getdnsservers", svc]
-        let pipe = Pipe(); p.standardOutput = pipe; p.standardError = Pipe()
-        do { try p.run() } catch { return [] }
-        let data = pipe.fileHandleForReading.readDataToEndOfFile(); p.waitUntilExit()
-        let out = String(data: data, encoding: .utf8) ?? ""
-        // A non-IP line ("There aren't any DNS Servers set on …") = DHCP.
-        let ips = out.split(separator: "\n")
-            .map { $0.trimmingCharacters(in: .whitespaces) }
-            .filter { $0.range(of: #"^[0-9a-fA-F:.]+$"#, options: .regularExpression) != nil }
-        return ips
+    /// Read the system DNS servers for the default service.
+    nonisolated static func currentSystemDNS() async -> [String] {
+        guard let svc = await defaultNetworkService() else { return [] }
+        return await Task.detached(priority: .userInitiated) {
+            let p = Process()
+            p.executableURL = URL(fileURLWithPath: "/usr/sbin/networksetup")
+            p.arguments = ["-getdnsservers", svc]
+            let pipe = Pipe(); p.standardOutput = pipe; p.standardError = Pipe()
+            do { try p.run() } catch { return [] }
+            let data = pipe.fileHandleForReading.readDataToEndOfFile(); p.waitUntilExit()
+            let out = String(data: data, encoding: .utf8) ?? ""
+            let ips = out.split(separator: "\n")
+                .map { $0.trimmingCharacters(in: .whitespaces) }
+                .filter { $0.range(of: #"^[0-9a-fA-F:.]+$"#, options: .regularExpression) != nil }
+            return ips
+        }.value
     }
 
-    /// Set the system DNS servers for the default service. An empty list resets
-    /// to DHCP (`networksetup … Empty`). Runs `networksetup` directly (works for
-    /// admin users without an auth prompt; sandbox is off). Returns success.
+    /// Set the system DNS servers for the default service.
     @discardableResult
-    nonisolated static func applySystemDNS(_ servers: [String]) -> Bool {
-        guard let svc = defaultNetworkService() else { return false }
-        let p = Process()
-        p.executableURL = URL(fileURLWithPath: "/usr/sbin/networksetup")
-        p.arguments = ["-setdnsservers", svc] + (servers.isEmpty ? ["Empty"] : servers)
-        p.standardOutput = Pipe(); p.standardError = Pipe()
-        do { try p.run(); p.waitUntilExit(); return p.terminationStatus == 0 }
-        catch { return false }
+    nonisolated static func applySystemDNS(_ servers: [String]) async -> Bool {
+        guard let svc = await defaultNetworkService() else { return false }
+        return await Task.detached(priority: .userInitiated) {
+            let p = Process()
+            p.executableURL = URL(fileURLWithPath: "/usr/sbin/networksetup")
+            p.arguments = ["-setdnsservers", svc] + (servers.isEmpty ? ["Empty"] : servers)
+            p.standardOutput = Pipe(); p.standardError = Pipe()
+            do { try p.run(); p.waitUntilExit(); return p.terminationStatus == 0 }
+            catch { return false }
+        }.value
     }
 
     /// Replace the known-unreliable geodata.kelee.one geox-url entries with the
@@ -642,20 +639,20 @@ import SwiftUI
             _ = try? await URLSession.shared.data(for: req)
         }
 
-        // A root kernel can only be stopped by the helper; but when upgrading
-        // user→root the *old* kernel was started by the app via Process (the
-        // helper never managed it, so stopMihomo can't kill it). So always run
-        // killall as a fallback — otherwise the old user-mode kernel survives,
-        // ensureRunning sees it reachable and early-returns, and the root upgrade
-        // silently never happens (then TUN can't be created).
-        if isRoot, let helper = XPCManager.shared.helper() {
-            _ = await withCheckedContinuation { (cont: CheckedContinuation<Bool, Never>) in
-                helper.stopMihomo { ok in cont.resume(returning: ok) }
+        // Perform stopping on a background thread to avoid blocking the Main Actor
+        await Task.detached(priority: .userInitiated) {
+            if await XPCManager.shared.verifyConnectivity() {
+                if let helper = XPCManager.shared.helper() {
+                    _ = await withCheckedContinuation { (cont: CheckedContinuation<Bool, Never>) in
+                        helper.stopMihomo { ok in cont.resume(returning: ok) }
+                    }
+                }
             }
-        }
-        let t = Process(); t.executableURL = URL(fileURLWithPath: "/usr/bin/killall")
-        t.arguments = ["-9", "mihomo"]
-        try? t.run(); t.waitUntilExit()
+            let t = Process(); t.executableURL = URL(fileURLWithPath: "/usr/bin/killall")
+            t.arguments = ["-9", "mihomo"]
+            t.standardOutput = Pipe(); t.standardError = Pipe()
+            try? t.run(); t.waitUntilExit()
+        }.value
 
         // Give it a moment to release ports / the binary
         try? await Task.sleep(nanoseconds: 500_000_000)

@@ -43,17 +43,27 @@ final class KernelManager: ObservableObject {
     func activateBuiltin() async {
         let fm = FileManager.default
         guard let bundled = Bundle.main.url(forResource: "mihomo", withExtension: nil) else {
-            note = "内置内核缺失（打包未含 mihomo）"; return
+            await MainActor.run { self.note = "内置内核缺失（打包未含 mihomo）" }; return
         }
+        
         await EngineControl.shared.stopKernel()   // release bin/mihomo before overwrite
-        do {
-            if fm.fileExists(atPath: binPath) { try fm.removeItem(atPath: binPath) }
-            try fm.copyItem(at: bundled, to: URL(fileURLWithPath: binPath))
-            try fm.setAttributes([.posixPermissions: 0o755], ofItemAtPath: binPath)
+        
+        let ok = await Task.detached(priority: .userInitiated) {
+            do {
+                if fm.fileExists(atPath: self.binPath) { try fm.removeItem(atPath: self.binPath) }
+                try fm.copyItem(at: bundled, to: URL(fileURLWithPath: self.binPath))
+                try fm.setAttributes([.posixPermissions: 0o755], ofItemAtPath: self.binPath)
+                return true
+            } catch {
+                return false
+            }
+        }.value
+
+        if ok {
             activeTag = "内置"
-            note = "已切换至内置内核，正在启动…"
-        } catch {
-            note = "切换失败：\(error.localizedDescription)"
+            await MainActor.run { self.note = "已切换至内置内核，正在启动…" }
+        } else {
+            await MainActor.run { self.note = "切换失败：文件操作错误" }
         }
         await EngineControl.shared.launch()
     }
@@ -63,17 +73,26 @@ final class KernelManager: ObservableObject {
         if tag == "内置" { await activateBuiltin(); return }
         let src = dir + "/\(tag)/mihomo"
         let fm = FileManager.default
-        guard fm.fileExists(atPath: src) else { note = "内核文件缺失"; return }
+        guard fm.fileExists(atPath: src) else { await MainActor.run { self.note = "内核文件缺失" }; return }
 
         await EngineControl.shared.stopKernel()   // release bin/mihomo before overwrite
-        do {
-            if fm.fileExists(atPath: binPath) { try fm.removeItem(atPath: binPath) }
-            try fm.copyItem(atPath: src, toPath: binPath)
-            try fm.setAttributes([.posixPermissions: 0o755], ofItemAtPath: binPath)
+        
+        let ok = await Task.detached(priority: .userInitiated) {
+            do {
+                if fm.fileExists(atPath: self.binPath) { try fm.removeItem(atPath: self.binPath) }
+                try fm.copyItem(atPath: src, toPath: self.binPath)
+                try fm.setAttributes([.posixPermissions: 0o755], ofItemAtPath: self.binPath)
+                return true
+            } catch {
+                return false
+            }
+        }.value
+
+        if ok {
             activeTag = tag
-            note = "已启用 \(tag)，正在启动…"
-        } catch {
-            note = "启用失败：\(error.localizedDescription)"
+            await MainActor.run { self.note = "已启用 \(tag)，正在启动…" }
+        } else {
+            await MainActor.run { self.note = "启用失败：文件操作错误" }
         }
         await EngineControl.shared.launch()
     }
@@ -113,16 +132,31 @@ final class KernelManager: ObservableObject {
         let fm = FileManager.default
         let tagDir = dir + "/\(latestTag)"
         try? fm.createDirectory(atPath: tagDir, withIntermediateDirectories: true)
-        // decompress .gz → mihomo
+        
+        // decompress .gz → mihomo on background thread
         let out = tagDir + "/mihomo"
-        let p = Process(); p.executableURL = URL(fileURLWithPath: "/usr/bin/gunzip")
-        p.arguments = ["-c", tmp.path]
-        let outFile = FileManager.default.createFile(atPath: out, contents: nil)
-        guard outFile, let fh = FileHandle(forWritingAtPath: out) else { note = "写入失败"; return }
-        p.standardOutput = fh
-        do { try p.run(); p.waitUntilExit(); try? fh.close() } catch { note = "解压失败"; return }
-        try? fm.setAttributes([.posixPermissions: 0o755], ofItemAtPath: out)
-        progress = 1; scanInstalled()
-        note = "已下载 \(latestTag)（\(channel == "alpha" ? "Alpha" : "正式版")）"
+        let ok = await Task.detached(priority: .userInitiated) {
+            let p = Process(); p.executableURL = URL(fileURLWithPath: "/usr/bin/gunzip")
+            p.arguments = ["-c", tmp.path]
+            guard FileManager.default.createFile(atPath: out, contents: nil),
+                  let fh = FileHandle(forWritingAtPath: out) else { return false }
+            p.standardOutput = fh
+            do {
+                try p.run()
+                p.waitUntilExit()
+                try? fh.close()
+                return p.terminationStatus == 0
+            } catch {
+                return false
+            }
+        }.value
+
+        if ok {
+            try? fm.setAttributes([.posixPermissions: 0o755], ofItemAtPath: out)
+            progress = 1; scanInstalled()
+            note = "已下载 \(latestTag)（\(channel == "alpha" ? "Alpha" : "正式版")）"
+        } else {
+            note = "解压失败"
+        }
     }
 }

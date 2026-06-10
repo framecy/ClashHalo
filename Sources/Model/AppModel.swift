@@ -45,13 +45,13 @@ import ServiceManagement
     @Published var nodes: [String: Node] = [:]    // name → node
     @Published var testing: Set<String> = []
 
-    // Connections (prevConnBytes/seenConnIDs/lastDownTotal are read in AppModel+Connections)
+    // Connections (prevConnBytes/lastDownTotal are read in AppModel+Connections)
     @Published var conns: [Conn] = []
     @Published var closedConnections: [Conn] = []
     @Published var dash = DashStats()   // precomputed once per snapshot (perf)
     var prevConnBytes: [String: (up: Int64, down: Int64)] = [:]
     var prevConnsMap: [String: Conn] = [:]
-    var seenConnIDs = Set<String>()
+    var totalConnsCount = 0
 
     // Logs
     @Published var logs: [Log] = []
@@ -108,6 +108,8 @@ import ServiceManagement
     @Published var closedConns = 0
     @Published var appMemoryMB = 0.0
     var lastDownTotal: Int64 = 0
+    var lastCacheFlush = Date.distantPast
+    var lastInterface: String? = nil
 
     // Toast
     @Published var toast: String?
@@ -315,19 +317,41 @@ import ServiceManagement
 
     @MainActor private func handleNetworkChange(online: Bool) {
         guard !sleeping else { return }   // ignore transient state during sleep/wake
-        guard networkOnline != online else { return }
+        let onlineChanged = networkOnline != online
         networkOnline = online
-        if !online && systemProxyOn {
-            // Network offline: disable system proxy immediately to prevent
-            // all traffic being blocked by a proxy pointing to a dead kernel.
-            let port = (configs["mixed-port"] as? Int) ?? (configs["port"] as? Int) ?? 7890
+        
+        if online {
+            // Re-sync state when coming back online or when path changes
             Task {
-                _ = await engine.setSystemProxy(enabled: false, port: port)
-                systemProxyOn = false
-                // Tunnel DNS points into a TUN device whose kernel is now
-                // unreachable — restore the real resolver so DNS keeps working.
+                await api.probe()
+                if api.reachable {
+                    await refreshConfigs()
+                    // If TUN is supposed to be on, ensure it's healthy and interface is pinned
+                    if tunOn && !engine.isBusy {
+                        let currentIface = await EngineControl.defaultInterface()
+                        if onlineChanged || (currentIface != nil && currentIface != lastInterface) {
+                            if let iface = currentIface { lastInterface = iface }
+                            engine.isBusy = true
+                            defer { engine.isBusy = false }
+                            await applyTUNState(true)
+                        }
+                    }
+                }
+            }
+        } else if onlineChanged {
+            // Network offline: disable system proxy and restore DNS to prevent
+            // all traffic being blocked by a proxy pointing to a dead kernel.
+            if systemProxyOn {
+                let port = (configs["mixed-port"] as? Int) ?? (configs["port"] as? Int) ?? 7890
+                Task {
+                    _ = await engine.setSystemProxy(enabled: false, port: port)
+                    systemProxyOn = false
+                    showToast("网络断开，已自动关闭系统代理")
+                }
+            }
+            // Always try to restore DNS when offline to be safe
+            Task {
                 await restoreTunnelDNS()
-                showToast("网络断开，已自动关闭系统代理")
             }
         }
     }
