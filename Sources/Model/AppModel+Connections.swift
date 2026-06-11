@@ -23,43 +23,59 @@ extension AppModel {
         }
         
         let items = s.connections ?? []
-        var bytes: [String: (up: Int64, down: Int64)] = [:]
-        var activeIDs = Set<String>()
         let hour = Calendar.current.component(.hour, from: Date())
         
-        for c in items {
-            activeIDs.insert(c.id)
-            if prevConnsMap[c.id] == nil { totalConnsCount += 1 }
-            let prev = prevConnBytes[c.id]
-            let upRate = prev.map { max(0, c.upload - $0.up) } ?? 0
-            let downRate = prev.map { max(0, c.download - $0.down) } ?? 0
-            bytes[c.id] = (c.upload, c.download)
+        // Memory Optimization: Skip expensive single-connection diffing and classification
+        // unless the user is actually looking at the dashboard or connections page.
+        // history.record() calls within this loop are the main culprit for background CPU/memory churn.
+        let needDetailedStats = isMainWindowVisible || isMenuBarVisible
+        
+        if needDetailedStats {
+            var bytes: [String: (up: Int64, down: Int64)] = [:]
+            var activeIDs = Set<String>()
             
-            // attribute this connection's byte delta to its category → history
-            let cat = (c.chains.first == "DIRECT" || c.chains.contains("DIRECT")) ? "direct"
-                    : (c.chains.first == "REJECT" || c.chains.contains("REJECT")) ? "reject" : "proxy"
-            history.record(category: cat, down: Int64(downRate), up: Int64(upRate), hour: hour)
-        }
-        prevConnBytes = bytes
-        
-        // Clean up prevConnsMap for closed connections to keep count accurate
-        var nextConnsMap: [String: Conn] = [:]
-        for id in activeIDs {
-            if let existing = prevConnsMap[id] {
-                nextConnsMap[id] = existing
-            } else {
-                // Dummy Conn just to track seen IDs in map
-                nextConnsMap[id] = Conn(
-                    id: id, host: "", dstIP: "", srcIP: "", port: "", network: "",
-                    process: "", processPath: "", chain: "", group: "", node: "",
-                    rule: "", ruleType: "", up: 0, down: 0, upRate: 0, downRate: 0, start: ""
-                )
+            for c in items {
+                activeIDs.insert(c.id)
+                if prevConnsMap[c.id] == nil { totalConnsCount += 1 }
+                let prev = prevConnBytes[c.id]
+                let upRate = prev.map { max(0, c.upload - $0.up) } ?? 0
+                let downRate = prev.map { max(0, c.download - $0.down) } ?? 0
+                bytes[c.id] = (c.upload, c.download)
+                
+                // attribute this connection's byte delta to its category → history
+                let cat = (c.chains.first == "DIRECT" || c.chains.contains("DIRECT")) ? "direct"
+                        : (c.chains.first == "REJECT" || c.chains.contains("REJECT")) ? "reject" : "proxy"
+                history.record(category: cat, down: Int64(downRate), up: Int64(upRate), hour: hour)
             }
+            prevConnBytes = bytes
+            
+            // Clean up prevConnsMap for closed connections to keep count accurate
+            var nextConnsMap: [String: Conn] = [:]
+            for id in activeIDs {
+                if let existing = prevConnsMap[id] {
+                    nextConnsMap[id] = existing
+                } else {
+                    // Use a minimal reference instead of full Conn object if possible,
+                    // but keeping it for compatibility with existing logic for now.
+                    // Just ensure we don't hold stale connections.
+                    nextConnsMap[id] = Conn(
+                        id: id, host: "", dstIP: "", srcIP: "", port: "", network: "",
+                        process: "", processPath: "", chain: "", group: "", node: "",
+                        rule: "", ruleType: "", up: 0, down: 0, upRate: 0, downRate: 0, start: ""
+                    )
+                }
+            }
+            prevConnsMap = nextConnsMap
+            activeConnectionsCount = activeIDs.count
+        } else {
+            // Background idle: Only sync basic count
+            activeConnectionsCount = items.count
+            // Clear maps to free up heap space immediately when going background
+            if !prevConnBytes.isEmpty { prevConnBytes.removeAll(keepingCapacity: false) }
+            if !prevConnsMap.isEmpty { prevConnsMap.removeAll(keepingCapacity: false) }
         }
-        prevConnsMap = nextConnsMap
         
-        activeConnectionsCount = activeIDs.count
-        closedConns = max(0, totalConnsCount - activeIDs.count)
+        closedConns = max(0, totalConnsCount - activeConnectionsCount)
         history.flushIfNeeded()
         lastDownTotal = s.downloadTotal
         appMemoryMB = Double(Self.residentMemoryBytes()) / 1_000_000
