@@ -234,10 +234,14 @@ import SwiftUI
     /// reference exactly these providers. Returns false on read failure.
     @discardableResult
     func writeProxyProviders(_ providers: [(name: String, url: String)]) -> Bool {
+        let oldNames = Set(proxyProviders().map { $0.name })
+        let newNames = Set(providers.map { $0.name })
+        let deleted = oldNames.subtracting(newNames)
+
         guard let text = try? String(contentsOfFile: configFilePath, encoding: .utf8) else { return false }
         var lines = text.components(separatedBy: "\n")
 
-        // Build the new block.
+        // 1. Build the new proxy-providers block.
         var block: [String] = []
         if !providers.isEmpty {
             block.append("proxy-providers:")
@@ -255,7 +259,8 @@ import SwiftUI
                 ]
             }
         }
-        // Replace existing proxy-providers block, else insert before proxy-groups.
+
+        // 2. Replace existing proxy-providers block, else insert before proxy-groups.
         if let start = lines.firstIndex(where: { $0.hasPrefix("proxy-providers:") }) {
             var end = start + 1
             while end < lines.count, lines[end].isEmpty || lines[end].hasPrefix(" ") || lines[end].hasPrefix("\t") { end += 1 }
@@ -265,11 +270,54 @@ import SwiftUI
             lines.insert(contentsOf: block + [""], at: at)
         }
 
-        // Sync the first group that uses `use:` to reference all provider names.
-        if let u = lines.firstIndex(where: { $0.hasPrefix("    use:") }) {
-            var j = u + 1
-            while j < lines.count, lines[j].hasPrefix("      ") { j += 1 }   // existing 6-space items
-            lines.replaceSubrange((u + 1)..<j, with: providers.map { "      - \($0.name)" })
+        // 3. Cleanup all groups: remove 'deleted' references and sync the first group.
+        var firstUseRange: Range<Int>? = nil
+        var i = 0
+        while i < lines.count {
+            let line = lines[i]
+            if line.trimmingCharacters(in: .whitespaces).hasPrefix("use:") {
+                // Determine indentation of the list items (usually +2 spaces from 'use:')
+                let useIndent = line.prefix(while: { $0 == " " || $0 == "\t" })
+                var j = i + 1
+                while j < lines.count {
+                    let subLine = lines[j]
+                    if subLine.trimmingCharacters(in: .whitespaces).isEmpty { j += 1; continue }
+                    guard subLine.hasPrefix(useIndent) && subLine.count > useIndent.count else { break }
+                    
+                    let trimmed = subLine.trimmingCharacters(in: .whitespaces)
+                    if trimmed.hasPrefix("- ") {
+                        let name = trimmed.dropFirst(2).trimmingCharacters(in: .whitespaces)
+                        if deleted.contains(name) {
+                            lines.remove(at: j)
+                            continue // check next line at same index
+                        }
+                    }
+                    j += 1
+                }
+                
+                // Record the first managed group (4-space 'use:') to sync all providers
+                if firstUseRange == nil && line.hasPrefix("    use:") {
+                    firstUseRange = (i + 1)..<j
+                } else {
+                    // Update i to avoid re-processing this block's items as 'use:' lines
+                    i = j - 1
+                }
+            }
+            i += 1
+        }
+
+        // 4. For the primary group, ensure it has ALL current providers.
+        if let range = firstUseRange {
+            // Need to re-find it if indices shifted, but since we only removed lines
+            // before it or updated 'i', let's just use the current state.
+            // Actually, it's safer to just do a second pass or be very careful.
+            // Since we've already cleaned 'deleted' from it, we just replace it.
+            // To be safe, we re-find the first "    use:" after step 3's deletions.
+            if let u = lines.firstIndex(where: { $0.hasPrefix("    use:") }) {
+                var j = u + 1
+                while j < lines.count, lines[j].hasPrefix("      ") { j += 1 }
+                lines.replaceSubrange((u + 1)..<j, with: providers.map { "      - \($0.name)" })
+            }
         }
 
         try? lines.joined(separator: "\n").write(toFile: configFilePath, atomically: true, encoding: .utf8)
