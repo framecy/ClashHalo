@@ -11,11 +11,6 @@ struct DnsPage: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            PageHead(title: "DNS 缓存", desc: "内置 DNS 服务器 · Fake‑IP 映射与条目缓存分析") {
-                Button { M.flushDnsCache() } label: { Label("刷新缓存", systemImage: "arrow.clockwise") }.controlSize(.small)
-                Button { M.clearAllCache() } label: { Label("清空", systemImage: "trash") }.controlSize(.small)
-            }
-
             ScrollView {
                 VStack(spacing: DS.Spacing.l) {
                     // DNS settings (editable) — 顶部曾有硬编码的假统计(平均解析/池/缓存),
