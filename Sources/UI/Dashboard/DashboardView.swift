@@ -36,7 +36,7 @@ struct DashboardPage: View {
                         BarStat("总上传", fmtBytes(Double(M.uploadTotal)), "arrow.up.circle.fill", .red)
                             .frame(height: DS.Layout.statHeight)
                             .frame(maxWidth: .infinity)
-                        BarStat("连接数", "\(M.conns.count)", "link.circle.fill", .cyan)
+                        BarStat("连接数", "\(M.activeConnectionsCount)", "link.circle.fill", .cyan)
                             .frame(height: DS.Layout.statHeight)
                             .frame(maxWidth: .infinity)
                         BarStat("访问目标", "\(uniqueHosts)", "scope", .orange)
@@ -74,7 +74,7 @@ struct DashboardPage: View {
                             .gridCellColumns(3)
 
                             VStack(spacing: 16) {
-                                MiniStat("活跃连接", "\(M.conns.count)", sub: "已关闭 \(M.closedConns)", icon: "link", color: .cyan)
+                                MiniStat("活跃连接", "\(M.activeConnectionsCount)", sub: "已关闭 \(M.closedConns)", icon: "link", color: .cyan)
                                     .frame(height: DS.Layout.statHeight)
                                 MiniStat("核心内存", fmtBytes(Double(M.memory)), sub: nil, icon: "memorychip", color: .purple)
                                     .frame(height: DS.Layout.statHeight)

@@ -20,7 +20,23 @@ import ServiceManagement
     let history = TrafficHistory()
 
     // Navigation + theme
-    @Published var route = "dashboard"
+    @Published var route = "dashboard" {
+        didSet {
+            if route == "connections" || route == "dns" {
+                conns = cachedConns
+                closedConnections = cachedClosedConnections
+            }
+            if route == "logs" {
+                logs = cachedLogs
+            }
+            reconcileActiveStreams()
+        }
+    }
+    @Published var isMainWindowVisible = false {
+        didSet {
+            reconcileActiveStreams()
+        }
+    }
     @AppStorage("ui.accent") var accentRaw = "green"
     var accent: Color {
         let colors: [String: Color] = [
@@ -48,6 +64,9 @@ import ServiceManagement
     // Connections (prevConnBytes/lastDownTotal are read in AppModel+Connections)
     @Published var conns: [Conn] = []
     @Published var closedConnections: [Conn] = []
+    @Published var activeConnectionsCount = 0
+    var cachedConns: [Conn] = []
+    var cachedClosedConnections: [Conn] = []
     @Published var dash = DashStats()   // precomputed once per snapshot (perf)
     var prevConnBytes: [String: (up: Int64, down: Int64)] = [:]
     var prevConnsMap: [String: Conn] = [:]
@@ -55,6 +74,7 @@ import ServiceManagement
 
     // Logs
     @Published var logs: [Log] = []
+    var cachedLogs: [Log] = []
     /// Kernel log subscription level (server-side filter). Defaults to `warning`
     /// so the panel isn't flooded by one line per connection (info level).
     @AppStorage("ui.logLevel") var logLevel = "warning"
@@ -195,37 +215,56 @@ import ServiceManagement
         reconnectTask = nil   // connected — no retry pending
 
         syncSystemProxyState()   // re-sync after reconnect in case proxy was toggled externally
-        startStreams()
-        startPolling()
+        reconcileActiveStreams()
     }
 
-    private func startStreams() {
-        trafficWS = api.stream("/traffic", type: TrafficTick.self) { [weak self] t in
-            Task { @MainActor in self?.onTraffic(t) }
+    private func reconcileActiveStreams() {
+        guard reachable && !sleeping else {
+            stopStreams()
+            return
         }
-        connWS = api.stream("/connections", type: ConnectionsSnapshot.self) { [weak self] s in
-            Task { @MainActor in self?.onConnections(s) }
-        }
-        logWS = api.stream("/logs?level=\(logLevel)", type: LogTick.self) { [weak self] l in
-            Task { @MainActor in self?.onLog(l) }
-        }
-        // mihomo only computes runtime memory while /memory is being subscribed;
-        // without this stream the kernel reports memory=0 (both here and in the
-        // /connections snapshot). First frame is 0, subsequent frames are real.
-        memWS = api.stream("/memory", type: MemoryTick.self) { [weak self] m in
-            Task { @MainActor in if m.inuse > 0 { self?.memory = m.inuse } }
+
+        if isMainWindowVisible {
+            if trafficWS == nil {
+                trafficWS = api.stream("/traffic", type: TrafficTick.self) { [weak self] t in
+                    Task { @MainActor in self?.onTraffic(t) }
+                }
+            }
+            
+            reconcileConnectionsTrackingMode()
+            
+            if logWS == nil {
+                logWS = api.stream("/logs?level=\(logLevel)", type: LogTick.self) { [weak self] l in
+                    Task { @MainActor in self?.onLog(l) }
+                }
+            }
+            if memWS == nil {
+                memWS = api.stream("/memory", type: MemoryTick.self) { [weak self] m in
+                    Task { @MainActor in if m.inuse > 0 { self?.memory = m.inuse } }
+                }
+            }
+            startPolling()
+        } else {
+            stopStreams()
+            
+            conns.removeAll(keepingCapacity: false)
+            closedConnections.removeAll(keepingCapacity: false)
+            cachedConns.removeAll(keepingCapacity: false)
+            cachedClosedConnections.removeAll(keepingCapacity: false)
+            logs.removeAll(keepingCapacity: false)
+            cachedLogs.removeAll(keepingCapacity: false)
+            
+            logKernel("主窗口不可见，已休眠全部数据流并清空内存缓存")
         }
     }
 
-    /// Change the log subscription level (server-side filter) and reconnect just
-    /// the log stream. Clears the buffer so stale higher-volume lines don't linger.
     func changeLogLevel(_ level: String) {
         guard level != logLevel else { return }
         logLevel = level
         logs.removeAll(keepingCapacity: true)
         logBuffer.removeAll(keepingCapacity: true)
         logWS?.cancel()
-        guard reachable else { return }
+        guard reachable && isMainWindowVisible else { return }
         logWS = api.stream("/logs?level=\(level)", type: LogTick.self) { [weak self] l in
             Task { @MainActor in self?.onLog(l) }
         }
@@ -234,16 +273,60 @@ import ServiceManagement
     private func stopStreams() {
         trafficWS?.cancel(); connWS?.cancel(); logWS?.cancel(); memWS?.cancel()
         trafficWS = nil; connWS = nil; logWS = nil; memWS = nil
+        pollTimer?.invalidate(); pollTimer = nil
         pollTask?.cancel(); pollTask = nil
     }
 
     private func startPolling() {
         pollTask?.cancel()
         pollTask = Task { [weak self] in
-            while let self, !Task.isCancelled, self.reachable {
+            while let self, !Task.isCancelled, self.reachable, self.isMainWindowVisible {
                 await self.refreshProxies()
                 await self.refreshConfigs()
                 try? await Task.sleep(nanoseconds: 3_000_000_000)
+            }
+        }
+    }
+
+    private var pollTimer: Timer?
+
+    private func reconcileConnectionsTrackingMode() {
+        pollTimer?.invalidate()
+        pollTimer = nil
+
+        guard reachable && !sleeping && isMainWindowVisible else {
+            if connWS != nil {
+                connWS?.cancel()
+                connWS = nil
+            }
+            return
+        }
+
+        if route == "connections" || route == "dns" {
+            if connWS == nil {
+                logKernel("进入前台页面，启动实时连接数据流...")
+                connWS = api.stream("/connections", type: ConnectionsSnapshot.self) { [weak self] s in
+                    Task { @MainActor in self?.onConnections(s) }
+                }
+            }
+        } else {
+            if connWS != nil {
+                logKernel("切到后台页面，断开实时连接数据流，降低解析开销")
+                connWS?.cancel()
+                connWS = nil
+            }
+            
+            logKernel("启动后台慢速连接 HTTP 轮询...")
+            pollTimer = Timer.scheduledTimer(withTimeInterval: 6.0, repeats: true) { [weak self] _ in
+                Task {
+                    guard let self else { return }
+                    do {
+                        let snapshot = try await self.api.fetchConnectionsSnapshot()
+                        await self.onConnections(snapshot)
+                    } catch {
+                        // 忽略后台轮询中的单次错误
+                    }
+                }
             }
         }
     }
@@ -258,9 +341,12 @@ import ServiceManagement
     }
     private func flushLogs() {
         guard !logBuffer.isEmpty else { return }
-        logs.append(contentsOf: logBuffer)
+        cachedLogs.append(contentsOf: logBuffer)
         logBuffer.removeAll(keepingCapacity: true)
-        if logs.count > 500 { logs = Array(logs.suffix(500)) }
+        if cachedLogs.count > 150 { cachedLogs = Array(cachedLogs.suffix(150)) }
+        if route == "logs" {
+            logs = cachedLogs
+        }
     }
 
     // MARK: Toast

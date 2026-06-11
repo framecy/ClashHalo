@@ -137,6 +137,7 @@ import SwiftUI
         hardenControllerConfig()
         normalizeGeoxURL()
         forceTUNDisabled()   // TUN is runtime-only (root) — never auto-enable from disk
+        injectMemoryOptimization()
     }
 
     /// Force `tun.enable: false` in the on-disk config. TUN requires root and must
@@ -430,6 +431,68 @@ import SwiftUI
         }
     }
 
+    /// Inject Kernel Memory Optimization: mmap for geodata & LRU Cache for DNS
+    func injectMemoryOptimization() {
+        let path = configFilePath
+        guard let text = try? String(contentsOfFile: path, encoding: .utf8) else { return }
+        var lines = text.components(separatedBy: "\n")
+        var hasGeodataMode = false
+        var inDns = false
+        var hasDnsCacheAlg = false
+        var hasDnsSize = false
+        var dnsIndex = -1
+        var changed = false
+        
+        func scalar(_ line: String, _ key: String) -> String? {
+            guard !line.hasPrefix(" "), !line.hasPrefix("\t"), line.hasPrefix(key) else { return nil }
+            let after = line.dropFirst(key.count)
+            guard after.first == ":" else { return nil }
+            return after.dropFirst().trimmingCharacters(in: .whitespaces)
+        }
+        
+        for i in lines.indices {
+            let line = lines[i]
+            if scalar(line, "geodata-mode") != nil {
+                hasGeodataMode = true
+            }
+            if !line.hasPrefix(" ") && !line.hasPrefix("\t") {
+                inDns = line.hasPrefix("dns:")
+                if inDns { dnsIndex = i }
+                continue
+            }
+            if inDns {
+                let trimmed = line.trimmingCharacters(in: .whitespaces)
+                if trimmed.hasPrefix("cache-algorithm:") {
+                    hasDnsCacheAlg = true
+                }
+                if trimmed.hasPrefix("size:") {
+                    hasDnsSize = true
+                }
+            }
+        }
+        
+        if !hasGeodataMode {
+            lines.insert("geodata-mode: true", at: 0)
+            changed = true
+            if dnsIndex != -1 { dnsIndex += 1 }
+        }
+        if dnsIndex != -1 {
+            var insertPos = dnsIndex + 1
+            if !hasDnsSize {
+                lines.insert("  size: 1500", at: insertPos)
+                insertPos += 1
+                changed = true
+            }
+            if !hasDnsCacheAlg {
+                lines.insert("  cache-algorithm: lru", at: insertPos)
+                changed = true
+            }
+        }
+        if changed {
+            try? lines.joined(separator: "\n").write(toFile: path, atomically: true, encoding: .utf8)
+        }
+    }
+
     /// Cryptographically-random, URL-safe secret for the control plane.
     static func randomSecret() -> String {
         let bytes = (0..<24).map { _ in UInt8.random(in: 0...255) }
@@ -495,6 +558,10 @@ import SwiftUI
                 let process = Process()
                 process.executableURL = URL(fileURLWithPath: kernelPath)
                 process.arguments = ["-d", appSupport]
+                var env = ProcessInfo.processInfo.environment
+                env["GOGC"] = "50"
+                env["GODEBUG"] = "madvdontneed=1"
+                process.environment = env
                 do {
                     try process.run()
                     runningAsRoot = false
@@ -620,6 +687,7 @@ import SwiftUI
             try yaml.write(toFile: path, atomically: true, encoding: .utf8)
             hardenControllerConfig()   // ensure controller binds loopback + strong secret
             forceTUNDisabled()         // TUN is runtime-only — don't let a profile auto-enable it
+            injectMemoryOptimization() // Apply kernel memory optimization settings
             try await api.reloadConfig(path: path)
             return (true, nil)
         } catch {
@@ -722,27 +790,39 @@ import SwiftUI
         return await Self.setSystemProxyFallback(enabled: enabled, port: port)
     }
 
-    /// Set/clear the macOS system HTTP/HTTPS/SOCKS proxy via osascript fallback.
+    /// Set/clear the macOS system HTTP/HTTPS/SOCKS proxy via service loop fallback.
     static func setSystemProxyFallback(enabled: Bool, port: Int) async -> Bool {
         let shell: String
         if enabled {
             shell = """
-            dev=$(route -n get default 2>/dev/null | awk '/interface:/{print $2}'); \\
-            svc=$(networksetup -listnetworkserviceorder | grep -B1 \\"Device: $dev)\\" | head -1 | sed -E 's/^\\\\([0-9]+\\\\) //'); \\
-            networksetup -setwebproxy \\"$svc\\" 127.0.0.1 \(port); \\
-            networksetup -setsecurewebproxy \\"$svc\\" 127.0.0.1 \(port); \\
-            networksetup -setsocksfirewallproxy \\"$svc\\" 127.0.0.1 \(port)
+            networksetup -listallnetworkservices | tail -n +2 | while read -r svc; do
+                [[ "$svc" == \\** ]] && continue
+                networksetup -setwebproxy "$svc" 127.0.0.1 \(port) 2>/dev/null || true
+                networksetup -setsecurewebproxy "$svc" 127.0.0.1 \(port) 2>/dev/null || true
+                networksetup -setsocksfirewallproxy "$svc" 127.0.0.1 \(port) 2>/dev/null || true
+                networksetup -setwebproxystate "$svc" on 2>/dev/null || true
+                networksetup -setsecurewebproxystate "$svc" on 2>/dev/null || true
+                networksetup -setsocksfirewallproxystate "$svc" on 2>/dev/null || true
+            done
             """
         } else {
             shell = """
-            dev=$(route -n get default 2>/dev/null | awk '/interface:/{print $2}'); \\
-            svc=$(networksetup -listnetworkserviceorder | grep -B1 \\"Device: $dev)\\" | head -1 | sed -E 's/^\\\\([0-9]+\\\\) //'); \\
-            networksetup -setwebproxystate \\"$svc\\" off; \\
-            networksetup -setsecurewebproxystate \\"$svc\\" off; \\
-            networksetup -setsocksfirewallproxystate \\"$svc\\" off
+            networksetup -listallnetworkservices | tail -n +2 | while read -r svc; do
+                [[ "$svc" == \\** ]] && continue
+                networksetup -setwebproxystate "$svc" off 2>/dev/null || true
+                networksetup -setsecurewebproxystate "$svc" off 2>/dev/null || true
+                networksetup -setsocksfirewallproxystate "$svc" off 2>/dev/null || true
+            done
             """
         }
-        let script = "do shell script \"\(shell)\" with administrator privileges"
+        
+        // Try running locally without admin prompt first
+        if await runLocalShell(shell) {
+            return true
+        }
+        
+        let escaped = shell.replacingOccurrences(of: "\\", with: "\\\\").replacingOccurrences(of: "\"", with: "\\\"")
+        let script = "do shell script \"\(escaped)\" with administrator privileges"
         return await withCheckedContinuation { cont in
             DispatchQueue.global().async {
                 let p = Process()
@@ -750,6 +830,25 @@ import SwiftUI
                 p.arguments = ["-e", script]
                 do { try p.run(); p.waitUntilExit(); cont.resume(returning: p.terminationStatus == 0) }
                 catch { cont.resume(returning: false) }
+            }
+        }
+    }
+
+    private static func runLocalShell(_ shell: String) async -> Bool {
+        await withCheckedContinuation { cont in
+            DispatchQueue.global().async {
+                let p = Process()
+                p.executableURL = URL(fileURLWithPath: "/bin/sh")
+                p.arguments = ["-c", shell]
+                p.standardOutput = Pipe()
+                p.standardError = Pipe()
+                do {
+                    try p.run()
+                    p.waitUntilExit()
+                    cont.resume(returning: p.terminationStatus == 0)
+                } catch {
+                    cont.resume(returning: false)
+                }
             }
         }
     }
