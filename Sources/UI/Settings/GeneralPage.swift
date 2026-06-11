@@ -17,10 +17,12 @@ struct GeneralPage: View {
 
             // Premium flat tabs
             HStack(spacing: 24) {
+                Spacer()
                 tabButton("通用", icon: "gearshape", tag: "general")
                 tabButton("高级设置", icon: "slider.horizontal.3", tag: "advanced")
                 tabButton("权限", icon: "shield", tag: "privilege")
                 tabButton("关于", icon: "info.circle", tag: "about")
+                Spacer()
             }
             .padding(.horizontal, DS.Spacing.xxl)
             .padding(.bottom, DS.Spacing.l)
