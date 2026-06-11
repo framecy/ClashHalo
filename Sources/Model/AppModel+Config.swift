@@ -47,7 +47,12 @@ extension AppModel {
             _ = try? await api.patchConfig(["geox-url": geo])
             c["geox-url"] = geo
         }
-        configs = c
+        
+        // Deep compare to avoid unnecessary @Published triggers (RSS optimization)
+        if !(c as NSDictionary).isEqual(configs) {
+            configs = c
+        }
+        
         if let m = c["mode"] as? String { mode = m }
         // B9: a user-mode kernel cannot create the utun device (operation not
         // permitted), so even if the config declares tun.enable=true it is not

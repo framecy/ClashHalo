@@ -50,8 +50,8 @@ extension AppModel {
         let yaml = store.content(store.activeID)
         let order = parseProxyGroupsOrder(from: yaml)
 
-        // Sort groups strictly according to YAML order; unrecognized/GLOBAL go last
-        groups = gs.sorted { a, b in
+        // Update only if changed to avoid unnecessary SwiftUI re-evaluations (RSS optimization)
+        let sortedGroups = gs.sorted { a, b in
             let idxA = order.firstIndex(of: a.name) ?? 999
             let idxB = order.firstIndex(of: b.name) ?? 999
             if idxA != idxB {
@@ -61,7 +61,9 @@ extension AppModel {
             if b.name == "GLOBAL" { return true }
             return a.name < b.name
         }
-        nodes = ns
+        
+        if sortedGroups != groups { groups = sortedGroups }
+        if ns != nodes { nodes = ns }
     }
 
     func select(group: String, name: String) {
