@@ -6,21 +6,12 @@ import Foundation
 
 extension AppModel {
     func onTraffic(_ t: TrafficTick) {
-        // Publish the rounded rate only when it changes, to avoid churning the
-        // whole view tree every tick.
         if t.up != curUp { curUp = t.up }
         if t.down != curDown { curDown = t.down }
-        // Rolling window feeding the dashboard sparkline (replaces the removed
-        // mmap-backed Metal chart of the old engine).
-        downSeries.append(Double(t.down)); if downSeries.count > 120 { downSeries.removeFirst() }
-        upSeries.append(Double(t.up)); if upSeries.count > 120 { upSeries.removeFirst() }
     }
 
-    func onConnections(_ s: ConnectionsSnapshot) {
+    func recordHistoryOnly(from s: ConnectionsSnapshot) {
         uploadTotal = s.uploadTotal; downloadTotal = s.downloadTotal
-        // Only update on a real value; the snapshot's memory mirrors mihomo's
-        // internal counter which is 0 until the /memory stream warms it up (see
-        // startStreams). Guarding against 0 avoids flicker back to "0 B".
         if let m = s.memory, m > 0 {
             memory = m
             // Core Memory Guard: If core usage > 512MB, flush caches (max once per 30 mins)
@@ -32,10 +23,8 @@ extension AppModel {
         }
         
         let items = s.connections ?? []
-        var next: [Conn] = []
         var bytes: [String: (up: Int64, down: Int64)] = [:]
         var activeIDs = Set<String>()
-        var nextConnsMap: [String: Conn] = [:]
         let hour = Calendar.current.component(.hour, from: Date())
         
         for c in items {
@@ -45,63 +34,34 @@ extension AppModel {
             let upRate = prev.map { max(0, c.upload - $0.up) } ?? 0
             let downRate = prev.map { max(0, c.download - $0.down) } ?? 0
             bytes[c.id] = (c.upload, c.download)
+            
             // attribute this connection's byte delta to its category → history
             let cat = (c.chains.first == "DIRECT" || c.chains.contains("DIRECT")) ? "direct"
                     : (c.chains.first == "REJECT" || c.chains.contains("REJECT")) ? "reject" : "proxy"
             history.record(category: cat, down: Int64(downRate), up: Int64(upRate), hour: hour)
-            let conn = Conn(
-                id: c.id,
-                host: c.metadata.host?.isEmpty == false ? c.metadata.host! : (c.metadata.destinationIP ?? "?"),
-                dstIP: c.metadata.destinationIP ?? "?",
-                srcIP: c.metadata.sourceIP ?? "?",
-                port: c.metadata.destinationPort ?? "",
-                network: c.metadata.network.uppercased(),
-                process: c.metadata.process ?? "—",
-                processPath: c.metadata.processPath ?? "—",
-                chain: c.chains.reversed().joined(separator: " → "),
-                group: c.chains.last ?? "?",
-                node: c.chains.first ?? "?",
-                rule: c.rulePayload.isEmpty ? c.rule : "\(c.rule),\(c.rulePayload)",
-                ruleType: c.rule,
-                up: c.upload, down: c.download,
-                upRate: upRate, downRate: downRate,
-                start: c.start
-            )
-            next.append(conn)
-            nextConnsMap[c.id] = conn
         }
         prevConnBytes = bytes
         
-        var newClosed = [Conn]()
-        for (id, conn) in prevConnsMap {
-            if !activeIDs.contains(id) {
-                var closedConn = conn
-                closedConn.upRate = 0
-                closedConn.downRate = 0
-                newClosed.append(closedConn)
-            }
-        }
-        if !newClosed.isEmpty {
-            cachedClosedConnections.insert(contentsOf: newClosed, at: 0)
-            if cachedClosedConnections.count > 150 {
-                cachedClosedConnections.removeLast(cachedClosedConnections.count - 150)
+        // Clean up prevConnsMap for closed connections to keep count accurate
+        var nextConnsMap: [String: Conn] = [:]
+        for id in activeIDs {
+            if let existing = prevConnsMap[id] {
+                nextConnsMap[id] = existing
+            } else {
+                // Dummy Conn just to track seen IDs in map
+                nextConnsMap[id] = Conn(
+                    id: id, host: "", dstIP: "", srcIP: "", port: "", network: "",
+                    process: "", processPath: "", chain: "", group: "", node: "",
+                    rule: "", ruleType: "", up: 0, down: 0, upRate: 0, downRate: 0, start: ""
+                )
             }
         }
         prevConnsMap = nextConnsMap
         
-        cachedConns = next.sorted { $0.downRate + $0.upRate > $1.downRate + $1.upRate }
-        if route == "connections" || route == "dns" {
-            conns = cachedConns
-            closedConnections = cachedClosedConnections
-        }
         activeConnectionsCount = activeIDs.count
-        dash = Self.computeDash(next)   // single pass, once per snapshot
-
-        // closed-connection count (this session) = total seen − currently-active
         closedConns = max(0, totalConnsCount - activeIDs.count)
         history.flushIfNeeded()
         lastDownTotal = s.downloadTotal
-        // app RSS
         appMemoryMB = Double(Self.residentMemoryBytes()) / 1_000_000
     }
 
