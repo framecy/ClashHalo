@@ -4,20 +4,24 @@
 
 ## [0.4.8] - 2026-06-11
 
-构建 0.4.8 build 6 发布。深度优化图形缓冲区占用与状态机重绘压力。
+构建 0.4.8 build 7 发布。深度优化图形渲染、增强 UI 交互一致性与网络配置容错率。
 
 ### Fixed
+- **UI 交互与视图一致性**:
+  - **网络与设置页统一**: 重构 `NetworkHubPage` 布局结构，使其与 `GeneralPage` 共享一致的“标题->标签->内容”层级；统一了标签栏的内边距、图标激活态与居中布局。
+  - **图标渲染修复**: 修复部分系统图标（如 `network`, `scope`）因强制追加 `.fill` 导致点击选中时图标消失的渲染 Bug。
+  - **配置开关防抖**: 为 `NToggle` (多级嵌套开关) 引入「乐观 UI」机制，在发起网络 PATCH 请求前立即更新内存状态，彻底修复“嗅探”等页面开关点击后因高频轮询而导致的自动回弹现象。
 - **图形与渲染优化 (RSS 压制)**:
-  - **UI Throttle**: 仪表盘流量趋势图更新频率降至 2.0s（原 1.0s），显著降低 `owned unmapped (graphics)` 内存缓冲区的堆积。
-  - **Idempotent Updates**: 在 `refreshProxies` 和 `refreshConfigs` 引入深度内容校验，仅在数据真实变化时触发 `@Published` 更新，消除 90% 以上无效的全局视图 re-evaluation 及其产生的内存波动。
-  - **Decoding Pool**: 为所有 REST API (Proxies/Configs/Rules) 的 JSON 解码过程强制包裹 `autoreleasepool`。
-- **规则解析与 YAML 鲁棒性**:
-  - 修复 `YamlRuleASTEngine` 无法正确剥离规则行内 `#` 注释导致匹配失效的 Bug (Build 5)。
-  - 增强 `proxy-provider` 移除逻辑：自动清理配置文件中所有策略组引用 (Build 5)。
-- **内存优化与后台管理**:
-  - **Aggressive Reclamation**: 后台静默时显式清空字典缓冲区并丢弃容量 (Build 5)。
+  - 仪表盘流量趋势图更新频率降至 2.0s（原 1.0s），显著降低 `owned unmapped (graphics)` 内存缓冲区的堆积。
+  - 在 `refreshProxies` 和 `refreshConfigs` 引入深度内容校验，仅在数据真实变化时触发 `@Published` 更新，消除 90% 以上无效的全局视图 re-evaluation 及其产生的内存波动。
+  - 为所有 REST API (Proxies/Configs/Rules) 的 JSON 解码过程强制包裹 `autoreleasepool`。
+- **配置与后台逻辑**:
+  - 增强 `proxy-provider` 移除逻辑：自动清理配置文件中所有策略组（`proxy-groups`）引用，避免内核级配置回滚。
+  - 修复 `YamlRuleASTEngine` 无法正确剥离规则行内 `#` 注释导致匹配失效的 Bug。
+  - **Aggressive Reclamation**: 后台静默时显式清空连接缓存字典并丢弃容量。
 
 ### Added
+- **菜单栏仪表盘**: 在菜单栏下拉面板 (MenuBarPanel) 中新增实时的**“核心内存”与“应用内存”**指标双拼展示卡片。
 - **代理规则管理**: 新增独立的代理规则页面 (`RulesPage`) 和规则编辑表单 (`RuleFormView`)，支持查看和编辑代理规则。
 
 ## [0.4.7] - 2026-06-08
