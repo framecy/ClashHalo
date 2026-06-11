@@ -112,12 +112,12 @@ private func kvRow(_ l: String, _ v: String) -> some View {
 struct NetworkHubPage: View {
     @EnvironmentObject var M: AppModel
     @State private var tab = "network"
-    private let tabs: [(String, String, String)] = [
-        ("入站", "network", "arrow.down.right.circle"),
-        ("TUN", "tun", "shield.lefthalf.filled"),
-        ("DNS", "dns", "network"),
-        ("嗅探", "sniffer", "scope"),
-        ("内核", "kernel", "cpu")
+    private let tabs: [(String, String, String, String)] = [
+        ("入站", "network", "arrow.down.right.circle", "arrow.down.right.circle.fill"),
+        ("TUN", "tun", "shield.lefthalf.filled", "shield.lefthalf.filled"),
+        ("DNS", "dns", "network", "network"),
+        ("嗅探", "sniffer", "scope", "scope"),
+        ("内核", "kernel", "cpu", "cpu.fill")
     ]
 
     var body: some View {
@@ -131,8 +131,9 @@ struct NetworkHubPage: View {
             }
 
             HStack(spacing: 24) {
+                Spacer()
                 ForEach(tabs, id: \.1) { t in
-                    tabButton(t.0, icon: t.2, tag: t.1)
+                    tabButton(t.0, tag: t.1, icon: t.2, activeIcon: t.3)
                 }
                 Spacer()
             }
@@ -162,10 +163,8 @@ struct NetworkHubPage: View {
         }
     }
 
-    private func tabButton(_ label: String, icon: String, tag: String) -> some View {
+    private func tabButton(_ label: String, tag: String, icon: String, activeIcon: String) -> some View {
         let active = tab == tag
-        let activeIcon = icon.hasSuffix(".fill") ? icon : icon + ".fill"
-        
         return Button(action: { tab = tag }) {
             VStack(spacing: 6) {
                 Image(systemName: active ? activeIcon : icon)
