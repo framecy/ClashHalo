@@ -22,17 +22,20 @@ import ServiceManagement
     // Navigation + theme
     @Published var route = "dashboard" {
         didSet {
-            if route == "connections" || route == "dns" {
-                conns = cachedConns
-                closedConnections = cachedClosedConnections
-            }
-            if route == "logs" {
-                logs = cachedLogs
-            }
             reconcileActiveStreams()
         }
     }
     @Published var isMainWindowVisible = false {
+        didSet {
+            reconcileActiveStreams()
+        }
+    }
+    @Published var isMenuBarVisible = false {
+        didSet {
+            reconcileActiveStreams()
+        }
+    }
+    @Published var isConnectionsPageActive = false {
         didSet {
             reconcileActiveStreams()
         }
@@ -61,37 +64,25 @@ import ServiceManagement
     @Published var nodes: [String: Node] = [:]    // name → node
     @Published var testing: Set<String> = []
 
-    // Connections (prevConnBytes/lastDownTotal are read in AppModel+Connections)
-    @Published var conns: [Conn] = []
-    @Published var closedConnections: [Conn] = []
+    // Connections (temporary caches for compatibility)
     @Published var activeConnectionsCount = 0
     var cachedConns: [Conn] = []
     var cachedClosedConnections: [Conn] = []
-    @Published var dash = DashStats()   // precomputed once per snapshot (perf)
     var prevConnBytes: [String: (up: Int64, down: Int64)] = [:]
     var prevConnsMap: [String: Conn] = [:]
     var totalConnsCount = 0
 
-    // Logs
-    @Published var logs: [Log] = []
-    var cachedLogs: [Log] = []
-    /// Kernel log subscription level (server-side filter). Defaults to `warning`
-    /// so the panel isn't flooded by one line per connection (info level).
+    // Logs (level configuration is preserved)
     @AppStorage("ui.logLevel") var logLevel = "warning"
-    private var logBuffer: [Log] = []
-    private var logFlushTimer: Timer?
-    private var logSeq = 0
 
-    // Traffic chart (rolling window of download bytes/s)
-    @Published var downSeries: [Double] = Array(repeating: 0, count: 120)
-    @Published var upSeries: [Double] = Array(repeating: 0, count: 120)
+    // Traffic rate (numbers only, sparkline moved to DashboardViewModel)
     @Published var curDown: Int64 = 0
     @Published var curUp: Int64 = 0
 
     // Config
     @Published var configs: [String: Any] = [:]
 
-    // Rules (read-only; populated by refreshRules in AppModel+Config)
+    // Rules
     @Published var rules: [RuleEntry] = []
 
     // Kernel Logs (Startup/Process logs)
@@ -168,9 +159,6 @@ import ServiceManagement
         store.load()
         history.load()
         syncSystemProxyState()   // Read actual macOS proxy state so the toggle matches reality
-        logFlushTimer = Timer.scheduledTimer(withTimeInterval: 0.5, repeats: true) { [weak self] _ in
-            Task { @MainActor in self?.flushLogs() }
-        }
         Task { await reconnect() }
         startNetworkMonitor()
         installSignalHandlers()
@@ -224,55 +212,49 @@ import ServiceManagement
             return
         }
 
-        if isMainWindowVisible {
+        let activeUI = isMainWindowVisible || isMenuBarVisible
+
+        if activeUI {
             if trafficWS == nil {
                 trafficWS = api.stream("/traffic", type: TrafficTick.self) { [weak self] t in
                     Task { @MainActor in self?.onTraffic(t) }
                 }
             }
-            
-            reconcileConnectionsTrackingMode()
-            
-            if logWS == nil {
-                logWS = api.stream("/logs?level=\(logLevel)", type: LogTick.self) { [weak self] l in
-                    Task { @MainActor in self?.onLog(l) }
-                }
-            }
-            if memWS == nil {
-                memWS = api.stream("/memory", type: MemoryTick.self) { [weak self] m in
-                    Task { @MainActor in if m.inuse > 0 { self?.memory = m.inuse } }
-                }
-            }
             startPolling()
         } else {
-            stopStreams()
-            
-            conns.removeAll(keepingCapacity: false)
-            closedConnections.removeAll(keepingCapacity: false)
+            trafficWS?.cancel()
+            trafficWS = nil
+            pollTask?.cancel()
+            pollTask = nil
+        }
+
+        pollTimer?.invalidate()
+        pollTimer = nil
+        
+        if !isConnectionsPageActive {
+            logKernel("启动后台慢速连接 HTTP 轮询...")
+            pollTimer = Timer.scheduledTimer(withTimeInterval: 6.0, repeats: true) { [weak self] _ in
+                Task {
+                    guard let self else { return }
+                    do {
+                        let snapshot = try await self.api.fetchConnectionsSnapshot()
+                        await self.recordHistoryOnly(from: snapshot)
+                    } catch {
+                        // Ignore
+                    }
+                }
+            }
+        }
+        
+        if !isMainWindowVisible {
             cachedConns.removeAll(keepingCapacity: false)
             cachedClosedConnections.removeAll(keepingCapacity: false)
-            logs.removeAll(keepingCapacity: false)
-            cachedLogs.removeAll(keepingCapacity: false)
-            
-            logKernel("主窗口不可见，已休眠全部数据流并清空内存缓存")
-        }
-    }
-
-    func changeLogLevel(_ level: String) {
-        guard level != logLevel else { return }
-        logLevel = level
-        logs.removeAll(keepingCapacity: true)
-        logBuffer.removeAll(keepingCapacity: true)
-        logWS?.cancel()
-        guard reachable && isMainWindowVisible else { return }
-        logWS = api.stream("/logs?level=\(level)", type: LogTick.self) { [weak self] l in
-            Task { @MainActor in self?.onLog(l) }
+            logKernel("主窗口不可见，已释放 AppModel 内存缓存")
         }
     }
 
     private func stopStreams() {
-        trafficWS?.cancel(); connWS?.cancel(); logWS?.cancel(); memWS?.cancel()
-        trafficWS = nil; connWS = nil; logWS = nil; memWS = nil
+        trafficWS?.cancel(); trafficWS = nil
         pollTimer?.invalidate(); pollTimer = nil
         pollTask?.cancel(); pollTask = nil
     }
@@ -280,7 +262,7 @@ import ServiceManagement
     private func startPolling() {
         pollTask?.cancel()
         pollTask = Task { [weak self] in
-            while let self, !Task.isCancelled, self.reachable, self.isMainWindowVisible {
+            while let self, !Task.isCancelled, self.reachable, self.isMainWindowVisible || self.isMenuBarVisible {
                 await self.refreshProxies()
                 await self.refreshConfigs()
                 try? await Task.sleep(nanoseconds: 3_000_000_000)
@@ -289,65 +271,6 @@ import ServiceManagement
     }
 
     private var pollTimer: Timer?
-
-    private func reconcileConnectionsTrackingMode() {
-        pollTimer?.invalidate()
-        pollTimer = nil
-
-        guard reachable && !sleeping && isMainWindowVisible else {
-            if connWS != nil {
-                connWS?.cancel()
-                connWS = nil
-            }
-            return
-        }
-
-        if route == "connections" || route == "dns" {
-            if connWS == nil {
-                logKernel("进入前台页面，启动实时连接数据流...")
-                connWS = api.stream("/connections", type: ConnectionsSnapshot.self) { [weak self] s in
-                    Task { @MainActor in self?.onConnections(s) }
-                }
-            }
-        } else {
-            if connWS != nil {
-                logKernel("切到后台页面，断开实时连接数据流，降低解析开销")
-                connWS?.cancel()
-                connWS = nil
-            }
-            
-            logKernel("启动后台慢速连接 HTTP 轮询...")
-            pollTimer = Timer.scheduledTimer(withTimeInterval: 6.0, repeats: true) { [weak self] _ in
-                Task {
-                    guard let self else { return }
-                    do {
-                        let snapshot = try await self.api.fetchConnectionsSnapshot()
-                        await self.onConnections(snapshot)
-                    } catch {
-                        // 忽略后台轮询中的单次错误
-                    }
-                }
-            }
-        }
-    }
-
-    // MARK: Logs
-
-    private func onLog(_ l: LogTick) {
-        // Buffer; a 0.5s timer flushes to @Published in one batch so a chatty
-        // log stream doesn't re-render the whole UI on every line.
-        logSeq += 1
-        logBuffer.append(Log(id: logSeq, time: Self.logDF.string(from: Date()), level: l.type, text: l.payload))
-    }
-    private func flushLogs() {
-        guard !logBuffer.isEmpty else { return }
-        cachedLogs.append(contentsOf: logBuffer)
-        logBuffer.removeAll(keepingCapacity: true)
-        if cachedLogs.count > 150 { cachedLogs = Array(cachedLogs.suffix(150)) }
-        if route == "logs" {
-            logs = cachedLogs
-        }
-    }
 
     // MARK: Toast
 

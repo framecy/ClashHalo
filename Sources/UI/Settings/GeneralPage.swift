@@ -482,6 +482,8 @@ struct MenuBarPanel: View {
         }
         .padding(DS.Spacing.m)
         .frame(width: 300)
+        .onAppear { M.isMenuBarVisible = true }
+        .onDisappear { M.isMenuBarVisible = false }
     }
 
     /// Open the main window focused on a given route.
