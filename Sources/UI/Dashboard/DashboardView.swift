@@ -478,13 +478,25 @@ struct TrafficSparkline: View {
         upSeries = Array(repeating: 0, count: 120)
     }
     
+    private var lastUIUpdate = Date.distantPast
+    
     private func onTraffic(_ t: TrafficTick) {
+        // Always update the raw values for labels (minimal impact)
         if t.up != curUp { curUp = t.up }
         if t.down != curDown { curDown = t.down }
-        downSeries.append(Double(t.down))
-        if downSeries.count > 120 { downSeries.removeFirst() }
-        upSeries.append(Double(t.up))
-        if upSeries.count > 120 { upSeries.removeFirst() }
+        
+        // Throttled UI update for the sparkline to reduce Graphics memory churn (RSS optimization)
+        // Redrawing a Canvas every 1s is expensive in terms of graphics buffers.
+        let now = Date()
+        if now.timeIntervalSince(lastUIUpdate) >= 2.0 {
+            lastUIUpdate = now
+            
+            // Aggressively manage the series arrays
+            downSeries.append(Double(t.down))
+            if downSeries.count > 120 { downSeries.removeFirst() }
+            upSeries.append(Double(t.up))
+            if upSeries.count > 120 { upSeries.removeFirst() }
+        }
     }
     
     private func pollConnections() async {

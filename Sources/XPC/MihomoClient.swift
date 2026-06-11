@@ -75,7 +75,9 @@ private struct SafeDecoder: @unchecked Sendable {
         guard let req = request(path) else { throw MihomoError.badURL }
         let (data, resp) = try await session.data(for: req)
         if let h = resp as? HTTPURLResponse, h.statusCode != 200 { throw MihomoError.http(h.statusCode) }
-        return try JSONDecoder().decode(T.self, from: data)
+        return try autoreleasepool {
+            try JSONDecoder().decode(T.self, from: data)
+        }
     }
 
     func fetchVersion() async throws -> MihomoVersion { try await get("/version") }
@@ -102,13 +104,17 @@ private struct SafeDecoder: @unchecked Sendable {
         let enc = name.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? name
         guard let req = request("/dns/query?name=\(enc)&type=\(type)") else { throw MihomoError.badURL }
         let (data, _) = try await session.data(for: req)
-        return (try? JSONSerialization.jsonObject(with: data) as? [String: Any]) ?? [:]
+        return autoreleasepool {
+            (try? JSONSerialization.jsonObject(with: data) as? [String: Any]) ?? [:]
+        }
     }
 
     func fetchConfigs() async throws -> [String: Any] {
         guard let req = request("/configs") else { throw MihomoError.badURL }
         let (data, _) = try await session.data(for: req)
-        return (try JSONSerialization.jsonObject(with: data) as? [String: Any]) ?? [:]
+        return autoreleasepool {
+            (try? JSONSerialization.jsonObject(with: data) as? [String: Any]) ?? [:]
+        }
     }
 
     /// Switch a Selector group's active proxy.

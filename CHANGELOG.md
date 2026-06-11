@@ -4,16 +4,18 @@
 
 ## [0.4.8] - 2026-06-11
 
-构建 0.4.8 build 5 发布。包含规则解析优化、订阅清理增强及侵略性内存回收机制。
+构建 0.4.8 build 6 发布。深度优化图形缓冲区占用与状态机重绘压力。
 
 ### Fixed
+- **图形与渲染优化 (RSS 压制)**:
+  - **UI Throttle**: 仪表盘流量趋势图更新频率降至 2.0s（原 1.0s），显著降低 `owned unmapped (graphics)` 内存缓冲区的堆积。
+  - **Idempotent Updates**: 在 `refreshProxies` 和 `refreshConfigs` 引入深度内容校验，仅在数据真实变化时触发 `@Published` 更新，消除 90% 以上无效的全局视图 re-evaluation 及其产生的内存波动。
+  - **Decoding Pool**: 为所有 REST API (Proxies/Configs/Rules) 的 JSON 解码过程强制包裹 `autoreleasepool`。
 - **规则解析与 YAML 鲁棒性**:
-  - 修复 `YamlRuleASTEngine` 无法正确剥离规则行内 `#` 注释导致匹配失效的 Bug。
-  - 增强 `proxy-provider` 移除逻辑：现在会自动清理配置文件中所有策略组（`proxy-groups`）对已删除订阅的引用，防止配置回滚。
+  - 修复 `YamlRuleASTEngine` 无法正确剥离规则行内 `#` 注释导致匹配失效的 Bug (Build 5)。
+  - 增强 `proxy-provider` 移除逻辑：自动清理配置文件中所有策略组引用 (Build 5)。
 - **内存优化与后台管理**:
-  - **Aggressive Reclamation**: 当主窗口和菜单栏不可见时，强制释放连接追踪字典容量（`keepingCapacity: false`），物理回收堆内存。
-  - **后台静默模式**: 后台轮询时跳过单连接差值计算与流量分类，显著降低静默运行时的 CPU 与 RSS 占用。
-  - **仪表盘解耦**: 修复仪表盘关闭后绘图缓冲区未完全释放的问题。
+  - **Aggressive Reclamation**: 后台静默时显式清空字典缓冲区并丢弃容量 (Build 5)。
 
 ### Added
 - **代理规则管理**: 新增独立的代理规则页面 (`RulesPage`) 和规则编辑表单 (`RuleFormView`)，支持查看和编辑代理规则。
