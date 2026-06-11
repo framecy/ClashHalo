@@ -118,27 +118,27 @@ private func kvRow(_ l: String, _ v: String) -> some View {
 struct NetworkHubPage: View {
     @EnvironmentObject var M: AppModel
     @State private var tab = "network"
-    private let tabs: [(String, String)] = [
-        ("入站", "network"), ("TUN", "tun"), ("DNS", "dns"), ("嗅探", "sniffer"), ("内核", "kernel")
+    private let tabs: [(String, String, String)] = [
+        ("入站", "network", "arrow.down.right.circle"),
+        ("TUN", "tun", "shield.lefthalf.filled"),
+        ("DNS", "dns", "network"),
+        ("嗅探", "sniffer", "scope"),
+        ("内核", "kernel", "cpu")
     ]
 
     var body: some View {
         VStack(spacing: 0) {
-            HStack(spacing: DS.Spacing.l) {
+            HStack(spacing: 24) {
                 ForEach(tabs, id: \.1) { t in
-                    Button { tab = t.1 } label: {
-                        Text(t.0).font(.dsBodyMedium)
-                            .foregroundColor(tab == t.1 ? .primary : .secondary)
-                            .padding(.vertical, DS.Spacing.s)
-                            .overlay(alignment: .bottom) {
-                                Rectangle().fill(tab == t.1 ? M.accent : Color.clear).frame(height: 2)
-                            }
-                    }.buttonStyle(.plain)
+                    tabButton(t.0, icon: t.2, tag: t.1)
                 }
                 Spacer()
             }
-            .padding(.horizontal, DS.Spacing.xl).padding(.top, DS.Spacing.s)
-            Divider()
+            .padding(.horizontal, DS.Spacing.xxl)
+            .padding(.bottom, DS.Spacing.l)
+            .padding(.top, DS.Spacing.s)
+
+            Divider().opacity(0.4)
             Group {
                 switch tab {
                 case "tun": TunPage()
@@ -149,6 +149,28 @@ struct NetworkHubPage: View {
                 }
             }
         }
+    }
+
+    private func tabButton(_ label: String, icon: String, tag: String) -> some View {
+        let active = tab == tag
+        return Button(action: { tab = tag }) {
+            VStack(spacing: 6) {
+                Image(systemName: icon)
+                    .font(.system(size: DS.Icon.md))
+                    .foregroundColor(active ? M.accent : .secondary)
+                Text(label)
+                    .font(.system(size: 12, weight: active ? .semibold : .regular))
+                    .foregroundColor(active ? .primary : .secondary)
+            }
+            .frame(width: 80)
+            .padding(.vertical, 8)
+            .contentShape(Rectangle())
+            .background(
+                RoundedRectangle(cornerRadius: DS.Radius.control)
+                    .fill(active ? DS.Palette.fill : Color.clear)
+            )
+        }
+        .buttonStyle(.plain)
     }
 }
 
