@@ -4,18 +4,19 @@ import SwiftUI
 
 struct LogsPage: View {
     @EnvironmentObject var M: AppModel
+    @StateObject private var VM = LogsViewModel()
     @State private var q = ""
     @State private var paused = false
     @State private var frozen: [Log] = []
 
     var body: some View {
-        let source = paused ? frozen : M.logs
+        let source = paused ? frozen : VM.logs
         let rows = source.filter {
             q.isEmpty || $0.text.localizedCaseInsensitiveContains(q)
         }
         VStack(spacing: 0) {
             PageHead(title: "实时日志", desc: "结构化日志流 · 核心运行状态") {
-                Button { paused.toggle(); if paused { frozen = M.logs } } label: {
+                Button { paused.toggle(); if paused { frozen = VM.logs } } label: {
                     Label(paused ? "继续" : "暂停", systemImage: paused ? "play.fill" : "pause.fill")
                 }.controlSize(.small)
                 Button { exportLogs(rows) } label: { Label("导出", systemImage: "square.and.arrow.up") }
@@ -27,7 +28,7 @@ struct LogsPage: View {
                     Image(systemName: "magnifyingglass").foregroundColor(.secondary)
                     TextField("过滤日志内容…", text: $q).textFieldStyle(.plain).frame(maxWidth: 200)
                 }
-                Picker("", selection: Binding(get: { M.logLevel }, set: { M.changeLogLevel($0) })) {
+                Picker("", selection: Binding(get: { VM.logLevel }, set: { VM.changeLogLevel($0) })) {
                     Text("DEBUG").tag("debug"); Text("INFO").tag("info")
                     Text("WARN").tag("warning"); Text("ERROR").tag("error")
                 }.pickerStyle(.segmented).frame(width: 300).labelsHidden()
@@ -57,7 +58,7 @@ struct LogsPage: View {
                         }
                     }.padding(.vertical, 6)
                 }
-                .onChange(of: M.logs.count) {
+                .onChange(of: VM.logs.count) {
                     // Newest-first: keep the latest line pinned to the top.
                     if !paused, let newest = rows.last { withAnimation { sp.scrollTo(newest.id, anchor: .top) } }
                 }
@@ -65,6 +66,12 @@ struct LogsPage: View {
             if source.isEmpty {
                 ContentUnavailable("等待日志流…", "doc.text.magnifyingglass").frame(maxHeight: .infinity)
             }
+        }
+        .onAppear {
+            VM.start()
+        }
+        .onDisappear {
+            VM.stop()
         }
     }
 
@@ -80,6 +87,89 @@ struct LogsPage: View {
     }
     private func logColor(_ l: String) -> Color {
         switch l { case "warning": return DS.Palette.warn; case "error": return DS.Palette.error; case "debug": return .secondary; default: return .blue }
+    }
+}
+
+@MainActor final class LogsViewModel: ObservableObject {
+    @Published var logs: [Log] = []
+    
+    // Mirror of UserPreferences
+    @AppStorage("ui.logLevel") var logLevel = "warning"
+    
+    private var logWS: WSHandle?
+    private var logBuffer: [Log] = []
+    private var logFlushTimer: Timer?
+    private var logSeq = 0
+    private let api = MihomoClient.shared
+    
+    private static let logDF: DateFormatter = {
+        let f = DateFormatter()
+        f.dateFormat = "HH:mm:ss"
+        return f
+    }()
+    
+    func start() {
+        guard api.reachable else { return }
+        
+        logs.removeAll()
+        logBuffer.removeAll()
+        
+        // Subscribe to logs stream
+        subscribeLogs()
+        
+        // Timer for flushing logs in batches (debounce)
+        logFlushTimer = Timer.scheduledTimer(withTimeInterval: 0.5, repeats: true) { [weak self] _ in
+            Task { @MainActor in
+                self?.flushLogs()
+            }
+        }
+    }
+    
+    func stop() {
+        logWS?.cancel()
+        logWS = nil
+        logFlushTimer?.invalidate()
+        logFlushTimer = nil
+        
+        // Completely clear memory
+        logs.removeAll(keepingCapacity: false)
+        logBuffer.removeAll(keepingCapacity: false)
+    }
+    
+    func changeLogLevel(_ level: String) {
+        guard level != logLevel else { return }
+        logLevel = level
+        
+        logs.removeAll(keepingCapacity: true)
+        logBuffer.removeAll(keepingCapacity: true)
+        logWS?.cancel()
+        
+        subscribeLogs()
+    }
+    
+    private func subscribeLogs() {
+        guard api.reachable else { return }
+        logWS = api.stream("/logs?level=\(logLevel)", type: LogTick.self) { [weak self] l in
+            Task { @MainActor in
+                self?.onLog(l)
+            }
+        }
+    }
+    
+    private func onLog(_ l: LogTick) {
+        logSeq += 1
+        logBuffer.append(Log(id: logSeq, time: Self.logDF.string(from: Date()), level: l.type, text: l.payload))
+    }
+    
+    private func flushLogs() {
+        guard !logBuffer.isEmpty else { return }
+        
+        logs.append(contentsOf: logBuffer)
+        logBuffer.removeAll(keepingCapacity: true)
+        
+        if logs.count > 150 {
+            logs = Array(logs.suffix(150))
+        }
     }
 }
 
