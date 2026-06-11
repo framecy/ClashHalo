@@ -220,10 +220,22 @@ import ServiceManagement
                     Task { @MainActor in self?.onTraffic(t) }
                 }
             }
+            if memWS == nil {
+                memWS = api.stream("/memory", type: MemoryTick.self) { [weak self] m in
+                    Task { @MainActor in
+                        if m.inuse > 0 {
+                            self?.memory = m.inuse
+                            self?.appMemoryMB = Double(Self.residentMemoryBytes()) / 1_000_000
+                        }
+                    }
+                }
+            }
             startPolling()
         } else {
             trafficWS?.cancel()
             trafficWS = nil
+            memWS?.cancel()
+            memWS = nil
             pollTask?.cancel()
             pollTask = nil
         }
