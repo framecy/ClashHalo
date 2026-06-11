@@ -467,10 +467,15 @@ struct TrafficSparkline: View {
         memWS = nil
         pollTimer = nil
         
-        // Clear memory arrays on exit
+        // Clear memory arrays on exit to ensure physical memory can be reclaimed
+        // keepingCapacity: false is crucial here to drop the backing buffer
+        downSeries.removeAll(keepingCapacity: false)
+        upSeries.removeAll(keepingCapacity: false)
+        dash = DashStats()
+        
+        // Ensure standard initialization values for UI consistency
         downSeries = Array(repeating: 0, count: 120)
         upSeries = Array(repeating: 0, count: 120)
-        dash = DashStats()
     }
     
     private func onTraffic(_ t: TrafficTick) {
