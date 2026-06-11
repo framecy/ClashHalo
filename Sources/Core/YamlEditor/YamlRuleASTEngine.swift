@@ -34,7 +34,11 @@ public final class YamlRuleASTEngine {
         let cleaned = trimmed.trimmingCharacters(in: CharacterSet(charactersIn: "#")).trimmingCharacters(in: .whitespaces)
         guard cleaned.hasPrefix("-") else { return nil }
         
-        let content = cleaned.dropFirst().trimmingCharacters(in: .whitespaces)
+        var content = cleaned.dropFirst().trimmingCharacters(in: .whitespaces)
+        // Strip inline YAML comments if present
+        if let hashRange = content.range(of: "#") {
+            content = String(content[..<hashRange.lowerBound]).trimmingCharacters(in: .whitespaces)
+        }
         let parts = content.split(separator: ",").map { $0.trimmingCharacters(in: .whitespaces) }
         guard parts.count >= 2 else { return nil } // 至少 TYPE,ACTION (MATCH)
         
