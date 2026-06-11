@@ -2,6 +2,7 @@ import SwiftUI
 
 struct ConnectionsPage: View {
     @EnvironmentObject var M: AppModel
+    @StateObject private var VM = ConnectionsViewModel()
     @State private var q = ""
     @State private var showConfirmDisconnect = false
     @State private var selectedTab = 0
@@ -22,7 +23,7 @@ struct ConnectionsPage: View {
     
     var body: some View {
         VStack(spacing: 0) {
-            PageHead(title: "连接", desc: selectedTab == 0 ? "\(M.conns.count) 个活跃连接 · 实时速率" : "\(M.closedConnections.count) 个已关闭连接") {
+            PageHead(title: "连接", desc: selectedTab == 0 ? "\(VM.conns.count) 个活跃连接 · 实时速率" : "\(VM.closedConnections.count) 个已关闭连接") {
                 Button(role: .destructive) { showConfirmDisconnect = true } label: { Label("全部断开", systemImage: "xmark.circle") }
                     .controlSize(.small)
             }
@@ -39,14 +40,14 @@ struct ConnectionsPage: View {
                 TextField("搜索域名 / 进程 / 规则", text: $q).textFieldStyle(.plain)
                 Spacer()
                 
-                let sourceConns = selectedTab == 0 ? M.conns : M.closedConnections
+                let sourceConns = selectedTab == 0 ? VM.conns : VM.closedConnections
                 Text("\(sourceConns.filter { matches($0) }.count) 匹配").font(.dsBody).foregroundColor(.secondary)
             }
             .padding(.horizontal, 14).padding(.vertical, 10)
             .background(Color(nsColor: .windowBackgroundColor).opacity(0.3))
             Divider()
 
-            let sourceConns = selectedTab == 0 ? M.conns : M.closedConnections
+            let sourceConns = selectedTab == 0 ? VM.conns : VM.closedConnections
             let rows = sourceConns.filter { matches($0) }.sorted(using: sortOrder)
             
             if rows.isEmpty {
@@ -94,10 +95,14 @@ struct ConnectionsPage: View {
             }
         }
         .onAppear {
+            VM.start()
             if !M.engine.configFilePath.isEmpty {
                 ruleModel.setTargetPath(M.engine.configFilePath)
                 ruleModel.load()
             }
+        }
+        .onDisappear {
+            VM.stop()
         }
         .onChange(of: M.engine.configFilePath) { _, path in
             if !path.isEmpty {
@@ -106,7 +111,7 @@ struct ConnectionsPage: View {
             }
         }
         .overlay(alignment: .bottomTrailing) {
-            if let id = selection, let c = (M.conns + M.closedConnections).first(where: { $0.id == id }) {
+            if let id = selection, let c = (VM.conns + VM.closedConnections).first(where: { $0.id == id }) {
                 ConnDetailCard(conn: c) { selection = nil }
                     .padding()
             }
@@ -250,5 +255,127 @@ struct ConnDetailCard: View {
             return df.string(from: date)
         }
         return String(isoString.prefix(19)).replacingOccurrences(of: "T", with: " ")
+    }
+}
+
+@MainActor final class ConnectionsViewModel: ObservableObject {
+    @Published var conns: [Conn] = []
+    @Published var closedConnections: [Conn] = []
+    
+    private var connWS: WSHandle?
+    private let api = MihomoClient.shared
+    private let M = AppModel.shared
+
+    func start() {
+        guard api.reachable else { return }
+        
+        M.isConnectionsPageActive = true
+        
+        // Subscribe to live connections stream
+        connWS = api.stream("/connections", type: ConnectionsSnapshot.self) { [weak self] s in
+            Task { @MainActor in
+                self?.onConnections(s)
+            }
+        }
+    }
+    
+    func stop() {
+        connWS?.cancel()
+        connWS = nil
+        
+        M.isConnectionsPageActive = false
+        
+        // Completely reclaim memory arrays when not on this page
+        conns.removeAll(keepingCapacity: false)
+        closedConnections.removeAll(keepingCapacity: false)
+    }
+    
+    private func onConnections(_ s: ConnectionsSnapshot) {
+        M.uploadTotal = s.uploadTotal
+        M.downloadTotal = s.downloadTotal
+        
+        if let m = s.memory, m > 0 {
+            M.memory = m
+            // Core Memory Guard
+            if m > 512 * 1024 * 1024 && Date().timeIntervalSince(M.lastCacheFlush) > 1800 {
+                M.lastCacheFlush = Date()
+                M.clearAllCache()
+                M.logKernel("核心内存占用过高 (\(m / 1_000_000)MB)，已自动清空 DNS 与 Fake‑IP 缓存")
+            }
+        }
+        
+        let items = s.connections ?? []
+        var next: [Conn] = []
+        var bytes: [String: (up: Int64, down: Int64)] = [:]
+        var activeIDs = Set<String>()
+        var nextConnsMap: [String: Conn] = [:]
+        let hour = Calendar.current.component(.hour, from: Date())
+        
+        for c in items {
+            activeIDs.insert(c.id)
+            if M.prevConnsMap[c.id] == nil { M.totalConnsCount += 1 }
+            let prev = M.prevConnBytes[c.id]
+            let upRate = prev.map { max(0, c.upload - $0.up) } ?? 0
+            let downRate = prev.map { max(0, c.download - $0.down) } ?? 0
+            bytes[c.id] = (c.upload, c.download)
+            
+            // Record category traffic delta to history
+            let cat = (c.chains.first == "DIRECT" || c.chains.contains("DIRECT")) ? "direct"
+                    : (c.chains.first == "REJECT" || c.chains.contains("REJECT")) ? "reject" : "proxy"
+            M.history.record(category: cat, down: Int64(downRate), up: Int64(upRate), hour: hour)
+            
+            let conn = Conn(
+                id: c.id,
+                host: c.metadata.host?.isEmpty == false ? c.metadata.host! : (c.metadata.destinationIP ?? "?"),
+                dstIP: c.metadata.destinationIP ?? "?",
+                srcIP: c.metadata.sourceIP ?? "?",
+                port: c.metadata.destinationPort ?? "",
+                network: c.metadata.network.uppercased(),
+                process: c.metadata.process ?? "—",
+                processPath: c.metadata.processPath ?? "—",
+                chain: c.chains.reversed().joined(separator: " → "),
+                group: c.chains.last ?? "?",
+                node: c.chains.first ?? "?",
+                rule: c.rulePayload.isEmpty ? c.rule : "\(c.rule),\(c.rulePayload)",
+                ruleType: c.rule,
+                up: c.upload, down: c.download,
+                upRate: upRate, downRate: downRate,
+                start: c.start
+            )
+            next.append(conn)
+            nextConnsMap[c.id] = conn
+        }
+        M.prevConnBytes = bytes
+        
+        var newClosed = [Conn]()
+        for (id, conn) in M.prevConnsMap {
+            if !activeIDs.contains(id) {
+                var closedConn = conn
+                closedConn.upRate = 0
+                closedConn.downRate = 0
+                newClosed.append(closedConn)
+            }
+        }
+        
+        if !newClosed.isEmpty {
+            M.cachedClosedConnections.insert(contentsOf: newClosed, at: 0)
+            if M.cachedClosedConnections.count > 150 {
+                M.cachedClosedConnections.removeLast(M.cachedClosedConnections.count - 150)
+            }
+        }
+        M.prevConnsMap = nextConnsMap
+        
+        M.cachedConns = next.sorted { $0.downRate + $0.upRate > $1.downRate + $1.upRate }
+        
+        conns = M.cachedConns
+        closedConnections = M.cachedClosedConnections
+        M.activeConnectionsCount = activeIDs.count
+        
+        M.closedConns = max(0, M.totalConnsCount - activeIDs.count)
+        M.history.flushIfNeeded()
+        M.lastDownTotal = s.downloadTotal
+        
+        // Update AppModel RSS memory
+        M.appMemoryMB = Double(AppModel.residentMemoryBytes()) / 1_000_000
     }
 }

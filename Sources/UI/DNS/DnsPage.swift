@@ -4,6 +4,7 @@ import SwiftUI
 
 struct DnsPage: View {
     @EnvironmentObject var M: AppModel
+    @StateObject private var connVM = ConnectionsViewModel()
     @State private var query = ""
     @State private var result = ""
     @State private var resolving = false
@@ -46,12 +47,12 @@ struct DnsPage: View {
                             if !result.isEmpty {
                                 Text(result).font(.dsMono).foregroundColor(.secondary)
                                     .textSelection(.enabled).frame(maxWidth: .infinity, alignment: .leading)
-                            }
+                             }
                         }
                     }
 
                     // Fake-IP mappings observed in live connections
-                    let fakeip = M.conns.filter { $0.dstIP.hasPrefix("198.18.") || $0.dstIP.hasPrefix("198.19.") }
+                    let fakeip = connVM.conns.filter { $0.dstIP.hasPrefix("198.18.") || $0.dstIP.hasPrefix("198.19.") }
                     Card(title: "Fake-IP 映射 · \(fakeip.count)（来自活跃连接）") {
                         if fakeip.isEmpty {
                             Text("当前无 Fake-IP 连接（需内核启用 dns.enhanced-mode: fake-ip 且有代理流量）")
@@ -73,6 +74,8 @@ struct DnsPage: View {
                 .padding(.horizontal, DS.Spacing.xl).padding(.bottom, DS.Spacing.xxl)
             }
         }
+        .onAppear { connVM.start() }
+        .onDisappear { connVM.stop() }
     }
     private func resolve() async {
         resolving = true; defer { resolving = false }
