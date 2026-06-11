@@ -386,7 +386,14 @@ struct NToggle: View {
             Text(label).font(.dsBody); Spacer()
             Toggle("", isOn: Binding(
                 get: { (nestedDict(M, parent)[sub] as? Bool) == true },
-                set: { v in Task { await M.patch([parent: [sub: v]]) } }
+                set: { v in
+                    // Optimistic UI update to prevent toggle flickering/rollback
+                    var currentParent = M.configs[parent] as? [String: Any] ?? [:]
+                    currentParent[sub] = v
+                    M.configs[parent] = currentParent
+                    
+                    Task { await M.patch([parent: [sub: v]]) }
+                }
             ))
             .toggleStyle(.switch)
             .labelsHidden()
