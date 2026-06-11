@@ -446,6 +446,32 @@ struct MenuBarPanel: View {
                 }
             }
 
+            // Memory usage card
+            card {
+                HStack(spacing: 0) {
+                    VStack(alignment: .leading, spacing: 2) {
+                        HStack(spacing: 4) {
+                            Image(systemName: "memorychip").font(.dsBody).foregroundColor(.purple)
+                            Text("核心内存").font(.dsBodyMedium).foregroundColor(.secondary)
+                        }
+                        Text(fmtBytes(Double(M.memory))).font(.dsCardLabel)
+                    }
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    
+                    Rectangle().fill(Color.secondary.opacity(0.2)).frame(width: 1, height: 24)
+                        .padding(.horizontal, DS.Spacing.m)
+                    
+                    VStack(alignment: .leading, spacing: 2) {
+                        HStack(spacing: 4) {
+                            Image(systemName: "app.dashed").font(.dsBody).foregroundColor(.orange)
+                            Text("应用内存").font(.dsBodyMedium).foregroundColor(.secondary)
+                        }
+                        Text(String(format: "%.0f MB", M.appMemoryMB)).font(.dsCardLabel)
+                    }
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                }
+            }
+
             // Quick actions (pill tiles)
             HStack(spacing: DS.Spacing.s) {
                 pill("复制命令", "terminal") { M.copyProxyCommand() }
