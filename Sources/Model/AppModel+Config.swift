@@ -78,7 +78,7 @@ extension AppModel {
                 systemProxyOn = on
                 showToast(on ? "系统代理已开启" : "系统代理已关闭")
             } else {
-                // Check reachability before showing generic error
+                systemProxyOn = !on // Revert the switch if operation fails
                 await api.probe()
                 if api.reachable { showToast("系统代理设置失败") }
             }

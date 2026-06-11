@@ -2,6 +2,10 @@ import Foundation
 import Combine
 import SwiftUI
 
+private struct SafeDecoder: @unchecked Sendable {
+    static let shared = JSONDecoder()
+}
+
 @MainActor final class MihomoClient: ObservableObject {
     static let shared = MihomoClient()
 
@@ -155,6 +159,13 @@ import SwiftUI
         _ = try await session.data(for: req)
     }
 
+    /// Fetch a single snapshot of active connections via HTTP GET.
+    func fetchConnectionsSnapshot() async throws -> ConnectionsSnapshot {
+        guard let req = request("/connections", method: "GET") else { throw MihomoError.badURL }
+        let (data, _) = try await session.data(for: req)
+        return try SafeDecoder.shared.decode(ConnectionsSnapshot.self, from: data)
+    }
+
     /// Flush the kernel's DNS resolver cache.
     func flushDnsCache() async throws {
         guard let req = request("/cache/dns/flush", method: "POST") else { throw MihomoError.badURL }
@@ -219,9 +230,11 @@ import SwiftUI
             guard let self, !handle.cancelled else { return }
             switch result {
             case .success(let msg):
-                if case .string(let s) = msg, let data = s.data(using: .utf8),
-                   let v = try? JSONDecoder().decode(T.self, from: data) {
-                    onValue(v)   // onValue hops to @MainActor itself
+                autoreleasepool {
+                    if case .string(let s) = msg, let data = s.data(using: .utf8),
+                       let v = try? SafeDecoder.shared.decode(T.self, from: data) {
+                        onValue(v)   // onValue hops to @MainActor itself
+                    }
                 }
                 self.receiveLoop(task: task, path: path, type: T.self, handle: handle, onValue: onValue)
             case .failure:

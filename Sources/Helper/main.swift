@@ -134,6 +134,10 @@ class Helper: NSObject, HelperProtocol {
         let process = Process()
         process.executableURL = URL(fileURLWithPath: binPath)
         process.arguments = ["-d", homeDir]
+        var env = ProcessInfo.processInfo.environment
+        env["GOGC"] = "50"
+        env["GODEBUG"] = "madvdontneed=1"
+        process.environment = env
 
         let logDir = "/Library/Logs/ClashPow"
         try? FileManager.default.createDirectory(atPath: logDir, withIntermediateDirectories: true)
