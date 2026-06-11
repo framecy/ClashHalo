@@ -33,6 +33,8 @@ struct ContentView: View {
         NavigationSplitView {
             sidebar.navigationSplitViewColumnWidth(min: 200, ideal: 210, max: 240)
         } detail: { detail }
+        .onAppear { M.isMainWindowVisible = true }
+        .onDisappear { M.isMainWindowVisible = false }
     }
 
     // MARK: Sidebar

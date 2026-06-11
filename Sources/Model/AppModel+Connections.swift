@@ -82,14 +82,19 @@ extension AppModel {
             }
         }
         if !newClosed.isEmpty {
-            closedConnections.insert(contentsOf: newClosed, at: 0)
-            if closedConnections.count > 500 {
-                closedConnections.removeLast(closedConnections.count - 500)
+            cachedClosedConnections.insert(contentsOf: newClosed, at: 0)
+            if cachedClosedConnections.count > 150 {
+                cachedClosedConnections.removeLast(cachedClosedConnections.count - 150)
             }
         }
         prevConnsMap = nextConnsMap
         
-        conns = next.sorted { $0.downRate + $0.upRate > $1.downRate + $1.upRate }
+        cachedConns = next.sorted { $0.downRate + $0.upRate > $1.downRate + $1.upRate }
+        if route == "connections" || route == "dns" {
+            conns = cachedConns
+            closedConnections = cachedClosedConnections
+        }
+        activeConnectionsCount = activeIDs.count
         dash = Self.computeDash(next)   // single pass, once per snapshot
 
         // closed-connection count (this session) = total seen − currently-active
