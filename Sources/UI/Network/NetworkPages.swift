@@ -9,8 +9,6 @@ struct NetworkPage: View {
     @EnvironmentObject var M: AppModel
     var body: some View {
         VStack(spacing: 0) {
-            PageHead(title: "网络入站", desc: "端口监听 · 局域网共享 · 访问控制列表 (ACL)")
-
             ScrollView {
                 VStack(spacing: DS.Spacing.l) {
                     Card(title: "入站端口", icon: "arrow.down.right.circle") {
@@ -54,8 +52,6 @@ struct TunPage: View {
     @EnvironmentObject var M: AppModel
     var body: some View {
         VStack(spacing: 0) {
-            PageHead(title: "TUN 模式", desc: "虚拟网卡驱动 · 协议栈选择 · 路由注入策略")
-
             ScrollView {
                 VStack(spacing: DS.Spacing.l) {
                     Card(title: "TUN 虚拟网卡", icon: "shield.lefthalf.filled") {
@@ -85,8 +81,6 @@ struct SnifferPage: View {
     @EnvironmentObject var M: AppModel
     var body: some View {
         VStack(spacing: 0) {
-            PageHead(title: "流量嗅探", desc: "协议解析 (TLS/HTTP/QUIC) · 真实域名还原")
-
             ScrollView {
                 VStack(spacing: DS.Spacing.l) {
                     Card(title: "协议嗅探 Sniffer", icon: "scope") {
@@ -128,6 +122,14 @@ struct NetworkHubPage: View {
 
     var body: some View {
         VStack(spacing: 0) {
+            let info = tabInfo
+            PageHead(title: info.0, desc: info.1) {
+                if tab == "dns" {
+                    Button { M.flushDnsCache() } label: { Label("刷新缓存", systemImage: "arrow.clockwise") }.controlSize(.small)
+                    Button { M.clearAllCache() } label: { Label("清空", systemImage: "trash") }.controlSize(.small)
+                }
+            }
+
             HStack(spacing: 24) {
                 ForEach(tabs, id: \.1) { t in
                     tabButton(t.0, icon: t.2, tag: t.1)
@@ -136,7 +138,6 @@ struct NetworkHubPage: View {
             }
             .padding(.horizontal, DS.Spacing.xxl)
             .padding(.bottom, DS.Spacing.l)
-            .padding(.top, DS.Spacing.s)
 
             Divider().opacity(0.4)
             Group {
@@ -151,11 +152,23 @@ struct NetworkHubPage: View {
         }
     }
 
+    private var tabInfo: (String, String) {
+        switch tab {
+        case "tun": return ("TUN 模式", "虚拟网卡驱动 · 协议栈选择 · 路由注入策略")
+        case "dns": return ("DNS 缓存", "内置 DNS 服务器 · Fake‑IP 映射与条目缓存分析")
+        case "sniffer": return ("流量嗅探", "协议解析 (TLS/HTTP/QUIC) · 真实域名还原")
+        case "kernel": return ("内核管理", "版本更新 · 核心状态 · 启动日志")
+        default: return ("网络入站", "端口监听 · 局域网共享 · 访问控制列表 (ACL)")
+        }
+    }
+
     private func tabButton(_ label: String, icon: String, tag: String) -> some View {
         let active = tab == tag
+        let activeIcon = icon.hasSuffix(".fill") ? icon : icon + ".fill"
+        
         return Button(action: { tab = tag }) {
             VStack(spacing: 6) {
-                Image(systemName: icon)
+                Image(systemName: active ? activeIcon : icon)
                     .font(.system(size: DS.Icon.md))
                     .foregroundColor(active ? M.accent : .secondary)
                 Text(label)
@@ -465,8 +478,6 @@ struct KernelMgmtPage: View {
     @EnvironmentObject var M: AppModel
     var body: some View {
         VStack(spacing: 0) {
-            PageHead(title: "内核管理", desc: "版本更新 · 核心状态 · 启动日志")
-
             ScrollView {
                 VStack(spacing: DS.Spacing.l) {
                     KernelCard()
