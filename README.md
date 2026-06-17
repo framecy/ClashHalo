@@ -78,7 +78,7 @@ git config core.hooksPath .githooks
 本项目的诞生离不开开源社区的伟大贡献，特别鸣谢以下项目及开源作者：
 
 - [Mihomo (Clash.Meta)](https://github.com/MetaCubeX/mihomo): 提供了极其强大且稳定的核心流量处理、规则匹配引擎。
-- [Zashboard](https://github.com/ZephyrWeb/zashboard): 提供了现代化、高性能且高度可定制的 Web UI 控制面板，极大地提升了用户体验。
+- [Zashboard](https://github.com/Zephyruso/zashboard): 提供了现代化、高性能且高度可定制的 Web UI 控制面板，极大地提升了用户体验。
 
 ## 开源许可 (License)
 
