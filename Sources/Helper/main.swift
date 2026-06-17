@@ -1,7 +1,8 @@
 import Foundation
 import Security
+import Darwin
 
-let kHelperVersion = "1.0.6"
+let kHelperVersion = "1.0.11"
 
 private let kClientRequirement = "identifier \"com.clashpow.app\""
 
@@ -159,11 +160,11 @@ class Helper: NSObject, HelperProtocol {
         }
     }
 
-    func stopMihomo(withReply reply: @escaping (Bool) -> Void) {
-        log("stopMihomo called")
-        Self.processLock.lock()
-        defer { Self.processLock.unlock() }
-        if let process = Self.mihomoProcess, process.isRunning {
+    static func stopMihomoInternal() {
+        log("stopMihomoInternal called")
+        processLock.lock()
+        defer { processLock.unlock() }
+        if let process = mihomoProcess, process.isRunning {
             process.terminate()
             // Wait up to 1.5s for graceful exit, then SIGKILL
             let deadline = Date().addingTimeInterval(1.5)
@@ -171,10 +172,10 @@ class Helper: NSObject, HelperProtocol {
                 Thread.sleep(forTimeInterval: 0.1)
             }
             if process.isRunning {
-                log("stopMihomo: SIGTERM timeout, sending SIGKILL to pid \(process.processIdentifier)")
+                log("stopMihomoInternal: SIGTERM timeout, sending SIGKILL to pid \(process.processIdentifier)")
                 kill(process.processIdentifier, SIGKILL)
             }
-            Self.mihomoProcess = nil
+            mihomoProcess = nil
         }
         // killall as final safety net (catches processes not owned by this instance)
         let t = Process()
@@ -182,6 +183,11 @@ class Helper: NSObject, HelperProtocol {
         t.arguments = ["-9", "mihomo"]
         t.standardOutput = Pipe(); t.standardError = Pipe()
         try? t.run(); t.waitUntilExit()
+    }
+
+    func stopMihomo(withReply reply: @escaping (Bool) -> Void) {
+        log("stopMihomo called")
+        Self.stopMihomoInternal()
         reply(true)
     }
 }
@@ -195,8 +201,44 @@ class HelperDelegate: NSObject, NSXPCListenerDelegate {
         }
         newConnection.exportedInterface = NSXPCInterface(with: HelperProtocol.self)
         newConnection.exportedObject = Helper()
+        
+        let clientPid = newConnection.processIdentifier
+        newConnection.invalidationHandler = {
+            log("Connection invalidated from pid \(clientPid)")
+            // Test if the client process is still running.
+            // kill(pid, 0) sends a null signal to detect process existence.
+            // Since helper runs as root, EPERM will not be returned if process exists,
+            // so any non-zero return means the process is gone (ESRCH).
+            if kill(clientPid, 0) != 0 {
+                log("Client process with pid \(clientPid) has exited. Performing cleanup.")
+                DispatchQueue.global().async {
+                    HelperDelegate.handleClientExit(pid: clientPid)
+                }
+            } else {
+                log("Client process with pid \(clientPid) is still running. Skipping cleanup.")
+            }
+        }
+        
         newConnection.resume()
         return true
+    }
+
+    private static func handleClientExit(pid: Int32) {
+        log("handleClientExit for pid \(pid): restoring settings to prevent DNS/proxy leaks")
+        
+        // 1. Stop mihomo process first (fast, reliable, and does not depend on system configuration locks)
+        Helper.stopMihomoInternal()
+        
+        // 2. Disable system proxy
+        let proxyReset = ProxyManager.setSystemProxy(enabled: false, port: 7890)
+        log("handleClientExit: system proxy disabled (\(proxyReset))")
+        
+        // 3. Restore DNS (networksetup layer only — mihomo's utun and its
+        //    Supplemental DNS resolver are auto-destroyed by the kernel when
+        //    the process exits; do NOT touch utun interfaces, as other VPN
+        //    apps like Shadowrocket share the same 198.18.x.x address space)
+        let dnsReset = ProxyManager.restoreDNS()
+        log("handleClientExit: DNS restored (\(dnsReset))")
     }
 }
 
