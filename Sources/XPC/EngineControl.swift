@@ -6,7 +6,7 @@ import SwiftUI
     static let shared = EngineControl()
     /// Expected version of the installed helper. When the running helper reports a
     /// different version the app auto-reinstalls it (new binary = new permissions fix).
-    static let kExpectedHelperVersion = "1.0.6"
+    static let kExpectedHelperVersion = "1.0.11"
     let api = MihomoClient.shared
 
     @Published var present = false
@@ -189,21 +189,77 @@ import SwiftUI
         func render(_ v: Any) -> String {
             if let b = v as? Bool { return b ? "true" : "false" }
             if let i = v as? Int { return "\(i)" }
+            if let d = v as? Double { return "\(Int(d))" }
             return "\(v)"
         }
+        
         for (key, value) in kv {
-            let val = render(value)
-            var found = false
-            for i in lines.indices {
-                let line = lines[i]
-                guard !line.hasPrefix(" "), !line.hasPrefix("\t"), line.hasPrefix(key) else { continue }
-                if line.dropFirst(key.count).first == ":" {
-                    lines[i] = "\(key): \(val)"; found = true; break
+            if let nested = value as? [String: Any] {
+                // Handle one level of nesting for known blocks: tun, dns, sniffer
+                setNestedScalars(parent: key, kv: nested, in: &lines)
+            } else {
+                let val = render(value)
+                var found = false
+                for i in lines.indices {
+                    let line = lines[i]
+                    guard !line.hasPrefix(" "), !line.hasPrefix("\t"), line.hasPrefix(key) else { continue }
+                    if line.dropFirst(key.count).first == ":" {
+                        lines[i] = "\(key): \(val)"; found = true; break
+                    }
                 }
+                if !found { lines.insert("\(key): \(val)", at: 0) }
             }
-            if !found { lines.insert("\(key): \(val)", at: 0) }
         }
         try? lines.joined(separator: "\n").write(toFile: path, atomically: true, encoding: .utf8)
+    }
+
+    private func setNestedScalars(parent: String, kv: [String: Any], in lines: inout [String]) {
+        func render(_ v: Any) -> String {
+            if let b = v as? Bool { return b ? "true" : "false" }
+            if let i = v as? Int { return "\(i)" }
+            if let d = v as? Double { return "\(Int(d))" }
+            if let arr = v as? [Any] {
+                return "[" + arr.map { "\($0)" }.joined(separator: ", ") + "]"
+            }
+            return "\(v)"
+        }
+
+        var parentIdx = -1
+        for i in lines.indices {
+            let line = lines[i]
+            if !line.hasPrefix(" ") && !line.hasPrefix("\t") && line.hasPrefix("\(parent):") {
+                parentIdx = i; break
+            }
+        }
+
+        if parentIdx == -1 {
+            // Parent not found, add it to the top
+            lines.insert("\(parent):", at: 0)
+            for (k, v) in kv {
+                lines.insert("  \(k): \(render(v))", at: 1)
+            }
+            return
+        }
+
+        for (k, v) in kv {
+            var found = false
+            let val = render(v)
+            var i = parentIdx + 1
+            while i < lines.count {
+                let line = lines[i]
+                if !line.hasPrefix(" ") && !line.hasPrefix("\t") && !line.isEmpty { break }
+                let trimmed = line.trimmingCharacters(in: .whitespaces)
+                if trimmed.hasPrefix("\(k):") {
+                    let indent = String(line.prefix(while: { $0 == " " || $0 == "\t" }))
+                    lines[i] = "\(indent.isEmpty ? "  " : indent)\(k): \(val)"
+                    found = true; break
+                }
+                i += 1
+            }
+            if !found {
+                lines.insert("  \(k): \(val)", at: parentIdx + 1)
+            }
+        }
     }
 
     // MARK: - proxy-providers (config.yaml editing)
@@ -335,14 +391,28 @@ import SwiftUI
             let data = pipe.fileHandleForReading.readDataToEndOfFile()
             p.waitUntilExit()
             guard let out = String(data: data, encoding: .utf8) else { return nil }
+            var routeIface: String? = nil
             for line in out.split(separator: "\n") {
                 let t = line.trimmingCharacters(in: .whitespaces)
                 if t.hasPrefix("interface:") {
                     let name = t.dropFirst("interface:".count).trimmingCharacters(in: .whitespaces)
-                    return name.isEmpty ? nil : name
+                    if !name.isEmpty {
+                        routeIface = name
+                        break
+                    }
                 }
             }
-            return nil
+            if let iface = routeIface, !iface.hasPrefix("utun") {
+                return iface
+            }
+            // Fallback: Scan physical interfaces if the default route points to a tunnel or is missing.
+            let physicalIfaces = NetScanner.interfaces().filter {
+                $0.kind == .physical && $0.isUp && !$0.ipv4.isEmpty
+            }
+            if physicalIfaces.contains(where: { $0.id == "en0" }) {
+                return "en0"
+            }
+            return physicalIfaces.first?.id
         }.value
     }
 
@@ -448,7 +518,7 @@ import SwiftUI
         guard let text = try? String(contentsOfFile: path, encoding: .utf8) else { return }
         var lines = text.components(separatedBy: "\n")
         let weak: Set<String> = ["", "clashpow", "caseqc", "123456", "admin", "password"]
-        var hasController = false, hasSecret = false, changed = false
+        var hasController = false, hasSecret = false, hasExtUI = false, hasExtUIName = false, changed = false
 
         func scalar(_ line: String, _ key: String) -> String? {
             guard !line.hasPrefix(" "), !line.hasPrefix("\t"), line.hasPrefix(key) else { return nil }
@@ -465,12 +535,16 @@ import SwiftUI
                 let port = ec.lastIndex(of: ":").map { String(ec[ec.index(after: $0)...]) } ?? "9090"
                 let want = "127.0.0.1:\(port.trimmingCharacters(in: .whitespaces))"
                 if ec != want { lines[i] = "external-controller: \(want)"; changed = true }
-            }
-            if let sec = scalar(lines[i], "secret") {
+            } else if let sec = scalar(lines[i], "secret") {
                 hasSecret = true
                 if weak.contains(sec) { lines[i] = "secret: \(Self.randomSecret())"; changed = true }
+            } else if scalar(lines[i], "external-ui") != nil {
+                hasExtUI = true
+            } else if scalar(lines[i], "external-ui-name") != nil {
+                hasExtUIName = true
             }
         }
+        
         if !hasController { lines.insert("external-controller: 127.0.0.1:9090", at: 0); changed = true }
         if !hasSecret { lines.insert("secret: \(Self.randomSecret())", at: 0); changed = true }
 

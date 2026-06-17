@@ -49,8 +49,26 @@ public class ProxyManager {
         p.executableURL = URL(fileURLWithPath: "/usr/sbin/networksetup")
         p.arguments = args
         p.standardOutput = Pipe(); p.standardError = Pipe()
-        do { try p.run(); p.waitUntilExit(); return p.terminationStatus == 0 }
-        catch { return false }
+        
+        let timer = DispatchSource.makeTimerSource(queue: DispatchQueue.global())
+        timer.schedule(deadline: .now() + 5.0)
+        timer.setEventHandler {
+            if p.isRunning {
+                log("Process timeout: killing hung networksetup process")
+                p.terminate()
+            }
+        }
+        
+        do {
+            try p.run()
+            timer.resume()
+            p.waitUntilExit()
+            timer.cancel()
+            return p.terminationStatus == 0
+        } catch {
+            timer.cancel()
+            return false
+        }
     }
 
     private static func runOutput(_ args: [String]) -> String? {
@@ -58,10 +76,45 @@ public class ProxyManager {
         p.executableURL = URL(fileURLWithPath: "/usr/sbin/networksetup")
         p.arguments = args
         let pipe = Pipe(); p.standardOutput = pipe; p.standardError = Pipe()
-        do { try p.run() } catch { return nil }
-        let data = pipe.fileHandleForReading.readDataToEndOfFile()
-        p.waitUntilExit()
-        return String(data: data, encoding: .utf8)
+        
+        let timer = DispatchSource.makeTimerSource(queue: DispatchQueue.global())
+        timer.schedule(deadline: .now() + 5.0)
+        timer.setEventHandler {
+            if p.isRunning {
+                log("Process Output timeout: killing hung networksetup process")
+                p.terminate()
+            }
+        }
+        
+        do {
+            try p.run()
+            timer.resume()
+            let data = pipe.fileHandleForReading.readDataToEndOfFile()
+            p.waitUntilExit()
+            timer.cancel()
+            return String(data: data, encoding: .utf8)
+        } catch {
+            timer.cancel()
+            return nil
+        }
+    }
+
+    /// Restore DNS settings for all active services to "Empty" (DHCP auto) or a fallback resolver (223.5.5.5).
+    @discardableResult
+    public static func restoreDNS() -> Bool {
+        let services = enabledNetworkServices()
+        guard !services.isEmpty else { return false }
+        var anyOK = false
+        for svc in services {
+            // First attempt: restore to DHCP default (Empty)
+            var ok = run(["-setdnsservers", svc, "Empty"])
+            if !ok {
+                // Fallback attempt: if Empty fails, use a public resolver like 223.5.5.5
+                ok = run(["-setdnsservers", svc, "223.5.5.5"])
+            }
+            if ok { anyOK = true }
+        }
+        return anyOK
     }
 
     /// Read the effective system proxy state (no root required). Returns true
@@ -71,5 +124,107 @@ public class ProxyManager {
         let httpOn = dict[kCFNetworkProxiesHTTPEnable as String] as? Int == 1
         let httpHost = dict[kCFNetworkProxiesHTTPProxy as String] as? String
         return httpOn && httpHost == "127.0.0.1"
+    }
+
+    /// Clean up TUN residual after mihomo exits: delete default routes pointing
+    /// to utun interfaces bearing mihomo's 198.18.x.x addresses, bring those
+    /// interfaces down, and remove their IP addresses. macOS utun interfaces
+    /// created via AF_SYSTEM sockets cannot be destroyed with `ifconfig destroy`
+    /// — they persist until their controlling socket FD is closed. Bringing them
+    /// down + removing addresses neutralizes their Supplemental DNS resolvers
+    /// and prevents traffic from routing into a dead tunnel.
+    @discardableResult
+    public static func cleanupTUNResidual() -> Bool {
+        // 1. Find utun interfaces with 198.18.x.x addresses (mihomo TUN signature)
+        let ifconfigOut = runGeneric("/sbin/ifconfig", ["-a"])
+        guard let output = ifconfigOut else {
+            log("cleanupTUNResidual: ifconfig failed")
+            return false
+        }
+
+        var mihomoUtuns: [(iface: String, addr: String)] = []
+        var currentIface: String?
+        for line in output.split(separator: "\n") {
+            let s = String(line)
+            // Interface header line: "utunN: flags=..."
+            if !s.hasPrefix("\t") && !s.hasPrefix(" "), s.contains(": flags=") {
+                currentIface = String(s.prefix(while: { $0 != ":" }))
+            }
+            // inet line with 198.18.x.x → this is mihomo's TUN
+            if let iface = currentIface, iface.hasPrefix("utun"),
+               s.contains("198.18."), s.contains("inet ") {
+                // Extract the IP address: "inet 198.18.0.1 --> ..."
+                let parts = s.trimmingCharacters(in: .whitespaces).split(separator: " ")
+                if let idx = parts.firstIndex(of: "inet"), idx + 1 < parts.count {
+                    mihomoUtuns.append((iface: iface, addr: String(parts[idx + 1])))
+                } else {
+                    mihomoUtuns.append((iface: iface, addr: "198.18.0.1"))
+                }
+            }
+        }
+
+        guard !mihomoUtuns.isEmpty else {
+            log("cleanupTUNResidual: no mihomo utun interfaces found")
+            return true  // nothing to clean
+        }
+
+        let ifaceNames = mihomoUtuns.map(\.iface)
+        log("cleanupTUNResidual: found mihomo utun interfaces: \(ifaceNames)")
+
+        // 2. Delete default routes pointing to these utun interfaces
+        for (iface, _) in mihomoUtuns {
+            // IPv4 default route (try both -ifscope and -interface forms)
+            _ = runGeneric("/sbin/route", ["-n", "delete", "default", "-ifscope", iface])
+            _ = runGeneric("/sbin/route", ["-n", "delete", "default", "-interface", iface])
+            // IPv6 default route
+            _ = runGeneric("/sbin/route", ["-n", "delete", "-inet6", "default", "-ifscope", iface])
+            _ = runGeneric("/sbin/route", ["-n", "delete", "-inet6", "default", "-interface", iface])
+        }
+
+        // 3. Delete any residual 198.18.0.0/15 routes (mihomo fake-ip range)
+        _ = runGeneric("/sbin/route", ["-n", "delete", "198.18.0.0/15"])
+
+        // 4. Bring interfaces down and remove their IP addresses to neutralize
+        //    Supplemental DNS resolvers. utun can't be `destroy`ed, but down +
+        //    address removal makes the system stop using it for DNS/routing.
+        for (iface, addr) in mihomoUtuns {
+            _ = runGeneric("/sbin/ifconfig", [iface, "down"])
+            _ = runGeneric("/sbin/ifconfig", [iface, "inet", addr, "delete"])
+            log("cleanupTUNResidual: \(iface) down + deleted \(addr)")
+        }
+
+        // 5. Flush the routing table cache to apply changes immediately
+        _ = runGeneric("/sbin/route", ["-n", "flush"])
+
+        return true
+    }
+
+    /// Run an arbitrary command and return its stdout (nil on failure). 5s timeout.
+    private static func runGeneric(_ executable: String, _ args: [String]) -> String? {
+        let p = Process()
+        p.executableURL = URL(fileURLWithPath: executable)
+        p.arguments = args
+        let pipe = Pipe(); p.standardOutput = pipe; p.standardError = Pipe()
+
+        let timer = DispatchSource.makeTimerSource(queue: DispatchQueue.global())
+        timer.schedule(deadline: .now() + 5.0)
+        timer.setEventHandler {
+            if p.isRunning {
+                log("runGeneric timeout: killing \(executable) \(args)")
+                p.terminate()
+            }
+        }
+
+        do {
+            try p.run()
+            timer.resume()
+            let data = pipe.fileHandleForReading.readDataToEndOfFile()
+            p.waitUntilExit()
+            timer.cancel()
+            return String(data: data, encoding: .utf8)
+        } catch {
+            timer.cancel()
+            return nil
+        }
     }
 }

@@ -46,11 +46,11 @@ git config core.hooksPath .githooks
 - UI 按功能分目录于 `Sources/UI/`，路由是 `AppModel.route` 字符串（见 `App/ContentView.swift` 侧栏 tab）。
 
 **2. 特权 Helper 层（`Sources/Helper/main.swift` + `Sources/XPC/`）**
-- 独立编译的 LaunchDaemon，Mach service `com.clashpow.helper`，通过 `HelperProtocol`（`XPC/HelperProtocol.swift`）做 XPC。当前版本 `kHelperVersion = "1.0.6"`。
+- 独立编译的 LaunchDaemon，Mach service `com.clashpow.helper`，通过 `HelperProtocol`（`XPC/HelperProtocol.swift`）做 XPC。当前版本 `kHelperVersion = "1.0.11"`。
 - 4 个 XPC 能力：`getVersion` / `setSystemProxy` / `startMihomo` / `stopMihomo`。
 - `XPCManager`（`XPC/XPCManager.swift`）—— GUI 侧连接管理 + `installDaemon()`/`uninstallDaemon()`/`upgradeDaemon()`（先卸载再安装的完整升级流）。
 - `ProxyManager`（`XPC/ProxyManager.swift`）—— Helper 内用 `networksetup` 改系统代理（SCPreferences 在 root daemon 会话不生效，已弃用）；状态读取仍用只读 `SCDynamicStoreCopyProxies`。
-- **版本管理**：`EngineControl.kExpectedHelperVersion = "1.0.6"`。`AppModel.start()` 启动 4s 后调用 `checkAndUpgradeHelperIfNeeded()`，版本低于预期时自动走 `upgradeDaemon()` 升级，无需用户手动操作。UI「设置→权限」tab 版本过旧时按钮显示「更新」（橙色）。
+- **版本管理**：`EngineControl.kExpectedHelperVersion = "1.0.11"`。`AppModel.start()` 启动 4s 后调用 `checkAndUpgradeHelperIfNeeded()`，版本低于预期时自动走 `upgradeDaemon()` 升级，无需用户手动操作。UI「设置→权限」tab 版本过旧时按钮显示「更新」（橙色）。
 - **`isAuthorizedClient` 三层鉴权**（`Helper/main.swift`）：
   1. `SecCodeCheckValidity(kSecCSBasicValidateOnly)` —— 跳过可执行+资源校验，仅验 identifier，兼容 ad-hoc 签名
   2. `SecCodeCopyStaticCode` + `SecCodeCopyPath` —— bundle 根路径回退
@@ -61,7 +61,7 @@ git config core.hooksPath .githooks
 ### 关键工作流
 
 **启动：**
-`AppModel.start()` → `engine.ensureInstalled()` + `ensureRunning()` → `reconnect()` 轮询 `/version` 握手 → 建 WS 长连 + 3s 轮询 `refreshProxies`/`refreshConfigs`。不可达时每 3s 静默重试。启动 4s 后后台检查 helper 版本并自动升级。
+`AppModel.start()`：使用 Strict Serialization（严格串行化）控制启动流水线：状态重置 → 探测/关闭僵死内核 → `ensureRunning()` 启动新实例 → 恢复系统网络 (如 DNS/Proxy) → `reconnect()` 建长连与 WebSocket。杜绝并发造成的重入与竞态。启动 4s 后独立检查 Helper 版本并提醒/自动升级。
 
 **TUN 开启**（`AppModel.toggleTUN`）：
 1. TUN 需 root → 检查 `engine.isRoot` 和 `engine.helperVersion`
@@ -82,7 +82,8 @@ git config core.hooksPath .githooks
 **配置变更**：统一经 `AppModel.patch()` → mihomo `/configs` PATCH（内核侧校验+回滚）；切换 profile 用 `setConfig` 写文件 + `/configs?force=true` PUT 热重载。
 
 **退出清理**（`AppDelegate` + signal handlers）：
-- `applicationWillTerminate` / SIGTERM / SIGINT：`killall -9 mihomo` + helper XPC `setSystemProxy(false)`
+- `applicationWillTerminate` / SIGTERM / SIGINT：`killall -9 mihomo` + helper XPC `setSystemProxy(false)` + 还原 Networksetup DNS。
+- **关于 TUN (utun) 的清理**：官方 mihomo 底层采用 `AF_SYSTEM` socket。App 或内核异常退出时，macOS Kernel 底层会自动接管回收 utun 并解绑对应路由与 Supplemental DNS。请勿在退出时使用 `ifconfig destroy` 清理 198.18 频段设备，否则会误杀处于同频段的 Shadowrocket 等第三方代理。
 - 一次性锁（`DispatchSemaphore`）防 delegate 与 signal handler 竞争
 
 **网络断开保护**（`NWPathMonitor`）：
