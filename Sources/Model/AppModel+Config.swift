@@ -100,6 +100,81 @@ extension AppModel {
         }
     }
 
+    func toggleGatewayMode() {
+        guard !engine.isBusy else { showToast("系统配置中，请稍候…"); return }
+        let want = !gatewayModeOn
+        
+        // Active Gateway needs TUN, let's enforce it
+        if want && !tunOn {
+            showToast("正准备环境：网关中枢需要 TUN 模式…")
+            engine.isBusy = true
+            Task {
+                await applyTUNState(true)
+                if tunOn {
+                    await applyGatewayMode(true)
+                } else {
+                    showToast("TUN 启动失败，无法开启网关中枢")
+                }
+                engine.isBusy = false
+            }
+            return
+        }
+
+        engine.isBusy = true
+        Task {
+            defer { engine.isBusy = false }
+            await applyGatewayMode(want)
+        }
+    }
+
+    private func applyGatewayMode(_ want: Bool) async {
+        if want {
+            // Check helper privileges for sysctl
+            if !engine.isRoot {
+                showToast("开启网关中枢需要管理员授权…")
+                let ok = await engine.installPrivileged()
+                guard ok else { showToast("授权失败，未开启网关"); return }
+                // Also requires root engine restart if not already
+                if !engine.runningAsRoot {
+                    showToast("正在以 Root 权限重启核心…")
+                    await engine.restart()
+                    try? await Task.sleep(nanoseconds: 2_000_000_000)
+                    await reconnect()
+                }
+            }
+
+            // Write configs for gateway mode (allow-lan and dns listen)
+            let overrides: [String: Any] = [
+                "allow-lan": true,
+                "dns": [
+                    "enable": true,
+                    "listen": "0.0.0.0:53",
+                    "enhanced-mode": "fake-ip"
+                ]
+            ]
+            let okPatch = await engine.patchConfig(overrides)
+            if okPatch {
+                await refreshConfigs()
+            }
+
+            let ok = await engine.setGatewayMode(enabled: true)
+            if ok {
+                gatewayModeOn = true
+                showToast("网关中枢（旁路由）已成功开启")
+            } else {
+                showToast("底层 IP 转发开启失败")
+            }
+        } else {
+            let ok = await engine.setGatewayMode(enabled: false)
+            if ok {
+                gatewayModeOn = false
+                showToast("网关中枢已关闭")
+            } else {
+                showToast("网关中枢关闭失败")
+            }
+        }
+    }
+
     /// Re-establish the user's TUN state after a kernel (re)start (restart button /
     /// kernel version switch / reinstall). A restart re-reads config.yaml where
     /// `tun.enable` is always false — TUN is a runtime-only PATCH that never
