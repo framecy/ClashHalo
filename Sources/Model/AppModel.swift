@@ -58,6 +58,7 @@ import ServiceManagement
     @Published var memory: Int64 = 0
     @Published var uploadTotal: Int64 = 0
     @Published var downloadTotal: Int64 = 0
+    @Published var gatewayDevices: [String: GatewayDevice] = [:]
 
     // Proxies
     @Published var groups: [ProxyGroup] = []

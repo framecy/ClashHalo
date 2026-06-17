@@ -33,7 +33,14 @@ extension AppModel {
         if needDetailedStats {
             var bytes: [String: (up: Int64, down: Int64)] = [:]
             var activeIDs = Set<String>()
+            var newGatewayDevices = gatewayDevices
+            for ip in newGatewayDevices.keys {
+                newGatewayDevices[ip]?.activeConnections = 0
+                newGatewayDevices[ip]?.uploadRate = 0
+                newGatewayDevices[ip]?.downloadRate = 0
+            }
             
+            let nowTime = Date()
             for c in items {
                 activeIDs.insert(c.id)
                 if !activeConnsSet.contains(c.id) { totalConnsCount += 1 }
@@ -46,8 +53,26 @@ extension AppModel {
                 let cat = (c.chains.first == "DIRECT" || c.chains.contains("DIRECT")) ? "direct"
                         : (c.chains.first == "REJECT" || c.chains.contains("REJECT")) ? "reject" : "proxy"
                 history.record(category: cat, down: Int64(downRate), up: Int64(upRate), hour: hour)
+                
+                // Track LAN Gateway devices
+                let proc = c.metadata.process ?? "—"
+                let srcIP = c.metadata.sourceIP ?? ""
+                if (proc == "—" || proc.isEmpty) && srcIP != "127.0.0.1" && srcIP != "::1" && !srcIP.isEmpty {
+                    var dev = newGatewayDevices[srcIP] ?? GatewayDevice(ip: srcIP, activeConnections: 0, uploadRate: 0, downloadRate: 0, totalUpload: 0, totalDownload: 0, firstSeen: nowTime, lastSeen: nowTime)
+                    dev.activeConnections += 1
+                    dev.uploadRate += Int64(upRate)
+                    dev.downloadRate += Int64(downRate)
+                    dev.totalUpload += Int64(upRate)
+                    dev.totalDownload += Int64(downRate)
+                    dev.lastSeen = nowTime
+                    newGatewayDevices[srcIP] = dev
+                }
             }
             prevConnBytes = bytes
+            
+            // Clean up old inactive devices (>10 mins)
+            newGatewayDevices = newGatewayDevices.filter { $0.value.activeConnections > 0 || nowTime.timeIntervalSince($0.value.lastSeen) < 600 }
+            gatewayDevices = newGatewayDevices
             
             activeConnsSet = activeIDs
             activeConnectionsCount = activeIDs.count
