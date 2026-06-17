@@ -190,6 +190,21 @@ class Helper: NSObject, HelperProtocol {
         Self.stopMihomoInternal()
         reply(true)
     }
+
+    func setGatewayMode(enabled: Bool, withReply reply: @escaping (Bool) -> Void) {
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/usr/sbin/sysctl")
+        process.arguments = ["-w", "net.inet.ip.forwarding=\(enabled ? 1 : 0)"]
+        do {
+            try process.run()
+            process.waitUntilExit()
+            log("setGatewayMode: \(enabled) -> success")
+            reply(process.terminationStatus == 0)
+        } catch {
+            log("setGatewayMode: failed: \(error)")
+            reply(false)
+        }
+    }
 }
 
 class HelperDelegate: NSObject, NSXPCListenerDelegate {
@@ -239,6 +254,13 @@ class HelperDelegate: NSObject, NSXPCListenerDelegate {
         //    apps like Shadowrocket share the same 198.18.x.x address space)
         let dnsReset = ProxyManager.restoreDNS()
         log("handleClientExit: DNS restored (\(dnsReset))")
+
+        // 4. Disable IP Forwarding
+        let t = Process()
+        t.executableURL = URL(fileURLWithPath: "/usr/sbin/sysctl")
+        t.arguments = ["-w", "net.inet.ip.forwarding=0"]
+        try? t.run()
+        log("handleClientExit: IP forwarding disabled")
     }
 }
 
