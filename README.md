@@ -11,9 +11,10 @@ ClashHalo 是「原生编排器」架构：GUI 通过 REST + WebSocket 与官方
 - **订阅与配置**：多套 YAML profile 管理，远程订阅（URL 存 Keychain），内核侧校验 + 热重载。订阅页支持 proxy-provider 增删改（写入配置 + 自动 `use:` 引用，备份/校验/失败回滚）。
 - **网络聚合页**：入站 / TUN / DNS / 嗅探 / 内核管理 合并为一个带 tab 的「网络」页；侧栏精简为 监控 / 代理 / 配置 三组。
 - **内核管理**：默认内置官方 mihomo，开箱即用；应用内可从 GitHub 下载/切换版本（stable / alpha），或一键切回内置内核。
+- **网关中枢 (旁路由)**：一键开启局域网底层 IP 转发并接管 53 端口 DNS。自动识别并展示局域网内所有接入设备的 IP、连接数及实时流量趋势。详情请参阅 [`Docs/GatewayGuide.md`](Docs/GatewayGuide.md)。
 - **外部面板集成 (Zashboard)**：深度内嵌开箱即用的 Zashboard 外部面板，通过自动注入哈希参数实现与内核免密无缝认证，支持跟随系统的主题自动切换。
 - **实时监控**：流量图、连接监控、单遍聚合的仪表盘、分级实时日志（默认 WARN）。
-- **菜单栏快捷面板**：开关（系统代理/TUN/核心）、模式、逐策略组节点选择（带延迟）、配置切换与更新订阅、复制终端代理命令、重载/清 DNS、页面导航；开机自启动与显示/隐藏 Dock 图标。
+- **菜单栏快捷面板**：开关（系统代理/TUN/网关中枢/核心）、模式、逐策略组节点选择（带延迟）、配置切换与更新订阅、复制终端代理命令、重载/清 DNS、页面导航；开机自启动与显示/隐藏 Dock 图标。
 - **安全**：控制面绑回环 + 强随机 secret；Helper XPC 三层客户端鉴权（SecurityFramework / bundle 路径 / proc_pidpath）+ 内核路径白名单。
 - **Helper 自动升级**：App 启动后自动检测版本，旧版 Helper 静默完成 uninstall → install 完整升级流；UI 版本过旧时显示橙色「更新」按钮。
 - **退出清理**：App 正常退出（`applicationWillTerminate`）或收到 SIGTERM/SIGINT 时，自动 `kill -9 mihomo` 并清除系统代理，避免代理残留。
