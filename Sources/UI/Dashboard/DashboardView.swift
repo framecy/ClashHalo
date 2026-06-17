@@ -224,14 +224,32 @@ struct TrafficDistributionView: View, Equatable {
         
         return HStack(spacing: 32) {
             ZStack {
-                Chart(data) { slice in
-                    SectorMark(
-                        angle: .value("Traffic", slice.value),
-                        innerRadius: .ratio(0.72),
-                        angularInset: 1.5
-                    )
-                    .foregroundStyle(slice.color)
-                    .cornerRadius(4)
+                Canvas { context, size in
+                    let total = direct + proxy + reject
+                    guard total > 0 else {
+                        // Draw empty placeholder ring
+                        var path = Path()
+                        let center = CGPoint(x: size.width / 2, y: size.height / 2)
+                        let radius = min(size.width, size.height) / 2
+                        path.addArc(center: center, radius: radius, startAngle: .zero, endAngle: .degrees(360), clockwise: false)
+                        context.stroke(path, with: .color(Color.secondary.opacity(0.2)), style: StrokeStyle(lineWidth: radius * 0.28))
+                        return
+                    }
+                    let center = CGPoint(x: size.width / 2, y: size.height / 2)
+                    let radius = min(size.width, size.height) / 2
+                    let lineWidth = radius * 0.28
+                    let strokeRadius = radius - lineWidth / 2
+                    
+                    var startAngle = Angle.degrees(-90)
+                    for slice in data {
+                        guard slice.value > 0 else { continue }
+                        let angle = Angle.degrees(360 * (slice.value / total))
+                        let endAngle = startAngle + angle
+                        var path = Path()
+                        path.addArc(center: center, radius: strokeRadius, startAngle: startAngle, endAngle: endAngle, clockwise: false)
+                        context.stroke(path, with: .color(slice.color), style: StrokeStyle(lineWidth: lineWidth, lineCap: .butt))
+                        startAngle = endAngle
+                    }
                 }
                 .frame(width: 110, height: 110)
 
