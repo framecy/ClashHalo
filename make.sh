@@ -43,6 +43,10 @@ for f in GeoSite.dat geoip.metadb ASN.mmdb; do
     done
 done
 
+echo "      Bundling local dashboards (Zashboard)…"
+mkdir -p "$RES/zashboard"
+cp -R "$ROOT/Resources/Panels/zashboard/dist" "$RES/zashboard/"
+
 # Bundle a default mihomo kernel so the app works out of the box. Reuse a local
 # kernel if present, otherwise download the official darwin-arm64 release.
 MIHOMO_DST="$APP/Contents/MacOS/mihomo"

@@ -13,30 +13,30 @@ struct NetworkPage: View {
                 VStack(spacing: DS.Spacing.l) {
                     Card(title: "入站端口", icon: "arrow.down.right.circle") {
                         VStack(spacing: 2) {
-                            NumRow("HTTP 端口", key: "port")
-                            NumRow("SOCKS 端口", key: "socks-port")
-                            NumRow("混合端口", key: "mixed-port")
-                            NumRow("Redir 端口", key: "redir-port")
-                            NumRow("TProxy 端口", key: "tproxy-port")
+                            NumRow("HTTP 端口", key: "port", persistent: true)
+                            NumRow("SOCKS 端口", key: "socks-port", persistent: true)
+                            NumRow("混合端口", key: "mixed-port", persistent: true)
+                            NumRow("Redir 端口", key: "redir-port", persistent: true)
+                            NumRow("TProxy 端口", key: "tproxy-port", persistent: true)
                         }
                         Text("端口设为 0 即禁用。建议绝大多数应用使用混合端口（兼容 HTTP 与 SOCKS5）。")
                             .font(.dsBody).foregroundColor(.secondary).padding(.top, 6)
                     }
                     Card(title: "全局网络", icon: "globe") {
                         VStack(spacing: 2) {
-                            ToggleRow("IPv6 支持", key: "ipv6")
-                            ToggleRow("多路径 TCP (MPTCP)", key: "inbound-mptcp")
-                            ToggleRow("TCP 并发连接", key: "tcp-concurrent")
+                            ToggleRow("IPv6 支持", key: "ipv6", persistent: true)
+                            ToggleRow("多路径 TCP (MPTCP)", key: "inbound-mptcp", persistent: true)
+                            ToggleRow("TCP 并发连接", key: "tcp-concurrent", persistent: true)
                         }
                     }
                     Card(title: "访问控制", icon: "lock.shield") {
                         VStack(spacing: 2) {
-                            ToggleRow("允许局域网连接", key: "allow-lan")
-                            TextRow("绑定地址", key: "bind-address", placeholder: "*")
-                            StringListRow("允许的 IP", key: "lan-allowed-ips", placeholder: "0.0.0.0/0")
-                            StringListRow("拒绝的 IP", key: "lan-disallowed-ips", placeholder: "192.168.0.3/32")
-                            StringListRow("代理认证", key: "authentication", placeholder: "user:pass")
-                            StringListRow("免认证网段", key: "skip-auth-prefixes", placeholder: "127.0.0.1/8")
+                            ToggleRow("允许局域网连接", key: "allow-lan", persistent: true)
+                            TextRow("绑定地址", key: "bind-address", placeholder: "*", persistent: true)
+                            StringListRow("允许的 IP", key: "lan-allowed-ips", placeholder: "0.0.0.0/0", persistent: true)
+                            StringListRow("拒绝的 IP", key: "lan-disallowed-ips", placeholder: "192.168.0.3/32", persistent: true)
+                            StringListRow("代理认证", key: "authentication", placeholder: "user:pass", persistent: true)
+                            StringListRow("免认证网段", key: "skip-auth-prefixes", placeholder: "127.0.0.1/8", persistent: true)
                         }
                         Text("开启“允许局域网”可将代理共享给同 Wi-Fi 下的其他设备；可用 IP 网段与认证做严格审查。")
                             .font(.dsBody).foregroundColor(.secondary).padding(.top, 6)
@@ -242,8 +242,8 @@ struct ToggleRow: View {
 /// Single-string field bound to a top-level config key.
 struct TextRow: View {
     @EnvironmentObject var M: AppModel
-    let label: String; let key: String; let placeholder: String
-    init(_ label: String, key: String, placeholder: String = "") { self.label = label; self.key = key; self.placeholder = placeholder }
+    let label: String; let key: String; let placeholder: String; let persistent: Bool
+    init(_ label: String, key: String, placeholder: String = "", persistent: Bool = false) { self.label = label; self.key = key; self.placeholder = placeholder; self.persistent = persistent }
     @State private var text = ""
     var body: some View {
         HStack {
@@ -253,7 +253,7 @@ struct TextRow: View {
                 .textFieldStyle(.roundedBorder)
                 .font(.dsMono)
                 .multilineTextAlignment(.trailing)
-                .onSubmit { Task { await M.patch([key: text]) } }
+                .onSubmit { Task { if persistent { await M.patchPersistent([key: text]) } else { await M.patch([key: text]) } } }
                 .frame(width: DS.Layout.fieldTrailing, alignment: .trailing)
         }
         .padding(.vertical, 5)
@@ -290,8 +290,8 @@ struct PickerRow: View {
 /// Automatically validates input format based on placeholder hints (CIDR, URL, etc.).
 struct StringListRow: View {
     @EnvironmentObject var M: AppModel
-    let label: String; let key: String; let placeholder: String
-    init(_ label: String, key: String, placeholder: String = "") { self.label = label; self.key = key; self.placeholder = placeholder }
+    let label: String; let key: String; let placeholder: String; let persistent: Bool
+    init(_ label: String, key: String, placeholder: String = "", persistent: Bool = false) { self.label = label; self.key = key; self.placeholder = placeholder; self.persistent = persistent }
     @State private var items: [String] = []
     @State private var draft = ""
     private var draftValid: Bool { draft.isEmpty || validateInput(draft) }
@@ -330,7 +330,7 @@ struct StringListRow: View {
         .padding(.vertical, DS.Spacing.s)
         .onAppear { items = (M.configs[key] as? [Any])?.map { "\($0)" } ?? [] }
     }
-    private func commit() { Task { await M.patch([key: items]) } }
+    private func commit() { Task { if persistent { await M.patchPersistent([key: items]) } else { await M.patch([key: items]) } } }
 
     /// Infer expected format from placeholder and validate accordingly.
     private func validateInput(_ s: String) -> Bool {
@@ -379,8 +379,8 @@ struct GeoURLRow: View {
 
 struct NToggle: View {
     @EnvironmentObject var M: AppModel
-    let parent: String; let sub: String; let label: String
-    init(_ label: String, _ parent: String, _ sub: String) { self.label = label; self.parent = parent; self.sub = sub }
+    let parent: String; let sub: String; let label: String; let persistent: Bool
+    init(_ label: String, _ parent: String, _ sub: String, persistent: Bool = true) { self.label = label; self.parent = parent; self.sub = sub; self.persistent = persistent }
     var body: some View {
         HStack {
             Text(label).font(.dsBody); Spacer()
@@ -392,7 +392,13 @@ struct NToggle: View {
                     currentParent[sub] = v
                     M.configs[parent] = currentParent
                     
-                    Task { await M.patch([parent: [sub: v]]) }
+                    Task {
+                        if persistent {
+                            await M.patchPersistent([parent: [sub: v]])
+                        } else {
+                            await M.patch([parent: [sub: v]])
+                        }
+                    }
                 }
             ))
             .toggleStyle(.switch)
@@ -404,9 +410,9 @@ struct NToggle: View {
 
 struct NPicker: View {
     @EnvironmentObject var M: AppModel
-    let parent: String; let sub: String; let label: String; let options: [(String, String)]
-    init(_ label: String, _ parent: String, _ sub: String, _ options: [(String, String)]) {
-        self.label = label; self.parent = parent; self.sub = sub; self.options = options
+    let parent: String; let sub: String; let label: String; let options: [(String, String)]; let persistent: Bool
+    init(_ label: String, _ parent: String, _ sub: String, _ options: [(String, String)], persistent: Bool = true) {
+        self.label = label; self.parent = parent; self.sub = sub; self.options = options; self.persistent = persistent
     }
     var body: some View {
         HStack {
@@ -416,7 +422,15 @@ struct NPicker: View {
                     let val = (nestedDict(M, parent)[sub] as? String) ?? ""
                     return options.contains(where: { $0.0 == val }) ? val : (options.first?.0 ?? "")
                 },
-                set: { v in Task { await M.patch([parent: [sub: v]]) } }
+                set: { v in
+                    Task {
+                        if persistent {
+                            await M.patchPersistent([parent: [sub: v]])
+                        } else {
+                            await M.patch([parent: [sub: v]])
+                        }
+                    }
+                }
             )) { ForEach(options, id: \.0) { Text($0.1).tag($0.0) } }
             .labelsHidden()
             .frame(width: DS.Layout.fieldTrailing, alignment: .trailing)
@@ -426,9 +440,9 @@ struct NPicker: View {
 
 struct NText: View {
     @EnvironmentObject var M: AppModel
-    let parent: String; let sub: String; let label: String; let placeholder: String
-    init(_ label: String, _ parent: String, _ sub: String, placeholder: String = "") {
-        self.label = label; self.parent = parent; self.sub = sub; self.placeholder = placeholder
+    let parent: String; let sub: String; let label: String; let placeholder: String; let persistent: Bool
+    init(_ label: String, _ parent: String, _ sub: String, placeholder: String = "", persistent: Bool = true) {
+        self.label = label; self.parent = parent; self.sub = sub; self.placeholder = placeholder; self.persistent = persistent
     }
     @State private var text = ""
     var body: some View {
@@ -438,7 +452,15 @@ struct NText: View {
                 .textFieldStyle(.roundedBorder)
                 .font(.dsMono)
                 .multilineTextAlignment(.trailing)
-                .onSubmit { Task { await M.patch([parent: [sub: text]]) } }
+                .onSubmit {
+                    Task {
+                        if persistent {
+                            await M.patchPersistent([parent: [sub: text]])
+                        } else {
+                            await M.patch([parent: [sub: text]])
+                        }
+                    }
+                }
                 .frame(width: DS.Layout.fieldTrailing, alignment: .trailing)
         }.padding(.vertical, 5)
         .onAppear { text = (nestedDict(M, parent)[sub] as? String) ?? "" }
@@ -447,9 +469,9 @@ struct NText: View {
 
 struct NList: View {
     @EnvironmentObject var M: AppModel
-    let parent: String; let sub: String; let label: String; let placeholder: String
-    init(_ label: String, _ parent: String, _ sub: String, placeholder: String = "") {
-        self.label = label; self.parent = parent; self.sub = sub; self.placeholder = placeholder
+    let parent: String; let sub: String; let label: String; let placeholder: String; let persistent: Bool
+    init(_ label: String, _ parent: String, _ sub: String, placeholder: String = "", persistent: Bool = true) {
+        self.label = label; self.parent = parent; self.sub = sub; self.placeholder = placeholder; self.persistent = persistent
     }
     @State private var items: [String] = []
     @State private var draft = ""
@@ -475,7 +497,15 @@ struct NList: View {
         }.padding(.vertical, DS.Spacing.s)
         .onAppear { items = (nestedDict(M, parent)[sub] as? [Any])?.map { "\($0)" } ?? [] }
     }
-    private func commit() { Task { await M.patch([parent: [sub: items]]) } }
+    private func commit() {
+        Task {
+            if persistent {
+                await M.patchPersistent([parent: [sub: items]])
+            } else {
+                await M.patch([parent: [sub: items]])
+            }
+        }
+    }
 }
 
 // MARK: - Kernel Management Page
@@ -487,6 +517,18 @@ struct KernelMgmtPage: View {
             ScrollView {
                 VStack(spacing: DS.Spacing.l) {
                     KernelCard()
+                    
+                    Card(title: "API 控制 (外部面板)", icon: "server.rack") {
+                        VStack(spacing: 2) {
+                            TextRow("API 监听地址", key: "external-controller", placeholder: "127.0.0.1:9090", persistent: true)
+                            TextRow("API 密钥 (Secret)", key: "secret", placeholder: "留空即无密码", persistent: true)
+                            TextRow("本地面板目录", key: "external-ui", placeholder: "zashboard", persistent: true)
+                            TextRow("面板解压目录名", key: "external-ui-name", placeholder: "zashboard", persistent: true)
+                            TextRow("面板下载地址", key: "external-ui-url", placeholder: "https://github.com/Zephyruso/zashboard/releases/latest/download/dist-no-fonts.zip", persistent: true)
+                        }
+                        Text("内核内置面板 (如 Zashboard)。配置下载地址后，内核启动时会自动下载并解压到指定目录，您可通过 http://<API地址>/ui 访问。")
+                            .font(.dsBody).foregroundColor(.secondary).padding(.top, 6)
+                    }
                     
                     Card(title: "启动日志", icon: "terminal") {
                         VStack(alignment: .leading, spacing: 4) {

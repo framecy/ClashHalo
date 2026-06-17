@@ -125,6 +125,9 @@ import ServiceManagement
     // Toast
     @Published var toast: String?
 
+    // External Panels
+    @AppStorage("ui.zashboardURL") var zashboardURL = "https://board.zash.run.place/"
+
     private var pathMonitor: NWPathMonitor?
     private var signalSources: [AnyObject] = []
     private var networkOnline = true
@@ -144,6 +147,11 @@ import ServiceManagement
     // MARK: Lifecycle
 
     func start() {
+        // Migrate old dead Vercel URL to the new official one
+        if zashboardURL.contains("zashboard.vercel.app") {
+            zashboardURL = "https://board.zash.run.place/"
+        }
+
         // Inject log sinks so the engine/helper layers report events without
         // referencing AppModel directly (decoupling — they no longer call
         // AppModel.shared).
@@ -155,16 +163,34 @@ import ServiceManagement
         refreshLaunchAtLogin()         // sync the launch-at-login mirror
         engine.ensureInstalled()
         api.applyController(fromConfigAt: engine.configFilePath)   // B1: discover endpoint before probing
-        engine.ensureRunning()   // Auto-start kernel if not responding
+        // App启动后不要自动启用内核！
+        // engine.ensureRunning()   // Auto-start kernel if not responding
         store.load()
         history.load()
-        syncSystemProxyState()   // Read actual macOS proxy state so the toggle matches reality
-        Task { await reconnect() }
-        startNetworkMonitor()
-        installSignalHandlers()
-        observeSleepWake()
-        // Check helper version after initial pollStatus has had time to fetch it
+        
+        // 同步将状态设为 false，防止任何回调或并发逻辑读取到错误状态
+        tunOn = false
+        systemProxyOn = false
+        reachable = false
+        
+        // App启动后不要自动启用内核与代理！强制在启动时关闭代理、清理残留内核并还原 DNS。
+        // 完成清洗后，才开始建立连接探活、监听网络变化以及进行 helper 版本升级检查。
+        let port = (configs["mixed-port"] as? Int) ?? (configs["port"] as? Int) ?? 7890
         Task {
+            _ = await engine.setSystemProxy(enabled: false, port: port)
+            await engine.stopKernel()
+            await restoreTunnelDNS()
+            
+            // 确保同步最新的系统代理状态给 UI
+            syncSystemProxyState()
+            
+            // 旧内核彻底死亡、DNS 清洗完毕后，才安全地开启重连探测与网络变更监听
+            await reconnect()
+            startNetworkMonitor()
+            installSignalHandlers()
+            observeSleepWake()
+            
+            // 稍后检查 Helper 版本是否过旧，自动进行升级
             try? await Task.sleep(nanoseconds: 4_000_000_000)
             await engine.checkAndUpgradeHelperIfNeeded()
         }
@@ -387,7 +413,10 @@ import ServiceManagement
         guard let dict = SCDynamicStoreCopyProxies(nil) as? [String: Any] else { return }
         let httpOn = dict[kCFNetworkProxiesHTTPEnable as String] as? Int == 1
         let httpHost = dict[kCFNetworkProxiesHTTPProxy as String] as? String
-        systemProxyOn = httpOn && httpHost == "127.0.0.1"
+        let httpPort = dict[kCFNetworkProxiesHTTPPort as String] as? Int
+        
+        let expectedPort = (configs["mixed-port"] as? Int) ?? (configs["port"] as? Int) ?? 7890
+        systemProxyOn = httpOn && httpHost == "127.0.0.1" && httpPort == expectedPort
     }
 
     // MARK: Menu-bar app preferences

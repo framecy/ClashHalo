@@ -74,6 +74,17 @@ struct GeneralPage: View {
                             Text("DAT 模式使用 v2ray (.dat) 替代 MaxMind (.mmdb) 进行 GeoIP 匹配，文件更小；推荐“内存优先”加载器以降低后台占用。")
                                 .font(.dsBody).foregroundColor(.secondary).padding(.top, 6)
                         }
+
+                        // 外部面板
+                        Card(title: "外部面板", icon: "macwindow.on.rectangle") {
+                            VStack(spacing: 12) {
+                                VStack(alignment: .leading, spacing: 4) {
+                                    Text("Zashboard URL").font(.dsBody).foregroundColor(.secondary)
+                                    TextField("https://board.zash.run.place/", text: $M.zashboardURL)
+                                        .textFieldStyle(.roundedBorder)
+                                }
+                            }
+                        }
                     } else if selectedTab == "advanced" {
                         // 路由与连接
                         Card(title: "路由与连接", icon: "arrow.triangle.branch") {
