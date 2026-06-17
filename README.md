@@ -72,3 +72,17 @@ git config core.hooksPath .githooks
 - **隐私保证**：本应用纯本地运行，不包含任何遥测、云端收集或隐蔽分析代码。所有订阅配置、流量日志和代理凭证均仅存放在用户本地设备中。
 
 **当您下载、构建或使用本项目时，即代表您已仔细阅读并完全同意上述免责声明。**
+
+## 致谢 (Acknowledgements)
+
+本项目的诞生离不开开源社区的伟大贡献，特别鸣谢以下项目及开源作者：
+
+- [Mihomo (Clash.Meta)](https://github.com/MetaCubeX/mihomo): 提供了极其强大且稳定的核心流量处理、规则匹配引擎。
+- [Zashboard](https://github.com/ZephyrWeb/zashboard): 提供了现代化、高性能且高度可定制的 Web UI 控制面板，极大地提升了用户体验。
+
+## 开源许可 (License)
+
+本项目（ClashHalo GUI 代码部分）基于 **[GPL-3.0 License](https://opensource.org/licenses/GPL-3.0)** 协议开源。
+您可以自由地使用、学习、修改和分发本项目代码，但任何基于本代码的衍生软件发布时，均须继续遵守 GPL-3.0 协议进行开源。
+
+*注：对于本项目在运行或构建时动态依赖 / 嵌入的其他上游开源组件（如 `mihomo` 等），其对应的代码与产物继续受其原开发者宣告的开源协议约束。*
