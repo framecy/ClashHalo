@@ -144,6 +144,7 @@ extension AppModel {
             }
 
             // Write configs for gateway mode (allow-lan and dns listen)
+            let oldTun = tunOn
             let overrides: [String: Any] = [
                 "allow-lan": true,
                 "dns": [
@@ -157,6 +158,12 @@ extension AppModel {
             await engine.restart()
             try? await Task.sleep(nanoseconds: 2_000_000_000)
             await reconnect()
+            
+            // Engine restart resets TUN runtime state and system DNS override,
+            // so we must reapply TUN if it was on.
+            if oldTun {
+                await reapplyTUN(wasOn: true)
+            }
 
             let ok = await engine.setGatewayMode(enabled: true)
             if ok {
