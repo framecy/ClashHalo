@@ -17,7 +17,7 @@ xcodebuild -project "$ROOT/ClashPow.xcodeproj" -scheme ClashPow \
     -configuration Release -derivedDataPath "$BUILD/dd" \
     -destination 'platform=macOS,arch=arm64' \
     CODE_SIGNING_ALLOWED=NO build >/dev/null
-APP="$BUILD/dd/Build/Products/Release/ClashPow.app"
+APP="$BUILD/dd/Build/Products/Release/ClashHalo.app"
 [ -d "$APP" ] || { echo "GUI build not found"; exit 1; }
 
 echo "[3/4] Bundling Helper Tool + Geodata…"
@@ -86,7 +86,7 @@ codesign --force --options runtime --sign - "$APP"
 # so users can drag-install and read how to bypass Gatekeeper (ad-hoc signed).
 STAGE="$BUILD/dmg"
 rm -rf "$STAGE"; mkdir -p "$STAGE"
-cp -R "$APP" "$STAGE/ClashPow.app"
+cp -R "$APP" "$STAGE/ClashHalo.app"
 ln -s /Applications "$STAGE/Applications"
 cat > "$STAGE/使用说明.txt" <<'GUIDE'
 ClashPow 使用说明
@@ -125,7 +125,7 @@ ClashPow 使用说明
 macOS 14.0+ ，Apple Silicon (arm64)。
 
 【卸载】
- · 删除 /Applications/ClashPow.app
+ · 删除 /Applications/ClashHalo.app
  · 删除数据目录 ~/Library/Application Support/ClashPow
  · 若安装过 TUN 特权服务，在终端执行：
    sudo launchctl bootout system /Library/LaunchDaemons/com.clashpow.helper.plist
@@ -134,10 +134,10 @@ macOS 14.0+ ，Apple Silicon (arm64)。
 GUIDE
 
 VERSION=$(grep -oE 'MARKETING_VERSION = [0-9.]+' "$ROOT/ClashPow.xcodeproj/project.pbxproj" | head -1 | awk '{print $3}')
-DMG_NAME="ClashPow_v${VERSION}_mac_arm"
+DMG_NAME="ClashHalo_v${VERSION}_mac_arm"
 DMG="$BUILD/${DMG_NAME}.dmg"
 rm -f "$DMG"
-hdiutil create -volname "ClashPow v${VERSION}" -srcfolder "$STAGE" -ov -format UDZO "$DMG" >/dev/null
+hdiutil create -volname "ClashHalo v${VERSION}" -srcfolder "$STAGE" -ov -format UDZO "$DMG" >/dev/null
 # Deliver a copy to the Desktop for convenience.
 cp -f "$DMG" "$HOME/Desktop/${DMG_NAME}.dmg"
 echo ""
