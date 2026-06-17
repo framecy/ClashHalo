@@ -104,17 +104,17 @@ struct GatewayDeviceRow: View {
                 HStack(spacing: 4) {
                     Image(systemName: "arrow.up")
                     Text(fmtRate(Double(dev.uploadRate)))
-                        .frame(width: 60, alignment: .trailing)
+                        .frame(width: 72, alignment: .trailing)
                     Text(fmtBytes(Double(dev.totalUpload)))
-                        .frame(width: 60, alignment: .trailing)
+                        .frame(width: 72, alignment: .trailing)
                 }
                 .foregroundColor(DS.Palette.ok)
                 HStack(spacing: 4) {
                     Image(systemName: "arrow.down")
                     Text(fmtRate(Double(dev.downloadRate)))
-                        .frame(width: 60, alignment: .trailing)
+                        .frame(width: 72, alignment: .trailing)
                     Text(fmtBytes(Double(dev.totalDownload)))
-                        .frame(width: 60, alignment: .trailing)
+                        .frame(width: 72, alignment: .trailing)
                 }
                 .foregroundColor(.blue)
             }
