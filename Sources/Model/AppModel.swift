@@ -425,7 +425,7 @@ import ServiceManagement
     // MARK: Menu-bar app preferences
 
     /// Apply the Dock-icon policy: `.regular` shows the Dock icon, `.accessory`
-    /// makes ClashPow a menu-bar-only app (no Dock icon / Cmd-Tab entry).
+    /// makes ClashHalo a menu-bar-only app (no Dock icon / Cmd-Tab entry).
     func applyActivationPolicy() {
         NSApp.setActivationPolicy(showDock ? .regular : .accessory)
     }
