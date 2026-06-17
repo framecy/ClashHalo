@@ -192,7 +192,7 @@ extension AppModel {
             // (redirect into tunnel when up, restore when down).
             await refreshConfigs()
             if want && !tunOn {
-                showToast("TUN 开启失败：内核未以管理员权限运行，无法创建 TUN 接口")
+                showToast("TUN 开启失败：可能无管理员权限或路由被其他 VPN 占用冲突")
             } else {
                 showToast(want ? "TUN 模式已开启" : "TUN 模式已关闭")
             }
@@ -287,6 +287,13 @@ extension AppModel {
         engine.setTunEnabled(tunOn)
         do {
             try await api.reloadConfig(path: engine.configFilePath)
+            
+            if overrides.keys.contains("external-controller") || overrides.keys.contains("secret") {
+                // Wait briefly for the kernel to bind the new port before probing
+                try? await Task.sleep(nanoseconds: 500_000_000)
+                await reconnect()
+            }
+            
             await refreshConfigs()
             showToast("配置已更新")
         } catch {
