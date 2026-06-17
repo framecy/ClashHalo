@@ -2,6 +2,24 @@
 
 本项目所有重要变更记录于此。格式参考 [Keep a Changelog](https://keepachangelog.com/),版本遵循语义化版本。
 
+## [0.5.0] - 2026-06-17
+
+### Added
+- **全新视觉设计与重命名**：
+  - 项目正式更名为 **ClashHalo**，以强调光环、轻盈的视觉与体验。
+  - 全新设计极简渐变光环应用图标。
+  - 内部动态加载系统 `NSApp.applicationIconImage` 并移除了硬编码的闪电图标，状态栏重构为动态小光环 (`circle.inset.filled`)。
+- **网关中枢能力 (旁路由) 基础层**：
+  - 核心引擎控制类 (`EngineControl`) 及 Helper 特权守护进程 (`XPCManager`) 新增开启系统 IP 转发（`sysctl net.inet.ip.forwarding`）的能力。
+  - UI 「网络」面板新增「局域网网关 (旁路由)」卡片，实现了一键将 Mac 变身为同局域网内的设备网关的能力。
+
+### Changed
+- **全局文案替换**：
+  - 所有的 `Info.plist`、UI 硬编码文案、构建脚本 (`make.sh`) 及日志文件名全面变更为 `ClashHalo`，以适配全新品牌。
+
+### Fixed
+- 修复因打包工具链及 App 重命名导致特权守护程序 (`com.clashpow.helper`) 的 `isAuthorizedClient` 路径鉴权失败、拒绝 XPC 握手的问题。通过重写底层路径验证逻辑及重新构建打包脚本予以解决。
+
 ## [0.4.9] - 2026-06-17
 
 构建 0.4.9 核心稳定性更新发布。深度修复长效代理、状态死锁与 TUN 接口冲突问题。特权服务 (Helper) 升级至 v1.0.11。
