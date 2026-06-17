@@ -363,7 +363,7 @@
 				);
 				MARKETING_VERSION = 0.4.9;
 				PRODUCT_BUNDLE_IDENTIFIER = com.clashpow.app;
-				PRODUCT_NAME = ClashPow;
+				PRODUCT_NAME = ClashHalo;
 			};
 			name = Debug;
 		};
@@ -394,7 +394,7 @@
 				);
 				MARKETING_VERSION = 0.4.9;
 				PRODUCT_BUNDLE_IDENTIFIER = com.clashpow.app;
-				PRODUCT_NAME = ClashPow;
+				PRODUCT_NAME = ClashHalo;
 			};
 			name = Release;
 		};

@@ -62,7 +62,7 @@ struct ClashPowApp: App {
         // openWindow(id:) call (it supports multiple windows), which piled up
         // duplicate windows from the menu-bar navigation. `Window` is a singleton
         // scene — openWindow(id:) fronts the existing one, or recreates it if closed.
-        Window("ClashPow", id: "main") {
+        Window("ClashHalo", id: "main") {
             ContentView()
                 .environmentObject(model)
                 .frame(minWidth: 940, minHeight: 620)

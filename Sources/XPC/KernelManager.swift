@@ -111,7 +111,7 @@ final class KernelManager: ObservableObject {
         guard let url = URL(string: api) else { return }
         var req = URLRequest(url: url)
         req.setValue("application/vnd.github+json", forHTTPHeaderField: "Accept")
-        req.setValue("ClashPow", forHTTPHeaderField: "User-Agent")
+        req.setValue("ClashHalo", forHTTPHeaderField: "User-Agent")
         guard let (data, resp) = try? await URLSession.shared.data(for: req) else { note = "网络错误"; return }
         if let h = resp as? HTTPURLResponse, h.statusCode == 403 { note = "GitHub API 限流，请稍后再试"; return }
         struct Asset: Decodable { let name: String; let browser_download_url: String }
