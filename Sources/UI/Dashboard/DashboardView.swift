@@ -89,7 +89,7 @@ struct DashboardPage: View {
                                             .font(.dsMonoBold)
                                         Spacer()
                                     }.padding(.bottom, 6)
-                                    TrafficSparkline(down: VM.downSeries, up: VM.upSeries, accent: M.accent).frame(height: 144)
+                                    TrafficSparkline(down: VM.downSeries, up: VM.upSeries, accent: M.accent).equatable().frame(height: 144)
                                 }
                             }
                             .frame(height: 224)
@@ -117,7 +117,7 @@ struct DashboardPage: View {
                         .frame(maxWidth: .infinity)
 
                         Card(title: "策略组排名", icon: "rectangle.3.group.fill") {
-                            RankList(rows: policyGroupRows, accent: M.accent, mode: .bytes)
+                            RankList(rows: policyGroupRows, accent: M.accent, mode: .bytes).equatable()
                         }
                         .frame(height: DS.Layout.cardRow)
                         .frame(maxWidth: .infinity)
@@ -126,20 +126,20 @@ struct DashboardPage: View {
                     // Row 4: Timeline (height 160)
                     Card(title: range == .today ? "流量时间轴 · 今日(每小时)" : "流量时间轴 · 本月(每日)", icon: "chart.bar.fill") {
                         HourlyBars(values: range == .today ? M.history.today.hourlyDown : M.history.monthDailyTotals,
-                                   accent: M.accent).frame(height: 110)
+                                   accent: M.accent).equatable().frame(height: 110)
                     }
                     .frame(height: 160)
 
                     // Row 5: Rank lists (each spans 2, height 208)
                     HStack(spacing: 16) {
                         Card(title: "高频规则", icon: "list.number") {
-                            RankList(rows: topRules, accent: .red, mode: .count)
+                            RankList(rows: topRules, accent: .red, mode: .count).equatable()
                         }
                         .frame(height: DS.Layout.cardRow)
                         .frame(maxWidth: .infinity)
 
                         Card(title: "热门域名", icon: "globe") {
-                            RankList(rows: topHosts, accent: .cyan, mode: .bytes)
+                            RankList(rows: topHosts, accent: .cyan, mode: .bytes).equatable()
                         }
                         .frame(height: DS.Layout.cardRow)
                         .frame(maxWidth: .infinity)
@@ -148,13 +148,13 @@ struct DashboardPage: View {
                     // Row 6: Rank lists (each spans 2, height 208)
                     HStack(spacing: 16) {
                         Card(title: "热门节点", icon: "bolt.horizontal.fill") {
-                            RankList(rows: topNodes, accent: .orange, mode: .bytes)
+                            RankList(rows: topNodes, accent: .orange, mode: .bytes).equatable()
                         }
                         .frame(height: DS.Layout.cardRow)
                         .frame(maxWidth: .infinity)
 
                         Card(title: "热门进程", icon: "app.badge") {
-                            RankList(rows: topProcs, accent: .blue, mode: .bytes)
+                            RankList(rows: topProcs, accent: .blue, mode: .bytes).equatable()
                         }
                         .frame(height: DS.Layout.cardRow)
                         .frame(maxWidth: .infinity)
@@ -176,29 +176,53 @@ struct DashboardPage: View {
     private var topProcs: [Rank] { VM.dash.procs }
     private var topRules: [Rank] { VM.dash.rules }
 
+    private var distribution: some View {
+        let day = range == .today ? M.history.today : M.history.month
+        return TrafficDistributionView(
+            direct: day.direct,
+            proxy: day.proxy,
+            reject: day.reject,
+            accent: M.accent
+        ).equatable()
+    }
+
+    private func greeting() -> String {
+        let h = Calendar.current.component(.hour, from: Date())
+        switch h {
+        case 5..<11: return "早上好，开启美好的一天 ☀️"
+        case 11..<14: return "中午好，记得休息一下 🍱"
+        case 14..<18: return "下午好，保持专注 ☕"
+        case 18..<22: return "晚上好，放松心情 🌙"
+        default: return "夜深了，注意身体 🦉"
+        }
+    }
+}
+
+struct TrafficDistributionView: View, Equatable {
+    let direct: Double
+    let proxy: Double
+    let reject: Double
+    let accent: Color
+    
+    static func == (lhs: Self, rhs: Self) -> Bool {
+        lhs.direct == rhs.direct && lhs.proxy == rhs.proxy && lhs.reject == rhs.reject && lhs.accent == rhs.accent
+    }
+    
     struct TrafficSlice: Identifiable {
         let name: String
         let value: Double
         let color: Color
         var id: String { name }
     }
-
-    private var distribution: some View {
-        let day = range == .today ? M.history.today : M.history.month
-        let direct = day.direct
-        let proxy  = day.proxy
-        let reject = day.reject
-
-        // Traffic categories use the shared semantic palette: direct = info,
-        // reject = error; proxy = the dynamic user accent.
+    
+    var body: some View {
         let data: [TrafficSlice] = [
             TrafficSlice(name: "直连", value: Double(direct), color: DS.Palette.info),
-            TrafficSlice(name: "代理", value: Double(proxy), color: M.accent),
+            TrafficSlice(name: "代理", value: Double(proxy), color: accent),
             TrafficSlice(name: "拦截", value: Double(reject), color: DS.Palette.error)
         ]
-
+        
         return HStack(spacing: 32) {
-            // Left side: Donut Chart
             ZStack {
                 Chart(data) { slice in
                     SectorMark(
@@ -211,7 +235,6 @@ struct DashboardPage: View {
                 }
                 .frame(width: 110, height: 110)
 
-                // Center Text
                 VStack(spacing: 2) {
                     Text("总计").font(.dsBody).foregroundColor(.secondary)
                     Text(fmtBytes(direct + proxy + reject))
@@ -221,19 +244,18 @@ struct DashboardPage: View {
                 }
                 .padding(.horizontal, 24)
             }
-            .frame(width: 120, height: 120) // slight buffer
+            .frame(width: 120, height: 120)
 
-            // Right side: Legends
             VStack(spacing: DS.Spacing.l) {
                 legendRow("直连", fmtBytes(direct), DS.Palette.info)
-                legendRow("代理", fmtBytes(proxy), M.accent)
+                legendRow("代理", fmtBytes(proxy), accent)
                 legendRow("拦截", fmtBytes(reject), DS.Palette.error)
             }
         }
         .padding(.vertical, 8)
         .padding(.horizontal, 8)
     }
-
+    
     private func legendRow(_ l: String, _ v: String, _ c: Color) -> some View {
         HStack(spacing: 12) {
             Circle().fill(c).frame(width: 8, height: 8)
@@ -258,7 +280,15 @@ struct DashboardPage: View {
 
 // MARK: - Components
 
-struct Rank: Identifiable { let id = UUID(); let name: String; let value: Double }
+struct Rank: Identifiable, Equatable { 
+    let id = UUID()
+    let name: String
+    let value: Double 
+    
+    static func == (lhs: Self, rhs: Self) -> Bool {
+        lhs.name == rhs.name && lhs.value == rhs.value
+    }
+}
 
 struct DashStats {
     var policyGroups: [Rank] = []
@@ -270,9 +300,16 @@ struct DashStats {
     var uniqueHosts = 0
 }
 
-struct RankList: View {
+struct RankList: View, Equatable {
     enum Mode { case bytes, count }
-    let rows: [Rank]; let accent: Color; let mode: Mode
+    let rows: [Rank]
+    let accent: Color
+    let mode: Mode
+    
+    static func == (lhs: Self, rhs: Self) -> Bool {
+        lhs.rows == rhs.rows && lhs.accent == rhs.accent && lhs.mode == rhs.mode
+    }
+    
     var body: some View {
         let mx = max(rows.first?.value ?? 1, 1)
         VStack(spacing: 10) {
@@ -369,8 +406,14 @@ struct MiniStat: View {
     }
 }
 
-struct HourlyBars: View {
-    let values: [Double]; let accent: Color
+struct HourlyBars: View, Equatable {
+    let values: [Double]
+    let accent: Color
+    
+    static func == (lhs: Self, rhs: Self) -> Bool {
+        lhs.values == rhs.values && lhs.accent == rhs.accent
+    }
+    
     var body: some View {
         let mx = max(values.max() ?? 1, 1)
         GeometryReader { g in
@@ -392,10 +435,14 @@ struct HourlyBars: View {
 // (from the /traffic WebSocket). Replaces the removed mmap-backed Metal chart
 // that depended on the old self-built engine's stats producer.
 
-struct TrafficSparkline: View {
+struct TrafficSparkline: View, Equatable {
     let down: [Double]
     let up: [Double]
     let accent: Color
+    
+    static func == (lhs: Self, rhs: Self) -> Bool {
+        lhs.down == rhs.down && lhs.up == rhs.up && lhs.accent == rhs.accent
+    }
 
     var body: some View {
         Canvas { context, size in
