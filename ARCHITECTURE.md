@@ -36,16 +36,20 @@ graph TD
 ### 1. GUI 层（`Sources/`，全 `@MainActor`）
 
 - **AppModel**（`Model/AppModel.swift`）：单一真相源 + 编排中枢（`AppModel.shared`），持有 `api`/`engine`/`store`/`history`，驱动全部 UI。按功能拆分为 4 个 extension：
-  - `AppModel+Config.swift`：配置/开关域（`toggleTUN` / `toggleSystemProxy` / `patch` / `activateProfile`）
+  - `AppModel+Config.swift`：配置/开关域（`toggleTUN` / `toggleSystemProxy` / `patch` / `activateProfile` / `patchPersistent`）
   - `AppModel+Proxies.swift`：代理组/节点/延迟测速
   - `AppModel+Connections.swift`：连接快照/流量聚合/仪表盘
 - **MihomoClient**（`XPC/MihomoClient.swift`）：纯 Swift REST/WS 客户端。`probe()` 探活；`stream()` 订阅 `/traffic`、`/connections`、`/logs`（断线自动重连）；启动时 `applyController(fromConfigAt:)` 从 config 发现 external-controller/secret。
 - **EngineControl**（`XPC/EngineControl.swift`）：内核生命周期（`ensureInstalled`/`ensureRunning`/`restart`/`stopKernel`）与「用户态 ↔ Root 态」切换；`kExpectedHelperVersion` 驱动自动升级；`syncRunningAsRootIfNeeded()` 用 `pgrep` 同步 root 状态。
+  - **YAML 增强**：`setNestedScalars` 允许安全地原子化改写 `config.yaml` 中的嵌套块（如 `tun`, `dns`, `sniffer`），确保 UI 上的修改能永久落地。
 - **ConfigStore**（`Model/ConfigStore.swift`）：多套 YAML profile 管理，远程订阅 URL 存 Keychain。
 - **AppDelegate**（`App/ClashPowApp.swift`）：`applicationWillTerminate` + SIGTERM/SIGINT handlers → `killall -9 mihomo` + `setSystemProxy(false)`；一次性 `DispatchSemaphore` 防竞争。
 - **NWPathMonitor**（`AppModel.swift`）：离线时自动关闭系统代理。
 
-### 2. 特权 Helper 层（`Sources/Helper/` + `Sources/XPC/`）
+### 2. UI 扩展层 (WebView Panels)
+- **Zashboard 集成**：通过 `WKWebView` 嵌入官方托管的 Zashboard 面板。采用 **Hash 参数注入技术** (`#/?hostname=...&secret=...`) 绕过跨域限制，实现打开即连的免密自动登录。
+
+### 3. 特权 Helper 层（`Sources/Helper/` + `Sources/XPC/`）
 
 - 独立编译的 LaunchDaemon（**v1.0.6**），Mach service `com.clashpow.helper`，经 `HelperProtocol` 做 XPC。
 - 能力：`getVersion` / `setSystemProxy` / `startMihomo` / `stopMihomo`。
