@@ -69,6 +69,7 @@ import ServiceManagement
     var cachedConns: [Conn] = []
     var cachedClosedConnections: [Conn] = []
     var prevConnBytes: [String: (up: Int64, down: Int64)] = [:]
+    var activeConnsSet: Set<String> = []
     var prevConnsMap: [String: Conn] = [:]
     var totalConnsCount = 0
 
@@ -287,6 +288,7 @@ import ServiceManagement
         if !isMainWindowVisible {
             cachedConns.removeAll(keepingCapacity: false)
             cachedClosedConnections.removeAll(keepingCapacity: false)
+            prevConnsMap.removeAll(keepingCapacity: false)
             logKernel("主窗口不可见，已释放 AppModel 内存缓存")
         }
     }

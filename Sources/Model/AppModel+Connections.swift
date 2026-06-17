@@ -36,7 +36,7 @@ extension AppModel {
             
             for c in items {
                 activeIDs.insert(c.id)
-                if prevConnsMap[c.id] == nil { totalConnsCount += 1 }
+                if !activeConnsSet.contains(c.id) { totalConnsCount += 1 }
                 let prev = prevConnBytes[c.id]
                 let upRate = prev.map { max(0, c.upload - $0.up) } ?? 0
                 let downRate = prev.map { max(0, c.download - $0.down) } ?? 0
@@ -49,30 +49,14 @@ extension AppModel {
             }
             prevConnBytes = bytes
             
-            // Clean up prevConnsMap for closed connections to keep count accurate
-            var nextConnsMap: [String: Conn] = [:]
-            for id in activeIDs {
-                if let existing = prevConnsMap[id] {
-                    nextConnsMap[id] = existing
-                } else {
-                    // Use a minimal reference instead of full Conn object if possible,
-                    // but keeping it for compatibility with existing logic for now.
-                    // Just ensure we don't hold stale connections.
-                    nextConnsMap[id] = Conn(
-                        id: id, host: "", dstIP: "", srcIP: "", port: "", network: "",
-                        process: "", processPath: "", chain: "", group: "", node: "",
-                        rule: "", ruleType: "", up: 0, down: 0, upRate: 0, downRate: 0, start: ""
-                    )
-                }
-            }
-            prevConnsMap = nextConnsMap
+            activeConnsSet = activeIDs
             activeConnectionsCount = activeIDs.count
         } else {
             // Background idle: Only sync basic count
             activeConnectionsCount = items.count
             // Clear maps to free up heap space immediately when going background
             if !prevConnBytes.isEmpty { prevConnBytes.removeAll(keepingCapacity: false) }
-            if !prevConnsMap.isEmpty { prevConnsMap.removeAll(keepingCapacity: false) }
+            if !activeConnsSet.isEmpty { activeConnsSet.removeAll(keepingCapacity: false) }
         }
         
         closedConns = max(0, totalConnsCount - activeConnectionsCount)

@@ -25,10 +25,6 @@ struct ContentView: View {
         .init(id: "map",     label: "SD-WAN 共存", icon: "shareplay"),
         .init(id: "general", label: "通用设置", icon: "gearshape.fill"),
     ]
-    // 扩展面板
-    private let panelTabs: [Tab] = [
-        .init(id: "zashboard", label: "Zashboard", icon: "gauge.with.needle"),
-    ]
 
     /// App 版本号(随 MARKETING_VERSION),展示于侧栏头部与关于页。
     static let appVersion = Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "—"
@@ -51,7 +47,7 @@ struct ContentView: View {
             List(selection: $M.route) {
                 Section("监控") { rows(monitorTabs) }
                 Section("代理") { rows(proxyTabs) }
-                Section("面板") { rows(panelTabs) }
+
                 Section("配置") { rows(configTabs) }
             }
             .listStyle(.sidebar)
@@ -127,7 +123,7 @@ struct ContentView: View {
                 case "general": GeneralPage()
                 case "network": NetworkHubPage()
                 case "map": SdwanPage()
-                case "zashboard": ZashboardPage()
+
                 default: DashboardPage()
                 }
             }

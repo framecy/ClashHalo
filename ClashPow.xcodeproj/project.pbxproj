@@ -40,8 +40,8 @@
 		DST1 /* DesignTokens.swift in Sources */ = {isa = PBXBuildFile; fileRef = DST2 /* DesignTokens.swift */; };
 		F0458DF12625404DA930506D /* ProxiesPage.swift in Sources */ = {isa = PBXBuildFile; fileRef = BF9832249132493A9E51C30C /* ProxiesPage.swift */; };
 		FD7AD16CD9DC6191C81AE1F5 /* RuleFormView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7DC2B59D23B0749A0B7CC125 /* RuleFormView.swift */; };
-		CP_BF_WEBVIEW /* WebView.swift in Sources */ = {isa = PBXBuildFile; fileRef = CP_FR_WEBVIEW /* WebView.swift */; };
-		CP_BF_ZASHBOARD /* ZashboardPage.swift in Sources */ = {isa = PBXBuildFile; fileRef = CP_FR_ZASHBOARD /* ZashboardPage.swift */; };
+
+
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
@@ -80,8 +80,8 @@
 		DST2 /* DesignTokens.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Sources/UI/DesignTokens.swift; sourceTree = SOURCE_ROOT; };
 		F001 /* ClashPow.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; path = ClashPow.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		F010 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = Info.plist; sourceTree = "<group>"; };
-		CP_FR_WEBVIEW /* WebView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Sources/UI/Common/WebView.swift; sourceTree = SOURCE_ROOT; };
-		CP_FR_ZASHBOARD /* ZashboardPage.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Sources/UI/Panels/ZashboardPage.swift; sourceTree = SOURCE_ROOT; };
+
+
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -186,7 +186,7 @@
 		G_UI_COMMON /* Common */ = {
 			isa = PBXGroup;
 			children = (
-				CP_FR_WEBVIEW /* WebView.swift */,
+
 			);
 			name = Common;
 			path = Common;
@@ -195,7 +195,7 @@
 		G_UI_PANELS /* Panels */ = {
 			isa = PBXGroup;
 			children = (
-				CP_FR_ZASHBOARD /* ZashboardPage.swift */,
+
 			);
 			name = Panels;
 			path = Panels;
@@ -329,8 +329,8 @@
 				212075FD58BB63EBBCA8786A /* RuleEditorModel.swift in Sources */,
 				04E0EC007CDC978C6D8D3024 /* YamlRuleASTEngine.swift in Sources */,
 				FD7AD16CD9DC6191C81AE1F5 /* RuleFormView.swift in Sources */,
-				CP_BF_WEBVIEW /* WebView.swift in Sources */,
-				CP_BF_ZASHBOARD /* ZashboardPage.swift in Sources */,
+
+
 			);
 		};
 /* End PBXSourcesBuildPhase section */
