@@ -152,10 +152,11 @@ extension AppModel {
                     "enhanced-mode": "fake-ip"
                 ]
             ]
-            let okPatch = await engine.patchConfig(overrides)
-            if okPatch {
-                await refreshConfigs()
-            }
+            engine.setTopLevelScalars(overrides)
+            showToast("正在重启核心以应用网关配置…")
+            await engine.restart()
+            try? await Task.sleep(nanoseconds: 2_000_000_000)
+            await reconnect()
 
             let ok = await engine.setGatewayMode(enabled: true)
             if ok {
