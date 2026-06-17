@@ -65,10 +65,9 @@ struct ContentView: View {
 
     private var appHeader: some View {
         HStack(spacing: 12) {
-            RoundedRectangle(cornerRadius: 10, style: .continuous)
-                .fill(LinearGradient(colors: [M.accent, M.accent.opacity(0.7)], startPoint: .topLeading, endPoint: .bottomTrailing))
+            Image(nsImage: NSApp.applicationIconImage ?? NSImage())
+                .resizable()
                 .frame(width: 32, height: 32)
-                .overlay(Image(systemName: "bolt.fill").font(.system(size: DS.Icon.sm, weight: .bold)).foregroundColor(.white))
             VStack(alignment: .leading, spacing: 0) {
                 HStack(spacing: 5) {
                     Text("ClashHalo").font(.dsLabelBold)
