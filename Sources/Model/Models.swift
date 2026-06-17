@@ -62,6 +62,24 @@ struct Log: Identifiable {
     let text: String
 }
 
+struct GatewayDevice: Identifiable, Equatable {
+    var id: String { ip }
+    let ip: String
+    var activeConnections: Int
+    var uploadRate: Int64
+    var downloadRate: Int64
+    var totalUpload: Int64
+    var totalDownload: Int64
+    var firstSeen: Date
+    var lastSeen: Date
+    var durationString: String {
+        let secs = Int(lastSeen.timeIntervalSince(firstSeen))
+        if secs < 60 { return "\(secs)s" }
+        if secs < 3600 { return "\(secs/60)m \(secs%60)s" }
+        return "\(secs/3600)h \((secs%3600)/60)m"
+    }
+}
+
 // MARK: - AppModel
 
 
