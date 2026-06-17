@@ -261,7 +261,7 @@ struct GeneralPage: View {
                 .padding(.top, 20)
             
             VStack(spacing: 4) {
-                Text("ClashPow")
+                Text("ClashHalo")
                     .font(.dsSection)
                     .fontWeight(.bold)
                 Text("Version \(Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "—") (build \(Bundle.main.infoDictionary?["CFBundleVersion"] as? String ?? "—"))")
@@ -367,7 +367,7 @@ struct MenuBarPanel: View {
             HStack(spacing: DS.Spacing.s) {
                 Image(systemName: "bolt.fill").font(.system(size: DS.Icon.md)).foregroundColor(M.accent)
                 VStack(alignment: .leading, spacing: 1) {
-                    Text("ClashPow").font(.dsCardLabel)
+                    Text("ClashHalo").font(.dsCardLabel)
                     HStack(spacing: DS.Spacing.xs) {
                         Circle().fill(M.reachable ? DS.Palette.ok : DS.Palette.error).frame(width: 5, height: 5)
                         Text(M.reachable ? "mihomo \(M.version)" : "未连接").font(.dsBody).foregroundColor(.secondary)

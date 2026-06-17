@@ -71,7 +71,7 @@ struct ContentView: View {
                 .overlay(Image(systemName: "bolt.fill").font(.system(size: DS.Icon.sm, weight: .bold)).foregroundColor(.white))
             VStack(alignment: .leading, spacing: 0) {
                 HStack(spacing: 5) {
-                    Text("ClashPow").font(.dsLabelBold)
+                    Text("ClashHalo").font(.dsLabelBold)
                     Text("v\(Self.appVersion) (\(Self.appBuild))").font(.dsBodyMedium).foregroundColor(.secondary)
                 }
             }
