@@ -137,7 +137,8 @@ private struct SafeDecoder: @unchecked Sendable {
     func patchConfig(_ patch: [String: Any]) async throws {
         let data = try JSONSerialization.data(withJSONObject: patch)
         guard let req = request("/configs", method: "PATCH", body: data) else { throw MihomoError.badURL }
-        _ = try await session.data(for: req)
+        let (_, resp) = try await session.data(for: req)
+        if let h = resp as? HTTPURLResponse, h.statusCode >= 400 { throw MihomoError.http(h.statusCode) }
     }
 
     /// Reload config from a file path (force). Surfaces mihomo's error message
