@@ -41,6 +41,17 @@ struct NetworkPage: View {
                         Text("开启“允许局域网”可将代理共享给同 Wi-Fi 下的其他设备；可用 IP 网段与认证做严格审查。")
                             .font(.dsBody).foregroundColor(.secondary).padding(.top, 6)
                     }
+                    Card(title: "局域网网关 (旁路由)", icon: "network.badge.shield.half.filled") {
+                        VStack(spacing: 2) {
+                            HStack {
+                                Text("作为网关中枢").font(.dsBody); Spacer()
+                                Toggle("", isOn: Binding(get: { M.gatewayModeOn }, set: { _ in M.toggleGatewayMode() }))
+                                    .toggleStyle(.switch).labelsHidden()
+                            }.padding(.vertical, 5)
+                        }
+                        Text("开启后将自动配置 IP 转发并接管局域网内其他所有设备的流量（需配合 TUN）。其他设备需将网关和 DNS 指向本机的局域网 IP。")
+                            .font(.dsBody).foregroundColor(.secondary).padding(.top, 6)
+                    }
                     Spacer(minLength: 0)
                 }.padding(DS.Spacing.xl)
             }

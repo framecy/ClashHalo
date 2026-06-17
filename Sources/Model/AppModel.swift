@@ -100,6 +100,7 @@ import ServiceManagement
     // Master switches
     @Published var systemProxyOn = false
     @Published var tunOn = false
+    @Published var gatewayModeOn = false
 
     // Menu-bar app preferences
     /// Show the Dock icon (.regular) vs menu-bar-only (.accessory).

@@ -112,6 +112,26 @@ public class XPCManager {
         }
     }
 
+    public func callGatewayMode(enabled: Bool, timeout: TimeInterval = 5.0) async -> Bool? {
+        guard checkStatus() == .enabled else { return nil }
+        let conn = NSXPCConnection(machServiceName: "com.clashpow.helper", options: .privileged)
+        conn.remoteObjectInterface = NSXPCInterface(with: HelperProtocol.self)
+        conn.resume()
+        return await withCheckedContinuation { (cont: CheckedContinuation<Bool?, Never>) in
+            let lock = NSLock(); var done = false
+            let finish: (Bool?) -> Void = { v in
+                lock.lock(); defer { lock.unlock() }
+                if !done { done = true; cont.resume(returning: v); conn.invalidate() }
+            }
+            guard let proxy = conn.remoteObjectProxyWithErrorHandler({ [weak self] error in
+                self?.onLog?("setGatewayMode XPC 错误: \(error.localizedDescription)")
+                finish(nil)
+            }) as? HelperProtocol else { finish(nil); return }
+            proxy.setGatewayMode(enabled: enabled) { ok in finish(ok) }
+            DispatchQueue.global().asyncAfter(deadline: .now() + timeout) { finish(nil) }
+        }
+    }
+
     public func installDaemon() async -> Bool {
         let bundlePath = Bundle.main.bundlePath
         let helperSrc = "\(bundlePath)/Contents/MacOS/com.clashpow.helper"

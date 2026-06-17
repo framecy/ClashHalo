@@ -901,6 +901,14 @@ import SwiftUI
     }
 
     @discardableResult
+    func setGatewayMode(enabled: Bool) async -> Bool {
+        if let ok = await XPCManager.shared.callGatewayMode(enabled: enabled) {
+            return ok
+        }
+        return false
+    }
+
+    @discardableResult
     func setSystemProxy(enabled: Bool, port: Int) async -> Bool {
         // Go through a fresh helper connection (callSystemProxy). The cached
         // helper() proxy silently dropped these calls — the helper never logged
