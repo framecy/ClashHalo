@@ -79,7 +79,7 @@ struct ClashPowApp: App {
         MenuBarExtra {
             MenuBarPanel().environmentObject(model)
         } label: {
-            Image(systemName: model.reachable ? "bolt.fill" : "bolt.slash")
+            Image(systemName: model.reachable ? "circle.inset.filled" : "circle.dashed")
         }
         .menuBarExtraStyle(.window)
     }
