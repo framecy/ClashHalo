@@ -36,7 +36,7 @@ func isAuthorizedClient(_ conn: NSXPCConnection) -> Bool {
             var pathURL: CFURL?
             if SecCodeCopyPath(sc, SecCSFlags(rawValue: 0), &pathURL) == errSecSuccess,
                let path = (pathURL as URL?)?.path,
-               (path.contains("/ClashPow.app") || path.hasSuffix("/ClashPow")) {
+               (path.contains("/ClashHalo.app") || path.hasSuffix("/ClashHalo")) {
                 log("isAuthorizedClient: SecCode-path fallback accepted pid \(pid)")
                 return true
             }
@@ -48,7 +48,7 @@ func isAuthorizedClient(_ conn: NSXPCConnection) -> Bool {
     var pathBuf = [Int8](repeating: 0, count: 4096)
     if proc_pidpath(pid, &pathBuf, 4096) > 0 {
         let path = String(cString: pathBuf)
-        if path.contains("/ClashPow.app/") || path.hasSuffix("/ClashPow") {
+        if path.contains("/ClashHalo.app/") || path.hasSuffix("/ClashHalo") {
             log("isAuthorizedClient: proc_pidpath fallback accepted pid \(pid): \(path)")
             return true
         }
