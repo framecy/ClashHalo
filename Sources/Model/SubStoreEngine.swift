@@ -32,8 +32,9 @@ class SubStoreEngine: ObservableObject {
         
         var env = ProcessInfo.processInfo.environment
         env["SUB_STORE_DATA_BASE_PATH"] = dataDir
-        env["SUB_STORE_FRONT_END_PATH"] = frontEndURL.path
-        env["PORT"] = "\(port)"
+        env["SUB_STORE_FRONTEND_PATH"] = frontEndURL.path
+        env["SUB_STORE_BACKEND_API_PORT"] = "3000"
+        env["SUB_STORE_FRONTEND_PORT"] = "\(port)"
         p.environment = env
         
         p.terminationHandler = { [weak self] _ in
