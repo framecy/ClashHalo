@@ -137,6 +137,10 @@ import ServiceManagement
     /// True while the system is sleeping — gates background activity so
     /// wake-up callbacks don't race with half-restored subsystems.
     private var sleeping = false
+    /// One-shot guard — `start()` must run exactly once per app lifetime.
+    private var started = false
+    /// System proxy was auto-disabled by the network-offline handler; restore on reconnect.
+    private var proxyAutoDisabled = false
 
     private var trafficWS: WSHandle?
     private var connWS: WSHandle?
@@ -150,6 +154,9 @@ import ServiceManagement
     // MARK: Lifecycle
 
     func start() {
+        guard !started else { return }
+        started = true
+
         // Migrate old dead Vercel URL to the new official one
         if zashboardURL.contains("zashboard.vercel.app") {
             zashboardURL = "https://board.zash.run.place/"
@@ -166,33 +173,34 @@ import ServiceManagement
         refreshLaunchAtLogin()         // sync the launch-at-login mirror
         engine.ensureInstalled()
         api.applyController(fromConfigAt: engine.configFilePath)   // B1: discover endpoint before probing
-        // App启动后不要自动启用内核！
-        // engine.ensureRunning()   // Auto-start kernel if not responding
         store.load()
         history.load()
-        
-        // 同步将状态设为 false，防止任何回调或并发逻辑读取到错误状态
-        tunOn = false
-        systemProxyOn = false
-        reachable = false
-        
-        // App启动后不要自动启用内核与代理！强制在启动时关闭代理、清理残留内核并还原 DNS。
-        // 完成清洗后，才开始建立连接探活、监听网络变化以及进行 helper 版本升级检查。
-        let port = (configs["mixed-port"] as? Int) ?? (configs["port"] as? Int) ?? 7890
+
         Task {
-            _ = await engine.setSystemProxy(enabled: false, port: port)
-            await engine.stopKernel()
-            await restoreTunnelDNS()
-            
-            // 确保同步最新的系统代理状态给 UI
-            syncSystemProxyState()
-            
-            // 旧内核彻底死亡、DNS 清洗完毕后，才安全地开启重连探测与网络变更监听
-            await reconnect()
+            // 探测内核是否存活，而非无条件杀死
+            await api.probe()
+
+            if api.reachable {
+                // 内核存活 → 同步状态，不杀不停
+                logKernel("启动探测：内核存活，同步状态…")
+                await reconnect()
+            } else {
+                // 内核不存活 → 仅清理残留状态（DNS/代理），不 killall
+                logKernel("启动探测：内核未响应，清理残留状态…")
+                tunOn = false
+                systemProxyOn = false
+                reachable = false
+                let port = (configs["mixed-port"] as? Int) ?? (configs["port"] as? Int) ?? 7890
+                _ = await engine.setSystemProxy(enabled: false, port: port)
+                await restoreTunnelDNS()
+                syncSystemProxyState()
+                await reconnect()
+            }
+
             startNetworkMonitor()
             installSignalHandlers()
             observeSleepWake()
-            
+
             // 稍后检查 Helper 版本是否过旧，自动进行升级
             try? await Task.sleep(nanoseconds: 4_000_000_000)
             await engine.checkAndUpgradeHelperIfNeeded()
@@ -207,19 +215,42 @@ import ServiceManagement
         api.applyController(fromConfigAt: engine.configFilePath)
 
         // Purely observation-based: Is the official mihomo REST API responding?
+        let wasReachable = self.reachable
         await api.probe()
-
         reachable = api.reachable
-        version = api.version
+        
+        if reachable && !wasReachable {
+            // Just came online
+            if !engine.isBusy {
+                if proxyAutoDisabled {
+                    let port = (configs["mixed-port"] as? Int) ?? (configs["port"] as? Int) ?? 7890
+                    _ = await engine.setSystemProxy(enabled: true, port: port)
+                    systemProxyOn = true
+                    proxyAutoDisabled = false
+                    showToast("网络恢复，已自动恢复系统代理")
+                }
+            }
+        }
 
         guard reachable else {
             // Core unreachable — TUN can't be active, so clear the switch to keep
             // the UI consistent (tunOn is normally driven by refreshConfigs, which
             // won't run while disconnected, leaving the toggle stuck "on").
             tunOn = false
-            // Kernel gone and we're not mid-TUN-toggle: don't strand the system
-            // DNS pointing into a dead tunnel (refreshConfigs won't run to fix it).
-            if !engine.isBusy { await restoreTunnelDNS() }
+            
+            // Only auto-disable proxy/DNS if the kernel WAS reachable and just crashed,
+            // NOT when it's just intentionally turned off by the user.
+            if wasReachable && !engine.isBusy {
+                await restoreTunnelDNS()
+                if systemProxyOn {
+                    proxyAutoDisabled = true
+                    let port = (configs["mixed-port"] as? Int) ?? (configs["port"] as? Int) ?? 7890
+                    _ = await engine.setSystemProxy(enabled: false, port: port)
+                    systemProxyOn = false
+                    showToast("内核已断开，自动关闭系统代理以防断网")
+                }
+            }
+            
             // Cancel any previous retry to avoid parallel reconnect races.
             reconnectTask?.cancel()
             reconnectTask = Task { [weak self] in
@@ -377,6 +408,16 @@ import ServiceManagement
                 await api.probe()
                 if api.reachable {
                     await refreshConfigs()
+                    // Restore system proxy if it was auto-disabled by the offline handler
+                    if proxyAutoDisabled && !systemProxyOn {
+                        proxyAutoDisabled = false
+                        let port = (configs["mixed-port"] as? Int) ?? (configs["port"] as? Int) ?? 7890
+                        let ok = await engine.setSystemProxy(enabled: true, port: port)
+                        if ok {
+                            systemProxyOn = true
+                            showToast("网络恢复，已自动恢复系统代理")
+                        }
+                    }
                     // If TUN is supposed to be on, ensure it's healthy and interface is pinned
                     if tunOn && !engine.isBusy {
                         let currentIface = await EngineControl.defaultInterface()
@@ -390,9 +431,10 @@ import ServiceManagement
                 }
             }
         } else if onlineChanged {
-            // Network offline: disable system proxy and restore DNS to prevent
-            // all traffic being blocked by a proxy pointing to a dead kernel.
+            // Network offline: disable system proxy to prevent traffic being
+            // blocked by a proxy pointing at a (potentially) dead kernel.
             if systemProxyOn {
+                proxyAutoDisabled = true
                 let port = (configs["mixed-port"] as? Int) ?? (configs["port"] as? Int) ?? 7890
                 Task {
                     _ = await engine.setSystemProxy(enabled: false, port: port)
@@ -400,9 +442,11 @@ import ServiceManagement
                     showToast("网络断开，已自动关闭系统代理")
                 }
             }
-            // Always try to restore DNS when offline to be safe
+            // Only restore DNS if the kernel is also gone — if TUN is still
+            // alive the tunnel DNS should stay; refreshConfigs will reconcile.
             Task {
-                await restoreTunnelDNS()
+                await api.probe(timeout: 1.0)
+                if !api.reachable { await restoreTunnelDNS() }
             }
         }
     }
