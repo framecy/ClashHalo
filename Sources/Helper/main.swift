@@ -35,10 +35,12 @@ func isAuthorizedClient(_ conn: NSXPCConnection) -> Bool {
            let sc = staticCode {
             var pathURL: CFURL?
             if SecCodeCopyPath(sc, SecCSFlags(rawValue: 0), &pathURL) == errSecSuccess,
-               let path = (pathURL as URL?)?.path,
-               (path.contains("/ClashHalo.app") || path.hasSuffix("/ClashHalo")) {
-                log("isAuthorizedClient: SecCode-path fallback accepted pid \(pid)")
-                return true
+               let path = (pathURL as URL?)?.path {
+                let p = path.lowercased()
+                if p.contains("/clashhalo") || p.contains("/clashpow") {
+                    log("isAuthorizedClient: SecCode-path fallback accepted pid \(pid): \(path)")
+                    return true
+                }
             }
         }
     }
@@ -48,7 +50,8 @@ func isAuthorizedClient(_ conn: NSXPCConnection) -> Bool {
     var pathBuf = [Int8](repeating: 0, count: 4096)
     if proc_pidpath(pid, &pathBuf, 4096) > 0 {
         let path = String(cString: pathBuf)
-        if path.contains("/ClashHalo.app/") || path.hasSuffix("/ClashHalo") {
+        let p = path.lowercased()
+        if p.contains("/clashhalo") || p.contains("/clashpow") {
             log("isAuthorizedClient: proc_pidpath fallback accepted pid \(pid): \(path)")
             return true
         }
@@ -62,7 +65,8 @@ func isAuthorizedClient(_ conn: NSXPCConnection) -> Bool {
 func isAllowedKernelPath(_ path: String) -> Bool {
     let std = (path as NSString).standardizingPath
     guard !std.contains(".."),
-          std.hasSuffix("/Library/Application Support/ClashPow/bin/mihomo") else { return false }
+          (std.hasSuffix("/Library/Application Support/ClashPow/bin/mihomo") ||
+           std.hasSuffix("/Library/Application Support/ClashHalo/bin/mihomo")) else { return false }
     let fm = FileManager.default
     var isDir: ObjCBool = false
     guard fm.fileExists(atPath: std, isDirectory: &isDir), !isDir.boolValue else { return false }
@@ -220,17 +224,19 @@ class HelperDelegate: NSObject, NSXPCListenerDelegate {
         let clientPid = newConnection.processIdentifier
         newConnection.invalidationHandler = {
             log("Connection invalidated from pid \(clientPid)")
-            // Test if the client process is still running.
-            // kill(pid, 0) sends a null signal to detect process existence.
-            // Since helper runs as root, EPERM will not be returned if process exists,
-            // so any non-zero return means the process is gone (ESRCH).
-            if kill(clientPid, 0) != 0 {
-                log("Client process with pid \(clientPid) has exited. Performing cleanup.")
-                DispatchQueue.global().async {
+            // To prevent accidental kernel cleanup on short-lived throwaway connections
+            // (e.g. setGatewayMode/verifyConnectivity), we wait briefly and re-verify
+            // that the client process is actually gone.
+            DispatchQueue.global().asyncAfter(deadline: .now() + 1.0) {
+                // kill(pid, 0) sends a null signal to detect process existence.
+                // Since helper runs as root, EPERM will not be returned if process exists,
+                // so any non-zero return means the process is gone (ESRCH).
+                if kill(clientPid, 0) != 0 {
+                    log("Client process with pid \(clientPid) has exited. Performing cleanup.")
                     HelperDelegate.handleClientExit(pid: clientPid)
+                } else {
+                    log("Client process with pid \(clientPid) is still running. Skipping cleanup.")
                 }
-            } else {
-                log("Client process with pid \(clientPid) is still running. Skipping cleanup.")
             }
         }
         
