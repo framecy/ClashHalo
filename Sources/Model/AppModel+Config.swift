@@ -159,6 +159,12 @@ extension AppModel {
             try? await Task.sleep(nanoseconds: 2_000_000_000)
             await reconnect()
             
+            // Verify kernel is actually up (not crashed due to port 53 conflict)
+            if !reachable {
+                showToast("核心启动失败，请检查 53 端口是否被占用")
+                return
+            }
+
             // Engine restart resets TUN runtime state and system DNS override,
             // so we must reapply TUN if it was on.
             if oldTun {
@@ -170,6 +176,7 @@ extension AppModel {
                 gatewayModeOn = true
                 showToast("网关中枢（旁路由）已成功开启")
             } else {
+                gatewayModeOn = false
                 showToast("底层 IP 转发开启失败")
             }
         } else {
