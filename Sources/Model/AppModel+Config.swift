@@ -9,12 +9,16 @@ extension AppModel {
     func activateProfile(_ id: String) {
         guard let content = store.makeActiveContent(id) else { showToast("配置为空"); return }
         let name = store.profiles.first { $0.id == id }?.name ?? ""
+        let wasTunOn = tunOn   // setConfig → forceTUNDisabled → TUN 会丢失，需恢复
         Task {
             // hardenControllerConfig is called inside setConfig, which writes
             // to config.yaml → hardens → reloads — correct ordering.
             let (ok, err) = await engine.setConfig(content)
             showToast(ok ? "已切换配置「\(name)」" : "配置错误：\(err ?? "")，已回滚")
-            if ok { await reconnect() }
+            if ok {
+                await reconnect()
+                await reapplyTUN(wasOn: wasTunOn)
+            }
         }
     }
 
