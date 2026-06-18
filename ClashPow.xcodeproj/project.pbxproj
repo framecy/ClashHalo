@@ -17,6 +17,8 @@
 		5C790C4A1B3744679E83ADA0 /* DnsPage.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2A173B69A3BD4DDA8F992A68 /* DnsPage.swift */; };
 		61523827C4D44A56AB8FA9E9 /* ConfigPage.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3D2C04980A2D415390C45937 /* ConfigPage.swift */; };
 		71D6AA8BB9A64328A01B5364 /* MihomoModels.swift in Sources */ = {isa = PBXBuildFile; fileRef = A3BB008E2BF84DF5A2895FBC /* MihomoModels.swift */; };
+		79DCC9B269C65FBBD5B9C70E /* sub-store-backend in Resources */ = {isa = PBXBuildFile; fileRef = 588FF0E9A7F646298341B4AB /* sub-store-backend */; };
+		7C137C69A9B0D22FDB269983 /* SubStorePage.swift in Sources */ = {isa = PBXBuildFile; fileRef = BA6771BEC14A6E2E77465BFF /* SubStorePage.swift */; };
 		8BC3EAE990F64B20BA6FA269 /* ConfigStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9641FF3F733D4D03A5FC9B70 /* ConfigStore.swift */; };
 		8F14ED3CECAC0F5F7C81C9A9 /* RuleValidator.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4ED2BED37C00E10C70F34AC9 /* RuleValidator.swift */; };
 		94B14BD55C274919B82F3C5E /* AppModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = A7EFEC0FDBC0406AA6A9D774 /* AppModel.swift */; };
@@ -34,14 +36,14 @@
 		AMP1 /* AppModel+Proxies.swift in Sources */ = {isa = PBXBuildFile; fileRef = AMP2 /* AppModel+Proxies.swift */; };
 		B1F3682AEF4F4C8AB5A97582 /* EngineControl.swift in Sources */ = {isa = PBXBuildFile; fileRef = 43A486CB7FAA4FBBAEBFCCE6 /* EngineControl.swift */; };
 		BA90C1F3406546599706585F /* NetworkPages.swift in Sources */ = {isa = PBXBuildFile; fileRef = A8B1C01AAFB044E986219D24 /* NetworkPages.swift */; };
+		C570533C117814E83AFC0E10 /* SubStoreEngine.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7B73AE08C88FEF1CD3EF6820 /* SubStoreEngine.swift */; };
 		C762A449C2434390BD3E8BF2 /* SubscriptionsPage.swift in Sources */ = {isa = PBXBuildFile; fileRef = 87F1015549B149CD80A68FBC /* SubscriptionsPage.swift */; };
 		D03CD0CC2A8E4B34ACE8FB5A /* RulesPage.swift in Sources */ = {isa = PBXBuildFile; fileRef = 50A6FB0C0B7141B0A804F1A9 /* RulesPage.swift */; };
 		DD035B63A0B144F2BE7205A4 /* KernelManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = A4311730377D47748FC5F9D5 /* KernelManager.swift */; };
 		DST1 /* DesignTokens.swift in Sources */ = {isa = PBXBuildFile; fileRef = DST2 /* DesignTokens.swift */; };
+		EB9D77C486665088AAD77DAE /* sub-store in Resources */ = {isa = PBXBuildFile; fileRef = A78A5EFEB71461FCFA60A4B5 /* sub-store */; };
 		F0458DF12625404DA930506D /* ProxiesPage.swift in Sources */ = {isa = PBXBuildFile; fileRef = BF9832249132493A9E51C30C /* ProxiesPage.swift */; };
 		FD7AD16CD9DC6191C81AE1F5 /* RuleFormView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7DC2B59D23B0749A0B7CC125 /* RuleFormView.swift */; };
-
-
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
@@ -52,9 +54,11 @@
 		43A486CB7FAA4FBBAEBFCCE6 /* EngineControl.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Sources/XPC/EngineControl.swift; sourceTree = SOURCE_ROOT; };
 		4ED2BED37C00E10C70F34AC9 /* RuleValidator.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = RuleValidator.swift; path = Sources/Core/RuleValidator/RuleValidator.swift; sourceTree = "<group>"; };
 		50A6FB0C0B7141B0A804F1A9 /* RulesPage.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Sources/UI/Rules/RulesPage.swift; sourceTree = SOURCE_ROOT; };
+		588FF0E9A7F646298341B4AB /* sub-store-backend */ = {isa = PBXFileReference; includeInIndex = 1; name = "sub-store-backend"; path = "Resources/bin/sub-store-backend"; sourceTree = "<group>"; };
 		5C1B022FFD034AE592948756 /* SdwanPage.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Sources/UI/SDWAN/SdwanPage.swift; sourceTree = SOURCE_ROOT; };
 		5E2B17CDA9711347F1C170EB /* YamlRuleASTEngine.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = YamlRuleASTEngine.swift; path = Sources/Core/YamlEditor/YamlRuleASTEngine.swift; sourceTree = "<group>"; };
 		6293BDBC99DBD2AA6E7426F3 /* RuleNode.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = RuleNode.swift; path = Sources/Model/RuleNode.swift; sourceTree = "<group>"; };
+		7B73AE08C88FEF1CD3EF6820 /* SubStoreEngine.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = SubStoreEngine.swift; sourceTree = "<group>"; };
 		7DC2B59D23B0749A0B7CC125 /* RuleFormView.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = RuleFormView.swift; path = Sources/UI/Rules/RuleFormView.swift; sourceTree = "<group>"; };
 		87F1015549B149CD80A68FBC /* SubscriptionsPage.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Sources/UI/Subscriptions/SubscriptionsPage.swift; sourceTree = SOURCE_ROOT; };
 		8CBAE68653724149A087BBEE /* GeneralPage.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Sources/UI/Settings/GeneralPage.swift; sourceTree = SOURCE_ROOT; };
@@ -63,6 +67,7 @@
 		A3BB008E2BF84DF5A2895FBC /* MihomoModels.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Sources/XPC/MihomoModels.swift; sourceTree = SOURCE_ROOT; };
 		A3F21F03B19F4760A795864C /* ConnectionsPage.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Sources/UI/Connections/ConnectionsPage.swift; sourceTree = SOURCE_ROOT; };
 		A4311730377D47748FC5F9D5 /* KernelManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Sources/XPC/KernelManager.swift; sourceTree = SOURCE_ROOT; };
+		A78A5EFEB71461FCFA60A4B5 /* sub-store */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = folder; name = "sub-store"; path = "Resources/Panels/sub-store"; sourceTree = "<group>"; };
 		A7EFEC0FDBC0406AA6A9D774 /* AppModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Sources/Model/AppModel.swift; sourceTree = SOURCE_ROOT; };
 		A8B1C01AAFB044E986219D24 /* NetworkPages.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Sources/UI/Network/NetworkPages.swift; sourceTree = SOURCE_ROOT; };
 		AABBCCDD0000000000000002 /* HelperProtocol.swift */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.swift; path = Sources/XPC/HelperProtocol.swift; sourceTree = "<group>"; };
@@ -75,13 +80,12 @@
 		B004 /* DashboardView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DashboardView.swift; sourceTree = "<group>"; };
 		B006 /* Models.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Models.swift; sourceTree = "<group>"; };
 		B015 /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
+		BA6771BEC14A6E2E77465BFF /* SubStorePage.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = SubStorePage.swift; sourceTree = "<group>"; };
 		BF9832249132493A9E51C30C /* ProxiesPage.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Sources/UI/Proxies/ProxiesPage.swift; sourceTree = SOURCE_ROOT; };
 		C6DEDA31B7B33D5919A12DEB /* RuleEditorModel.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = RuleEditorModel.swift; path = Sources/Core/RuleValidator/RuleEditorModel.swift; sourceTree = "<group>"; };
 		DST2 /* DesignTokens.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Sources/UI/DesignTokens.swift; sourceTree = SOURCE_ROOT; };
 		F001 /* ClashPow.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; path = ClashPow.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		F010 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = Info.plist; sourceTree = "<group>"; };
-
-
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -95,6 +99,15 @@
 /* End PBXFrameworksBuildPhase section */
 
 /* Begin PBXGroup section */
+		23B625084A53A916F0D5D7F8 /* Subscriptions */ = {
+			isa = PBXGroup;
+			children = (
+				BA6771BEC14A6E2E77465BFF /* SubStorePage.swift */,
+			);
+			name = Subscriptions;
+			path = Subscriptions;
+			sourceTree = "<group>";
+		};
 		G_APP /* App */ = {
 			isa = PBXGroup;
 			children = (
@@ -123,6 +136,7 @@
 				AMG2 /* AppModel+Config.swift */,
 				9641FF3F733D4D03A5FC9B70 /* ConfigStore.swift */,
 				06A576D2F0DE48B7BA1A37D7 /* TrafficHistory.swift */,
+				7B73AE08C88FEF1CD3EF6820 /* SubStoreEngine.swift */,
 			);
 			name = Model;
 			path = Model;
@@ -155,6 +169,8 @@
 				C6DEDA31B7B33D5919A12DEB /* RuleEditorModel.swift */,
 				5E2B17CDA9711347F1C170EB /* YamlRuleASTEngine.swift */,
 				7DC2B59D23B0749A0B7CC125 /* RuleFormView.swift */,
+				A78A5EFEB71461FCFA60A4B5 /* sub-store */,
+				588FF0E9A7F646298341B4AB /* sub-store-backend */,
 			);
 			sourceTree = "<group>";
 		};
@@ -178,6 +194,7 @@
 				G_UI_CONFIGEDITOR /* ConfigEditor */,
 				G_UI_COMMON /* Common */,
 				G_UI_PANELS /* Panels */,
+				23B625084A53A916F0D5D7F8 /* Subscriptions */,
 			);
 			name = UI;
 			path = UI;
@@ -186,19 +203,9 @@
 		G_UI_COMMON /* Common */ = {
 			isa = PBXGroup;
 			children = (
-
 			);
 			name = Common;
 			path = Common;
-			sourceTree = "<group>";
-		};
-		G_UI_PANELS /* Panels */ = {
-			isa = PBXGroup;
-			children = (
-
-			);
-			name = Panels;
-			path = Panels;
 			sourceTree = "<group>";
 		};
 		G_UI_CONFIGEDITOR /* ConfigEditor */ = {
@@ -227,6 +234,14 @@
 			);
 			name = Dashboard;
 			path = Dashboard;
+			sourceTree = "<group>";
+		};
+		G_UI_PANELS /* Panels */ = {
+			isa = PBXGroup;
+			children = (
+			);
+			name = Panels;
+			path = Panels;
 			sourceTree = "<group>";
 		};
 		G_XPC /* XPC */ = {
@@ -288,6 +303,8 @@
 			buildActionMask = 2147483647;
 			files = (
 				A015 /* Assets.xcassets in Resources */,
+				EB9D77C486665088AAD77DAE /* sub-store in Resources */,
+				79DCC9B269C65FBBD5B9C70E /* sub-store-backend in Resources */,
 			);
 		};
 /* End PBXResourcesBuildPhase section */
@@ -329,8 +346,8 @@
 				212075FD58BB63EBBCA8786A /* RuleEditorModel.swift in Sources */,
 				04E0EC007CDC978C6D8D3024 /* YamlRuleASTEngine.swift in Sources */,
 				FD7AD16CD9DC6191C81AE1F5 /* RuleFormView.swift in Sources */,
-
-
+				C570533C117814E83AFC0E10 /* SubStoreEngine.swift in Sources */,
+				7C137C69A9B0D22FDB269983 /* SubStorePage.swift in Sources */,
 			);
 		};
 /* End PBXSourcesBuildPhase section */
