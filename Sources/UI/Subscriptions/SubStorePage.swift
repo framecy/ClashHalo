@@ -8,7 +8,7 @@ struct SubStorePage: View {
         VStack(spacing: 0) {
             PageHead(title: "Sub-Store", desc: "本地高级订阅管理器") {
                 Button {
-                    if let url = URL(string: "http://127.0.0.1:\(engine.port)?api=http://127.0.0.1:\(engine.port)") {
+                    if let url = URL(string: "http://127.0.0.1:\(engine.port)") {
                         NSWorkspace.shared.open(url)
                     }
                 } label: {
@@ -17,7 +17,7 @@ struct SubStorePage: View {
             }
             
             if engine.isRunning {
-                SubStoreWebView(url: URL(string: "http://127.0.0.1:\(engine.port)?api=http://127.0.0.1:\(engine.port)")!)
+                SubStoreWebView(url: URL(string: "http://127.0.0.1:\(engine.port)")!)
             } else {
                 VStack(spacing: 16) {
                     ProgressView()
@@ -40,6 +40,9 @@ struct SubStoreWebView: NSViewRepresentable {
         let prefs = WKWebpagePreferences()
         prefs.allowsContentJavaScript = true
         config.defaultWebpagePreferences = prefs
+        
+        let script = WKUserScript(source: "localStorage.clear();", injectionTime: .atDocumentStart, forMainFrameOnly: true)
+        config.userContentController.addUserScript(script)
         
         let webView = WKWebView(frame: .zero, configuration: config)
         // Set a transparent background
