@@ -218,6 +218,7 @@ import ServiceManagement
         let wasReachable = self.reachable
         await api.probe()
         reachable = api.reachable
+        version = api.version
         
         if reachable && !wasReachable {
             // Just came online
