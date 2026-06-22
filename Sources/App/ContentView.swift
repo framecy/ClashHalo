@@ -17,7 +17,6 @@ struct ContentView: View {
         .init(id: "proxies", label: "代理",     icon: "diamond.fill"),
         .init(id: "rules",   label: "分流规则", icon: "line.3.horizontal.decrease"),
         .init(id: "subscriptions", label: "配置与订阅", icon: "icloud.and.arrow.down"),
-        .init(id: "substore", label: "Sub-Store", icon: "square.stack.3d.down.forward.fill"),
     ]
     // 配置：profile · 网络(入站/TUN/DNS/嗅探/内核) · SD-WAN · 偏好
     private let configTabs: [Tab] = [
@@ -118,7 +117,6 @@ struct ContentView: View {
                 case "proxies": ProxiesPage()
                 case "rules": RulesPage()
                 case "subscriptions": SubscriptionsPage()
-                case "substore": SubStorePage()
                 case "config": ConfigPage()
                 case "logs": LogsPage()
                 case "general": GeneralPage()
