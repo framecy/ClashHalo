@@ -52,7 +52,10 @@ echo "      Bundling Sub-Store…"
 mkdir -p "$RES/bin"
 cp "$ROOT/Resources/bin/sub-store-backend" "$RES/bin/"
 chmod 755 "$RES/bin/sub-store-backend"
-cp -R "$ROOT/Resources/Panels/sub-store" "$RES/Panels/sub-store"
+echo "      Bundling Sub-Store backend…"
+mkdir -p "$RES/SubStoreBackend" "$RES/SubStoreCore"
+cp "$ROOT/Resources/SubStoreBackend/sub-store.bundle.js" "$RES/SubStoreBackend/"
+cp "$ROOT/Resources/SubStoreCore/proxy-utils.js" "$RES/SubStoreCore/"
 
 # Bundle a default mihomo kernel so the app works out of the box. Reuse a local
 # kernel if present, otherwise download the official darwin-arm64 release.
