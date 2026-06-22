@@ -19,6 +19,18 @@ struct DashboardPage: View {
         .frame(height: 32)
     }
 
+    private var subStoreButton: some View {
+        Button {
+            let backend = SubStoreEngine.shared.backendURL
+            let urlString = "https://sub-store.vercel.app/subs?api=\(backend)"
+            if let url = URL(string: urlString) {
+                NSWorkspace.shared.open(url)
+            }
+        } label: {
+            Label("Sub-Store", systemImage: "link.circle")
+        }
+    }
+
     private var zashboardButton: some View {
         Button {
             let host = M.api.host
@@ -42,6 +54,7 @@ struct DashboardPage: View {
             VStack(alignment: .leading, spacing: 0) {
                 PageHead(title: "仪表盘", desc: nil) {
                     HStack {
+                        subStoreButton
                         zashboardButton
                         rangePicker
                     }

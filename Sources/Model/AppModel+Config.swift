@@ -51,7 +51,14 @@ extension AppModel {
             _ = try? await api.patchConfig(["geox-url": geo])
             c["geox-url"] = geo
         }
-        
+
+        // Mihomo API does not return sniffer config, so read it from config.yaml
+        if let fileConfig = engine.readConfigFile() {
+            if let sniffer = fileConfig["sniffer"] as? [String: Any] {
+                c["sniffer"] = sniffer
+            }
+        }
+
         // Deep compare to avoid unnecessary @Published triggers (RSS optimization)
         if !(c as NSDictionary).isEqual(configs) {
             configs = c

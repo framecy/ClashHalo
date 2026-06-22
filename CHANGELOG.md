@@ -2,23 +2,65 @@
 
 本项目所有重要变更记录于此。格式参考 [Keep a Changelog](https://keepachangelog.com/),版本遵循语义化版本。
 
-## [0.5.1] - 2026-06-18
+## [0.5.1] - 2026-06-22
 
-构建 0.5.1 内核生命周期与网络状态稳定性深度更新。全面修复由竞态条件、网络瞬断和系统睡眠唤醒导致的内核误杀及代理状态异常丢失问题。
+构建 0.5.1 功能增强、性能优化与配置管理完善更新。新增 Sub-Store 本地后端集成，大幅降低内存占用，完善系统休眠/唤醒恢复机制，修复网络嗅探配置管理问题。
 
 ### Added
-- **自动化集成测试套件**：
-  - 新增 `Scripts/integration_test.sh` 端到端 Bash 自动化集成测试脚本，覆盖特权守护进程 Dead Man's Switch (崩溃兜底清场机制)、网络瞬断自动容错、及内核崩溃防死锁恢复测试用例，为内核生命周期管理提供自动化质量保证。
+- **Sub-Store 本地后端集成**：
+  - 新增 `SubStoreEngine` 管理类，自动启动 Node.js 运行 Sub-Store 后端（sub-store.bundle.js v2.31.2）监听本地端口 3000。
+  - 应用启动时自动启动后端，退出时自动停止，用户无需手动配置。
+  - 仪表盘新增「Sub-Store」按钮，点击在浏览器中打开官方前端（https://sub-store.vercel.app），自动连接本地后端。
+  - 移除了内嵌的 WebView 方案和侧边栏独立入口，采用与 Zashboard 一致的浏览器启动方式，保持 UI 简洁。
+  - 后端自动检测 Node.js 路径（支持 homebrew, nvm, fnm 等安装方式）。
+  - 数据存储在 `~/Library/Application Support/ClashPow/sub-store-data/`。
+
+- **内存优化与自动保护机制**：
+  - 新增 `AppModel.residentMemoryBytes()` 方法实时监控应用物理内存（RSS）占用。
+  - 当应用 RSS 超过 400 MB 时自动清空所有连接缓存，防止内存泄漏。
+  - 连接追踪从重量级 `prevConnsMap: [String: Conn]` 改为轻量级 `activeConnsSet: Set<String>`，减少数十万次对象分配。
+  - `prevConnBytes` 字典增加 2000 条目上限保护，防止长时间运行后无限增长。
+
+- **系统休眠/唤醒完整恢复流程**：
+  - `prepareForSleep()` 中保存休眠前的 TUN 和系统代理状态，并主动释放 4 个连接缓存字典。
+  - `recoverFromWake()` 中增加完整恢复流程：探测内核健康 → 必要时重启内核 → 重连 API → 恢复 TUN → 恢复系统代理。
+  - 确保系统唤醒后代理状态一致，无需用户手动干预。
+
+- **自动化集成测试套件**（0.5.1 早期版本）：
+  - 新增 `Scripts/integration_test.sh` 端到端 Bash 自动化集成测试脚本，覆盖特权守护进程 Dead Man's Switch (崩溃兜底清场机制)、网络瞬断自动容错、及内核崩溃防死锁恢复测试用例。
 
 ### Fixed
-- **启动防误杀与多环境触发重入漏洞**：
+- **网络嗅探（Sniffer）配置管理问题**：
+  - 修复 mihomo API `/configs` 不返回 `sniffer` 字段导致 `refreshConfigs()` 清空内存配置、嗅探开关失效的问题。
+  - 新增 `EngineControl.readConfigFile()` 方法从 config.yaml 读取嗅探配置并合并到运行时配置中。
+  - 修复 config.yaml 中 `sniff` 字段格式错误（从数组改为对象格式），添加默认协议配置（TLS, HTTP, QUIC）。
+  - 嗅探页面新增「解析纯 IP」开关，优化帮助文本说明嗅探是加载时配置需重启内核生效。
+
+- **启动防误杀与多环境触发重入漏洞**（0.5.1 早期版本）：
   - 修复了 SwiftUI 生命周期（`onAppear` 等）由于多窗口或从后台唤醒导致的多次重新初始化，进而反复触发 `AppModel.start()` 中意外全杀 (`killall -9`) 内核守护进程的漏洞。采用无损探活 (`api.probe()`) 与状态栅栏替换了原有的暴力重启逻辑。
-- **配置切换的 TUN 静默丢失问题**：
+
+- **配置切换的 TUN 静默丢失问题**（0.5.1 早期版本）：
   - 修复 `activateProfile` 重新应用底层配置时由于隐式调用 `forceTUNDisabled()` 造成 TUN 虚拟网卡丢失的问题，现在会在配置重载后自动保存并恢复先前的 TUN 开关状态。
-- **崩溃兜底（Dead Man's Switch）竞态异常与断网死锁修复**：
+
+- **崩溃兜底（Dead Man's Switch）竞态异常与断网死锁修复**（0.5.1 早期版本）：
   - 修复由于强杀客户端进程导致 XPC 连接断开时，底层 Helper 守护进程中的 `kill(clientPid, 0)` 因内核未及时完成孤儿进程回收而错误跳过紧急清场（关闭遗留内核、还原 DNS/代理）的严重问题。现已引入 0.5s 进程异步销毁确认延迟。
-- **死循环式系统代理自关闭漏洞修复**：
-  - 修复当用户主动关闭内核却单独保留“系统代理”开启时，后台 3 秒一次的探测任务会将“合法离线”误判为“内核崩溃断开”并强制关闭系统代理的智障反馈循环。
+
+- **死循环式系统代理自关闭漏洞修复**（0.5.1 早期版本）：
+  - 修复当用户主动关闭内核却单独保留”系统代理”开启时，后台 3 秒一次的探测任务会将”合法离线”误判为”内核崩溃断开”并强制关闭系统代理的智障反馈循环。
+
+### Changed
+- **Sub-Store 集成方式调整**：
+  - 移除侧边栏「Sub-Store」菜单项和独立页面路由。
+  - 移除 WKWebView 内嵌方案（`Resources/Panels/sub-store/*` 前端资源已删除，共 147 个文件）。
+  - 统一为仪表盘按钮 + 浏览器启动方式，与 Zashboard 保持一致的用户体验。
+
+### Performance
+- **内存占用大幅降低（200+ MB → 60 MB）**：
+  - 后台轮询间隔从 6 秒延长至 10 秒，减少 JSON 序列化开销。
+  - 系统休眠或网络离线时跳过连接轮询，避免无效 API 调用。
+  - 主窗口不可见时清空所有连接缓存（cachedConns, cachedClosedConnections, prevConnBytes, activeConnsSet）。
+  - 网络离线时主动释放 prevConnBytes 和 activeConnsSet，减少内存占用。
+  - 仪表盘流量图更新间隔从 1 秒节流至 2 秒，减少 Canvas 重绘导致的 Graphics 内存开销。
 
 ## [0.5.0] - 2026-06-17
 

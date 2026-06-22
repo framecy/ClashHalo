@@ -1,6 +1,6 @@
 # ClashHalo
 
-> macOS 14+ (Apple Silicon) 原生 SwiftUI 代理客户端，直接编排官方 `mihomo` (Clash.Meta) 内核。当前版本 **v0.4.9**。
+> macOS 14+ (Apple Silicon) 原生 SwiftUI 代理客户端，直接编排官方 `mihomo` (Clash.Meta) 内核。当前版本 **v0.5.1**。
 
 ClashHalo 是「原生编排器」架构：GUI 通过 REST + WebSocket 与官方内核通信，特权操作交给独立签名的 Helper。纯 Swift、零中间层、完全兼容官方内核特性。
 
@@ -9,7 +9,8 @@ ClashHalo 是「原生编排器」架构：GUI 通过 REST + WebSocket 与官方
 - **系统代理**：一键设置 / 清除 macOS 系统 HTTP/HTTPS/SOCKS 代理；网络离线时自动清除，防止流量阻断。
 - **TUN 模式**：首次开启请求管理员授权安装特权 Helper，内核以 root 重启并接管全局流量（utun + auto-route）。
 - **订阅与配置**：多套 YAML profile 管理，远程订阅（URL 存 Keychain），内核侧校验 + 热重载。订阅页支持 proxy-provider 增删改（写入配置 + 自动 `use:` 引用，备份/校验/失败回滚）。
-- **网络聚合页**：入站 / TUN / DNS / 嗅探 / 内核管理 合并为一个带 tab 的「网络」页；侧栏精简为 监控 / 代理 / 配置 三组。
+- **Sub-Store 本地后端集成**：应用自动启动 Sub-Store 后端（Node.js + sub-store.bundle.js，监听端口 3000），仪表盘提供快捷按钮在浏览器中打开官方前端，自动连接本地后端，实现高级订阅转换功能。
+- **网络聚合页**：入站 / TUN / DNS / 嗅探 / 内核管理 合并为一个带 tab 的「网络」页；侧栏精简为 监控 / 代理 / 配置 三组。嗅探页支持协议解析配置（TLS/HTTP/QUIC），修改后需重启内核生效。
 - **内核管理**：默认内置官方 mihomo，开箱即用；应用内可从 GitHub 下载/切换版本（stable / alpha），或一键切回内置内核。
 - **网关中枢 (旁路由)**：一键开启局域网底层 IP 转发并接管 53 端口 DNS。自动识别并展示局域网内所有接入设备的 IP、连接数及实时流量趋势。详情请参阅 [`Docs/GatewayGuide.md`](Docs/GatewayGuide.md)。
 - **外部面板集成 (Zashboard)**：深度内嵌开箱即用的 Zashboard 外部面板，通过自动注入哈希参数实现与内核免密无缝认证，支持跟随系统的主题自动切换。
