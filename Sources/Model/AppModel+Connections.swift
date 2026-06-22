@@ -21,10 +21,22 @@ extension AppModel {
                 logKernel("核心内存占用过高 (\(m / 1_000_000)MB)，已自动清空 DNS 与 Fake‑IP 缓存")
             }
         }
-        
+
+        // App Memory Guard: If app RSS > 400MB, aggressively free local caches
+        let appRSS = Self.residentMemoryBytes()
+        if appRSS > 400 * 1_000_000 {
+            cachedConns.removeAll(keepingCapacity: false)
+            cachedClosedConnections.removeAll(keepingCapacity: false)
+            if !isMainWindowVisible && !isMenuBarVisible {
+                prevConnBytes.removeAll(keepingCapacity: false)
+                activeConnsSet.removeAll(keepingCapacity: false)
+            }
+            logKernel("App 内存占用过高 (\(appRSS / 1_000_000)MB)，已释放缓存")
+        }
+
         let items = s.connections ?? []
         let hour = Calendar.current.component(.hour, from: Date())
-        
+
         // Memory Optimization: Skip expensive single-connection diffing and classification
         // unless the user is actually looking at the dashboard or connections page.
         // history.record() calls within this loop are the main culprit for background CPU/memory churn.
@@ -69,7 +81,13 @@ extension AppModel {
                 }
             }
             prevConnBytes = bytes
-            
+
+            // Limit prevConnBytes growth: cap at 2000 entries to prevent unbounded heap
+            if prevConnBytes.count > 2000 {
+                prevConnBytes.removeAll(keepingCapacity: false)
+                logKernel("连接追踪字典过大 (\(prevConnBytes.count))，已重置")
+            }
+
             // Clean up old inactive devices (>10 mins)
             newGatewayDevices = newGatewayDevices.filter { $0.value.activeConnections > 0 || nowTime.timeIntervalSince($0.value.lastSeen) < 600 }
             gatewayDevices = newGatewayDevices

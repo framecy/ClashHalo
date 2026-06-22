@@ -308,22 +308,22 @@ struct ConnDetailCard: View {
         var next: [Conn] = []
         var bytes: [String: (up: Int64, down: Int64)] = [:]
         var activeIDs = Set<String>()
-        var nextConnsMap: [String: Conn] = [:]
         let hour = Calendar.current.component(.hour, from: Date())
-        
+
         for c in items {
             activeIDs.insert(c.id)
-            if M.prevConnsMap[c.id] == nil { M.totalConnsCount += 1 }
+            // Track new connections: if not in previous active set, increment total count
+            if !M.activeConnsSet.contains(c.id) { M.totalConnsCount += 1 }
             let prev = M.prevConnBytes[c.id]
             let upRate = prev.map { max(0, c.upload - $0.up) } ?? 0
             let downRate = prev.map { max(0, c.download - $0.down) } ?? 0
             bytes[c.id] = (c.upload, c.download)
-            
+
             // Record category traffic delta to history
             let cat = (c.chains.first == "DIRECT" || c.chains.contains("DIRECT")) ? "direct"
                     : (c.chains.first == "REJECT" || c.chains.contains("REJECT")) ? "reject" : "proxy"
             M.history.record(category: cat, down: Int64(downRate), up: Int64(upRate), hour: hour)
-            
+
             let conn = Conn(
                 id: c.id,
                 host: c.metadata.host?.isEmpty == false ? c.metadata.host! : (c.metadata.destinationIP ?? "?"),
@@ -343,27 +343,27 @@ struct ConnDetailCard: View {
                 start: c.start
             )
             next.append(conn)
-            nextConnsMap[c.id] = conn
         }
         M.prevConnBytes = bytes
-        
+
+        // Detect closed connections: those in cachedConns but not in current activeIDs
         var newClosed = [Conn]()
-        for (id, conn) in M.prevConnsMap {
-            if !activeIDs.contains(id) {
+        for conn in M.cachedConns {
+            if !activeIDs.contains(conn.id) {
                 var closedConn = conn
                 closedConn.upRate = 0
                 closedConn.downRate = 0
                 newClosed.append(closedConn)
             }
         }
-        
+
         if !newClosed.isEmpty {
             M.cachedClosedConnections.insert(contentsOf: newClosed, at: 0)
             if M.cachedClosedConnections.count > 150 {
                 M.cachedClosedConnections.removeLast(M.cachedClosedConnections.count - 150)
             }
         }
-        M.prevConnsMap = nextConnsMap
+        M.activeConnsSet = activeIDs
         
         M.cachedConns = next.sorted { $0.downRate + $0.upRate > $1.downRate + $1.upRate }
         
