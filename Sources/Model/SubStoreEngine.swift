@@ -3,81 +3,132 @@ import Combine
 
 class SubStoreEngine: ObservableObject {
     static let shared = SubStoreEngine()
-    
+
     private var process: Process?
     @Published var isRunning = false
-    let port = 3001
-    
+    @Published var backendURL: String = "http://127.0.0.1:3000"
+    let port = 3000
+
     private let dataDir: String = {
         let p = NSHomeDirectory() + "/Library/Application Support/ClashPow/sub-store-data"
         try? FileManager.default.createDirectory(atPath: p, withIntermediateDirectories: true)
         return p
     }()
-    
+
+    private init() {}
+
     func start() {
-        guard !isRunning else { return }
-        
-        let bundle = Bundle.main
-        guard let binURL = bundle.url(forResource: "sub-store-backend", withExtension: nil) else {
-            print("Sub-Store binary not found")
+        NSLog("[SubStore] start() called, isRunning: \(isRunning)")
+        guard !isRunning else {
+            NSLog("[SubStore] Already running, skipping")
             return
         }
-        guard let frontEndURL = bundle.url(forResource: "sub-store", withExtension: nil) else {
-            print("Sub-Store frontend not found")
+
+        // 查找 Node.js
+        guard let nodePath = findNode() else {
+            NSLog("[SubStore] Node.js not found")
             return
         }
-        
+
+        // 查找 bundle.js
+        guard let bundlePath = Bundle.main.path(forResource: "sub-store.bundle", ofType: "js", inDirectory: "SubStoreBackend") else {
+            NSLog("[SubStore] sub-store.bundle.js not found")
+            return
+        }
+
+        NSLog("[SubStore] Node: \(nodePath)")
+        NSLog("[SubStore] Bundle: \(bundlePath)")
+
         let p = Process()
-        p.executableURL = binURL
-        
+        p.executableURL = URL(fileURLWithPath: nodePath)
+        p.arguments = [bundlePath]
+
         var env = ProcessInfo.processInfo.environment
         env["SUB_STORE_DATA_BASE_PATH"] = dataDir
-        env["SUB_STORE_FRONTEND_PATH"] = frontEndURL.path
-        env["SUB_STORE_BACKEND_API_PORT"] = "3000"
-        env["SUB_STORE_FRONTEND_BACKEND_PATH"] = "/"
-        
+        env["SUB_STORE_BACKEND_API_PORT"] = "\(port)"
+        env["SUB_STORE_CORS_ALLOWED_ORIGINS"] = "*"
+        p.environment = env
+
         let pipe = Pipe()
         p.standardOutput = pipe
         p.standardError = pipe
-        
+
         pipe.fileHandleForReading.readabilityHandler = { fh in
             let data = fh.availableData
             if !data.isEmpty, let str = String(data: data, encoding: .utf8) {
-                print("[SubStore] \(str)", terminator: "")
-                if let logData = ("[SubStore] " + str).data(using: .utf8) {
-                    if let fileHandle = try? FileHandle(forWritingTo: URL(fileURLWithPath: "/tmp/sub-store.log")) {
-                        fileHandle.seekToEndOfFile()
-                        fileHandle.write(logData)
-                        fileHandle.closeFile()
-                    } else {
-                        try? logData.write(to: URL(fileURLWithPath: "/tmp/sub-store.log"))
-                    }
-                }
+                NSLog("[SubStore] \(str.trimmingCharacters(in: .whitespacesAndNewlines))")
             }
         }
-        
-        p.terminationHandler = { [weak self] process in
-            let status = process.terminationStatus
-            print("[SubStore] Process terminated with status \(status)")
-            DispatchQueue.main.async { self?.isRunning = false }
+
+        p.terminationHandler = { process in
+            NSLog("[SubStore] Process terminated with status \(process.terminationStatus)")
+            DispatchQueue.main.async {
+                self.isRunning = false
+                self.process = nil
+            }
         }
-        
-        env["SUB_STORE_FRONTEND_PORT"] = "\(port)"
-        p.environment = env
-        
+
         do {
             try p.run()
             self.process = p
-            self.isRunning = true
-            print("Sub-Store Engine started on port \(port)")
+
+            // 等待后端启动
+            DispatchQueue.main.asyncAfter(deadline: .now() + 2) {
+                self.isRunning = true
+                NSLog("[SubStore] Engine started on port \(self.port)")
+            }
         } catch {
-            print("Failed to start Sub-Store: \(error)")
+            NSLog("[SubStore] Failed to start: \(error)")
         }
     }
-    
+
     func stop() {
+        NSLog("[SubStore] stop() called")
         process?.terminate()
-        process = nil
         isRunning = false
+        process = nil
+    }
+
+    private func findNode() -> String? {
+        let paths = [
+            "/usr/local/bin/node",
+            "/opt/homebrew/bin/node",
+            "/usr/bin/node",
+            NSHomeDirectory() + "/.nvm/versions/node/*/bin/node",
+            NSHomeDirectory() + "/.local/share/fnm/node-versions/*/installation/bin/node"
+        ]
+
+        for path in paths {
+            if path.contains("*") {
+                // 使用通配符查找
+                let dir = URL(fileURLWithPath: (path as NSString).deletingLastPathComponent)
+                if let enumerator = FileManager.default.enumerator(at: dir, includingPropertiesForKeys: nil) {
+                    for case let fileURL as URL in enumerator {
+                        if fileURL.lastPathComponent == "node" && FileManager.default.isExecutableFile(atPath: fileURL.path) {
+                            return fileURL.path
+                        }
+                    }
+                }
+            } else if FileManager.default.isExecutableFile(atPath: path) {
+                return path
+            }
+        }
+
+        // 使用 which 命令查找
+        let task = Process()
+        task.executableURL = URL(fileURLWithPath: "/usr/bin/which")
+        task.arguments = ["node"]
+        let pipe = Pipe()
+        task.standardOutput = pipe
+        try? task.run()
+        task.waitUntilExit()
+
+        if let data = try? pipe.fileHandleForReading.readToEnd(),
+           let path = String(data: data, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines),
+           !path.isEmpty {
+            return path
+        }
+
+        return nil
     }
 }

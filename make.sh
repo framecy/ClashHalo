@@ -44,8 +44,15 @@ for f in GeoSite.dat geoip.metadb ASN.mmdb; do
 done
 
 echo "      Bundling local dashboards (Zashboard)…"
-mkdir -p "$RES/zashboard"
-cp -R "$ROOT/Resources/Panels/zashboard/dist" "$RES/zashboard/"
+mkdir -p "$RES/Panels"
+rm -rf "$RES/zashboard" # Remove old wrong path if exists
+cp -R "$ROOT/Resources/Panels/zashboard/dist" "$RES/Panels/zashboard"
+
+echo "      Bundling Sub-Store…"
+mkdir -p "$RES/bin"
+cp "$ROOT/Resources/bin/sub-store-backend" "$RES/bin/"
+chmod 755 "$RES/bin/sub-store-backend"
+cp -R "$ROOT/Resources/Panels/sub-store" "$RES/Panels/sub-store"
 
 # Bundle a default mihomo kernel so the app works out of the box. Reuse a local
 # kernel if present, otherwise download the official darwin-arm64 release.
@@ -73,6 +80,10 @@ echo "[4/4] Ad-hoc signing + DMG…"
 xattr -cr "$APP"
 # Sign helper tool
 codesign --force --sign - "$APP/Contents/MacOS/com.clashpow.helper"
+# Sign sub-store backend
+if [ -f "$APP/Contents/Resources/bin/sub-store-backend" ]; then
+    codesign --force --sign - "$APP/Contents/Resources/bin/sub-store-backend"
+fi
 # Sign mihomo WITHOUT --options runtime: hardened runtime blocks AF_SYSTEM sockets
 # (utun device creation) that mihomo needs for TUN mode even when running as root.
 # Pre-signing before the bundle step prevents --deep from overriding this.

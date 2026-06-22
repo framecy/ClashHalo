@@ -71,7 +71,6 @@ import ServiceManagement
     var cachedClosedConnections: [Conn] = []
     var prevConnBytes: [String: (up: Int64, down: Int64)] = [:]
     var activeConnsSet: Set<String> = []
-    var prevConnsMap: [String: Conn] = [:]
     var totalConnsCount = 0
 
     // Logs (level configuration is preserved)
@@ -130,6 +129,7 @@ import ServiceManagement
 
     // External Panels
     @AppStorage("ui.zashboardURL") var zashboardURL = "https://board.zash.run.place/"
+    @AppStorage("ui.subStoreURL") var subStoreURL = "https://sub-store.vercel.app/"
 
     private var pathMonitor: NWPathMonitor?
     private var signalSources: [AnyObject] = []
@@ -137,6 +137,9 @@ import ServiceManagement
     /// True while the system is sleeping — gates background activity so
     /// wake-up callbacks don't race with half-restored subsystems.
     private var sleeping = false
+    /// Saved state before sleep: used to restore after wake
+    private var preSleepTunOn = false
+    private var preSleepSystemProxyOn = false
     /// One-shot guard — `start()` must run exactly once per app lifetime.
     private var started = false
     /// System proxy was auto-disabled by the network-offline handler; restore on reconnect.
@@ -303,12 +306,14 @@ import ServiceManagement
 
         pollTimer?.invalidate()
         pollTimer = nil
-        
+
         if !isConnectionsPageActive {
-            logKernel("启动后台慢速连接 HTTP 轮询...")
-            pollTimer = Timer.scheduledTimer(withTimeInterval: 6.0, repeats: true) { [weak self] _ in
+            // 后台慢速轮询：降低频率到 10 秒，减少内存分配
+            pollTimer = Timer.scheduledTimer(withTimeInterval: 10.0, repeats: true) { [weak self] _ in
                 Task {
                     guard let self else { return }
+                    // 睡眠中或网络离线时跳过轮询
+                    guard !self.sleeping && self.networkOnline else { return }
                     do {
                         let snapshot = try await self.api.fetchConnectionsSnapshot()
                         await self.recordHistoryOnly(from: snapshot)
@@ -322,7 +327,8 @@ import ServiceManagement
         if !isMainWindowVisible {
             cachedConns.removeAll(keepingCapacity: false)
             cachedClosedConnections.removeAll(keepingCapacity: false)
-            prevConnsMap.removeAll(keepingCapacity: false)
+            prevConnBytes.removeAll(keepingCapacity: false)
+            activeConnsSet.removeAll(keepingCapacity: false)
             logKernel("主窗口不可见，已释放 AppModel 内存缓存")
         }
     }
@@ -381,9 +387,22 @@ import ServiceManagement
     /// Prevents reconnect storms and stale-proxy crashes on wake.
     private func prepareForSleep() {
         sleeping = true
+
+        // Save current state
+        preSleepTunOn = tunOn
+        preSleepSystemProxyOn = systemProxyOn
+
         stopStreams()       // cancel WS — avoids 4× reconnect race on wake
         reconnectTask?.cancel()
         reconnectTask = nil
+
+        // Proactively free memory: clear large connection tracking maps
+        prevConnBytes.removeAll(keepingCapacity: false)
+        activeConnsSet.removeAll(keepingCapacity: false)
+        cachedConns.removeAll(keepingCapacity: false)
+        cachedClosedConnections.removeAll(keepingCapacity: false)
+
+        logKernel("系统即将休眠，已保存状态并释放内存")
     }
 
     /// Re-establish connectivity after system wake. Delays briefly to let
@@ -391,10 +410,53 @@ import ServiceManagement
     private func recoverFromWake() {
         sleeping = false
         XPCManager.shared.resetConnection()   // tear down stale Mach ports
+
+        logKernel("系统唤醒，正在恢复连接与服务...")
+
         Task {
             // Network interfaces need a moment to re-associate after wake
             try? await Task.sleep(nanoseconds: 2_000_000_000)
+
+            // Probe kernel health
+            await api.probe(timeout: 2.0)
+
+            if !api.reachable {
+                // Kernel died during sleep — restart it
+                logKernel("唤醒后内核未响应，正在重启...")
+                engine.ensureRunning()
+
+                // Wait for kernel to come up
+                for i in 1...8 {
+                    try? await Task.sleep(nanoseconds: 1_000_000_000)
+                    await api.probe(timeout: 1.0)
+                    if api.reachable {
+                        logKernel("内核已重启 (尝试 \(i))")
+                        break
+                    }
+                }
+            }
+
+            // Reconnect and restore state
             await reconnect()
+
+            // Restore TUN if it was active before sleep
+            if preSleepTunOn && !tunOn {
+                logKernel("恢复 TUN 模式...")
+                await applyTUNState(true)
+            }
+
+            // Restore system proxy if it was active before sleep
+            if preSleepSystemProxyOn && !systemProxyOn {
+                logKernel("恢复系统代理...")
+                let port = (configs["mixed-port"] as? Int) ?? (configs["port"] as? Int) ?? 7890
+                let ok = await engine.setSystemProxy(enabled: true, port: port)
+                if ok {
+                    systemProxyOn = true
+                    logKernel("系统代理已恢复")
+                }
+            }
+
+            logKernel("唤醒恢复完成")
         }
     }
 
@@ -449,6 +511,10 @@ import ServiceManagement
                 await api.probe(timeout: 1.0)
                 if !api.reachable { await restoreTunnelDNS() }
             }
+            // Proactively free memory when going offline
+            prevConnBytes.removeAll(keepingCapacity: false)
+            activeConnsSet.removeAll(keepingCapacity: false)
+            logKernel("网络离线，已释放连接追踪缓存")
         }
     }
 
