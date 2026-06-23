@@ -990,6 +990,7 @@ import SwiftUI
         var result: [String: Any] = [:]
         var currentSection: String? = nil
         var currentDict: [String: Any] = [:]
+        var lastKey: String? = nil
 
         for line in text.components(separatedBy: "\n") {
             let trimmed = line.trimmingCharacters(in: .whitespaces)
@@ -997,11 +998,11 @@ import SwiftUI
 
             // Top-level key
             if !line.hasPrefix(" ") && !line.hasPrefix("\t") && line.contains(":") {
-                // Save previous section
                 if let section = currentSection, !currentDict.isEmpty {
                     result[section] = currentDict
                     currentDict = [:]
                 }
+                lastKey = nil
 
                 let parts = line.split(separator: ":", maxSplits: 1)
                 let key = String(parts[0]).trimmingCharacters(in: .whitespaces)
@@ -1020,14 +1021,33 @@ import SwiftUI
             else if (line.hasPrefix("  ") && !line.hasPrefix("    ")) && line.contains(":") {
                 let parts = line.trimmingCharacters(in: .whitespaces).split(separator: ":", maxSplits: 1)
                 let key = String(parts[0]).trimmingCharacters(in: .whitespaces)
+                lastKey = key
                 if parts.count > 1 {
                     let value = String(parts[1]).trimmingCharacters(in: .whitespaces)
-                    currentDict[key] = parseValue(value)
+                    if value.isEmpty {
+                        currentDict[key] = [] as [String]
+                    } else {
+                        currentDict[key] = parseValue(value)
+                    }
+                } else {
+                    currentDict[key] = [] as [String]
+                }
+            }
+            // Array items (4-space indent or - prefix)
+            else if (line.hasPrefix("    ") || line.hasPrefix("  -") || line.hasPrefix("\t\t")) && trimmed.hasPrefix("-") {
+                if let key = lastKey {
+                    let value = trimmed.dropFirst().trimmingCharacters(in: .whitespaces)
+                    var arr = currentDict[key] as? [String] ?? []
+                    if let parsedStr = parseValue(value) as? String {
+                        arr.append(parsedStr)
+                    } else {
+                        arr.append(value)
+                    }
+                    currentDict[key] = arr
                 }
             }
         }
 
-        // Save last section
         if let section = currentSection, !currentDict.isEmpty {
             result[section] = currentDict
         }
@@ -1045,6 +1065,14 @@ import SwiftUI
         }
         if value.hasPrefix("\"") && value.hasSuffix("\"") {
             return String(value.dropFirst().dropLast())
+        }
+        // Handle flow-style array
+        if value.hasPrefix("[") && value.hasSuffix("]") {
+            let inner = value.dropFirst().dropLast().trimmingCharacters(in: .whitespaces)
+            if inner.isEmpty { return [] as [String] }
+            return inner.components(separatedBy: ",").map { 
+                $0.trimmingCharacters(in: .whitespaces).trimmingCharacters(in: CharacterSet(charactersIn: "\"'"))
+            }
         }
         return value
     }
