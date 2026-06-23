@@ -52,10 +52,13 @@ extension AppModel {
             c["geox-url"] = geo
         }
 
-        // Mihomo API does not return sniffer config, so read it from config.yaml
+        // Mihomo API does not return sniffer or dns config, so read them from config.yaml
         if let fileConfig = engine.readConfigFile() {
             if let sniffer = fileConfig["sniffer"] as? [String: Any] {
                 c["sniffer"] = sniffer
+            }
+            if let dns = fileConfig["dns"] as? [String: Any] {
+                c["dns"] = dns
             }
         }
 

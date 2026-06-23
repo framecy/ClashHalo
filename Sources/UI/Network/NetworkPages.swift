@@ -498,8 +498,8 @@ struct NPicker: View {
             Text(label).font(.dsBody); Spacer()
             Picker("", selection: Binding<String>(
                 get: {
-                    let val = (nestedDict(M, parent)[sub] as? String) ?? ""
-                    return options.contains(where: { $0.0 == val }) ? val : (options.first?.0 ?? "")
+                    let val = ((nestedDict(M, parent)[sub] as? String) ?? "").lowercased()
+                    return options.first(where: { $0.0.lowercased() == val })?.0 ?? (options.first?.0 ?? "")
                 },
                 set: { v in
                     Task {
