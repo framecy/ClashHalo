@@ -79,6 +79,11 @@ import ServiceManagement
     // Traffic rate (numbers only, sparkline moved to DashboardViewModel)
     @Published var curDown: Int64 = 0
     @Published var curUp: Int64 = 0
+    @Published var downSeries: [Double] = Array(repeating: 0, count: 120)
+    @Published var upSeries: [Double] = Array(repeating: 0, count: 120)
+    @Published var dash = DashStats()
+    var lastUIUpdate = Date.distantPast
+
 
     // Config
     @Published var configs: [String: Any] = [:]
@@ -129,7 +134,6 @@ import ServiceManagement
 
     // External Panels
     @AppStorage("ui.zashboardURL") var zashboardURL = "https://board.zash.run.place/"
-    @AppStorage("ui.subStoreURL") var subStoreURL = "https://sub-store.vercel.app/"
 
     private var pathMonitor: NWPathMonitor?
     private var signalSources: [AnyObject] = []
@@ -146,7 +150,7 @@ import ServiceManagement
     private var proxyAutoDisabled = false
 
     private var trafficWS: WSHandle?
-    private var connWS: WSHandle?
+
     private var logWS: WSHandle?
     private var memWS: WSHandle?
     private var pollTask: Task<Void, Never>?

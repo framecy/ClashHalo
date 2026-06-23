@@ -262,7 +262,7 @@ struct ConnDetailCard: View {
     @Published var conns: [Conn] = []
     @Published var closedConnections: [Conn] = []
     
-    private var connWS: WSHandle?
+    private var pollTimer: Timer?
     private let api = MihomoClient.shared
     private let M = AppModel.shared
 
@@ -271,23 +271,37 @@ struct ConnDetailCard: View {
         
         M.isConnectionsPageActive = true
         
-        // Subscribe to live connections stream
-        connWS = api.stream("/connections", type: ConnectionsSnapshot.self) { [weak self] s in
-            Task { @MainActor in
-                self?.onConnections(s)
+        // HTTP polling instead of WebSocket — avoids kernel pushing full-payload
+        // JSON every 1s which causes severe memory churn under high connection count.
+        // Poll at 1.5s gives near-realtime UX while halving allocation frequency.
+        pollTimer = Timer.scheduledTimer(withTimeInterval: 1.5, repeats: true) { [weak self] _ in
+            Task { @MainActor [weak self] in
+                await self?.poll()
             }
         }
+        // Immediate first fetch
+        Task { await poll() }
     }
     
     func stop() {
-        connWS?.cancel()
-        connWS = nil
+        pollTimer?.invalidate()
+        pollTimer = nil
         
         M.isConnectionsPageActive = false
         
         // Completely reclaim memory arrays when not on this page
         conns.removeAll(keepingCapacity: false)
         closedConnections.removeAll(keepingCapacity: false)
+    }
+    
+    private func poll() async {
+        guard api.reachable else { return }
+        do {
+            let s = try await api.fetchConnectionsSnapshot()
+            onConnections(s)
+        } catch {
+            // Network transient — skip this tick
+        }
     }
     
     private func onConnections(_ s: ConnectionsSnapshot) {
@@ -312,14 +326,12 @@ struct ConnDetailCard: View {
 
         for c in items {
             activeIDs.insert(c.id)
-            // Track new connections: if not in previous active set, increment total count
             if !M.activeConnsSet.contains(c.id) { M.totalConnsCount += 1 }
             let prev = M.prevConnBytes[c.id]
             let upRate = prev.map { max(0, c.upload - $0.up) } ?? 0
             let downRate = prev.map { max(0, c.download - $0.down) } ?? 0
             bytes[c.id] = (c.upload, c.download)
 
-            // Record category traffic delta to history
             let cat = (c.chains.first == "DIRECT" || c.chains.contains("DIRECT")) ? "direct"
                     : (c.chains.first == "REJECT" || c.chains.contains("REJECT")) ? "reject" : "proxy"
             M.history.record(category: cat, down: Int64(downRate), up: Int64(upRate), hour: hour)
@@ -346,7 +358,7 @@ struct ConnDetailCard: View {
         }
         M.prevConnBytes = bytes
 
-        // Detect closed connections: those in cachedConns but not in current activeIDs
+        // Detect closed connections
         var newClosed = [Conn]()
         for conn in M.cachedConns {
             if !activeIDs.contains(conn.id) {
@@ -371,11 +383,13 @@ struct ConnDetailCard: View {
         closedConnections = M.cachedClosedConnections
         M.activeConnectionsCount = activeIDs.count
         
+        // Also update dashboard stats while on connections page
+        M.dash = AppModel.computeDash(next)
+        
         M.closedConns = max(0, M.totalConnsCount - activeIDs.count)
         M.history.flushIfNeeded()
         M.lastDownTotal = s.downloadTotal
         
-        // Update AppModel RSS memory
         M.appMemoryMB = Double(AppModel.residentMemoryBytes()) / 1_000_000
     }
 }
