@@ -5,6 +5,13 @@ BUILD="$ROOT/build"
 mkdir -p "$BUILD"
 
 echo "[1/4] Building Helper Tool…"
+
+# Auto-increment build number
+BUILD_NUM=$(grep -oE 'CURRENT_PROJECT_VERSION = [0-9]+' "$ROOT/ClashPow.xcodeproj/project.pbxproj" | head -1 | awk '{print $3}' | tr -d ';')
+NEW_BUILD=$((BUILD_NUM + 1))
+sed -i '' "s/CURRENT_PROJECT_VERSION = $BUILD_NUM;/CURRENT_PROJECT_VERSION = $NEW_BUILD;/g" "$ROOT/ClashPow.xcodeproj/project.pbxproj"
+echo "      Bumped build number: $BUILD_NUM -> $NEW_BUILD"
+
 # Note: Embed Info.plist into the binary for proper identification
 swiftc \
     "$ROOT/Sources/Helper/main.swift" "$ROOT/Sources/XPC/ProxyManager.swift" "$ROOT/Sources/XPC/HelperProtocol.swift" \
@@ -148,7 +155,8 @@ macOS 14.0+ ，Apple Silicon (arm64)。
 GUIDE
 
 VERSION=$(grep -oE 'MARKETING_VERSION = [0-9.]+' "$ROOT/ClashPow.xcodeproj/project.pbxproj" | head -1 | awk '{print $3}')
-DMG_NAME="ClashHalo_v${VERSION}_mac_arm"
+BUILD_NUM=$(grep -oE 'CURRENT_PROJECT_VERSION = [0-9]+' "$ROOT/ClashPow.xcodeproj/project.pbxproj" | head -1 | awk '{print $3}')
+DMG_NAME="ClashHalo_v${VERSION}_build_${BUILD_NUM}_mac"
 DMG="$BUILD/${DMG_NAME}.dmg"
 rm -f "$DMG"
 hdiutil create -volname "ClashHalo v${VERSION}" -srcfolder "$STAGE" -ov -format UDZO "$DMG" >/dev/null
