@@ -2,11 +2,9 @@
 // memory, distribution, policy-group ranking, hourly timeline, top rules/hosts/
 // nodes, client source IPs, target classification. All from live mihomo data.
 import SwiftUI
-import Charts
 
 struct DashboardPage: View {
     @EnvironmentObject var M: AppModel
-    @StateObject private var VM = DashboardViewModel()
     enum Range { case today, month }
     @State private var range: Range = .today
 
@@ -17,18 +15,6 @@ struct DashboardPage: View {
             }.pickerStyle(.segmented).labelsHidden()
         }
         .frame(height: 32)
-    }
-
-    private var subStoreButton: some View {
-        Button {
-            let backend = SubStoreEngine.shared.backendURL
-            let urlString = "https://sub-store.vercel.app/subs?api=\(backend)"
-            if let url = URL(string: urlString) {
-                NSWorkspace.shared.open(url)
-            }
-        } label: {
-            Label("Sub-Store", systemImage: "link.circle")
-        }
     }
 
     private var zashboardButton: some View {
@@ -54,7 +40,6 @@ struct DashboardPage: View {
             VStack(alignment: .leading, spacing: 0) {
                 PageHead(title: "仪表盘", desc: nil) {
                     HStack {
-                        subStoreButton
                         zashboardButton
                         rangePicker
                     }
@@ -65,13 +50,13 @@ struct DashboardPage: View {
 
                     // Row 1: Top stats bar (4 columns, height 64)
                     HStack(spacing: 16) {
-                        BarStat("总下载", fmtBytes(Double(VM.downloadTotal)), "arrow.down.circle.fill", M.accent)
+                        BarStat("总下载", fmtBytes(Double(M.downloadTotal)), "arrow.down.circle.fill", M.accent)
                             .frame(height: DS.Layout.statHeight)
                             .frame(maxWidth: .infinity)
-                        BarStat("总上传", fmtBytes(Double(VM.uploadTotal)), "arrow.up.circle.fill", .red)
+                        BarStat("总上传", fmtBytes(Double(M.uploadTotal)), "arrow.up.circle.fill", .red)
                             .frame(height: DS.Layout.statHeight)
                             .frame(maxWidth: .infinity)
-                        BarStat("连接数", "\(VM.activeConnectionsCount)", "link.circle.fill", .cyan)
+                        BarStat("连接数", "\(M.activeConnectionsCount)", "link.circle.fill", .cyan)
                             .frame(height: DS.Layout.statHeight)
                             .frame(maxWidth: .infinity)
                         BarStat("访问目标", "\(uniqueHosts)", "scope", .orange)
@@ -94,26 +79,26 @@ struct DashboardPage: View {
                             Card(title: "流量趋势", icon: "chart.xyaxis.line") {
                                 VStack(alignment: .leading, spacing: 0) {
                                     HStack(spacing: 18) {
-                                        Label(fmtRate(Double(VM.curDown)), systemImage: "arrow.down")
+                                        Label(fmtRate(Double(M.curDown)), systemImage: "arrow.down")
                                             .foregroundColor(.red)
                                             .font(.dsMonoBold)
-                                        Label(fmtRate(Double(VM.curUp)), systemImage: "arrow.up")
+                                        Label(fmtRate(Double(M.curUp)), systemImage: "arrow.up")
                                             .foregroundColor(M.accent)
                                             .font(.dsMonoBold)
                                         Spacer()
                                     }.padding(.bottom, 6)
-                                    TrafficSparkline(down: VM.downSeries, up: VM.upSeries, accent: M.accent).equatable().frame(height: 144)
+                                    TrafficSparkline(down: M.downSeries, up: M.upSeries, accent: M.accent).equatable().frame(height: 144)
                                 }
                             }
                             .frame(height: 224)
                             .gridCellColumns(3)
 
                             VStack(spacing: 16) {
-                                MiniStat("活跃连接", "\(VM.activeConnectionsCount)", sub: "已关闭 \(VM.closedConns)", icon: "link", color: .cyan)
+                                MiniStat("活跃连接", "\(M.activeConnectionsCount)", sub: "已关闭 \(M.closedConns)", icon: "link", color: .cyan)
                                     .frame(height: DS.Layout.statHeight)
-                                MiniStat("核心内存", fmtBytes(Double(VM.memory)), sub: nil, icon: "memorychip", color: .purple)
+                                MiniStat("核心内存", fmtBytes(Double(M.memory)), sub: nil, icon: "memorychip", color: .purple)
                                     .frame(height: DS.Layout.statHeight)
-                                MiniStat("应用内存", String(format: "%.0f MB", VM.appMemoryMB), sub: nil, icon: "app.dashed", color: .orange)
+                                MiniStat("应用内存", String(format: "%.0f MB", M.appMemoryMB), sub: nil, icon: "app.dashed", color: .orange)
                                     .frame(height: DS.Layout.statHeight)
                             }
                             .frame(height: 224)
@@ -176,18 +161,16 @@ struct DashboardPage: View {
                 .padding(.horizontal, DS.Spacing.l).padding(.bottom, DS.Spacing.l)
             }
         }
-        .onAppear { VM.start() }
-        .onDisappear { VM.stop() }
     }
 
     // MARK: aggregations (read precomputed snapshot — no per-render work)
 
-    private var uniqueHosts: Int { VM.dash.uniqueHosts }
-    private var policyGroupRows: [Rank] { VM.dash.policyGroups }
-    private var topHosts: [Rank] { VM.dash.hosts }
-    private var topNodes: [Rank] { VM.dash.nodes }
-    private var topProcs: [Rank] { VM.dash.procs }
-    private var topRules: [Rank] { VM.dash.rules }
+    private var uniqueHosts: Int { M.dash.uniqueHosts }
+    private var policyGroupRows: [Rank] { M.dash.policyGroups }
+    private var topHosts: [Rank] { M.dash.hosts }
+    private var topNodes: [Rank] { M.dash.nodes }
+    private var topProcs: [Rank] { M.dash.procs }
+    private var topRules: [Rank] { M.dash.rules }
 
     private var distribution: some View {
         let day = range == .today ? M.history.today : M.history.month
@@ -297,16 +280,7 @@ struct TrafficDistributionView: View, Equatable {
         .frame(maxWidth: .infinity)
     }
 
-    private func greeting() -> String {
-        let h = Calendar.current.component(.hour, from: Date())
-        switch h {
-        case 5..<11: return "早上好，开启美好的一天 ☀️"
-        case 11..<14: return "中午好，记得休息一下 🍱"
-        case 14..<18: return "下午好，保持专注 ☕️"
-        case 18..<23: return "忙碌了一天，好好休息！🌙"
-        default: return "夜深了，注意身体 🌌"
-        }
-    }
+
 }
 
 // MARK: - Components
@@ -505,143 +479,4 @@ struct TrafficSparkline: View, Equatable {
 #Preview("Dashboard") {
     DashboardPage().environmentObject(AppModel.shared)
         .frame(width: 1000, height: 760).preferredColorScheme(.dark)
-}
-
-@MainActor final class DashboardViewModel: ObservableObject {
-    @Published var downloadTotal: Int64 = 0
-    @Published var uploadTotal: Int64 = 0
-    @Published var activeConnectionsCount: Int = 0
-    @Published var uniqueHosts: Int = 0
-    @Published var curDown: Int64 = 0
-    @Published var curUp: Int64 = 0
-    @Published var memory: Int64 = 0
-    @Published var appMemoryMB: Double = 0.0
-    @Published var closedConns: Int = 0
-
-    @Published var downSeries: [Double] = Array(repeating: 0, count: 120)
-    @Published var upSeries: [Double] = Array(repeating: 0, count: 120)
-
-    @Published var dash = DashStats()
-
-    private var trafficWS: WSHandle?
-    private var memWS: WSHandle?
-    private var pollTimer: Timer?
-    
-    private let api = MihomoClient.shared
-    
-    func start() {
-        guard api.reachable else { return }
-        
-        // 1. WebSocket stream for traffic
-        trafficWS = api.stream("/traffic", type: TrafficTick.self) { [weak self] t in
-            Task { @MainActor in self?.onTraffic(t) }
-        }
-        
-        // 2. WebSocket stream for memory
-        memWS = api.stream("/memory", type: MemoryTick.self) { [weak self] m in
-            Task { @MainActor in
-                if m.inuse > 0 { self?.memory = m.inuse }
-            }
-        }
-        
-        // 3. Regular poll (every 3s) for connections data to compute rankings
-        pollTimer = Timer.scheduledTimer(withTimeInterval: 3.0, repeats: true) { [weak self] _ in
-            Task { [weak self] in
-                await self?.pollConnections()
-            }
-        }
-        
-        // Trigger initial poll immediately
-        Task {
-            await pollConnections()
-        }
-    }
-    
-    func stop() {
-        trafficWS?.cancel()
-        memWS?.cancel()
-        pollTimer?.invalidate()
-        
-        trafficWS = nil
-        memWS = nil
-        pollTimer = nil
-        
-        // Clear memory arrays on exit to ensure physical memory can be reclaimed
-        // keepingCapacity: false is crucial here to drop the backing buffer
-        downSeries.removeAll(keepingCapacity: false)
-        upSeries.removeAll(keepingCapacity: false)
-        dash = DashStats()
-        
-        // Ensure standard initialization values for UI consistency
-        downSeries = Array(repeating: 0, count: 120)
-        upSeries = Array(repeating: 0, count: 120)
-    }
-    
-    private var lastUIUpdate = Date.distantPast
-    
-    private func onTraffic(_ t: TrafficTick) {
-        // Always update the raw values for labels (minimal impact)
-        if t.up != curUp { curUp = t.up }
-        if t.down != curDown { curDown = t.down }
-        
-        // Throttled UI update for the sparkline to reduce Graphics memory churn (RSS optimization)
-        // Redrawing a Canvas every 1s is expensive in terms of graphics buffers.
-        let now = Date()
-        if now.timeIntervalSince(lastUIUpdate) >= 2.0 {
-            lastUIUpdate = now
-            
-            // Aggressively manage the series arrays
-            downSeries.append(Double(t.down))
-            if downSeries.count > 120 { downSeries.removeFirst() }
-            upSeries.append(Double(t.up))
-            if upSeries.count > 120 { upSeries.removeFirst() }
-        }
-    }
-    
-    private func pollConnections() async {
-        guard api.reachable else { return }
-        do {
-            let s = try await api.fetchConnectionsSnapshot()
-            downloadTotal = s.downloadTotal
-            uploadTotal = s.uploadTotal
-            
-            let items = s.connections ?? []
-            var next: [Conn] = []
-            var activeIDs = Set<String>()
-            
-            for c in items {
-                activeIDs.insert(c.id)
-                let conn = Conn(
-                    id: c.id,
-                    host: c.metadata.host?.isEmpty == false ? c.metadata.host! : (c.metadata.destinationIP ?? "?"),
-                    dstIP: c.metadata.destinationIP ?? "?",
-                    srcIP: c.metadata.sourceIP ?? "?",
-                    port: c.metadata.destinationPort ?? "",
-                    network: c.metadata.network.uppercased(),
-                    process: c.metadata.process ?? "—",
-                    processPath: c.metadata.processPath ?? "—",
-                    chain: c.chains.reversed().joined(separator: " → "),
-                    group: c.chains.last ?? "?",
-                    node: c.chains.first ?? "?",
-                    rule: c.rulePayload.isEmpty ? c.rule : "\(c.rule),\(c.rulePayload)",
-                    ruleType: c.rule,
-                    up: c.upload, down: c.download,
-                    upRate: 0, downRate: 0,
-                    start: c.start
-                )
-                next.append(conn)
-            }
-            
-            activeConnectionsCount = activeIDs.count
-            dash = AppModel.computeDash(next)
-            
-            // RSS memory of current app
-            appMemoryMB = Double(AppModel.residentMemoryBytes()) / 1_000_000
-            
-            // closed connections count
-            closedConns = max(0, AppModel.shared.totalConnsCount - activeIDs.count)
-        } catch {
-            // Ignore
-        }
-    }
 }

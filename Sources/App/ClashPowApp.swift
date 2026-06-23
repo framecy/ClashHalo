@@ -4,13 +4,9 @@ import SwiftUI
 
 final class AppDelegate: NSObject, NSApplicationDelegate {
     func applicationDidFinishLaunching(_ notification: Notification) {
-        // 启动 Sub-Store 引擎
-        SubStoreEngine.shared.start()
     }
 
     func applicationWillTerminate(_ notification: Notification) {
-        // 停止 Sub-Store 引擎
-        SubStoreEngine.shared.stop()
         AppDelegate.performCleanup()
     }
 

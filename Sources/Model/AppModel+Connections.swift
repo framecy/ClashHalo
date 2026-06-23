@@ -8,6 +8,15 @@ extension AppModel {
     func onTraffic(_ t: TrafficTick) {
         if t.up != curUp { curUp = t.up }
         if t.down != curDown { curDown = t.down }
+        
+        let now = Date()
+        if now.timeIntervalSince(lastUIUpdate) >= 2.0 {
+            lastUIUpdate = now
+            downSeries.append(Double(t.down))
+            if downSeries.count > 120 { downSeries.removeFirst() }
+            upSeries.append(Double(t.up))
+            if upSeries.count > 120 { upSeries.removeFirst() }
+        }
     }
 
     func recordHistoryOnly(from s: ConnectionsSnapshot) {
@@ -92,8 +101,35 @@ extension AppModel {
             newGatewayDevices = newGatewayDevices.filter { $0.value.activeConnections > 0 || nowTime.timeIntervalSince($0.value.lastSeen) < 600 }
             gatewayDevices = newGatewayDevices
             
+            
             activeConnsSet = activeIDs
             activeConnectionsCount = activeIDs.count
+            
+            if route == "dashboard" || route == "connections" {
+                var next: [Conn] = []
+                for c in items {
+                    let conn = Conn(
+                        id: c.id,
+                        host: c.metadata.host?.isEmpty == false ? c.metadata.host! : (c.metadata.destinationIP ?? "?"),
+                        dstIP: c.metadata.destinationIP ?? "?",
+                        srcIP: c.metadata.sourceIP ?? "?",
+                        port: c.metadata.destinationPort ?? "",
+                        network: c.metadata.network.uppercased(),
+                        process: c.metadata.process ?? "—",
+                        processPath: c.metadata.processPath ?? "—",
+                        chain: c.chains.reversed().joined(separator: " → "),
+                        group: c.chains.last ?? "?",
+                        node: c.chains.first ?? "?",
+                        rule: c.rulePayload.isEmpty ? c.rule : "\(c.rule),\(c.rulePayload)",
+                        ruleType: c.rule,
+                        up: c.upload, down: c.download,
+                        upRate: 0, downRate: 0,
+                        start: c.start
+                    )
+                    next.append(conn)
+                }
+                dash = Self.computeDash(next)
+            }
         } else {
             // Background idle: Only sync basic count
             activeConnectionsCount = items.count
