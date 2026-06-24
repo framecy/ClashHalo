@@ -5,21 +5,46 @@ import Foundation
 // proxy / TUN / engine), mode, and the read-only rules view.
 
 extension AppModel {
-    /// Switch the active config profile: persist as engine config + hot-apply.
-    func activateProfile(_ id: String) {
-        guard let content = store.makeActiveContent(id) else { showToast("配置为空"); return }
+    /// Promote an Imported (or re-activate an Applied) profile to the
+    /// running kernel: persist → reload → mark applied. Pure side-effects;
+    /// the user already consented at the call site (two-stage sheet or
+    /// "设为活动" tap). Reload coalesces via `appliedHash`: a re-apply of
+    /// unchanged content short-circuits before touching the kernel.
+    func selectForApply(_ id: String) {
+        guard let content = store.commit(id) else { showToast("配置为空"); return }
         let name = store.profiles.first { $0.id == id }?.name ?? ""
-        let wasTunOn = tunOn   // setConfig → forceTUNDisabled → TUN 会丢失，需恢复
+        let wasTunOn = tunOn
+        // Skip reload if the on-disk content matches the last applied hash.
+        // `commit` just rewrote config.yaml with the same content, but the
+        // kernel state is unchanged — avoid the hot-reload churn.
+        if let last = store.profiles.first(where: { $0.id == id })?.appliedHash,
+           last == Sha1.hex(content) {
+            store.markApplied(id, hash: last)
+            showToast("已切换配置「\(name)」")
+            return
+        }
+        pendingApplyID = id
         Task {
-            // hardenControllerConfig is called inside setConfig, which writes
-            // to config.yaml → hardens → reloads — correct ordering.
             let (ok, err) = await engine.setConfig(content)
-            showToast(ok ? "已切换配置「\(name)」" : "配置错误：\(err ?? "")，已回滚")
+            pendingApplyID = nil
             if ok {
+                store.markApplied(id, hash: Sha1.hex(content))
+                showToast("已切换配置「\(name)」")
                 await reconnect()
                 await reapplyTUN(wasOn: wasTunOn)
+            } else {
+                showToast("配置错误：\(err ?? "")，已回滚")
             }
         }
+    }
+
+    /// Legacy single-shot entry point kept for any non-UI callers (notably
+    /// `ProfileEditSheet` "保存并应用"). Behaviour is identical to a tap on
+    /// the card for an already-Applied profile, and identical to confirming
+    /// preview for a Draft. Use `selectForApply` directly from the new two-
+    /// stage sheets to preserve the pending/spinner UX.
+    func activateProfile(_ id: String) {
+        selectForApply(id)
     }
 
     func refreshConfigs() async {
