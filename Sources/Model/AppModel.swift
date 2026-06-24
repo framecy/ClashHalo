@@ -92,6 +92,8 @@ import ServiceManagement
     @Published var rules: [RuleEntry] = []
 
     // Kernel Logs (Startup/Process logs)
+    // Make this the canonical home for the in-flight apply flag.
+    @Published var pendingApplyID: String? = nil
     @Published var kernelLogs: [String] = []
     func logKernel(_ msg: String) {
         Task { @MainActor in
@@ -602,7 +604,7 @@ import ServiceManagement
         showToast("正在更新订阅…")
         Task {
             for p in remotes { _ = await store.updateRemote(p.id) }
-            if !store.activeID.isEmpty { activateProfile(store.activeID) }
+            if !store.activeID.isEmpty { selectForApply(store.activeID) }
             showToast("订阅已更新")
         }
     }

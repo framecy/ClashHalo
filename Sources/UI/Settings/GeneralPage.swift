@@ -558,7 +558,7 @@ struct MenuBarPanel: View {
     /// One profile row: tap to activate; active = accent checkmark + primary text.
     private func profileRow(_ p: Profile) -> some View {
         let active = p.id == M.store.activeID
-        return Button { M.activateProfile(p.id) } label: {
+        return Button { M.selectForApply(p.id) } label: {
             HStack(spacing: DS.Spacing.s) {
                 Image(systemName: active ? "checkmark.circle.fill" : "circle")
                     .font(.dsBody).foregroundColor(active ? M.accent : .secondary)
