@@ -40,32 +40,47 @@ struct ConfigPage: View {
 
     private func profileCard(_ p: Profile) -> some View {
         let active = M.store.activeID == p.id
+        let pendingApply = M.pendingApplyID == p.id
+        // Drafts are visually distinct from inactive-but-already-applied
+        // profiles: amber outline + a small badge instead of the empty
+        // circle + "设为活动" CTA used by inactive applied ones.
+        let draft = p.needsApply
         return VStack(alignment: .leading, spacing: 10) {
             HStack(spacing: 8) {
                 Image(systemName: p.source == "remote" ? "icloud.fill" : "doc.fill")
                     .font(.dsLabel)
                     .foregroundColor(active ? M.accent : .secondary)
                 Text(p.name).font(.dsLabelBold).lineLimit(1)
+                if draft {
+                    Text("待应用").font(.dsBodyBold).foregroundColor(DS.Palette.warn)
+                        .padding(.horizontal, 6).padding(.vertical, 2)
+                        .background(Capsule().fill(DS.Palette.warn.opacity(0.15)))
+                }
                 Spacer()
                 if active {
                     Text("生效中").font(.dsBodyBold).foregroundColor(M.accent)
                         .padding(.horizontal, 6).padding(.vertical, 2)
                         .background(Capsule().fill(M.accent.opacity(0.12)))
+                } else if pendingApply {
+                    ProgressView().controlSize(.small)
                 } else {
                     Circle().stroke(Color.secondary.opacity(0.3), lineWidth: 1.5).frame(width: 12, height: 12)
                 }
             }
             Text(p.source == "remote" ? "远程订阅" : "本地文件").font(.dsBody).foregroundColor(.secondary)
-            
+
             Divider().opacity(0.4).padding(.vertical, 2)
-            
+
             HStack {
                 Text(relTime(p.updatedAt)).font(.dsBody).foregroundColor(.secondary)
                 Spacer()
                 if active {
                     Image(systemName: "checkmark.circle.fill").foregroundColor(M.accent).font(.dsLabel)
+                } else if draft {
+                    Button { M.selectForApply(p.id) } label: { Text("应用此配置") }
+                        .buttonStyle(.borderedProminent).controlSize(.small).tint(DS.Palette.warn)
                 } else {
-                    Button("设为活动") { M.activateProfile(p.id) }
+                    Button("设为活动") { M.selectForApply(p.id) }
                         .buttonStyle(.plain).font(.dsBodySemibold).foregroundColor(.accentColor)
                 }
             }
@@ -73,18 +88,23 @@ struct ConfigPage: View {
         .padding(DS.Spacing.l)
         .frame(maxWidth: .infinity, alignment: .leading)
         .background(RoundedRectangle(cornerRadius: DS.Radius.card).fill(DS.Palette.cardBg))
-        .overlay(RoundedRectangle(cornerRadius: DS.Radius.card).stroke(active ? M.accent.opacity(0.4) : DS.Palette.cardBgAlt, lineWidth: active ? 1.5 : 1))
+        .overlay(RoundedRectangle(cornerRadius: DS.Radius.card).stroke(active ? M.accent.opacity(0.4) :
+                                                                      draft ? DS.Palette.warn.opacity(0.5) :
+                                                                      DS.Palette.cardBgAlt, lineWidth: (active || draft) ? 1.5 : 1))
         .contentShape(Rectangle())
-        .onTapGesture { if !active { M.activateProfile(p.id) } }
+        .onTapGesture { if !active && !pendingApply { M.selectForApply(p.id) } }
         .contextMenu {
-            if !active { Button { M.activateProfile(p.id) } label: { Label("设为活动", systemImage: "checkmark") } }
+            if !active { Button { M.selectForApply(p.id) } label: { Label("设为活动", systemImage: "checkmark") } }
             Button { editingID = p.id } label: { Label("编辑 YAML…", systemImage: "pencil") }
+            if draft {
+                Button(role: .destructive) { M.store.discardDraft(p.id) } label: { Label("放弃导入", systemImage: "trash.slash") }
+            }
             if p.source == "remote" {
-                Button { Task { _ = await M.store.updateRemote(p.id); if active { M.activateProfile(p.id) }; M.showToast("已更新订阅") } } label: { Label("更新订阅", systemImage: "arrow.clockwise") }
+                Button { Task { _ = await M.store.updateRemote(p.id); if active { M.selectForApply(p.id) }; M.showToast("已更新订阅") } } label: { Label("更新订阅", systemImage: "arrow.clockwise") }
             }
             Divider()
             Button(role: .destructive) { M.store.remove(p.id) } label: { Label("删除", systemImage: "trash") }
-                .disabled(active)
+                .disabled(active || draft)
         }
     }
 
@@ -99,30 +119,105 @@ struct ConfigPage: View {
 
 // MARK: - Import / edit sheets
 
+// MARK: - Two-stage import sheets (Phase 1: import isolation)
+//
+// Both sheets share the same lifecycle: `.pick` → `.preview`. The preview
+// stage is reached **without touching the kernel**: the YAML is downloaded
+// (remote) or read from disk (local), then a lightweight row-scan summary
+// is shown. The user then chooses:
+//   - 放弃 / 取消        : in-memory draft is dropped, nothing on disk
+//   - 添加到配置列表      : profile lands on disk as `isApplied = false` (a
+//                          draft, visible in the card list with a 「待应用」
+//                          badge until the user taps it)
+//   - 导入并应用          : draft lands on disk and is immediately pushed to
+//                          the running kernel via `selectForApply`
+
 struct ImportRemoteSheet: View {
     @EnvironmentObject var M: AppModel
     @Environment(\.dismiss) var dismiss
-    @State private var name = ""; @State private var url = ""; @State private var busy = false; @State private var err = ""
+    @State private var name = ""
+    @State private var url = ""
+    @State private var busy = false
+    @State private var err = ""
+    @State private var stage: Stage = .pick
+    @State private var previewContent = ""
+    @State private var preview = YAMLPreview()
+    enum Stage { case pick, preview }
+
     var body: some View {
         VStack(alignment: .leading, spacing: DS.Spacing.l) {
-            Text("导入远程配置或订阅").font(.dsCardLabel)
-            TextField("名称", text: $name).textFieldStyle(.roundedBorder)
-            TextField("https://…/clash 或订阅链接", text: $url).textFieldStyle(.roundedBorder).font(.dsMono)
-            if !err.isEmpty { Text(err).font(.dsBody).foregroundColor(.red) }
-            HStack {
-                Button("取消") { dismiss() }
-                Spacer()
-                Button { Task { await go() } } label: { if busy { ProgressView().controlSize(.small) } else { Text("导入") } }
+            if stage == .pick {
+                Text("导入远程配置或订阅").font(.dsCardLabel)
+                TextField("名称", text: $name).textFieldStyle(.roundedBorder)
+                TextField("https://…/clash 或订阅链接", text: $url).textFieldStyle(.roundedBorder).font(.dsMono)
+                if !err.isEmpty { Text(err).font(.dsBody).foregroundColor(.red) }
+                HStack {
+                    Button("取消") { dismiss() }
+                    Spacer()
+                    Button { Task { await fetchPreview() } } label: {
+                        if busy { ProgressView().controlSize(.small) } else { Text("下载预览") }
+                    }
                     .buttonStyle(.borderedProminent).disabled(url.isEmpty || busy)
+                }
+            } else {
+                Text("导入预览").font(.dsCardLabel)
+                previewSummary
+                if !err.isEmpty { Text(err).font(.dsBody).foregroundColor(.red) }
+                HStack {
+                    Button("放弃") { stage = .pick }
+                    Spacer()
+                    Button("添加到配置列表") { Task { await saveOnly() } }
+                    Button("导入并应用") { Task { await saveAndApply() } }
+                        .buttonStyle(.borderedProminent).disabled(name.isEmpty || busy)
+                }
             }
         }.padding(DS.Spacing.xl).frame(width: 440)
     }
-    private func go() async {
+
+    private var previewSummary: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Text("检测到 \(preview.nodeCount) 个节点、\(preview.groupCount) 个分组、\(preview.ruleCount) 条规则")
+                .font(.dsBody).foregroundColor(.secondary)
+            Text("文件大小：\(preview.bytes) 字节")
+                .font(.dsBody).foregroundColor(.secondary)
+            if preview.hasProxyProviders {
+                Label("包含 proxy-providers，将在线拉取节点", systemImage: "icloud.and.arrow.down")
+                    .font(.dsBody).foregroundColor(.secondary)
+            }
+        }
+    }
+
+    private func fetchPreview() async {
         busy = true; err = ""
-        let nm = name.isEmpty ? (URL(string: url)?.host ?? "远程配置") : name
-        if let id = await M.store.importRemote(name: nm, url: url) { M.activateProfile(id); dismiss() }
-        else { err = "下载或解析失败，请检查链接" }
+        guard let u = URL(string: url) else { err = "链接无效"; busy = false; return }
+        do {
+            let (data, _) = try await URLSession.shared.data(from: u)
+            guard let text = String(data: data, encoding: .utf8), text.contains(":") else {
+                err = "下载失败或内容不是 YAML"; busy = false; return
+            }
+            previewContent = text
+            preview = M.store.previewOfContent(text)
+            if name.isEmpty { name = u.host ?? "远程配置" }
+            stage = .preview
+        } catch {
+            err = "下载失败：\(error.localizedDescription)"
+        }
         busy = false
+    }
+
+    private func saveOnly() async {
+        guard !previewContent.isEmpty else { dismiss(); return }
+        _ = M.store.importLocalDraft(name: name.isEmpty ? (URL(string: url)?.host ?? "远程配置") : name,
+                                     content: previewContent)
+        dismiss()
+    }
+
+    private func saveAndApply() async {
+        guard !previewContent.isEmpty else { dismiss(); return }
+        let id = M.store.importLocalDraft(name: name.isEmpty ? (URL(string: url)?.host ?? "远程配置") : name,
+                                          content: previewContent)
+        M.selectForApply(id)
+        dismiss()
     }
 }
 
@@ -130,17 +225,43 @@ struct AddLocalSheet: View {
     @EnvironmentObject var M: AppModel
     @Environment(\.dismiss) var dismiss
     @State private var name = ""
+    @State private var stage: Stage = .pick
+    @State private var draftContent = ""
+    @State private var preview = YAMLPreview()
+    enum Stage { case pick, preview }
+
     var body: some View {
         VStack(alignment: .leading, spacing: DS.Spacing.l) {
-            Text("添加本地配置").font(.dsCardLabel)
-            TextField("名称", text: $name).textFieldStyle(.roundedBorder)
-            HStack {
-                Button("从文件导入…") { pickFile() }
-                Spacer()
-                Button("取消") { dismiss() }
+            if stage == .pick {
+                Text("添加本地配置").font(.dsCardLabel)
+                TextField("名称", text: $name).textFieldStyle(.roundedBorder)
+                HStack {
+                    Button("从文件导入…") { pickFile() }
+                    Spacer()
+                    Button("取消") { dismiss() }
+                }
+            } else {
+                Text("导入预览").font(.dsCardLabel)
+                Text("检测到 \(preview.nodeCount) 个节点、\(preview.groupCount) 个分组、\(preview.ruleCount) 条规则")
+                    .font(.dsBody).foregroundColor(.secondary)
+                Text("文件大小：\(preview.bytes) 字节")
+                    .font(.dsBody).foregroundColor(.secondary)
+                if preview.hasProxyProviders {
+                    Label("包含 proxy-providers，将在线拉取节点", systemImage: "icloud.and.arrow.down")
+                        .font(.dsBody).foregroundColor(.secondary)
+                }
+                HStack {
+                    Button("放弃") { stage = .pick }
+                    Spacer()
+                    Button("添加到配置列表") { Task { await saveDraft(apply: false) } }
+                        .disabled(name.isEmpty)
+                    Button("导入并应用") { Task { await saveDraft(apply: true) } }
+                        .buttonStyle(.borderedProminent).disabled(name.isEmpty)
+                }
             }
         }.padding(DS.Spacing.xl).frame(width: 400)
     }
+
     private func pickFile() {
         let panel = NSOpenPanel()
         panel.allowedContentTypes = [.yaml, .plainText]
@@ -149,10 +270,18 @@ struct AddLocalSheet: View {
            url.startAccessingSecurityScopedResource(),
            let content = try? String(contentsOf: url, encoding: .utf8) {
             defer { url.stopAccessingSecurityScopedResource() }
-            let nm = name.isEmpty ? url.deletingPathExtension().lastPathComponent : name
-            let id = M.store.addLocal(name: nm, content: content)
-            M.activateProfile(id); dismiss()
+            draftContent = content
+            preview = M.store.previewOfContent(content)
+            if name.isEmpty { name = url.deletingPathExtension().lastPathComponent }
+            stage = .preview
         }
+    }
+
+    private func saveDraft(apply: Bool) async {
+        let id = M.store.importLocalDraft(name: name.isEmpty ? "未命名配置" : name,
+                                          content: draftContent)
+        if apply { M.selectForApply(id) }
+        dismiss()
     }
 }
 
