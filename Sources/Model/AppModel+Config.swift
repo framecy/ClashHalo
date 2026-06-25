@@ -184,6 +184,19 @@ extension AppModel {
 
             // Write configs for gateway mode (allow-lan and dns listen)
             let oldTun = tunOn
+
+            // Snapshot current allow-lan / dns.listen values so Gateway
+            // disable can restore them later (avoid stale overrides).
+            preGatewayAllowLan = (configs["allow-lan"] as? Bool) ?? false
+            if let dns = configs["dns"] as? [String: Any] {
+                preGatewayDNSListen = dns["listen"] as? String
+            }
+
+            // Back up config.yaml before Gateway overwrites so we can
+            // roll back if the kernel crashes (e.g. port 53 conflict).
+            let cfgPath = engine.configFilePath
+            let backup = try? String(contentsOfFile: cfgPath, encoding: .utf8)
+
             let overrides: [String: Any] = [
                 "allow-lan": true,
                 "dns": [
@@ -197,9 +210,18 @@ extension AppModel {
             await engine.restart()
             try? await Task.sleep(nanoseconds: 2_000_000_000)
             await reconnect()
-            
-            // Verify kernel is actually up (not crashed due to port 53 conflict)
+
+            // Verify kernel is actually up (not crashed due to port 53 conflict).
+            // If unreachable, roll back config.yaml from backup and restart again.
             if !reachable {
+                if let b = backup {
+                    try? b.write(toFile: cfgPath, atomically: true, encoding: .utf8)
+                    showToast("端口冲突，正在回滚配置…")
+                    await engine.restart()
+                    try? await Task.sleep(nanoseconds: 2_000_000_000)
+                    await reconnect()
+                }
+                preGatewayAllowLan = nil; preGatewayDNSListen = nil
                 showToast("核心启动失败，请检查 53 端口是否被占用")
                 return
             }
@@ -216,13 +238,32 @@ extension AppModel {
                 showToast("网关中枢（旁路由）已成功开启")
             } else {
                 gatewayModeOn = false
+                preGatewayAllowLan = nil; preGatewayDNSListen = nil
                 showToast("底层 IP 转发开启失败")
             }
         } else {
+            // Restore config.yaml overrides that Gateway mode applied.
+            let restores: [String: Any] = [
+                "allow-lan": preGatewayAllowLan ?? false,
+                "dns": [
+                    "enable": true,
+                    "listen": preGatewayDNSListen ?? "127.0.0.1:1053",
+                    "enhanced-mode": "fake-ip"
+                ]
+            ]
+            preGatewayAllowLan = nil; preGatewayDNSListen = nil
+            engine.setTopLevelScalars(restores)
+
             let ok = await engine.setGatewayMode(enabled: false)
             if ok {
                 gatewayModeOn = false
-                showToast("网关中枢已关闭")
+                do {
+                    try await api.reloadConfig(path: engine.configFilePath)
+                    await refreshConfigs()
+                    showToast("网关中枢已关闭")
+                } catch {
+                    showToast("网关中枢已关闭，配置重载失败")
+                }
             } else {
                 showToast("网关中枢关闭失败")
             }
@@ -323,6 +364,12 @@ extension AppModel {
             if want && !tunOn {
                 showToast("TUN 开启失败：可能无管理员权限或路由被其他 VPN 占用冲突")
             } else {
+                // TUN disable cascades: Gateway mode requires TUN, so if we
+                // just turned TUN off, also tear down Gateway (sysctl + UI).
+                if !want && gatewayModeOn {
+                    _ = await engine.setGatewayMode(enabled: false)
+                    gatewayModeOn = false
+                }
                 showToast(want ? "TUN 模式已开启" : "TUN 模式已关闭")
             }
         } else {
@@ -496,6 +543,7 @@ extension AppModel {
                 await engine.stopKernel()   // proper async stop (SIGTERM → wait → SIGKILL)
                 reachable = false
                 tunOn = false   // 核心停止 → TUN 必然失效，复位开关避免状态卡 on
+                gatewayModeOn = false  // kernel gone → Gateway IP forwarding is cleaned by helper, sync UI
                 await restoreTunnelDNS()   // kernel gone → tunnel DNS would black-hole resolution
                 // Clear system proxy so traffic isn't black-holed to a dead kernel
                 if systemProxyOn {
