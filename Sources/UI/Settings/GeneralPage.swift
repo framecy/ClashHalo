@@ -196,7 +196,7 @@ struct GeneralPage: View {
                             .padding(.vertical, 4)
                         }
 
-                        Text("ClashPow 需要“特权辅助程序”才能安全地为您接管系统网络路由及代理设置。")
+                        Text("ClashHalo 需要“特权辅助程序”才能安全地为您接管系统网络路由及代理设置。")
                             .font(.dsBody)
                             .foregroundColor(.secondary)
                             .padding(.horizontal, 4)
@@ -255,13 +255,14 @@ struct GeneralPage: View {
 
     private var aboutView: some View {
         VStack(spacing: 20) {
-            Image(systemName: "bolt.fill")
-                .font(.system(size: DS.Icon.hero))
-                .foregroundColor(M.accent)
+            Image(nsImage: NSApp.applicationIconImage ?? NSImage())
+                .resizable()
+                .frame(width: 64, height: 64)
+                .padding(.top, 20)
                 .padding(.top, 20)
             
             VStack(spacing: 4) {
-                Text("ClashPow")
+                Text("ClashHalo")
                     .font(.dsSection)
                     .fontWeight(.bold)
                 Text("Version \(Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "—") (build \(Bundle.main.infoDictionary?["CFBundleVersion"] as? String ?? "—"))")
@@ -269,7 +270,7 @@ struct GeneralPage: View {
                     .foregroundColor(.secondary)
             }
 
-            Text("ClashPow 是一个基于 mihomo (Clash.Meta) 内核的 macOS 原生代理客户端。采用原生 SwiftUI 编写，通过独立特权 Helper (XPC) 进行权限分离，订阅凭据经 Keychain 安全存储。")
+            Text("ClashHalo 是一个基于 mihomo (Clash.Meta) 内核的 macOS 原生代理客户端。采用原生 SwiftUI 编写，通过独立特权 Helper (XPC) 进行权限分离，订阅凭据经 Keychain 安全存储。")
                 .font(.dsBody)
                 .multilineTextAlignment(.center)
                 .foregroundColor(.secondary)
@@ -287,7 +288,7 @@ struct GeneralPage: View {
             
             Spacer()
             
-            Text("© 2026 ClashPow Dev Team. All rights reserved.")
+            Text("© 2026 ClashHalo Dev Team. All rights reserved.")
                 .font(.dsBody)
                 .foregroundColor(.secondary)
                 .padding(.bottom, 20)
@@ -367,7 +368,7 @@ struct MenuBarPanel: View {
             HStack(spacing: DS.Spacing.s) {
                 Image(systemName: "bolt.fill").font(.system(size: DS.Icon.md)).foregroundColor(M.accent)
                 VStack(alignment: .leading, spacing: 1) {
-                    Text("ClashPow").font(.dsCardLabel)
+                    Text("ClashHalo").font(.dsCardLabel)
                     HStack(spacing: DS.Spacing.xs) {
                         Circle().fill(M.reachable ? DS.Palette.ok : DS.Palette.error).frame(width: 5, height: 5)
                         Text(M.reachable ? "mihomo \(M.version)" : "未连接").font(.dsBody).foregroundColor(.secondary)
@@ -511,12 +512,12 @@ struct MenuBarPanel: View {
             // Action row — open main window / quit (Burrow-style)
             HStack {
                 Button { go(M.route) } label: {
-                    Text("打开 ClashPow").font(.dsCardLabel)
+                    Text("打开 ClashHalo").font(.dsCardLabel)
                 }.buttonStyle(.plain)
                 Spacer()
                 Button { NSApplication.shared.terminate(nil) } label: {
                     Image(systemName: "power").font(.system(size: DS.Icon.sm)).foregroundColor(.secondary)
-                }.buttonStyle(.plain).help("退出 ClashPow")
+                }.buttonStyle(.plain).help("退出 ClashHalo")
             }.padding(.horizontal, DS.Spacing.xs)
         }
         .padding(DS.Spacing.m)
@@ -557,7 +558,7 @@ struct MenuBarPanel: View {
     /// One profile row: tap to activate; active = accent checkmark + primary text.
     private func profileRow(_ p: Profile) -> some View {
         let active = p.id == M.store.activeID
-        return Button { M.activateProfile(p.id) } label: {
+        return Button { M.selectForApply(p.id) } label: {
             HStack(spacing: DS.Spacing.s) {
                 Image(systemName: active ? "checkmark.circle.fill" : "circle")
                     .font(.dsBody).foregroundColor(active ? M.accent : .secondary)

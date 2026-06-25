@@ -41,10 +41,88 @@ struct NetworkPage: View {
                         Text("开启“允许局域网”可将代理共享给同 Wi-Fi 下的其他设备；可用 IP 网段与认证做严格审查。")
                             .font(.dsBody).foregroundColor(.secondary).padding(.top, 6)
                     }
+                    Card(title: "局域网网关 (旁路由)", icon: "network.badge.shield.half.filled") {
+                        VStack(spacing: 2) {
+                            HStack {
+                                Text("作为网关中枢").font(.dsBody); Spacer()
+                                Toggle("", isOn: Binding(get: { M.gatewayModeOn }, set: { _ in M.toggleGatewayMode() }))
+                                    .toggleStyle(.switch).labelsHidden()
+                            }.padding(.vertical, 5)
+                        }
+                        Text("开启后将自动配置 IP 转发并接管局域网内其他所有设备的流量（需配合 TUN）。其他设备需将网关和 DNS 指向本机的局域网 IP。")
+                            .font(.dsBody).foregroundColor(.secondary).padding(.top, 6)
+                    }
+                    if M.gatewayModeOn {
+                        GatewayDevicesView()
+                    }
                     Spacer(minLength: 0)
                 }.padding(DS.Spacing.xl)
             }
         }
+    }
+}
+
+struct GatewayDevicesView: View {
+    @EnvironmentObject var M: AppModel
+    
+    var body: some View {
+        Card(title: "已接入设备 (\(M.gatewayDevices.count))", icon: "desktopcomputer.network") {
+            if M.gatewayDevices.isEmpty {
+                Text("暂无设备接入，请确保其他设备网关和DNS已指向本机")
+                    .font(.dsBody)
+                    .foregroundColor(.secondary)
+                    .frame(maxWidth: .infinity, alignment: .center)
+                    .padding(.vertical, 10)
+            } else {
+                VStack(spacing: 8) {
+                    let devices = Array(M.gatewayDevices.values).sorted(by: { $0.lastSeen > $1.lastSeen })
+                    ForEach(devices) { dev in
+                        GatewayDeviceRow(dev: dev)
+                    }
+                }
+            }
+        }
+    }
+}
+
+struct GatewayDeviceRow: View {
+    let dev: GatewayDevice
+    var body: some View {
+        HStack {
+            VStack(alignment: .leading, spacing: 4) {
+                Text(dev.ip)
+                    .font(.system(size: 14, weight: .semibold, design: .monospaced))
+                HStack(spacing: 12) {
+                    Label("\(dev.activeConnections) 连接", systemImage: "point.3.connected.trianglepath.dotted")
+                    Label("\(dev.durationString)", systemImage: "clock")
+                }
+                .font(.system(size: 11))
+                .foregroundColor(.secondary)
+            }
+            Spacer()
+            VStack(alignment: .trailing, spacing: 4) {
+                HStack(spacing: 4) {
+                    Image(systemName: "arrow.up")
+                    Text(fmtRate(Double(dev.uploadRate)))
+                        .frame(width: 72, alignment: .trailing)
+                    Text(fmtBytes(Double(dev.totalUpload)))
+                        .frame(width: 72, alignment: .trailing)
+                }
+                .foregroundColor(DS.Palette.ok)
+                HStack(spacing: 4) {
+                    Image(systemName: "arrow.down")
+                    Text(fmtRate(Double(dev.downloadRate)))
+                        .frame(width: 72, alignment: .trailing)
+                    Text(fmtBytes(Double(dev.totalDownload)))
+                        .frame(width: 72, alignment: .trailing)
+                }
+                .foregroundColor(.blue)
+            }
+            .font(.system(size: 11, design: .monospaced))
+        }
+        .padding(10)
+        .background(Color.secondary.opacity(0.05))
+        .cornerRadius(6)
     }
 }
 
@@ -88,8 +166,9 @@ struct SnifferPage: View {
                         NToggle("启用嗅探", "sniffer", "enable")
                         NToggle("覆盖目标地址", "sniffer", "override-destination")
                         NToggle("强制 DNS 映射", "sniffer", "force-dns-mapping")
+                        NToggle("解析纯 IP", "sniffer", "parse-pure-ip")
                     }
-                    Text("从 TLS / QUIC / HTTP 握手中提取真实域名用于分流，对走 IP 的连接尤为重要。")
+                    Text("从 TLS / QUIC / HTTP 握手中提取真实域名用于分流，对走 IP 的连接尤为重要。默认嗅探协议：TLS(443,8443), HTTP(80,8080-8880), QUIC(443,8443)。修改后请重启核心生效。")
                         .font(.dsBody).foregroundColor(.secondary).padding(.top, 6)
                 }
                 }
@@ -419,8 +498,8 @@ struct NPicker: View {
             Text(label).font(.dsBody); Spacer()
             Picker("", selection: Binding<String>(
                 get: {
-                    let val = (nestedDict(M, parent)[sub] as? String) ?? ""
-                    return options.contains(where: { $0.0 == val }) ? val : (options.first?.0 ?? "")
+                    let val = ((nestedDict(M, parent)[sub] as? String) ?? "").lowercased()
+                    return options.first(where: { $0.0.lowercased() == val })?.0 ?? (options.first?.0 ?? "")
                 },
                 set: { v in
                     Task {

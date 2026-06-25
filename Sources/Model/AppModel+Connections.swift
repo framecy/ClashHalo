@@ -8,6 +8,15 @@ extension AppModel {
     func onTraffic(_ t: TrafficTick) {
         if t.up != curUp { curUp = t.up }
         if t.down != curDown { curDown = t.down }
+        
+        let now = Date()
+        if now.timeIntervalSince(lastUIUpdate) >= 2.0 {
+            lastUIUpdate = now
+            downSeries.append(Double(t.down))
+            if downSeries.count > 120 { downSeries.removeFirst() }
+            upSeries.append(Double(t.up))
+            if upSeries.count > 120 { upSeries.removeFirst() }
+        }
     }
 
     func recordHistoryOnly(from s: ConnectionsSnapshot) {
@@ -21,10 +30,22 @@ extension AppModel {
                 logKernel("核心内存占用过高 (\(m / 1_000_000)MB)，已自动清空 DNS 与 Fake‑IP 缓存")
             }
         }
-        
+
+        // App Memory Guard: If app RSS > 400MB, aggressively free local caches
+        let appRSS = Self.residentMemoryBytes()
+        if appRSS > 400 * 1_000_000 {
+            cachedConns.removeAll(keepingCapacity: false)
+            cachedClosedConnections.removeAll(keepingCapacity: false)
+            if !isMainWindowVisible && !isMenuBarVisible {
+                prevConnBytes.removeAll(keepingCapacity: false)
+                activeConnsSet.removeAll(keepingCapacity: false)
+            }
+            logKernel("App 内存占用过高 (\(appRSS / 1_000_000)MB)，已释放缓存")
+        }
+
         let items = s.connections ?? []
         let hour = Calendar.current.component(.hour, from: Date())
-        
+
         // Memory Optimization: Skip expensive single-connection diffing and classification
         // unless the user is actually looking at the dashboard or connections page.
         // history.record() calls within this loop are the main culprit for background CPU/memory churn.
@@ -33,10 +54,17 @@ extension AppModel {
         if needDetailedStats {
             var bytes: [String: (up: Int64, down: Int64)] = [:]
             var activeIDs = Set<String>()
+            var newGatewayDevices = gatewayDevices
+            for ip in newGatewayDevices.keys {
+                newGatewayDevices[ip]?.activeConnections = 0
+                newGatewayDevices[ip]?.uploadRate = 0
+                newGatewayDevices[ip]?.downloadRate = 0
+            }
             
+            let nowTime = Date()
             for c in items {
                 activeIDs.insert(c.id)
-                if prevConnsMap[c.id] == nil { totalConnsCount += 1 }
+                if !activeConnsSet.contains(c.id) { totalConnsCount += 1 }
                 let prev = prevConnBytes[c.id]
                 let upRate = prev.map { max(0, c.upload - $0.up) } ?? 0
                 let downRate = prev.map { max(0, c.download - $0.down) } ?? 0
@@ -46,33 +74,68 @@ extension AppModel {
                 let cat = (c.chains.first == "DIRECT" || c.chains.contains("DIRECT")) ? "direct"
                         : (c.chains.first == "REJECT" || c.chains.contains("REJECT")) ? "reject" : "proxy"
                 history.record(category: cat, down: Int64(downRate), up: Int64(upRate), hour: hour)
-            }
-            prevConnBytes = bytes
-            
-            // Clean up prevConnsMap for closed connections to keep count accurate
-            var nextConnsMap: [String: Conn] = [:]
-            for id in activeIDs {
-                if let existing = prevConnsMap[id] {
-                    nextConnsMap[id] = existing
-                } else {
-                    // Use a minimal reference instead of full Conn object if possible,
-                    // but keeping it for compatibility with existing logic for now.
-                    // Just ensure we don't hold stale connections.
-                    nextConnsMap[id] = Conn(
-                        id: id, host: "", dstIP: "", srcIP: "", port: "", network: "",
-                        process: "", processPath: "", chain: "", group: "", node: "",
-                        rule: "", ruleType: "", up: 0, down: 0, upRate: 0, downRate: 0, start: ""
-                    )
+                
+                // Track LAN Gateway devices
+                let proc = c.metadata.process ?? "—"
+                let srcIP = c.metadata.sourceIP ?? ""
+                if (proc == "—" || proc.isEmpty) && srcIP != "127.0.0.1" && srcIP != "::1" && !srcIP.isEmpty {
+                    var dev = newGatewayDevices[srcIP] ?? GatewayDevice(ip: srcIP, activeConnections: 0, uploadRate: 0, downloadRate: 0, totalUpload: 0, totalDownload: 0, firstSeen: nowTime, lastSeen: nowTime)
+                    dev.activeConnections += 1
+                    dev.uploadRate += Int64(upRate)
+                    dev.downloadRate += Int64(downRate)
+                    dev.totalUpload += Int64(upRate)
+                    dev.totalDownload += Int64(downRate)
+                    dev.lastSeen = nowTime
+                    newGatewayDevices[srcIP] = dev
                 }
             }
-            prevConnsMap = nextConnsMap
+            prevConnBytes = bytes
+
+            // Limit prevConnBytes growth: cap at 2000 entries to prevent unbounded heap
+            if prevConnBytes.count > 2000 {
+                prevConnBytes.removeAll(keepingCapacity: false)
+                logKernel("连接追踪字典过大 (\(prevConnBytes.count))，已重置")
+            }
+
+            // Clean up old inactive devices (>10 mins)
+            newGatewayDevices = newGatewayDevices.filter { $0.value.activeConnections > 0 || nowTime.timeIntervalSince($0.value.lastSeen) < 600 }
+            gatewayDevices = newGatewayDevices
+            
+            
+            activeConnsSet = activeIDs
             activeConnectionsCount = activeIDs.count
+            
+            if route == "dashboard" || route == "connections" {
+                var next: [Conn] = []
+                for c in items {
+                    let conn = Conn(
+                        id: c.id,
+                        host: c.metadata.host?.isEmpty == false ? c.metadata.host! : (c.metadata.destinationIP ?? "?"),
+                        dstIP: c.metadata.destinationIP ?? "?",
+                        srcIP: c.metadata.sourceIP ?? "?",
+                        port: c.metadata.destinationPort ?? "",
+                        network: c.metadata.network.uppercased(),
+                        process: c.metadata.process ?? "—",
+                        processPath: c.metadata.processPath ?? "—",
+                        chain: c.chains.reversed().joined(separator: " → "),
+                        group: c.chains.last ?? "?",
+                        node: c.chains.first ?? "?",
+                        rule: c.rulePayload.isEmpty ? c.rule : "\(c.rule),\(c.rulePayload)",
+                        ruleType: c.rule,
+                        up: c.upload, down: c.download,
+                        upRate: 0, downRate: 0,
+                        start: c.start
+                    )
+                    next.append(conn)
+                }
+                dash = Self.computeDash(next)
+            }
         } else {
             // Background idle: Only sync basic count
             activeConnectionsCount = items.count
             // Clear maps to free up heap space immediately when going background
             if !prevConnBytes.isEmpty { prevConnBytes.removeAll(keepingCapacity: false) }
-            if !prevConnsMap.isEmpty { prevConnsMap.removeAll(keepingCapacity: false) }
+            if !activeConnsSet.isEmpty { activeConnsSet.removeAll(keepingCapacity: false) }
         }
         
         closedConns = max(0, totalConnsCount - activeConnectionsCount)
@@ -110,14 +173,14 @@ extension AppModel {
 
     /// Resident set size of this process (bytes) via mach task_info.
     static func residentMemoryBytes() -> UInt64 {
-        var info = mach_task_basic_info()
-        var count = mach_msg_type_number_t(MemoryLayout<mach_task_basic_info>.size) / 4
+        var info = task_vm_info_data_t()
+        var count = mach_msg_type_number_t(MemoryLayout<task_vm_info>.size / MemoryLayout<integer_t>.size)
         let kr = withUnsafeMutablePointer(to: &info) {
             $0.withMemoryRebound(to: integer_t.self, capacity: Int(count)) {
-                task_info(mach_task_self_, task_flavor_t(MACH_TASK_BASIC_INFO), $0, &count)
+                task_info(mach_task_self_, task_flavor_t(TASK_VM_INFO), $0, &count)
             }
         }
-        return kr == KERN_SUCCESS ? info.resident_size : 0
+        return kr == KERN_SUCCESS ? UInt64(info.phys_footprint) : 0
     }
 
     func closeAllConnections() {

@@ -19,6 +19,7 @@
 		71D6AA8BB9A64328A01B5364 /* MihomoModels.swift in Sources */ = {isa = PBXBuildFile; fileRef = A3BB008E2BF84DF5A2895FBC /* MihomoModels.swift */; };
 		8BC3EAE990F64B20BA6FA269 /* ConfigStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9641FF3F733D4D03A5FC9B70 /* ConfigStore.swift */; };
 		8F14ED3CECAC0F5F7C81C9A9 /* RuleValidator.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4ED2BED37C00E10C70F34AC9 /* RuleValidator.swift */; };
+		HASHSW1F1A5AD4866E444CB21D6A9A /* Hash.swift in Sources */ = {isa = PBXBuildFile; fileRef = HASHSWFFFFFF /* Hash.swift */; };
 		94B14BD55C274919B82F3C5E /* AppModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = A7EFEC0FDBC0406AA6A9D774 /* AppModel.swift */; };
 		9F1A5AD4866E444CB21D6A9A /* LogsPage.swift in Sources */ = {isa = PBXBuildFile; fileRef = 932DCE667C4747EEB24EB3B1 /* LogsPage.swift */; };
 		A001 /* ClashPowApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = B001 /* ClashPowApp.swift */; };
@@ -40,8 +41,6 @@
 		DST1 /* DesignTokens.swift in Sources */ = {isa = PBXBuildFile; fileRef = DST2 /* DesignTokens.swift */; };
 		F0458DF12625404DA930506D /* ProxiesPage.swift in Sources */ = {isa = PBXBuildFile; fileRef = BF9832249132493A9E51C30C /* ProxiesPage.swift */; };
 		FD7AD16CD9DC6191C81AE1F5 /* RuleFormView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7DC2B59D23B0749A0B7CC125 /* RuleFormView.swift */; };
-		CP_BF_WEBVIEW /* WebView.swift in Sources */ = {isa = PBXBuildFile; fileRef = CP_FR_WEBVIEW /* WebView.swift */; };
-		CP_BF_ZASHBOARD /* ZashboardPage.swift in Sources */ = {isa = PBXBuildFile; fileRef = CP_FR_ZASHBOARD /* ZashboardPage.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
@@ -51,6 +50,7 @@
 		40F5A17CAAA24A5BBC54C15E /* MihomoClient.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Sources/XPC/MihomoClient.swift; sourceTree = SOURCE_ROOT; };
 		43A486CB7FAA4FBBAEBFCCE6 /* EngineControl.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Sources/XPC/EngineControl.swift; sourceTree = SOURCE_ROOT; };
 		4ED2BED37C00E10C70F34AC9 /* RuleValidator.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = RuleValidator.swift; path = Sources/Core/RuleValidator/RuleValidator.swift; sourceTree = "<group>"; };
+		HASHSWFFFFFF /* Hash.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = Hash.swift; path = Sources/Core/Hash.swift; sourceTree = "<group>"; };
 		50A6FB0C0B7141B0A804F1A9 /* RulesPage.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Sources/UI/Rules/RulesPage.swift; sourceTree = SOURCE_ROOT; };
 		5C1B022FFD034AE592948756 /* SdwanPage.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Sources/UI/SDWAN/SdwanPage.swift; sourceTree = SOURCE_ROOT; };
 		5E2B17CDA9711347F1C170EB /* YamlRuleASTEngine.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = YamlRuleASTEngine.swift; path = Sources/Core/YamlEditor/YamlRuleASTEngine.swift; sourceTree = "<group>"; };
@@ -80,8 +80,6 @@
 		DST2 /* DesignTokens.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Sources/UI/DesignTokens.swift; sourceTree = SOURCE_ROOT; };
 		F001 /* ClashPow.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; path = ClashPow.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		F010 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = Info.plist; sourceTree = "<group>"; };
-		CP_FR_WEBVIEW /* WebView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Sources/UI/Common/WebView.swift; sourceTree = SOURCE_ROOT; };
-		CP_FR_ZASHBOARD /* ZashboardPage.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Sources/UI/Panels/ZashboardPage.swift; sourceTree = SOURCE_ROOT; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -154,6 +152,7 @@
 				4ED2BED37C00E10C70F34AC9 /* RuleValidator.swift */,
 				C6DEDA31B7B33D5919A12DEB /* RuleEditorModel.swift */,
 				5E2B17CDA9711347F1C170EB /* YamlRuleASTEngine.swift */,
+				HASHSWFFFFFF /* Hash.swift */,
 				7DC2B59D23B0749A0B7CC125 /* RuleFormView.swift */,
 			);
 			sourceTree = "<group>";
@@ -176,29 +175,9 @@
 			children = (
 				G_UI_DASHBOARD /* Dashboard */,
 				G_UI_CONFIGEDITOR /* ConfigEditor */,
-				G_UI_COMMON /* Common */,
-				G_UI_PANELS /* Panels */,
 			);
 			name = UI;
 			path = UI;
-			sourceTree = "<group>";
-		};
-		G_UI_COMMON /* Common */ = {
-			isa = PBXGroup;
-			children = (
-				CP_FR_WEBVIEW /* WebView.swift */,
-			);
-			name = Common;
-			path = Common;
-			sourceTree = "<group>";
-		};
-		G_UI_PANELS /* Panels */ = {
-			isa = PBXGroup;
-			children = (
-				CP_FR_ZASHBOARD /* ZashboardPage.swift */,
-			);
-			name = Panels;
-			path = Panels;
 			sourceTree = "<group>";
 		};
 		G_UI_CONFIGEDITOR /* ConfigEditor */ = {
@@ -326,11 +305,10 @@
 				DST1 /* DesignTokens.swift in Sources */,
 				0F32145D5136BC694424C663 /* RuleNode.swift in Sources */,
 				8F14ED3CECAC0F5F7C81C9A9 /* RuleValidator.swift in Sources */,
+				HASHSW1F1A5AD4866E444CB21D6A9A /* Hash.swift in Sources */,
 				212075FD58BB63EBBCA8786A /* RuleEditorModel.swift in Sources */,
 				04E0EC007CDC978C6D8D3024 /* YamlRuleASTEngine.swift in Sources */,
 				FD7AD16CD9DC6191C81AE1F5 /* RuleFormView.swift in Sources */,
-				CP_BF_WEBVIEW /* WebView.swift in Sources */,
-				CP_BF_ZASHBOARD /* ZashboardPage.swift in Sources */,
 			);
 		};
 /* End PBXSourcesBuildPhase section */
@@ -353,7 +331,7 @@
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				CODE_SIGN_ENTITLEMENTS = ClashPow.entitlements;
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 27;
+				CURRENT_PROJECT_VERSION = 5;
 				ENABLE_HARDENED_RUNTIME = YES;
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_FILE = Sources/Info.plist;
@@ -361,9 +339,9 @@
 					"$(inherited)",
 					"@executable_path/../Frameworks",
 				);
-				MARKETING_VERSION = 0.4.9;
+				MARKETING_VERSION = 0.5.2;
 				PRODUCT_BUNDLE_IDENTIFIER = com.clashpow.app;
-				PRODUCT_NAME = ClashPow;
+				PRODUCT_NAME = ClashHalo;
 			};
 			name = Debug;
 		};
@@ -384,7 +362,7 @@
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				CODE_SIGN_ENTITLEMENTS = ClashPow.entitlements;
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 27;
+				CURRENT_PROJECT_VERSION = 5;
 				ENABLE_HARDENED_RUNTIME = YES;
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_FILE = Sources/Info.plist;
@@ -392,9 +370,9 @@
 					"$(inherited)",
 					"@executable_path/../Frameworks",
 				);
-				MARKETING_VERSION = 0.4.9;
+				MARKETING_VERSION = 0.5.2;
 				PRODUCT_BUNDLE_IDENTIFIER = com.clashpow.app;
-				PRODUCT_NAME = ClashPow;
+				PRODUCT_NAME = ClashHalo;
 			};
 			name = Release;
 		};

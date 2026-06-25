@@ -62,6 +62,24 @@ struct Log: Identifiable {
     let text: String
 }
 
+struct GatewayDevice: Identifiable, Equatable {
+    var id: String { ip }
+    let ip: String
+    var activeConnections: Int
+    var uploadRate: Int64
+    var downloadRate: Int64
+    var totalUpload: Int64
+    var totalDownload: Int64
+    var firstSeen: Date
+    var lastSeen: Date
+    var durationString: String {
+        let secs = Int(lastSeen.timeIntervalSince(firstSeen))
+        if secs < 60 { return "\(secs)s" }
+        if secs < 3600 { return "\(secs/60)m \(secs%60)s" }
+        return "\(secs/3600)h \((secs%3600)/60)m"
+    }
+}
+
 // MARK: - AppModel
 
 
@@ -121,6 +139,21 @@ struct Profile: Identifiable, Codable {
     var url: String?
     var importedAt: Date
     var updatedAt: Date
+    /// NEW: profile lifecycle flag — `nil` for legacy manifests, treated as
+    /// fully Applied to preserve the pre-isolation user experience.
+    /// - `false` → imported but not yet pushed to the running kernel.
+    /// - `true`  → successfully hot-reloaded into engine.config.yaml.
+    var isApplied: Bool? = nil
+    /// Hash of the YAML content last sent to `engine.setConfig`. Lets us
+    /// skip reloads when a Profile is re-activated with identical content.
+    var appliedHash: String? = nil
+}
+
+extension Profile {
+    /// True when the profile has been imported but the kernel has not yet
+    /// been told to use it. UI surfaces this as a "待应用" badge on the
+    /// profile card and a primary "应用此配置" action button.
+    var needsApply: Bool { isApplied == false }
 }
 
 

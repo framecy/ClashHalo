@@ -78,7 +78,7 @@ struct LogsPage: View {
     private func exportLogs(_ rows: [Log]) {
         let text = rows.map { "\($0.time) [\($0.level.uppercased())] \($0.text)" }.joined(separator: "\n")
         let panel = NSSavePanel()
-        panel.nameFieldStringValue = "clashpow-logs.txt"
+        panel.nameFieldStringValue = "clashhalo-logs.txt"
         panel.allowedContentTypes = [.plainText]
         if panel.runModal() == .OK, let url = panel.url {
             try? text.write(to: url, atomically: true, encoding: .utf8)
