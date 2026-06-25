@@ -5,6 +5,13 @@ BUILD="$ROOT/build"
 mkdir -p "$BUILD"
 
 echo "[1/4] Building Helper Tool…"
+
+# Auto-increment build number
+BUILD_NUM=$(grep -oE 'CURRENT_PROJECT_VERSION = [0-9]+' "$ROOT/ClashPow.xcodeproj/project.pbxproj" | head -1 | awk '{print $3}' | tr -d ';')
+NEW_BUILD=$((BUILD_NUM + 1))
+sed -i '' "s/CURRENT_PROJECT_VERSION = $BUILD_NUM;/CURRENT_PROJECT_VERSION = $NEW_BUILD;/g" "$ROOT/ClashPow.xcodeproj/project.pbxproj"
+echo "      Bumped build number: $BUILD_NUM -> $NEW_BUILD"
+
 # Note: Embed Info.plist into the binary for proper identification
 swiftc \
     "$ROOT/Sources/Helper/main.swift" "$ROOT/Sources/XPC/ProxyManager.swift" "$ROOT/Sources/XPC/HelperProtocol.swift" \
@@ -17,7 +24,7 @@ xcodebuild -project "$ROOT/ClashPow.xcodeproj" -scheme ClashPow \
     -configuration Release -derivedDataPath "$BUILD/dd" \
     -destination 'platform=macOS,arch=arm64' \
     CODE_SIGNING_ALLOWED=NO build >/dev/null
-APP="$BUILD/dd/Build/Products/Release/ClashPow.app"
+APP="$BUILD/dd/Build/Products/Release/ClashHalo.app"
 [ -d "$APP" ] || { echo "GUI build not found"; exit 1; }
 
 echo "[3/4] Bundling Helper Tool + Geodata…"
@@ -44,8 +51,9 @@ for f in GeoSite.dat geoip.metadb ASN.mmdb; do
 done
 
 echo "      Bundling local dashboards (Zashboard)…"
-mkdir -p "$RES/zashboard"
-cp -R "$ROOT/Resources/Panels/zashboard/dist" "$RES/zashboard/"
+mkdir -p "$RES/Panels"
+rm -rf "$RES/zashboard" # Remove old wrong path if exists
+cp -R "$ROOT/Resources/Panels/zashboard/dist" "$RES/Panels/zashboard"
 
 # Bundle a default mihomo kernel so the app works out of the box. Reuse a local
 # kernel if present, otherwise download the official darwin-arm64 release.
@@ -86,7 +94,7 @@ codesign --force --options runtime --sign - "$APP"
 # so users can drag-install and read how to bypass Gatekeeper (ad-hoc signed).
 STAGE="$BUILD/dmg"
 rm -rf "$STAGE"; mkdir -p "$STAGE"
-cp -R "$APP" "$STAGE/ClashPow.app"
+cp -R "$APP" "$STAGE/ClashHalo.app"
 ln -s /Applications "$STAGE/Applications"
 cat > "$STAGE/使用说明.txt" <<'GUIDE'
 ClashPow 使用说明
@@ -125,7 +133,7 @@ ClashPow 使用说明
 macOS 14.0+ ，Apple Silicon (arm64)。
 
 【卸载】
- · 删除 /Applications/ClashPow.app
+ · 删除 /Applications/ClashHalo.app
  · 删除数据目录 ~/Library/Application Support/ClashPow
  · 若安装过 TUN 特权服务，在终端执行：
    sudo launchctl bootout system /Library/LaunchDaemons/com.clashpow.helper.plist
@@ -134,10 +142,11 @@ macOS 14.0+ ，Apple Silicon (arm64)。
 GUIDE
 
 VERSION=$(grep -oE 'MARKETING_VERSION = [0-9.]+' "$ROOT/ClashPow.xcodeproj/project.pbxproj" | head -1 | awk '{print $3}')
-DMG_NAME="ClashPow_v${VERSION}_mac_arm"
+BUILD_NUM=$(grep -oE 'CURRENT_PROJECT_VERSION = [0-9]+' "$ROOT/ClashPow.xcodeproj/project.pbxproj" | head -1 | awk '{print $3}')
+DMG_NAME="ClashHalo_v${VERSION}_build_${BUILD_NUM}_mac"
 DMG="$BUILD/${DMG_NAME}.dmg"
 rm -f "$DMG"
-hdiutil create -volname "ClashPow v${VERSION}" -srcfolder "$STAGE" -ov -format UDZO "$DMG" >/dev/null
+hdiutil create -volname "ClashHalo v${VERSION}" -srcfolder "$STAGE" -ov -format UDZO "$DMG" >/dev/null
 # Deliver a copy to the Desktop for convenience.
 cp -f "$DMG" "$HOME/Desktop/${DMG_NAME}.dmg"
 echo ""

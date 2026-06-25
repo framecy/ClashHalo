@@ -3,6 +3,9 @@ import SwiftUI
 // MARK: - App Delegate
 
 final class AppDelegate: NSObject, NSApplicationDelegate {
+    func applicationDidFinishLaunching(_ notification: Notification) {
+    }
+
     func applicationWillTerminate(_ notification: Notification) {
         AppDelegate.performCleanup()
     }
@@ -62,7 +65,7 @@ struct ClashPowApp: App {
         // openWindow(id:) call (it supports multiple windows), which piled up
         // duplicate windows from the menu-bar navigation. `Window` is a singleton
         // scene — openWindow(id:) fronts the existing one, or recreates it if closed.
-        Window("ClashPow", id: "main") {
+        Window("ClashHalo", id: "main") {
             ContentView()
                 .environmentObject(model)
                 .frame(minWidth: 940, minHeight: 620)
@@ -79,7 +82,7 @@ struct ClashPowApp: App {
         MenuBarExtra {
             MenuBarPanel().environmentObject(model)
         } label: {
-            Image(systemName: model.reachable ? "bolt.fill" : "bolt.slash")
+            Image(systemName: model.reachable ? "circle.inset.filled" : "circle.dashed")
         }
         .menuBarExtraStyle(.window)
     }
