@@ -113,6 +113,12 @@ import ServiceManagement
     var preGatewayAllowLan: Bool?
     var preGatewayDNSListen: String?
 
+    /// The proxy port from the running config. Centralises the repeated
+    /// `(configs["mixed-port"] ?? configs["port"] ?? 7890)` lookup.
+    var proxyPort: Int {
+        (configs["mixed-port"] as? Int) ?? (configs["port"] as? Int) ?? 7890
+    }
+
     // Menu-bar app preferences
     /// Show the Dock icon (.regular) vs menu-bar-only (.accessory).
     /// Toggle via `setShowDock(_:)` so the activation policy is re-applied — a
@@ -150,6 +156,7 @@ import ServiceManagement
     /// Saved state before sleep: used to restore after wake
     private var preSleepTunOn = false
     private var preSleepSystemProxyOn = false
+    private var preSleepGatewayOn = false
     /// One-shot guard — `start()` must run exactly once per app lifetime.
     private var started = false
     /// System proxy was auto-disabled by the network-offline handler; restore on reconnect.
@@ -203,8 +210,7 @@ import ServiceManagement
                 tunOn = false
                 systemProxyOn = false
                 reachable = false
-                let port = (configs["mixed-port"] as? Int) ?? (configs["port"] as? Int) ?? 7890
-                _ = await engine.setSystemProxy(enabled: false, port: port)
+                _ = await engine.setSystemProxy(enabled: false, port: proxyPort)
                 await restoreTunnelDNS()
                 syncSystemProxyState()
                 await reconnect()
@@ -237,8 +243,7 @@ import ServiceManagement
             // Just came online
             if !engine.isBusy {
                 if proxyAutoDisabled {
-                    let port = (configs["mixed-port"] as? Int) ?? (configs["port"] as? Int) ?? 7890
-                    _ = await engine.setSystemProxy(enabled: true, port: port)
+                    _ = await engine.setSystemProxy(enabled: true, port: proxyPort)
                     systemProxyOn = true
                     proxyAutoDisabled = false
                     showToast("网络恢复，已自动恢复系统代理")
@@ -247,10 +252,12 @@ import ServiceManagement
         }
 
         guard reachable else {
-            // Core unreachable — TUN can't be active, so clear the switch to keep
-            // the UI consistent (tunOn is normally driven by refreshConfigs, which
-            // won't run while disconnected, leaving the toggle stuck "on").
+            // Core unreachable — TUN/Gateway can't be active, so clear the
+            // switches to keep the UI consistent (tunOn is normally driven by
+            // refreshConfigs, which won't run while disconnected, leaving the
+            // toggles stuck "on").
             tunOn = false
+            gatewayModeOn = false
             
             // Only auto-disable proxy/DNS if the kernel WAS reachable and just crashed,
             // NOT when it's just intentionally turned off by the user.
@@ -258,8 +265,7 @@ import ServiceManagement
                 await restoreTunnelDNS()
                 if systemProxyOn {
                     proxyAutoDisabled = true
-                    let port = (configs["mixed-port"] as? Int) ?? (configs["port"] as? Int) ?? 7890
-                    _ = await engine.setSystemProxy(enabled: false, port: port)
+                    _ = await engine.setSystemProxy(enabled: false, port: proxyPort)
                     systemProxyOn = false
                     showToast("内核已断开，自动关闭系统代理以防断网")
                 }
@@ -401,6 +407,7 @@ import ServiceManagement
         // Save current state
         preSleepTunOn = tunOn
         preSleepSystemProxyOn = systemProxyOn
+        preSleepGatewayOn = gatewayModeOn
 
         stopStreams()       // cancel WS — avoids 4× reconnect race on wake
         reconnectTask?.cancel()
@@ -458,12 +465,38 @@ import ServiceManagement
             // Restore system proxy if it was active before sleep
             if preSleepSystemProxyOn && !systemProxyOn {
                 logKernel("恢复系统代理...")
-                let port = (configs["mixed-port"] as? Int) ?? (configs["port"] as? Int) ?? 7890
-                let ok = await engine.setSystemProxy(enabled: true, port: port)
+                let ok = await engine.setSystemProxy(enabled: true, port: proxyPort)
                 if ok {
                     systemProxyOn = true
                     logKernel("系统代理已恢复")
                 }
+            }
+
+            // Restore Gateway config overrides if it was active before sleep.
+            // A kernel restart during sleep re-reads config.yaml from disk,
+            // which has the original profile values — the Gateway overrides
+            // (allow-lan + dns.listen=0.0.0.0:53) are lost. Re-inject them
+            // and reload so Gateway clients keep working.
+            if preSleepGatewayOn && reachable {
+                logKernel("恢复网关中枢配置...")
+                let overrides: [String: Any] = [
+                    "allow-lan": true,
+                    "dns": [
+                        "enable": true,
+                        "listen": "0.0.0.0:53",
+                        "enhanced-mode": "fake-ip"
+                    ]
+                ]
+                engine.setTopLevelScalars(overrides)
+                do {
+                    try await api.reloadConfig(path: engine.configFilePath)
+                    await refreshConfigs()
+                } catch {
+                    logKernel("网关配置重载失败：\(error.localizedDescription)")
+                }
+                let ok = await engine.setGatewayMode(enabled: true)
+                gatewayModeOn = ok
+                logKernel(ok ? "网关中枢已恢复" : "网关中枢恢复失败")
             }
 
             logKernel("唤醒恢复完成")
@@ -484,8 +517,7 @@ import ServiceManagement
                     // Restore system proxy if it was auto-disabled by the offline handler
                     if proxyAutoDisabled && !systemProxyOn {
                         proxyAutoDisabled = false
-                        let port = (configs["mixed-port"] as? Int) ?? (configs["port"] as? Int) ?? 7890
-                        let ok = await engine.setSystemProxy(enabled: true, port: port)
+                        let ok = await engine.setSystemProxy(enabled: true, port: proxyPort)
                         if ok {
                             systemProxyOn = true
                             showToast("网络恢复，已自动恢复系统代理")
@@ -508,9 +540,8 @@ import ServiceManagement
             // blocked by a proxy pointing at a (potentially) dead kernel.
             if systemProxyOn {
                 proxyAutoDisabled = true
-                let port = (configs["mixed-port"] as? Int) ?? (configs["port"] as? Int) ?? 7890
                 Task {
-                    _ = await engine.setSystemProxy(enabled: false, port: port)
+                    _ = await engine.setSystemProxy(enabled: false, port: proxyPort)
                     systemProxyOn = false
                     showToast("网络断开，已自动关闭系统代理")
                 }
@@ -540,8 +571,7 @@ import ServiceManagement
         let httpHost = dict[kCFNetworkProxiesHTTPProxy as String] as? String
         let httpPort = dict[kCFNetworkProxiesHTTPPort as String] as? Int
         
-        let expectedPort = (configs["mixed-port"] as? Int) ?? (configs["port"] as? Int) ?? 7890
-        systemProxyOn = httpOn && httpHost == "127.0.0.1" && httpPort == expectedPort
+        systemProxyOn = httpOn && httpHost == "127.0.0.1" && httpPort == proxyPort
     }
 
     // MARK: Menu-bar app preferences
@@ -576,7 +606,7 @@ import ServiceManagement
 
     /// Copy a shell snippet that points a terminal at the local proxy.
     func copyProxyCommand() {
-        let port = (configs["mixed-port"] as? Int) ?? (configs["port"] as? Int) ?? 7890
+        let port = proxyPort
         let cmd = "export https_proxy=http://127.0.0.1:\(port) http_proxy=http://127.0.0.1:\(port) all_proxy=socks5://127.0.0.1:\(port)"
         NSPasteboard.general.clearContents()
         NSPasteboard.general.setString(cmd, forType: .string)
