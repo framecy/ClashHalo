@@ -108,6 +108,10 @@ import ServiceManagement
     @Published var systemProxyOn = false
     @Published var tunOn = false
     @Published var gatewayModeOn = false
+    /// Snapshot of allow-lan / dns.listen before Gateway mode overrode them,
+    /// used to restore config.yaml when Gateway is disabled.
+    var preGatewayAllowLan: Bool?
+    var preGatewayDNSListen: String?
 
     // Menu-bar app preferences
     /// Show the Dock icon (.regular) vs menu-bar-only (.accessory).
