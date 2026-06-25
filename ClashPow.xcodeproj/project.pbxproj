@@ -9,18 +9,14 @@
 /* Begin PBXBuildFile section */
 		04E0EC007CDC978C6D8D3024 /* YamlRuleASTEngine.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5E2B17CDA9711347F1C170EB /* YamlRuleASTEngine.swift */; };
 		0F32145D5136BC694424C663 /* RuleNode.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6293BDBC99DBD2AA6E7426F3 /* RuleNode.swift */; };
-		1250A2D8F0BAC98B1EC000E1 /* SubStoreEngine.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8F6E766B37C8ED3E6DCA2F22 /* SubStoreEngine.swift */; };
 		212075FD58BB63EBBCA8786A /* RuleEditorModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = C6DEDA31B7B33D5919A12DEB /* RuleEditorModel.swift */; };
-		333534616135656137363434343335376136653365643437 /* SubStoreEngine.swift in Sources */ = {isa = PBXBuildFile; fileRef = 363638636663353932393733343765666235326165373831 /* SubStoreEngine.swift */; };
 		394E7B0C59764680BB4D9507 /* MihomoClient.swift in Sources */ = {isa = PBXBuildFile; fileRef = 40F5A17CAAA24A5BBC54C15E /* MihomoClient.swift */; };
-		3D87A73D9A5D921BB7F3D77A /* SubStoreBackend in Resources */ = {isa = PBXBuildFile; fileRef = A56132C4991A44317911EB92 /* SubStoreBackend */; };
 		4F219760BD14466DA838B50A /* SdwanPage.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5C1B022FFD034AE592948756 /* SdwanPage.swift */; };
 		4FE025F9B3A84B9A9563DC03 /* ConnectionsPage.swift in Sources */ = {isa = PBXBuildFile; fileRef = A3F21F03B19F4760A795864C /* ConnectionsPage.swift */; };
 		52A040A2184744959929CD76 /* TrafficHistory.swift in Sources */ = {isa = PBXBuildFile; fileRef = 06A576D2F0DE48B7BA1A37D7 /* TrafficHistory.swift */; };
 		5C790C4A1B3744679E83ADA0 /* DnsPage.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2A173B69A3BD4DDA8F992A68 /* DnsPage.swift */; };
 		61523827C4D44A56AB8FA9E9 /* ConfigPage.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3D2C04980A2D415390C45937 /* ConfigPage.swift */; };
 		71D6AA8BB9A64328A01B5364 /* MihomoModels.swift in Sources */ = {isa = PBXBuildFile; fileRef = A3BB008E2BF84DF5A2895FBC /* MihomoModels.swift */; };
-		7C137C69A9B0D22FDB269983 /* SubStorePage.swift in Sources */ = {isa = PBXBuildFile; fileRef = BA6771BEC14A6E2E77465BFF /* SubStorePage.swift */; };
 		8BC3EAE990F64B20BA6FA269 /* ConfigStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9641FF3F733D4D03A5FC9B70 /* ConfigStore.swift */; };
 		8F14ED3CECAC0F5F7C81C9A9 /* RuleValidator.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4ED2BED37C00E10C70F34AC9 /* RuleValidator.swift */; };
 		HASHSW1F1A5AD4866E444CB21D6A9A /* Hash.swift in Sources */ = {isa = PBXBuildFile; fileRef = HASHSWFFFFFF /* Hash.swift */; };
@@ -50,28 +46,23 @@
 /* Begin PBXFileReference section */
 		06A576D2F0DE48B7BA1A37D7 /* TrafficHistory.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Sources/Model/TrafficHistory.swift; sourceTree = SOURCE_ROOT; };
 		2A173B69A3BD4DDA8F992A68 /* DnsPage.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Sources/UI/DNS/DnsPage.swift; sourceTree = SOURCE_ROOT; };
-		363638636663353932393733343765666235326165373831 /* SubStoreEngine.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Sources/Model/SubStoreEngine.swift; sourceTree = SOURCE_ROOT; };
 		3D2C04980A2D415390C45937 /* ConfigPage.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Sources/UI/Config/ConfigPage.swift; sourceTree = SOURCE_ROOT; };
 		40F5A17CAAA24A5BBC54C15E /* MihomoClient.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Sources/XPC/MihomoClient.swift; sourceTree = SOURCE_ROOT; };
 		43A486CB7FAA4FBBAEBFCCE6 /* EngineControl.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Sources/XPC/EngineControl.swift; sourceTree = SOURCE_ROOT; };
 		4ED2BED37C00E10C70F34AC9 /* RuleValidator.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = RuleValidator.swift; path = Sources/Core/RuleValidator/RuleValidator.swift; sourceTree = "<group>"; };
 		HASHSWFFFFFF /* Hash.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = Hash.swift; path = Sources/Core/Hash.swift; sourceTree = "<group>"; };
 		50A6FB0C0B7141B0A804F1A9 /* RulesPage.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Sources/UI/Rules/RulesPage.swift; sourceTree = SOURCE_ROOT; };
-		588FF0E9A7F646298341B4AB /* sub-store-backend */ = {isa = PBXFileReference; lastKnownFileType = "compiled.mach-o.executable"; path = "Resources/bin/sub-store-backend"; sourceTree = SOURCE_ROOT; };
 		5C1B022FFD034AE592948756 /* SdwanPage.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Sources/UI/SDWAN/SdwanPage.swift; sourceTree = SOURCE_ROOT; };
 		5E2B17CDA9711347F1C170EB /* YamlRuleASTEngine.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = YamlRuleASTEngine.swift; path = Sources/Core/YamlEditor/YamlRuleASTEngine.swift; sourceTree = "<group>"; };
 		6293BDBC99DBD2AA6E7426F3 /* RuleNode.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = RuleNode.swift; path = Sources/Model/RuleNode.swift; sourceTree = "<group>"; };
 		7DC2B59D23B0749A0B7CC125 /* RuleFormView.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = RuleFormView.swift; path = Sources/UI/Rules/RuleFormView.swift; sourceTree = "<group>"; };
 		87F1015549B149CD80A68FBC /* SubscriptionsPage.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Sources/UI/Subscriptions/SubscriptionsPage.swift; sourceTree = SOURCE_ROOT; };
 		8CBAE68653724149A087BBEE /* GeneralPage.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Sources/UI/Settings/GeneralPage.swift; sourceTree = SOURCE_ROOT; };
-		8F6E766B37C8ED3E6DCA2F22 /* SubStoreEngine.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = SubStoreEngine.swift; path = Sources/Model/SubStoreEngine.swift; sourceTree = "<group>"; };
 		932DCE667C4747EEB24EB3B1 /* LogsPage.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Sources/UI/Logs/LogsPage.swift; sourceTree = SOURCE_ROOT; };
 		9641FF3F733D4D03A5FC9B70 /* ConfigStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Sources/Model/ConfigStore.swift; sourceTree = SOURCE_ROOT; };
 		A3BB008E2BF84DF5A2895FBC /* MihomoModels.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Sources/XPC/MihomoModels.swift; sourceTree = SOURCE_ROOT; };
 		A3F21F03B19F4760A795864C /* ConnectionsPage.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Sources/UI/Connections/ConnectionsPage.swift; sourceTree = SOURCE_ROOT; };
 		A4311730377D47748FC5F9D5 /* KernelManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Sources/XPC/KernelManager.swift; sourceTree = SOURCE_ROOT; };
-		A56132C4991A44317911EB92 /* SubStoreBackend */ = {isa = PBXFileReference; includeInIndex = 1; name = SubStoreBackend; path = Resources/SubStoreBackend; sourceTree = "<group>"; };
-		A78A5EFEB71461FCFA60A4B5 /* sub-store */ = {isa = PBXFileReference; lastKnownFileType = folder; path = "Resources/Panels/sub-store"; sourceTree = SOURCE_ROOT; };
 		A7EFEC0FDBC0406AA6A9D774 /* AppModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Sources/Model/AppModel.swift; sourceTree = SOURCE_ROOT; };
 		A8B1C01AAFB044E986219D24 /* NetworkPages.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Sources/UI/Network/NetworkPages.swift; sourceTree = SOURCE_ROOT; };
 		AABBCCDD0000000000000002 /* HelperProtocol.swift */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.swift; path = Sources/XPC/HelperProtocol.swift; sourceTree = "<group>"; };
@@ -84,7 +75,6 @@
 		B004 /* DashboardView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DashboardView.swift; sourceTree = "<group>"; };
 		B006 /* Models.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Models.swift; sourceTree = "<group>"; };
 		B015 /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
-		BA6771BEC14A6E2E77465BFF /* SubStorePage.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = SubStorePage.swift; sourceTree = "<group>"; };
 		BF9832249132493A9E51C30C /* ProxiesPage.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Sources/UI/Proxies/ProxiesPage.swift; sourceTree = SOURCE_ROOT; };
 		C6DEDA31B7B33D5919A12DEB /* RuleEditorModel.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = RuleEditorModel.swift; path = Sources/Core/RuleValidator/RuleEditorModel.swift; sourceTree = "<group>"; };
 		DST2 /* DesignTokens.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Sources/UI/DesignTokens.swift; sourceTree = SOURCE_ROOT; };
@@ -103,23 +93,6 @@
 /* End PBXFrameworksBuildPhase section */
 
 /* Begin PBXGroup section */
-		23B625084A53A916F0D5D7F8 /* Subscriptions */ = {
-			isa = PBXGroup;
-			children = (
-				BA6771BEC14A6E2E77465BFF /* SubStorePage.swift */,
-			);
-			name = Subscriptions;
-			path = Subscriptions;
-			sourceTree = "<group>";
-		};
-		CACE67E5D48DBA031FB1AFFA /* Resources */ = {
-			isa = PBXGroup;
-			children = (
-				A56132C4991A44317911EB92 /* SubStoreBackend */,
-			);
-			name = Resources;
-			sourceTree = "<group>";
-		};
 		G_APP /* App */ = {
 			isa = PBXGroup;
 			children = (
@@ -164,8 +137,6 @@
 		G_RESOURCES /* Resources */ = {
 			isa = PBXGroup;
 			children = (
-				588FF0E9A7F646298341B4AB /* sub-store-backend */,
-				A78A5EFEB71461FCFA60A4B5 /* sub-store */,
 				B015 /* Assets.xcassets */,
 			);
 			name = Resources;
@@ -183,8 +154,6 @@
 				5E2B17CDA9711347F1C170EB /* YamlRuleASTEngine.swift */,
 				HASHSWFFFFFF /* Hash.swift */,
 				7DC2B59D23B0749A0B7CC125 /* RuleFormView.swift */,
-				8F6E766B37C8ED3E6DCA2F22 /* SubStoreEngine.swift */,
-				CACE67E5D48DBA031FB1AFFA /* Resources */,
 			);
 			sourceTree = "<group>";
 		};
@@ -206,20 +175,9 @@
 			children = (
 				G_UI_DASHBOARD /* Dashboard */,
 				G_UI_CONFIGEDITOR /* ConfigEditor */,
-				G_UI_COMMON /* Common */,
-				G_UI_PANELS /* Panels */,
-				23B625084A53A916F0D5D7F8 /* Subscriptions */,
 			);
 			name = UI;
 			path = UI;
-			sourceTree = "<group>";
-		};
-		G_UI_COMMON /* Common */ = {
-			isa = PBXGroup;
-			children = (
-			);
-			name = Common;
-			path = Common;
 			sourceTree = "<group>";
 		};
 		G_UI_CONFIGEDITOR /* ConfigEditor */ = {
@@ -248,14 +206,6 @@
 			);
 			name = Dashboard;
 			path = Dashboard;
-			sourceTree = "<group>";
-		};
-		G_UI_PANELS /* Panels */ = {
-			isa = PBXGroup;
-			children = (
-			);
-			name = Panels;
-			path = Panels;
 			sourceTree = "<group>";
 		};
 		G_XPC /* XPC */ = {
@@ -317,7 +267,6 @@
 			buildActionMask = 2147483647;
 			files = (
 				A015 /* Assets.xcassets in Resources */,
-				3D87A73D9A5D921BB7F3D77A /* SubStoreBackend in Resources */,
 			);
 		};
 /* End PBXResourcesBuildPhase section */
@@ -327,7 +276,6 @@
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
-				333534616135656137363434343335376136653365643437 /* SubStoreEngine.swift in Sources */,
 				AABBCCDD0000000000000001 /* HelperProtocol.swift in Sources */,
 				AABBCCDD0000000000000003 /* XPCManager.swift in Sources */,
 				A001 /* ClashPowApp.swift in Sources */,
@@ -361,8 +309,6 @@
 				212075FD58BB63EBBCA8786A /* RuleEditorModel.swift in Sources */,
 				04E0EC007CDC978C6D8D3024 /* YamlRuleASTEngine.swift in Sources */,
 				FD7AD16CD9DC6191C81AE1F5 /* RuleFormView.swift in Sources */,
-				7C137C69A9B0D22FDB269983 /* SubStorePage.swift in Sources */,
-				1250A2D8F0BAC98B1EC000E1 /* SubStoreEngine.swift in Sources */,
 			);
 		};
 /* End PBXSourcesBuildPhase section */
