@@ -55,15 +55,6 @@ mkdir -p "$RES/Panels"
 rm -rf "$RES/zashboard" # Remove old wrong path if exists
 cp -R "$ROOT/Resources/Panels/zashboard/dist" "$RES/Panels/zashboard"
 
-echo "      Bundling Sub-Store…"
-mkdir -p "$RES/bin"
-cp "$ROOT/Resources/bin/sub-store-backend" "$RES/bin/"
-chmod 755 "$RES/bin/sub-store-backend"
-echo "      Bundling Sub-Store backend…"
-mkdir -p "$RES/SubStoreBackend" "$RES/SubStoreCore"
-cp "$ROOT/Resources/SubStoreBackend/sub-store.bundle.js" "$RES/SubStoreBackend/"
-cp "$ROOT/Resources/SubStoreCore/proxy-utils.js" "$RES/SubStoreCore/"
-
 # Bundle a default mihomo kernel so the app works out of the box. Reuse a local
 # kernel if present, otherwise download the official darwin-arm64 release.
 MIHOMO_DST="$APP/Contents/MacOS/mihomo"
@@ -90,10 +81,6 @@ echo "[4/4] Ad-hoc signing + DMG…"
 xattr -cr "$APP"
 # Sign helper tool
 codesign --force --sign - "$APP/Contents/MacOS/com.clashpow.helper"
-# Sign sub-store backend
-if [ -f "$APP/Contents/Resources/bin/sub-store-backend" ]; then
-    codesign --force --sign - "$APP/Contents/Resources/bin/sub-store-backend"
-fi
 # Sign mihomo WITHOUT --options runtime: hardened runtime blocks AF_SYSTEM sockets
 # (utun device creation) that mihomo needs for TUN mode even when running as root.
 # Pre-signing before the bundle step prevents --deep from overriding this.
