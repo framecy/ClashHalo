@@ -16,7 +16,7 @@ struct ContentView: View {
     private let proxyTabs: [Tab] = [
         .init(id: "proxies", label: "代理",     icon: "diamond.fill"),
         .init(id: "rules",   label: "分流规则", icon: "line.3.horizontal.decrease"),
-        .init(id: "subscriptions", label: "订阅", icon: "icloud.and.arrow.down"),
+        .init(id: "subscriptions", label: "配置与订阅", icon: "icloud.and.arrow.down"),
     ]
     // 配置：profile · 网络(入站/TUN/DNS/嗅探/内核) · SD-WAN · 偏好
     private let configTabs: [Tab] = [
@@ -24,10 +24,6 @@ struct ContentView: View {
         .init(id: "network", label: "网络",     icon: "network"),
         .init(id: "map",     label: "SD-WAN 共存", icon: "shareplay"),
         .init(id: "general", label: "通用设置", icon: "gearshape.fill"),
-    ]
-    // 扩展面板
-    private let panelTabs: [Tab] = [
-        .init(id: "zashboard", label: "Zashboard", icon: "gauge.with.needle"),
     ]
 
     /// App 版本号(随 MARKETING_VERSION),展示于侧栏头部与关于页。
@@ -51,7 +47,7 @@ struct ContentView: View {
             List(selection: $M.route) {
                 Section("监控") { rows(monitorTabs) }
                 Section("代理") { rows(proxyTabs) }
-                Section("面板") { rows(panelTabs) }
+
                 Section("配置") { rows(configTabs) }
             }
             .listStyle(.sidebar)
@@ -69,13 +65,12 @@ struct ContentView: View {
 
     private var appHeader: some View {
         HStack(spacing: 12) {
-            RoundedRectangle(cornerRadius: 10, style: .continuous)
-                .fill(LinearGradient(colors: [M.accent, M.accent.opacity(0.7)], startPoint: .topLeading, endPoint: .bottomTrailing))
+            Image(nsImage: NSApp.applicationIconImage ?? NSImage())
+                .resizable()
                 .frame(width: 32, height: 32)
-                .overlay(Image(systemName: "bolt.fill").font(.system(size: DS.Icon.sm, weight: .bold)).foregroundColor(.white))
             VStack(alignment: .leading, spacing: 0) {
                 HStack(spacing: 5) {
-                    Text("ClashPow").font(.dsLabelBold)
+                    Text("ClashHalo").font(.dsLabelBold)
                     Text("v\(Self.appVersion) (\(Self.appBuild))").font(.dsBodyMedium).foregroundColor(.secondary)
                 }
             }
@@ -127,7 +122,7 @@ struct ContentView: View {
                 case "general": GeneralPage()
                 case "network": NetworkHubPage()
                 case "map": SdwanPage()
-                case "zashboard": ZashboardPage()
+
                 default: DashboardPage()
                 }
             }

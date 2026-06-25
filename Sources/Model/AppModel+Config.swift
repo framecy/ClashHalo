@@ -5,17 +5,46 @@ import Foundation
 // proxy / TUN / engine), mode, and the read-only rules view.
 
 extension AppModel {
-    /// Switch the active config profile: persist as engine config + hot-apply.
-    func activateProfile(_ id: String) {
-        guard let content = store.makeActiveContent(id) else { showToast("配置为空"); return }
+    /// Promote an Imported (or re-activate an Applied) profile to the
+    /// running kernel: persist → reload → mark applied. Pure side-effects;
+    /// the user already consented at the call site (two-stage sheet or
+    /// "设为活动" tap). Reload coalesces via `appliedHash`: a re-apply of
+    /// unchanged content short-circuits before touching the kernel.
+    func selectForApply(_ id: String) {
+        guard let content = store.commit(id) else { showToast("配置为空"); return }
         let name = store.profiles.first { $0.id == id }?.name ?? ""
-        Task {
-            // hardenControllerConfig is called inside setConfig, which writes
-            // to config.yaml → hardens → reloads — correct ordering.
-            let (ok, err) = await engine.setConfig(content)
-            showToast(ok ? "已切换配置「\(name)」" : "配置错误：\(err ?? "")，已回滚")
-            if ok { await reconnect() }
+        let wasTunOn = tunOn
+        // Skip reload if the on-disk content matches the last applied hash.
+        // `commit` just rewrote config.yaml with the same content, but the
+        // kernel state is unchanged — avoid the hot-reload churn.
+        if let last = store.profiles.first(where: { $0.id == id })?.appliedHash,
+           last == Sha1.hex(content) {
+            store.markApplied(id, hash: last)
+            showToast("已切换配置「\(name)」")
+            return
         }
+        pendingApplyID = id
+        Task {
+            let (ok, err) = await engine.setConfig(content)
+            pendingApplyID = nil
+            if ok {
+                store.markApplied(id, hash: Sha1.hex(content))
+                showToast("已切换配置「\(name)」")
+                await reconnect()
+                await reapplyTUN(wasOn: wasTunOn)
+            } else {
+                showToast("配置错误：\(err ?? "")，已回滚")
+            }
+        }
+    }
+
+    /// Legacy single-shot entry point kept for any non-UI callers (notably
+    /// `ProfileEditSheet` "保存并应用"). Behaviour is identical to a tap on
+    /// the card for an already-Applied profile, and identical to confirming
+    /// preview for a Draft. Use `selectForApply` directly from the new two-
+    /// stage sheets to preserve the pending/spinner UX.
+    func activateProfile(_ id: String) {
+        selectForApply(id)
     }
 
     func refreshConfigs() async {
@@ -47,7 +76,17 @@ extension AppModel {
             _ = try? await api.patchConfig(["geox-url": geo])
             c["geox-url"] = geo
         }
-        
+
+        // Mihomo API does not return sniffer or dns config, so read them from config.yaml
+        if let fileConfig = engine.readConfigFile() {
+            if let sniffer = fileConfig["sniffer"] as? [String: Any] {
+                c["sniffer"] = sniffer
+            }
+            if let dns = fileConfig["dns"] as? [String: Any] {
+                c["dns"] = dns
+            }
+        }
+
         // Deep compare to avoid unnecessary @Published triggers (RSS optimization)
         if !(c as NSDictionary).isEqual(configs) {
             configs = c
@@ -97,6 +136,96 @@ extension AppModel {
         Task {
             defer { engine.isBusy = false }
             await applyTUNState(want)
+        }
+    }
+
+    func toggleGatewayMode() {
+        guard !engine.isBusy else { showToast("系统配置中，请稍候…"); return }
+        let want = !gatewayModeOn
+        
+        // Active Gateway needs TUN, let's enforce it
+        if want && !tunOn {
+            showToast("正准备环境：网关中枢需要 TUN 模式…")
+            engine.isBusy = true
+            Task {
+                await applyTUNState(true)
+                if tunOn {
+                    await applyGatewayMode(true)
+                } else {
+                    showToast("TUN 启动失败，无法开启网关中枢")
+                }
+                engine.isBusy = false
+            }
+            return
+        }
+
+        engine.isBusy = true
+        Task {
+            defer { engine.isBusy = false }
+            await applyGatewayMode(want)
+        }
+    }
+
+    private func applyGatewayMode(_ want: Bool) async {
+        if want {
+            // Check helper privileges for sysctl
+            if !engine.isRoot {
+                showToast("开启网关中枢需要管理员授权…")
+                let ok = await engine.installPrivileged()
+                guard ok else { showToast("授权失败，未开启网关"); return }
+                // Also requires root engine restart if not already
+                if !engine.runningAsRoot {
+                    showToast("正在以 Root 权限重启核心…")
+                    await engine.restart()
+                    try? await Task.sleep(nanoseconds: 2_000_000_000)
+                    await reconnect()
+                }
+            }
+
+            // Write configs for gateway mode (allow-lan and dns listen)
+            let oldTun = tunOn
+            let overrides: [String: Any] = [
+                "allow-lan": true,
+                "dns": [
+                    "enable": true,
+                    "listen": "0.0.0.0:53",
+                    "enhanced-mode": "fake-ip"
+                ]
+            ]
+            engine.setTopLevelScalars(overrides)
+            showToast("正在重启核心以应用网关配置…")
+            await engine.restart()
+            try? await Task.sleep(nanoseconds: 2_000_000_000)
+            await reconnect()
+            
+            // Verify kernel is actually up (not crashed due to port 53 conflict)
+            if !reachable {
+                showToast("核心启动失败，请检查 53 端口是否被占用")
+                return
+            }
+
+            // Engine restart resets TUN runtime state and system DNS override,
+            // so we must reapply TUN if it was on.
+            if oldTun {
+                await reapplyTUN(wasOn: true)
+            }
+
+            let ok = await engine.setGatewayMode(enabled: true)
+            if ok {
+                gatewayModeOn = true
+                showToast("网关中枢（旁路由）已成功开启")
+            } else {
+                gatewayModeOn = false
+                showToast("底层 IP 转发开启失败")
+            }
+        } else {
+            let ok = await engine.setGatewayMode(enabled: false)
+            if ok {
+                gatewayModeOn = false
+                showToast("网关中枢已关闭")
+            } else {
+                showToast("网关中枢关闭失败")
+            }
         }
     }
 

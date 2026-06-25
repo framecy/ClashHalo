@@ -901,6 +901,14 @@ import SwiftUI
     }
 
     @discardableResult
+    func setGatewayMode(enabled: Bool) async -> Bool {
+        if let ok = await XPCManager.shared.callGatewayMode(enabled: enabled) {
+            return ok
+        }
+        return false
+    }
+
+    @discardableResult
     func setSystemProxy(enabled: Bool, port: Int) async -> Bool {
         // Go through a fresh helper connection (callSystemProxy). The cached
         // helper() proxy silently dropped these calls — the helper never logged
@@ -973,5 +981,99 @@ import SwiftUI
                 }
             }
         }
+    }
+
+    /// Read config.yaml and return a dictionary. Used to read fields that mihomo
+    /// API doesn't expose (e.g. sniffer).
+    func readConfigFile() -> [String: Any]? {
+        guard let text = try? String(contentsOfFile: configFilePath, encoding: .utf8) else { return nil }
+        var result: [String: Any] = [:]
+        var currentSection: String? = nil
+        var currentDict: [String: Any] = [:]
+        var lastKey: String? = nil
+
+        for line in text.components(separatedBy: "\n") {
+            let trimmed = line.trimmingCharacters(in: .whitespaces)
+            if trimmed.isEmpty || trimmed.hasPrefix("#") { continue }
+
+            // Top-level key
+            if !line.hasPrefix(" ") && !line.hasPrefix("\t") && line.contains(":") {
+                if let section = currentSection, !currentDict.isEmpty {
+                    result[section] = currentDict
+                    currentDict = [:]
+                }
+                lastKey = nil
+
+                let parts = line.split(separator: ":", maxSplits: 1)
+                let key = String(parts[0]).trimmingCharacters(in: .whitespaces)
+                if parts.count > 1 {
+                    let value = String(parts[1]).trimmingCharacters(in: .whitespaces)
+                    if value.isEmpty {
+                        currentSection = key
+                    } else {
+                        result[key] = parseValue(value)
+                    }
+                } else {
+                    currentSection = key
+                }
+            }
+            // Nested key (2-space indent)
+            else if (line.hasPrefix("  ") && !line.hasPrefix("    ")) && line.contains(":") {
+                let parts = line.trimmingCharacters(in: .whitespaces).split(separator: ":", maxSplits: 1)
+                let key = String(parts[0]).trimmingCharacters(in: .whitespaces)
+                lastKey = key
+                if parts.count > 1 {
+                    let value = String(parts[1]).trimmingCharacters(in: .whitespaces)
+                    if value.isEmpty {
+                        currentDict[key] = [] as [String]
+                    } else {
+                        currentDict[key] = parseValue(value)
+                    }
+                } else {
+                    currentDict[key] = [] as [String]
+                }
+            }
+            // Array items (4-space indent or - prefix)
+            else if (line.hasPrefix("    ") || line.hasPrefix("  -") || line.hasPrefix("\t\t")) && trimmed.hasPrefix("-") {
+                if let key = lastKey {
+                    let value = trimmed.dropFirst().trimmingCharacters(in: .whitespaces)
+                    var arr = currentDict[key] as? [String] ?? []
+                    if let parsedStr = parseValue(value) as? String {
+                        arr.append(parsedStr)
+                    } else {
+                        arr.append(value)
+                    }
+                    currentDict[key] = arr
+                }
+            }
+        }
+
+        if let section = currentSection, !currentDict.isEmpty {
+            result[section] = currentDict
+        }
+
+        return result
+    }
+
+    private func parseValue(_ value: String) -> Any {
+        if value == "true" { return true }
+        if value == "false" { return false }
+        if let i = Int(value) { return i }
+        // Remove quotes
+        if value.hasPrefix("'") && value.hasSuffix("'") {
+            return String(value.dropFirst().dropLast())
+        }
+        if value.hasPrefix("\"") && value.hasSuffix("\"") {
+            return String(value.dropFirst().dropLast())
+        }
+        // Handle flow-style array
+        if value.hasPrefix("[") && value.hasSuffix("]") {
+            let inner = value.dropFirst().dropLast().trimmingCharacters(in: .whitespaces)
+            if inner.isEmpty { return [] as [String] }
+            return inner.components(separatedBy: ",").map { 
+                $0.trimmingCharacters(in: .whitespaces).trimmingCharacters(in: CharacterSet(charactersIn: "\"'"))
+            }
+        }
+        return value
     }
 }
