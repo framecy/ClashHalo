@@ -23,6 +23,7 @@ extension AppModel {
             showToast("已切换配置「\(name)」")
             return
         }
+        let oldPort = proxyPort
         pendingApplyID = id
         Task {
             let (ok, err) = await engine.setConfig(content)
@@ -32,6 +33,36 @@ extension AppModel {
                 showToast("已切换配置「\(name)」")
                 await reconnect()
                 await reapplyTUN(wasOn: wasTunOn)
+
+                // Port-change cascade: if the new profile uses a different
+                // mixed-port and the system proxy is on, re-set it so traffic
+                // doesn't leak to the old (now dead) port.
+                let newPort = proxyPort
+                if systemProxyOn && newPort != oldPort {
+                    let ok = await engine.setSystemProxy(enabled: true, port: newPort)
+                    if ok { showToast("系统代理已更新至端口 \(newPort)") }
+                }
+
+                // Gateway cascade: the new profile may have overwritten
+                // allow-lan / dns.listen. Re-apply the Gateway overrides so
+                // the gateway keeps working.
+                if gatewayModeOn {
+                    let overrides: [String: Any] = [
+                        "allow-lan": true,
+                        "dns": [
+                            "enable": true,
+                            "listen": "0.0.0.0:53",
+                            "enhanced-mode": "fake-ip"
+                        ]
+                    ]
+                    engine.setTopLevelScalars(overrides)
+                    do {
+                        try await api.reloadConfig(path: engine.configFilePath)
+                        await refreshConfigs()
+                    } catch {
+                        showToast("网关配置重载失败")
+                    }
+                }
             } else {
                 showToast("配置错误：\(err ?? "")，已回滚")
             }
@@ -113,9 +144,24 @@ extension AppModel {
 
     // MARK: Master switches
 
+    /// Guard + set + defer-reset wrapper for `engine.isBusy`. All long-running
+    /// kernel lifecycle operations (TUN/engine/Gateway toggle, restart, kernel
+    /// switch) must go through this so the isBusy flag has a single write path.
+    /// Returns `false` and shows a toast if the engine is already busy.
+    @discardableResult
+    func withEngineBusy(_ label: String = "操作", _ body: @escaping () async -> Void) -> Bool {
+        guard !engine.isBusy else { showToast("内核操作进行中，请稍候…"); return false }
+        engine.isBusy = true
+        Task {
+            defer { engine.isBusy = false }
+            await body()
+        }
+        return true
+    }
+
     func toggleSystemProxy() {
         let on = !systemProxyOn
-        let port = (configs["mixed-port"] as? Int) ?? (configs["port"] as? Int) ?? 7890
+        let port = proxyPort
         Task {
             let ok = await engine.setSystemProxy(enabled: on, port: port)
             if ok {
@@ -130,40 +176,27 @@ extension AppModel {
     }
 
     func toggleTUN() {
-        guard !engine.isBusy else { showToast("内核操作进行中，请稍候…"); return }
-        let want = !tunOn
-        engine.isBusy = true
-        Task {
-            defer { engine.isBusy = false }
-            await applyTUNState(want)
-        }
+        withEngineBusy { await self.applyTUNState(!self.tunOn) }
     }
 
     func toggleGatewayMode() {
-        guard !engine.isBusy else { showToast("系统配置中，请稍候…"); return }
         let want = !gatewayModeOn
-        
+
         // Active Gateway needs TUN, let's enforce it
         if want && !tunOn {
             showToast("正准备环境：网关中枢需要 TUN 模式…")
-            engine.isBusy = true
-            Task {
-                await applyTUNState(true)
-                if tunOn {
-                    await applyGatewayMode(true)
+            withEngineBusy {
+                await self.applyTUNState(true)
+                if self.tunOn {
+                    await self.applyGatewayMode(true)
                 } else {
-                    showToast("TUN 启动失败，无法开启网关中枢")
+                    self.showToast("TUN 启动失败，无法开启网关中枢")
                 }
-                engine.isBusy = false
             }
             return
         }
 
-        engine.isBusy = true
-        Task {
-            defer { engine.isBusy = false }
-            await applyGatewayMode(want)
-        }
+        withEngineBusy("系统配置") { await self.applyGatewayMode(want) }
     }
 
     private func applyGatewayMode(_ want: Bool) async {
@@ -506,53 +539,46 @@ extension AppModel {
     }
 
     func toggleEngine() {
-        guard !engine.isBusy else { showToast("内核操作进行中，请稍候…"); return }
         let want = !reachable
-        engine.isBusy = true
-        Task {
-            defer { engine.isBusy = false }
+        withEngineBusy {
             if want {
-                logKernel("正在请求启动核心...")
-                showToast("正在启动核心...")
-                engine.ensureRunning()
+                self.logKernel("正在请求启动核心...")
+                self.showToast("正在启动核心...")
+                self.engine.ensureRunning()
 
                 // Wait and verify
                 for i in 1...5 {
                     try? await Task.sleep(nanoseconds: 1_000_000_000)
-                    await api.probe(timeout: 0.5)
-                    if api.reachable {
-                        logKernel("核心启动成功 (尝试 \(i))")
-                        await reconnect()
+                    await self.api.probe(timeout: 0.5)
+                    if self.api.reachable {
+                        self.logKernel("核心启动成功 (尝试 \(i))")
+                        await self.reconnect()
                         return
                     }
-                    logKernel("等待核心响应... (\(i)/5)")
+                    self.logKernel("等待核心响应... (\(i)/5)")
                 }
-                // Not reachable after retries — surface the REAL reason. A bad
-                // config makes mihomo exit immediately on start, which looks
-                // identical to a timeout; previously this was misreported as
-                // "权限不足", sending users to needlessly reinstall the helper.
-                if let cfgErr = await engine.validateConfig() {
-                    logKernel("配置错误，核心无法启动：\(cfgErr)")
-                    showToast("配置错误：\(cfgErr)")
+                // Not reachable after retries — surface the REAL reason.
+                if let cfgErr = await self.engine.validateConfig() {
+                    self.logKernel("配置错误，核心无法启动：\(cfgErr)")
+                    self.showToast("配置错误：\(cfgErr)")
                 } else {
-                    logKernel("错误：核心未响应（启动超时或权限不足）")
-                    showToast("核心启动失败，请检查内核与权限")
+                    self.logKernel("错误：核心未响应（启动超时或权限不足）")
+                    self.showToast("核心启动失败，请检查内核与权限")
                 }
             } else {
-                logKernel("正在停止核心...")
-                await engine.stopKernel()   // proper async stop (SIGTERM → wait → SIGKILL)
-                reachable = false
-                tunOn = false   // 核心停止 → TUN 必然失效，复位开关避免状态卡 on
-                gatewayModeOn = false  // kernel gone → Gateway IP forwarding is cleaned by helper, sync UI
-                await restoreTunnelDNS()   // kernel gone → tunnel DNS would black-hole resolution
-                // Clear system proxy so traffic isn't black-holed to a dead kernel
-                if systemProxyOn {
-                    let port = (configs["mixed-port"] as? Int) ?? (configs["port"] as? Int) ?? 7890
-                    _ = await engine.setSystemProxy(enabled: false, port: port)
-                    systemProxyOn = false
+                self.logKernel("正在停止核心...")
+                await self.engine.stopKernel()
+                self.reachable = false
+                self.tunOn = false
+                self.gatewayModeOn = false
+                await self.restoreTunnelDNS()
+                if self.systemProxyOn {
+                    let port = self.proxyPort
+                    _ = await self.engine.setSystemProxy(enabled: false, port: port)
+                    self.systemProxyOn = false
                 }
-                logKernel("核心已停止")
-                showToast("核心已停止")
+                self.logKernel("核心已停止")
+                self.showToast("核心已停止")
             }
         }
     }
