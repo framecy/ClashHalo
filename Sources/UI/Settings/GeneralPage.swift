@@ -32,24 +32,6 @@ struct GeneralPage: View {
             ScrollView {
                 VStack(spacing: 14) {
                     if selectedTab == "general" {
-                        // 外观
-                        Card(title: "外观", icon: "paintbrush") {
-                            VStack(spacing: 10) {
-                                HStack {
-                                    Text("强调色").font(.dsBody)
-                                    Spacer()
-                                    HStack(spacing: 8) {
-                                        ForEach(["green","blue","purple","orange"], id: \.self) { c in
-                                            Circle().fill(colorFor(c)).frame(width: 22, height: 22)
-                                                .overlay(Circle().stroke(Color.primary, lineWidth: M.accentRaw == c ? 2 : 0))
-                                                .onTapGesture { M.accentRaw = c }
-                                        }
-                                    }
-                                    .frame(width: DS.Layout.fieldTrailing, alignment: .trailing)
-                                }
-                            }
-                        }
-
                         // 菜单栏
                         Card(title: "菜单栏", icon: "menubar.rectangle") {
                             HStack {
@@ -153,7 +135,7 @@ struct GeneralPage: View {
                                         .background(
                                             RoundedRectangle(cornerRadius: 6)
                                                 .fill(helperNeedsUpdate ? Color.orange :
-                                                      engine.isRoot ? Color.red.opacity(0.15) : M.accent)
+                                                      engine.isRoot ? Color.red.opacity(0.15) : DS.Palette.accent)
                                         )
                                     }
                                     .buttonStyle(.plain)
@@ -237,7 +219,7 @@ struct GeneralPage: View {
             VStack(spacing: 6) {
                 Image(systemName: active ? activeIcon : inactiveIcon)
                     .font(.system(size: DS.Icon.md))
-                    .foregroundColor(active ? M.accent : .secondary)
+                    .foregroundColor(active ? DS.Palette.accent : .secondary)
                 Text(label)
                     .font(.system(size: 12, weight: active ? .semibold : .regular))
                     .foregroundColor(active ? .primary : .secondary)
@@ -281,7 +263,7 @@ struct GeneralPage: View {
                 Link(destination: URL(string: "https://github.com/MetaCubeX/mihomo")!) {
                     Label("mihomo (Clash.Meta) 核心", systemImage: "link")
                         .font(.dsBody)
-                        .foregroundColor(M.accent)
+                        .foregroundColor(DS.Palette.accent)
                 }
             }
             .padding(.top, 10)
@@ -304,7 +286,7 @@ struct GeneralPage: View {
         HStack { Text(l).font(.dsBody).foregroundColor(.secondary).frame(width: 50, alignment: .leading)
             TextField(placeholder, text: text).textFieldStyle(.roundedBorder) }
     }
-    func colorFor(_ s: String) -> Color { ["green":.green,"blue":.blue,"purple":.purple,"orange":.orange][s] ?? .green }
+
 
     /// True when helper is installed but its version is below the expected version.
     private var helperNeedsUpdate: Bool {
@@ -366,7 +348,7 @@ struct MenuBarPanel: View {
         VStack(alignment: .leading, spacing: DS.Spacing.s) {
             // Header
             HStack(spacing: DS.Spacing.s) {
-                Image(systemName: "bolt.fill").font(.system(size: DS.Icon.md)).foregroundColor(M.accent)
+                Image(systemName: "bolt.fill").font(.system(size: DS.Icon.md)).foregroundColor(DS.Palette.accent)
                 VStack(alignment: .leading, spacing: 1) {
                     Text("ClashHalo").font(.dsCardLabel)
                     HStack(spacing: DS.Spacing.xs) {
@@ -429,7 +411,7 @@ struct MenuBarPanel: View {
                         .frame(maxWidth: .infinity)
                         .padding(.vertical, DS.Spacing.s)
                         .background(RoundedRectangle(cornerRadius: DS.Radius.control).fill(DS.Palette.fill))
-                        .foregroundColor(M.accent)
+                        .foregroundColor(DS.Palette.accent)
                     }.buttonStyle(.plain).disabled(M.groups.isEmpty)
                 }
             }
@@ -444,7 +426,7 @@ struct MenuBarPanel: View {
                             HStack(spacing: DS.Spacing.xs) {
                                 Image(systemName: "arrow.clockwise").font(.dsBody)
                                 Text("更新订阅").font(.dsBody)
-                            }.foregroundColor(M.accent)
+                            }.foregroundColor(DS.Palette.accent)
                         }.buttonStyle(.plain)
                     }
                 }
@@ -550,7 +532,7 @@ struct MenuBarPanel: View {
             Text(label).font(.dsBodyMedium)
                 .frame(maxWidth: .infinity)
                 .padding(.vertical, DS.Spacing.s - 2)
-                .background(RoundedRectangle(cornerRadius: DS.Radius.control - 2).fill(on ? M.accent : Color.clear))
+                .background(RoundedRectangle(cornerRadius: DS.Radius.control - 2).fill(on ? DS.Palette.accent : Color.clear))
                 .foregroundColor(on ? .white : .secondary)
         }.buttonStyle(.plain)
     }
@@ -561,7 +543,7 @@ struct MenuBarPanel: View {
         return Button { M.selectForApply(p.id) } label: {
             HStack(spacing: DS.Spacing.s) {
                 Image(systemName: active ? "checkmark.circle.fill" : "circle")
-                    .font(.dsBody).foregroundColor(active ? M.accent : .secondary)
+                    .font(.dsBody).foregroundColor(active ? DS.Palette.accent : .secondary)
                 Image(systemName: p.source == "remote" ? "icloud.fill" : "doc.fill")
                     .font(.dsBody).foregroundColor(.secondary).frame(width: 14)
                 Text(p.name).font(.dsBodyMedium).foregroundColor(active ? .primary : .secondary).lineLimit(1)
@@ -602,7 +584,7 @@ struct MenuBarPanel: View {
                            isOn: Binding<Bool>) -> some View {
         HStack(spacing: DS.Spacing.s) {
             Circle()
-                .fill(isOn.wrappedValue ? (accent ? M.accent : DS.Palette.ok) : Color.secondary.opacity(0.3))
+                .fill(isOn.wrappedValue ? (accent ? DS.Palette.accent : DS.Palette.ok) : Color.secondary.opacity(0.3))
                 .frame(width: 6, height: 6)
             Image(systemName: icon).font(.dsBody)
                 .foregroundColor(isOn.wrappedValue ? .primary : .secondary)

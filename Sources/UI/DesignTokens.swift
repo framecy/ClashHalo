@@ -6,26 +6,29 @@ import SwiftUI
 // radii, icon sizes and layout constants. Use these instead of hardcoded
 // literals so the design language stays consistent and adapts in one place.
 //
-// Coverage: all UI now reads from these tokens — fonts (DS / Font.ds*), spacing,
-// radius, icon sizes, neutral fills/borders and status colors are centralized;
-// former outlier sizes have been snapped onto the scale.
-//
-// NOTES:
-// - The dynamic theme/accent color stays in `AppModel.accent` (user-selectable).
-// - Surfaces (`cardBg`/`cardBgAlt`) are DARK-ONLY fixed colors; the app is locked
-//   to the dark color scheme. To support a light theme, switch these to
-//   scheme-adaptive colors (Asset Catalog or `Color(nsColor:)` dynamic colors).
+// Theme: light / dark mode only. A single brand accent color is used throughout;
+// there is no user-selectable accent picker.
 
 enum DS {
 
     // MARK: Colors
 
     enum Palette {
-        /// Elevated surface / card background. Replaces the hardcoded
-        /// `Color(red: 0x2A…)` literals scattered across 4 files.
-        static let cardBg = Color(red: 0x2A / 255.0, green: 0x2A / 255.0, blue: 0x2A / 255.0)
-        /// Slightly lighter surface (was `Color(red: 0x2C…)`).
-        static let cardBgAlt = Color(red: 0x2C / 255.0, green: 0x2C / 255.0, blue: 0x2C / 255.0)
+        /// Brand accent — fixed green, used app-wide for primary interactive elements.
+        static let accent = Color(red: 0x19 / 255.0, green: 0xC3 / 255.0, blue: 0x7D / 255.0)
+
+        /// Elevated surface / card background — adapts to light/dark.
+        static let cardBg = Color(nsColor: .init(name: nil, dynamicProvider: { appearance in
+            appearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua
+                ? NSColor(red: 0x2A / 255.0, green: 0x2A / 255.0, blue: 0x2A / 255.0, alpha: 1)
+                : NSColor(red: 0xF5 / 255.0, green: 0xF5 / 255.0, blue: 0xF5 / 255.0, alpha: 1)
+        }))
+        /// Slightly lighter/darker surface variant.
+        static let cardBgAlt = Color(nsColor: .init(name: nil, dynamicProvider: { appearance in
+            appearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua
+                ? NSColor(red: 0x2C / 255.0, green: 0x2C / 255.0, blue: 0x2C / 255.0, alpha: 1)
+                : NSColor(red: 0xE8 / 255.0, green: 0xE8 / 255.0, blue: 0xE8 / 255.0, alpha: 1)
+        }))
 
         /// Semantic status colors — use instead of raw `.green/.red/.orange`.
         static let ok    = Color.green   // running / connected / low latency / success

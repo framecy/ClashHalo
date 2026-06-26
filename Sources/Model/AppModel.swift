@@ -40,17 +40,6 @@ import ServiceManagement
             reconcileActiveStreams()
         }
     }
-    @AppStorage("ui.accent") var accentRaw = "green"
-    var accent: Color {
-        let colors: [String: Color] = [
-            "green": Color(hex: "19c37d"),
-            "blue": .blue,
-            "purple": .purple,
-            "orange": .orange
-        ]
-        return colors[accentRaw] ?? Color(hex: "19c37d")
-    }
-
     // Connection status
     @Published var reachable = false
     @Published var version = "?"
@@ -81,6 +70,7 @@ import ServiceManagement
     @Published var curUp: Int64 = 0
     @Published var downSeries: [Double] = Array(repeating: 0, count: 120)
     @Published var upSeries: [Double] = Array(repeating: 0, count: 120)
+    @AppStorage("trafficRefreshInterval") public var trafficRefreshInterval: Double = 1.0
     @Published var dash = DashStats()
     var lastUIUpdate = Date.distantPast
 

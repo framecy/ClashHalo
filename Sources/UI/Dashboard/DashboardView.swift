@@ -50,7 +50,7 @@ struct DashboardPage: View {
 
                     // Row 1: Top stats bar (4 columns, height 64)
                     HStack(spacing: 16) {
-                        BarStat("总下载", fmtBytes(Double(M.downloadTotal)), "arrow.down.circle.fill", M.accent)
+                        BarStat("总下载", fmtBytes(Double(M.downloadTotal)), "arrow.down.circle.fill", DS.Palette.accent)
                             .frame(height: DS.Layout.statHeight)
                             .frame(maxWidth: .infinity)
                         BarStat("总上传", fmtBytes(Double(M.uploadTotal)), "arrow.up.circle.fill", .red)
@@ -76,32 +76,41 @@ struct DashboardPage: View {
                             Color.clear.frame(height: 0).frame(maxWidth: .infinity)
                         }
                         GridRow {
-                            Card(title: "流量趋势", icon: "chart.xyaxis.line") {
-                                VStack(alignment: .leading, spacing: 0) {
+                            Card(title: "流量趋势", icon: "chart.xyaxis.line", actions: {
+                                Picker("", selection: $M.trafficRefreshInterval) {
+                                    Text("1s").tag(1.0)
+                                    Text("3s").tag(3.0)
+                                    Text("5s").tag(5.0)
+                                    Text("10s").tag(10.0)
+                                }.pickerStyle(.menu)
+                                    .frame(width: 72, height: 28)
+                                    .controlSize(.small)
+                            }) {
+                                VStack(spacing: 0) {
                                     HStack(spacing: 18) {
                                         Label(fmtRate(Double(M.curDown)), systemImage: "arrow.down")
                                             .foregroundColor(.red)
                                             .font(.dsMonoBold)
                                         Label(fmtRate(Double(M.curUp)), systemImage: "arrow.up")
-                                            .foregroundColor(M.accent)
+                                            .foregroundColor(DS.Palette.accent)
                                             .font(.dsMonoBold)
                                         Spacer()
                                     }.padding(.bottom, 6)
-                                    TrafficSparkline(down: M.downSeries, up: M.upSeries, accent: M.accent).equatable().frame(height: 144)
+                                    TrafficSparkline(down: M.downSeries, up: M.upSeries, accent: DS.Palette.accent)
+                                        .frame(maxWidth: .infinity, maxHeight: .infinity)
+                                        .drawingGroup()
                                 }
                             }
-                            .frame(height: 224)
+                            .frame(height: DS.Layout.cardRow)
                             .gridCellColumns(3)
 
                             VStack(spacing: 16) {
-                                MiniStat("活跃连接", "\(M.activeConnectionsCount)", sub: "已关闭 \(M.closedConns)", icon: "link", color: .cyan)
-                                    .frame(height: DS.Layout.statHeight)
                                 MiniStat("核心内存", fmtBytes(Double(M.memory)), sub: nil, icon: "memorychip", color: .purple)
-                                    .frame(height: DS.Layout.statHeight)
+                                    .frame(maxHeight: .infinity)
                                 MiniStat("应用内存", String(format: "%.0f MB", M.appMemoryMB), sub: nil, icon: "app.dashed", color: .orange)
-                                    .frame(height: DS.Layout.statHeight)
+                                    .frame(maxHeight: .infinity)
                             }
-                            .frame(height: 224)
+                            .frame(height: DS.Layout.cardRow)
                             .gridCellColumns(1)
                         }
                     }
@@ -115,20 +124,14 @@ struct DashboardPage: View {
                         .frame(maxWidth: .infinity)
 
                         Card(title: "策略组排名", icon: "rectangle.3.group.fill") {
-                            RankList(rows: policyGroupRows, accent: M.accent, mode: .bytes).equatable()
+                            RankList(rows: policyGroupRows, accent: DS.Palette.accent, mode: .bytes).equatable()
                         }
                         .frame(height: DS.Layout.cardRow)
                         .frame(maxWidth: .infinity)
                     }
 
-                    // Row 4: Timeline (height 160)
-                    Card(title: range == .today ? "流量时间轴 · 今日(每小时)" : "流量时间轴 · 本月(每日)", icon: "chart.bar.fill") {
-                        HourlyBars(values: range == .today ? M.history.today.hourlyDown : M.history.monthDailyTotals,
-                                   accent: M.accent).equatable().frame(height: 110)
-                    }
-                    .frame(height: 160)
 
-                    // Row 5: Rank lists (each spans 2, height 208)
+                    // Row 5: Rank lists (3 columns, height 208)
                     HStack(spacing: 16) {
                         Card(title: "高频规则", icon: "list.number") {
                             RankList(rows: topRules, accent: .red, mode: .count).equatable()
@@ -141,22 +144,15 @@ struct DashboardPage: View {
                         }
                         .frame(height: DS.Layout.cardRow)
                         .frame(maxWidth: .infinity)
-                    }
-
-                    // Row 6: Rank lists (each spans 2, height 208)
-                    HStack(spacing: 16) {
-                        Card(title: "热门节点", icon: "bolt.horizontal.fill") {
+                        
+                        Card(title: "热门节点", icon: "server.rack") {
                             RankList(rows: topNodes, accent: .orange, mode: .bytes).equatable()
                         }
                         .frame(height: DS.Layout.cardRow)
                         .frame(maxWidth: .infinity)
-
-                        Card(title: "热门进程", icon: "app.badge") {
-                            RankList(rows: topProcs, accent: .blue, mode: .bytes).equatable()
-                        }
-                        .frame(height: DS.Layout.cardRow)
-                        .frame(maxWidth: .infinity)
                     }
+
+
                 }
                 .padding(.horizontal, DS.Spacing.l).padding(.bottom, DS.Spacing.l)
             }
@@ -169,7 +165,6 @@ struct DashboardPage: View {
     private var policyGroupRows: [Rank] { M.dash.policyGroups }
     private var topHosts: [Rank] { M.dash.hosts }
     private var topNodes: [Rank] { M.dash.nodes }
-    private var topProcs: [Rank] { M.dash.procs }
     private var topRules: [Rank] { M.dash.rules }
 
     private var distribution: some View {
@@ -178,7 +173,7 @@ struct DashboardPage: View {
             direct: day.direct,
             proxy: day.proxy,
             reject: day.reject,
-            accent: M.accent
+            accent: DS.Palette.accent
         ).equatable()
     }
 
@@ -227,8 +222,10 @@ struct TrafficDistributionView: View, Equatable {
                         var path = Path()
                         let center = CGPoint(x: size.width / 2, y: size.height / 2)
                         let radius = min(size.width, size.height) / 2
-                        path.addArc(center: center, radius: radius, startAngle: .zero, endAngle: .degrees(360), clockwise: false)
-                        context.stroke(path, with: .color(Color.secondary.opacity(0.2)), style: StrokeStyle(lineWidth: radius * 0.28))
+                        let lineWidth = radius * 0.28
+                        let strokeRadius = radius - lineWidth / 2
+                        path.addArc(center: center, radius: strokeRadius, startAngle: .zero, endAngle: .degrees(360), clockwise: false)
+                        context.stroke(path, with: .color(Color.secondary.opacity(0.2)), style: StrokeStyle(lineWidth: lineWidth))
                         return
                     }
                     let center = CGPoint(x: size.width / 2, y: size.height / 2)
@@ -351,7 +348,7 @@ struct StatBox: View {
             Text(label).font(.dsBody).foregroundColor(.secondary)
             HStack(alignment: .firstTextBaseline, spacing: 2) {
                 Text(value).font(.dsStatValue)
-                    .foregroundColor(accent ? M.accent : .primary)
+                    .foregroundColor(accent ? DS.Palette.accent : .primary)
                 if let unit { Text(unit).font(.dsBodySemibold).foregroundColor(.secondary) }
             }
             Text(sub).font(.dsBody).foregroundColor(.secondary).lineLimit(1)
@@ -359,7 +356,7 @@ struct StatBox: View {
         .padding(DS.Spacing.l)
         .frame(maxWidth: .infinity, alignment: .leading)
         .background(RoundedRectangle(cornerRadius: DS.Radius.card).fill(DS.Palette.cardBg))
-        .overlay(RoundedRectangle(cornerRadius: DS.Radius.card).stroke(accent ? M.accent.opacity(0.3) : DS.Palette.cardBgAlt))
+        .overlay(RoundedRectangle(cornerRadius: DS.Radius.card).stroke(accent ? DS.Palette.accent.opacity(0.3) : DS.Palette.cardBgAlt))
     }
 }
 
@@ -405,7 +402,6 @@ struct MiniStat: View {
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         .padding(.horizontal, DS.Spacing.l).padding(.vertical, DS.Spacing.m)
-        .frame(height: DS.Layout.statHeight)
         .background(RoundedRectangle(cornerRadius: DS.Radius.control).fill(DS.Palette.cardBg))
         .overlay(RoundedRectangle(cornerRadius: DS.Radius.control).stroke(DS.Palette.cardBgAlt))
     }

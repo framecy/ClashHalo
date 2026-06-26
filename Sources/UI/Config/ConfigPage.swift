@@ -14,7 +14,7 @@ struct ConfigPage: View {
                 Button { showImportRemote = true } label: { Label("导入订阅", systemImage: "icloud.and.arrow.down") }
                     .controlSize(.small)
                 Button { showAddLocal = true } label: { Label("添加本地", systemImage: "doc.badge.plus") }
-                    .controlSize(.small).tint(M.accent).buttonStyle(.borderedProminent)
+                    .controlSize(.small).tint(DS.Palette.accent).buttonStyle(.borderedProminent)
             }
 
             ScrollView {
@@ -49,7 +49,7 @@ struct ConfigPage: View {
             HStack(spacing: 8) {
                 Image(systemName: p.source == "remote" ? "icloud.fill" : "doc.fill")
                     .font(.dsLabel)
-                    .foregroundColor(active ? M.accent : .secondary)
+                    .foregroundColor(active ? DS.Palette.accent : .secondary)
                 Text(p.name).font(.dsLabelBold).lineLimit(1)
                 if draft {
                     Text("待应用").font(.dsBodyBold).foregroundColor(DS.Palette.warn)
@@ -58,9 +58,9 @@ struct ConfigPage: View {
                 }
                 Spacer()
                 if active {
-                    Text("生效中").font(.dsBodyBold).foregroundColor(M.accent)
+                    Text("生效中").font(.dsBodyBold).foregroundColor(DS.Palette.accent)
                         .padding(.horizontal, 6).padding(.vertical, 2)
-                        .background(Capsule().fill(M.accent.opacity(0.12)))
+                        .background(Capsule().fill(DS.Palette.accent.opacity(0.12)))
                 } else if pendingApply {
                     ProgressView().controlSize(.small)
                 } else {
@@ -75,7 +75,7 @@ struct ConfigPage: View {
                 Text(relTime(p.updatedAt)).font(.dsBody).foregroundColor(.secondary)
                 Spacer()
                 if active {
-                    Image(systemName: "checkmark.circle.fill").foregroundColor(M.accent).font(.dsLabel)
+                    Image(systemName: "checkmark.circle.fill").foregroundColor(DS.Palette.accent).font(.dsLabel)
                 } else if draft {
                     Button { M.selectForApply(p.id) } label: { Text("应用此配置") }
                         .buttonStyle(.borderedProminent).controlSize(.small).tint(DS.Palette.warn)
@@ -88,7 +88,7 @@ struct ConfigPage: View {
         .padding(DS.Spacing.l)
         .frame(maxWidth: .infinity, alignment: .leading)
         .background(RoundedRectangle(cornerRadius: DS.Radius.card).fill(DS.Palette.cardBg))
-        .overlay(RoundedRectangle(cornerRadius: DS.Radius.card).stroke(active ? M.accent.opacity(0.4) :
+        .overlay(RoundedRectangle(cornerRadius: DS.Radius.card).stroke(active ? DS.Palette.accent.opacity(0.4) :
                                                                       draft ? DS.Palette.warn.opacity(0.5) :
                                                                       DS.Palette.cardBgAlt, lineWidth: (active || draft) ? 1.5 : 1))
         .contentShape(Rectangle())
