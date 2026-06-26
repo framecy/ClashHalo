@@ -100,7 +100,7 @@ struct ContentView: View {
 
     private func statusToggle(_ label: String, icon: String, isOn: Binding<Bool>, accent: Bool) -> some View {
         HStack(spacing: 8) {
-            Circle().fill(isOn.wrappedValue ? (accent ? M.accent : DS.Palette.ok) : Color.secondary.opacity(0.3)).frame(width: 6, height: 6)
+            Circle().fill(isOn.wrappedValue ? (accent ? DS.Palette.accent : DS.Palette.ok) : Color.secondary.opacity(0.3)).frame(width: 6, height: 6)
             Text(label).font(.dsBodyMedium).foregroundColor(isOn.wrappedValue ? .primary : .secondary)
             Spacer()
             Toggle("", isOn: isOn).toggleStyle(.switch).controlSize(.mini).labelsHidden()
@@ -173,11 +173,21 @@ extension PageHead where Actions == EmptyView {
 
 // MARK: - Reusable card container
 
-struct Card<Content: View>: View {
-    var title: String? = nil
-    var icon: String? = nil
-    var pad = true
+struct Card<Content: View, Actions: View>: View {
+    var title: String?
+    var icon: String?
+    var pad: Bool
+    @ViewBuilder var actions: () -> Actions
     @ViewBuilder var content: () -> Content
+    
+    init(title: String? = nil, icon: String? = nil, pad: Bool = true, @ViewBuilder actions: @escaping () -> Actions, @ViewBuilder content: @escaping () -> Content) {
+        self.title = title
+        self.icon = icon
+        self.pad = pad
+        self.actions = actions
+        self.content = content
+    }
+
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
             if let title {
@@ -185,6 +195,7 @@ struct Card<Content: View>: View {
                     if let icon { Image(systemName: icon).font(.dsBody).foregroundColor(.secondary) }
                     Text(title).font(.dsBodyBold).foregroundColor(.secondary)
                     Spacer()
+                    actions()
                 }
                 .padding(.horizontal, DS.Spacing.l).padding(.top, DS.Spacing.m).padding(.bottom, DS.Spacing.s)
             }
@@ -199,5 +210,11 @@ struct Card<Content: View>: View {
         .clipped()
         .background(RoundedRectangle(cornerRadius: DS.Radius.card).fill(DS.Palette.cardBg))
         .overlay(RoundedRectangle(cornerRadius: DS.Radius.card).stroke(DS.Palette.cardBgAlt))
+    }
+}
+
+extension Card where Actions == EmptyView {
+    init(title: String? = nil, icon: String? = nil, pad: Bool = true, @ViewBuilder content: @escaping () -> Content) {
+        self.init(title: title, icon: icon, pad: pad, actions: { EmptyView() }, content: content)
     }
 }

@@ -248,7 +248,7 @@ struct NetworkHubPage: View {
             VStack(spacing: 6) {
                 Image(systemName: active ? activeIcon : icon)
                     .font(.system(size: DS.Icon.md))
-                    .foregroundColor(active ? M.accent : .secondary)
+                    .foregroundColor(active ? DS.Palette.accent : .secondary)
                 Text(label)
                     .font(.system(size: 12, weight: active ? .semibold : .regular))
                     .foregroundColor(active ? .primary : .secondary)
@@ -684,7 +684,7 @@ struct KernelCard: View {
                             }
                             .controlSize(.small)
                             .buttonStyle(.borderedProminent)
-                            .tint(M.accent)
+                            .tint(DS.Palette.accent)
                             .disabled(km.downloading)
                         }
                     }
@@ -714,12 +714,12 @@ struct KernelCard: View {
     @ViewBuilder
     private func kernelRow(tag: String, label: String, icon: String, km: KernelManager) -> some View {
         HStack {
-            Image(systemName: icon).font(.dsBody).foregroundColor(tag == "内置" ? M.accent : .secondary)
+            Image(systemName: icon).font(.dsBody).foregroundColor(tag == "内置" ? DS.Palette.accent : .secondary)
             Text(label).font(.dsMono)
             Spacer()
             if km.activeTag == tag {
                 Label("使用中", systemImage: "checkmark.circle.fill")
-                    .font(.dsBody).foregroundColor(M.accent).frame(width: DS.Layout.fieldTrailing, alignment: .trailing)
+                    .font(.dsBody).foregroundColor(DS.Palette.accent).frame(width: DS.Layout.fieldTrailing, alignment: .trailing)
             } else {
                 Button("启用") {
                     M.withEngineBusy {

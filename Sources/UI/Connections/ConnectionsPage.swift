@@ -28,22 +28,26 @@ struct ConnectionsPage: View {
                     .controlSize(.small)
             }
 
-            HStack {
+            HStack(spacing: DS.Spacing.xxl) {
                 Picker("", selection: $selectedTab) {
                     Text("连接中").tag(0)
                     Text("已关闭").tag(1)
                 }
                 .pickerStyle(.segmented)
                 .frame(width: 160)
+                .offset(x: -4)
                 
-                Image(systemName: "magnifyingglass").foregroundColor(.secondary).padding(.leading, 8)
-                TextField("搜索域名 / 进程 / 规则", text: $q).textFieldStyle(.plain)
+                HStack(spacing: DS.Spacing.s) {
+                    Image(systemName: "magnifyingglass").foregroundColor(.secondary)
+                    TextField("搜索域名 / 进程 / 规则", text: $q).textFieldStyle(.plain)
+                }
+                
                 Spacer()
                 
                 let sourceConns = selectedTab == 0 ? VM.conns : VM.closedConnections
                 Text("\(sourceConns.filter { matches($0) }.count) 匹配").font(.dsBody).foregroundColor(.secondary)
             }
-            .padding(.horizontal, 14).padding(.vertical, 10)
+            .padding(.horizontal, DS.Spacing.l).padding(.vertical, 10)
             .background(Color(nsColor: .windowBackgroundColor).opacity(0.3))
             Divider()
 
@@ -59,19 +63,33 @@ struct ConnectionsPage: View {
                     TableColumn("目标", value: \.host) { c in
                         VStack(alignment: .leading, spacing: 1) {
                             Text(c.host).font(.dsBodyMedium).lineLimit(1)
-                            Text("\(c.dstIP):\(c.port)").font(.dsMono).foregroundColor(.secondary)
+                            Text("\(c.dstIP):\(c.port)").font(.dsMono).foregroundColor(.secondary).lineLimit(1)
                         }
+                        .frame(maxWidth: .infinity, alignment: .leading)
                     }.width(min: 180, ideal: 240)
-                    TableColumn("进程", value: \.process) { c in Text(c.process).font(.dsBody).foregroundColor(.secondary).lineLimit(1) }.width(min: 80, ideal: 120)
-                    TableColumn("规则", value: \.rule) { c in Text(c.rule).font(.dsMono).foregroundColor(.secondary).lineLimit(1) }.width(min: 100, ideal: 150)
+                    TableColumn("进程", value: \.process) { c in
+                        Text(c.process).font(.dsBody).foregroundColor(.secondary).lineLimit(1)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                    }.width(min: 80, ideal: 120)
+                    TableColumn("规则", value: \.rule) { c in
+                        Text(c.rule).font(.dsMono).foregroundColor(.secondary).lineLimit(1)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                    }.width(min: 100, ideal: 150)
                     TableColumn("链路", value: \.chain) { c in
                         HStack(spacing: 4) {
-                            Text(c.chain).font(.dsBodySemibold).foregroundColor(c.category == "proxy" ? M.accent : .secondary).lineLimit(1)
-                            Text(c.node).font(.dsMono).foregroundColor(.secondary)
+                            Text(c.chain).font(.dsBodySemibold).foregroundColor(c.category == "proxy" ? DS.Palette.accent : .secondary).lineLimit(1)
+                            Text(c.node).font(.dsMono).foregroundColor(.secondary).lineLimit(1)
                         }
+                        .frame(maxWidth: .infinity, alignment: .leading)
                     }.width(min: 120, ideal: 180)
-                    TableColumn("↓", value: \.downRate) { c in Text(fmtRate(Double(c.downRate))).font(.dsMono) }.width(70)
-                    TableColumn("↑", value: \.upRate) { c in Text(fmtRate(Double(c.upRate))).font(.dsMono).foregroundColor(.secondary) }.width(70)
+                    TableColumn("↓", value: \.downRate) { c in
+                        Text(fmtRate(Double(c.downRate))).font(.dsMono)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                    }.width(70)
+                    TableColumn("↑", value: \.upRate) { c in
+                        Text(fmtRate(Double(c.upRate))).font(.dsMono).foregroundColor(.secondary)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                    }.width(70)
                     TableColumn("") { c in
                         if selectedTab == 0 {
                             Button { M.closeConnection(id: c.id) } label: { Image(systemName: "xmark.circle") }
@@ -384,7 +402,7 @@ struct ConnDetailCard: View {
         M.activeConnectionsCount = activeIDs.count
         
         // Also update dashboard stats while on connections page
-        M.dash = AppModel.computeDash(next)
+        M.dash = AppModel.computeDashRaw(items)
         
         M.closedConns = max(0, M.totalConnsCount - activeIDs.count)
         M.history.flushIfNeeded()
