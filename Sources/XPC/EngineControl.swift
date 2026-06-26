@@ -276,10 +276,17 @@ import SwiftUI
             }
             guard inBlock else { continue }
             if line.hasPrefix("  ") && !line.hasPrefix("   ") {       // 2-space provider name
-                let t = line.trimmingCharacters(in: .whitespaces)
-                if t.hasSuffix(":") { result.append((String(t.dropLast()), "")); curIdx = result.count - 1 }
+                let t = line.trimmingCharacters(in: .whitespacesAndNewlines)
+                if t.hasSuffix(":") { 
+                    let name = String(t.dropLast()).replacingOccurrences(of: "\"", with: "").replacingOccurrences(of: "'", with: "")
+                    if !name.isEmpty {
+                        result.append((name, ""))
+                        curIdx = result.count - 1 
+                    }
+                }
             } else if curIdx >= 0 && line.hasPrefix("    url:") {     // 4-space own url
-                result[curIdx].1 = line.trimmingCharacters(in: .whitespaces).dropFirst(4).trimmingCharacters(in: .whitespaces)
+                let url = line.trimmingCharacters(in: .whitespacesAndNewlines).dropFirst(4).trimmingCharacters(in: .whitespacesAndNewlines)
+                result[curIdx].1 = url.replacingOccurrences(of: "\"", with: "").replacingOccurrences(of: "'", with: "")
             }
         }
         return result.map { (name: $0.0, url: $0.1) }
@@ -303,9 +310,9 @@ import SwiftUI
             block.append("proxy-providers:")
             for p in providers {
                 block += [
-                    "  \(p.name):",
+                    "  \"\(p.name)\":",
                     "    type: http",
-                    "    url: \(p.url)",
+                    "    url: \"\(p.url)\"",
                     "    interval: 3600",
                     "    health-check:",
                     "      enable: true",
@@ -319,61 +326,150 @@ import SwiftUI
         // 2. Replace existing proxy-providers block, else insert before proxy-groups.
         if let start = lines.firstIndex(where: { $0.hasPrefix("proxy-providers:") }) {
             var end = start + 1
-            while end < lines.count, lines[end].isEmpty || lines[end].hasPrefix(" ") || lines[end].hasPrefix("\t") { end += 1 }
+            while end < lines.count, lines[end].trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || lines[end].hasPrefix(" ") || lines[end].hasPrefix("\t") { end += 1 }
             lines.replaceSubrange(start..<end, with: block)
         } else if !block.isEmpty {
             let at = lines.firstIndex(where: { $0.hasPrefix("proxy-groups:") }) ?? lines.count
             lines.insert(contentsOf: block + [""], at: at)
         }
 
-        // 3. Cleanup all groups: remove 'deleted' references and sync the first group.
-        var firstUseRange: Range<Int>? = nil
+        // 3. Cleanup all references (use, proxies, rules)
+        var insideProxyGroups = false
+        var insideRules = false
+
         var i = 0
         while i < lines.count {
             let line = lines[i]
-            if line.trimmingCharacters(in: .whitespaces).hasPrefix("use:") {
-                // Determine indentation of the list items (usually +2 spaces from 'use:')
-                let useIndent = line.prefix(while: { $0 == " " || $0 == "\t" })
-                var j = i + 1
-                while j < lines.count {
-                    let subLine = lines[j]
-                    if subLine.trimmingCharacters(in: .whitespaces).isEmpty { j += 1; continue }
-                    guard subLine.hasPrefix(useIndent) && subLine.count > useIndent.count else { break }
-                    
-                    let trimmed = subLine.trimmingCharacters(in: .whitespaces)
-                    if trimmed.hasPrefix("- ") {
-                        let name = trimmed.dropFirst(2).trimmingCharacters(in: .whitespaces)
-                        if deleted.contains(name) {
-                            lines.remove(at: j)
-                            continue // check next line at same index
-                        }
+            let trimmed = line.trimmingCharacters(in: .whitespacesAndNewlines)
+            
+            if line.hasPrefix("proxy-groups:") { insideProxyGroups = true; insideRules = false; i += 1; continue }
+            if line.hasPrefix("rules:") { insideRules = true; insideProxyGroups = false; i += 1; continue }
+            if !line.hasPrefix(" ") && !line.hasPrefix("-") && !trimmed.isEmpty { insideProxyGroups = false; insideRules = false }
+
+            if insideProxyGroups {
+                // Inline array use: [A, B] or proxies: [A, B]
+                if (trimmed.hasPrefix("use:") || trimmed.hasPrefix("proxies:")) && trimmed.contains("[") {
+                    var modified = line
+                    for d in deleted {
+                        modified = modified.replacingOccurrences(of: " \(d),", with: " ")
+                        modified = modified.replacingOccurrences(of: " \"\(d)\",", with: " ")
+                        modified = modified.replacingOccurrences(of: " \(d)]", with: "]")
+                        modified = modified.replacingOccurrences(of: " \"\(d)\"]", with: "]")
+                        modified = modified.replacingOccurrences(of: "[\(d), ", with: "[")
+                        modified = modified.replacingOccurrences(of: "[\"\(d)\", ", with: "[")
+                        modified = modified.replacingOccurrences(of: "[\(d)]", with: "[]")
+                        modified = modified.replacingOccurrences(of: "[\"\(d)\"]", with: "[]")
                     }
-                    j += 1
+                    if modified != line { lines[i] = modified }
                 }
                 
-                // Record the first managed group (4-space 'use:') to sync all providers
-                if firstUseRange == nil && line.hasPrefix("    use:") {
-                    firstUseRange = (i + 1)..<j
-                } else {
-                    // Update i to avoid re-processing this block's items as 'use:' lines
-                    i = j - 1
+                // Block array: - ProviderName
+                if trimmed.hasPrefix("- ") && !trimmed.hasPrefix("- name:") {
+                    let rawName = trimmed.dropFirst(2).trimmingCharacters(in: .whitespaces)
+                    let name = rawName.replacingOccurrences(of: "\"", with: "").replacingOccurrences(of: "'", with: "")
+                    if deleted.contains(name) {
+                        lines.remove(at: i)
+                        continue
+                    }
+                }
+            }
+
+            if insideRules {
+                // Rule format: - MATCH,NodeOrProvider
+                if trimmed.hasPrefix("- ") {
+                    let parts = trimmed.dropFirst(2).components(separatedBy: ",")
+                    if let lastRaw = parts.last?.trimmingCharacters(in: .whitespaces) {
+                        let last = lastRaw.replacingOccurrences(of: "\"", with: "").replacingOccurrences(of: "'", with: "")
+                        if deleted.contains(last) {
+                            lines.remove(at: i)
+                            continue
+                        }
+                    }
                 }
             }
             i += 1
         }
 
-        // 4. For the primary group, ensure it has ALL current providers.
-        if let range = firstUseRange {
-            // Need to re-find it if indices shifted, but since we only removed lines
-            // before it or updated 'i', let's just use the current state.
-            // Actually, it's safer to just do a second pass or be very careful.
-            // Since we've already cleaned 'deleted' from it, we just replace it.
-            // To be safe, we re-find the first "    use:" after step 3's deletions.
-            if let u = lines.firstIndex(where: { $0.hasPrefix("    use:") }) {
-                var j = u + 1
-                while j < lines.count, lines[j].hasPrefix("      ") { j += 1 }
-                lines.replaceSubrange((u + 1)..<j, with: providers.map { "      - \($0.name)" })
+        // 4. Sync the primary group's use: block.
+        if let pgIdx = lines.firstIndex(where: { $0.hasPrefix("proxy-groups:") }) {
+            if let firstGroupIdx = lines[(pgIdx+1)...].firstIndex(where: { $0.trimmingCharacters(in: .whitespaces).hasPrefix("- name:") }) {
+                // Find where this group ends
+                var nextGroupIdx = lines.count
+                for idx in (firstGroupIdx+1)..<lines.count {
+                    let trimmed = lines[idx].trimmingCharacters(in: .whitespacesAndNewlines)
+                    if trimmed.hasPrefix("- name:") || (!lines[idx].hasPrefix(" ") && !trimmed.isEmpty) {
+                        nextGroupIdx = idx
+                        break
+                    }
+                }
+                
+                // Remove existing `use:` in primary group
+                if let useIdx = lines[firstGroupIdx..<nextGroupIdx].firstIndex(where: { $0.trimmingCharacters(in: .whitespacesAndNewlines) == "use:" }) {
+                    var endUseIdx = useIdx + 1
+                    let useIndent = lines[useIdx].prefix(while: { $0 == " " }).count
+                    while endUseIdx < nextGroupIdx {
+                        let trimmed = lines[endUseIdx].trimmingCharacters(in: .whitespacesAndNewlines)
+                        if trimmed.isEmpty { endUseIdx += 1; continue }
+                        let indent = lines[endUseIdx].prefix(while: { $0 == " " }).count
+                        if indent > useIndent { 
+                            endUseIdx += 1
+                            continue 
+                        }
+                        if indent == useIndent && trimmed.hasPrefix("-") {
+                            endUseIdx += 1
+                            continue
+                        }
+                        break
+                    }
+                    lines.removeSubrange(useIdx..<endUseIdx)
+                    nextGroupIdx -= (endUseIdx - useIdx)
+                }
+                
+                // Inject new `use:`
+                if !providers.isEmpty {
+                    var insertAt = firstGroupIdx + 1
+                    var baseIndent = "    "
+                    while insertAt < nextGroupIdx {
+                        let line = lines[insertAt]
+                        let trimmed = line.trimmingCharacters(in: .whitespacesAndNewlines)
+                        if !trimmed.hasPrefix("type:") && !trimmed.hasPrefix("name:") { break }
+                        baseIndent = String(line.prefix(while: { $0 == " " }))
+                        insertAt += 1
+                    }
+                    var useBlock = ["\(baseIndent)use:"]
+                    useBlock.append(contentsOf: providers.map { "\(baseIndent)  - \"\($0.name)\"" })
+                    lines.insert(contentsOf: useBlock, at: insertAt)
+                }
             }
+        }
+
+        // 5. Cleanup any dangling empty use: or proxies: blocks in other groups
+        var j = lines.count - 1
+        while j >= 0 {
+            let trimmed = lines[j].trimmingCharacters(in: .whitespacesAndNewlines)
+            if trimmed == "use:" || trimmed == "proxies:" {
+                let indent = lines[j].prefix(while: { $0 == " " }).count
+                var hasChildren = false
+                var k = j + 1
+                while k < lines.count {
+                    let nextTrimmed = lines[k].trimmingCharacters(in: .whitespacesAndNewlines)
+                    if nextTrimmed.isEmpty { k += 1; continue }
+                    let nextIndent = lines[k].prefix(while: { $0 == " " }).count
+                    if nextIndent > indent { 
+                        hasChildren = true
+                        break 
+                    }
+                    if nextIndent == indent && nextTrimmed.hasPrefix("-") {
+                        hasChildren = true
+                        break
+                    }
+                    break
+                }
+                if !hasChildren {
+                    lines.remove(at: j)
+                }
+            }
+            j -= 1
         }
 
         try? lines.joined(separator: "\n").write(toFile: configFilePath, atomically: true, encoding: .utf8)
