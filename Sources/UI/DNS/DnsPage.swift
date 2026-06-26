@@ -58,7 +58,7 @@ struct DnsPage: View {
                                     HStack {
                                         Text(c.host).font(.dsBody).lineLimit(1)
                                         Spacer()
-                                        Text(c.dstIP).font(.dsMono).foregroundColor(M.accent)
+                                        Text(c.dstIP).font(.dsMono).foregroundColor(DS.Palette.accent)
                                     }
                                 }
                             }
