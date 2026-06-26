@@ -1,6 +1,6 @@
 # ClashHalo
 
-> macOS 14+ (Apple Silicon) 原生 SwiftUI 代理客户端，直接编排官方 `mihomo` (Clash.Meta) 内核。当前版本 **v0.5.2**。
+> macOS 14+ (Apple Silicon) 原生 SwiftUI 代理客户端，直接编排官方 `mihomo` (Clash.Meta) 内核。当前版本 **v0.5.3**。
 
 ClashHalo 采用「原生编排器」架构，纯 Swift 编写、零中间层，特权操作交由独立签名的 Helper 处理，完全兼容官方内核特性。
 
