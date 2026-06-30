@@ -5,6 +5,16 @@ import Foundation
 // proxy / TUN / engine), mode, and the read-only rules view.
 
 extension AppModel {
+    /// Gateway mode configuration overrides (allow-lan + DNS listen on 0.0.0.0:53)
+    static let gatewayOverrides: [String: Any] = [
+        "allow-lan": true,
+        "dns": [
+            "enable": true,
+            "listen": "0.0.0.0:53",
+            "enhanced-mode": "fake-ip"
+        ]
+    ]
+
     /// Promote an Imported (or re-activate an Applied) profile to the
     /// running kernel: persist → reload → mark applied. Pure side-effects;
     /// the user already consented at the call site (two-stage sheet or
@@ -50,15 +60,7 @@ extension AppModel {
                 // allow-lan / dns.listen. Re-apply the Gateway overrides so
                 // the gateway keeps working.
                 if gatewayModeOn {
-                    let overrides: [String: Any] = [
-                        "allow-lan": true,
-                        "dns": [
-                            "enable": true,
-                            "listen": "0.0.0.0:53",
-                            "enhanced-mode": "fake-ip"
-                        ]
-                    ]
-                    engine.setTopLevelScalars(overrides)
+                    engine.setTopLevelScalars(Self.gatewayOverrides)
                     do {
                         try await api.reloadConfig(path: engine.configFilePath)
                         await refreshConfigs()
@@ -248,15 +250,7 @@ extension AppModel {
             let cfgPath = engine.configFilePath
             let backup = try? String(contentsOfFile: cfgPath, encoding: .utf8)
 
-            let overrides: [String: Any] = [
-                "allow-lan": true,
-                "dns": [
-                    "enable": true,
-                    "listen": "0.0.0.0:53",
-                    "enhanced-mode": "fake-ip"
-                ]
-            ]
-            engine.setTopLevelScalars(overrides)
+            engine.setTopLevelScalars(Self.gatewayOverrides)
             showToast("正在重启核心以应用网关配置…")
             await engine.restart()
             try? await Task.sleep(nanoseconds: 2_000_000_000)
