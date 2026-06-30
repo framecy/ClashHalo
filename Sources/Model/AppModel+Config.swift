@@ -136,13 +136,16 @@ extension AppModel {
         if let tun = c["tun"] as? [String: Any] {
             tunOn = (tun["enable"] as? Bool) == true && engine.runningAsRoot
         }
-        // Sync Gateway state from config: if allow-lan=true AND dns.listen=0.0.0.0:53,
-        // Gateway mode is likely active (single-direction sync; write path is authoritative).
-        let allowLan = (c["allow-lan"] as? Bool) == true
-        let dnsListen = (c["dns"] as? [String: Any])?["listen"] as? String
-        if allowLan && dnsListen == "0.0.0.0:53" {
-            // Config suggests Gateway is on; reflect in UI if not already
-            if !gatewayModeOn { gatewayModeOn = true }
+        // Gateway state inference (cautious): if UI thinks Gateway is off but
+        // config has the signature (allow-lan=true AND dns.listen=0.0.0.0:53),
+        // sync UI to true. Never sync false → avoids overwriting user's manual
+        // LAN-sharing configs. The write path (applyGatewayMode) remains authoritative.
+        if !gatewayModeOn {
+            let allowLan = (c["allow-lan"] as? Bool) == true
+            let dnsListen = (c["dns"] as? [String: Any])?["listen"] as? String
+            if allowLan && dnsListen == "0.0.0.0:53" {
+                gatewayModeOn = true
+            }
         }
         // Keep system DNS in sync with the real TUN state. This is the single
         // point where tunOn is derived from reality, so it also recovers the
