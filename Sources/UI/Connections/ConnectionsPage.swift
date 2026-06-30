@@ -20,7 +20,13 @@ struct ConnectionsPage: View {
     // Rule Editor
     @StateObject private var ruleModel = RuleEditorModel(targetFilePath: "")
     @State private var activeRuleEdit: RuleEditContext? = nil
-    
+
+    // Computed filtered & sorted rows (cached per body evaluation)
+    private var filteredRows: [Conn] {
+        let source = selectedTab == 0 ? VM.conns : VM.closedConnections
+        return source.filter { matches($0) }.sorted(using: sortOrder)
+    }
+
     var body: some View {
         VStack(spacing: 0) {
             PageHead(title: "连接", desc: selectedTab == 0 ? "\(VM.conns.count) 个活跃连接 · 实时速率" : "\(VM.closedConnections.count) 个已关闭连接") {
@@ -43,23 +49,19 @@ struct ConnectionsPage: View {
                 }
                 
                 Spacer()
-                
-                let sourceConns = selectedTab == 0 ? VM.conns : VM.closedConnections
-                Text("\(sourceConns.filter { matches($0) }.count) 匹配").font(.dsBody).foregroundColor(.secondary)
+
+                Text("\(filteredRows.count) 匹配").font(.dsBody).foregroundColor(.secondary)
             }
             .padding(.horizontal, DS.Spacing.l).padding(.vertical, 10)
             .background(Color(nsColor: .windowBackgroundColor).opacity(0.3))
             Divider()
 
-            let sourceConns = selectedTab == 0 ? VM.conns : VM.closedConnections
-            let rows = sourceConns.filter { matches($0) }.sorted(using: sortOrder)
-            
-            if rows.isEmpty {
+            if filteredRows.isEmpty {
                 ContentUnavailable(q.isEmpty ? (selectedTab == 0 ? "暂无活跃连接" : "暂无已关闭连接") : "无匹配结果", "point.3.connected.trianglepath.dotted")
                     .frame(maxHeight: .infinity)
                     .onTapGesture { selection = nil }
             } else {
-                Table(rows, selection: $selection, sortOrder: $sortOrder) {
+                Table(filteredRows, selection: $selection, sortOrder: $sortOrder) {
                     TableColumn("目标", value: \.host) { c in
                         VStack(alignment: .leading, spacing: 1) {
                             Text(c.host).font(.dsBodyMedium).lineLimit(1)
@@ -98,7 +100,7 @@ struct ConnectionsPage: View {
                     }.width(36)
                 }
                 .contextMenu(forSelectionType: Conn.ID.self) { ids in
-                    if let id = ids.first, let c = rows.first(where: { $0.id == id }) {
+                    if let id = ids.first, let c = filteredRows.first(where: { $0.id == id }) {
                         Button("添加/修改分流规则...") {
                             prepareRuleEdit(for: c)
                         }
