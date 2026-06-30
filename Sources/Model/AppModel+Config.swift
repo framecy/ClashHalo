@@ -11,6 +11,7 @@ extension AppModel {
     /// "设为活动" tap). Reload coalesces via `appliedHash`: a re-apply of
     /// unchanged content short-circuits before touching the kernel.
     func selectForApply(_ id: String) {
+        guard !engine.isBusy else { showToast("内核操作进行中，请稍候…"); return }
         guard let content = store.commit(id) else { showToast("配置为空"); return }
         let name = store.profiles.first { $0.id == id }?.name ?? ""
         let wasTunOn = tunOn
@@ -25,7 +26,9 @@ extension AppModel {
         }
         let oldPort = proxyPort
         pendingApplyID = id
+        engine.isBusy = true
         Task {
+            defer { engine.isBusy = false }
             let (ok, err) = await engine.setConfig(content)
             pendingApplyID = nil
             if ok {
@@ -63,6 +66,9 @@ extension AppModel {
                         showToast("网关配置重载失败")
                     }
                 }
+
+                // Refresh proxies after profile switch (event-driven)
+                await refreshProxies()
             } else {
                 showToast("配置错误：\(err ?? "")，已回滚")
             }
@@ -130,6 +136,14 @@ extension AppModel {
         if let tun = c["tun"] as? [String: Any] {
             tunOn = (tun["enable"] as? Bool) == true && engine.runningAsRoot
         }
+        // Sync Gateway state from config: if allow-lan=true AND dns.listen=0.0.0.0:53,
+        // Gateway mode is likely active (single-direction sync; write path is authoritative).
+        let allowLan = (c["allow-lan"] as? Bool) == true
+        let dnsListen = (c["dns"] as? [String: Any])?["listen"] as? String
+        if allowLan && dnsListen == "0.0.0.0:53" {
+            // Config suggests Gateway is on; reflect in UI if not already
+            if !gatewayModeOn { gatewayModeOn = true }
+        }
         // Keep system DNS in sync with the real TUN state. This is the single
         // point where tunOn is derived from reality, so it also recovers the
         // correct DNS after an app restart (TUN survived → keep redirect; TUN
@@ -160,6 +174,7 @@ extension AppModel {
     }
 
     func toggleSystemProxy() {
+        guard !engine.isBusy else { showToast("内核操作进行中，请稍候…"); return }
         let on = !systemProxyOn
         let port = proxyPort
         Task {
@@ -570,6 +585,10 @@ extension AppModel {
                 await self.engine.stopKernel()
                 self.reachable = false
                 self.tunOn = false
+                // 停核心时主动清理 Gateway 系统级 IP 转发（sysctl），防止残留
+                if self.gatewayModeOn {
+                    _ = await self.engine.setGatewayMode(enabled: false)
+                }
                 self.gatewayModeOn = false
                 await self.restoreTunnelDNS()
                 if self.systemProxyOn {
@@ -585,7 +604,17 @@ extension AppModel {
 
     func setMode(_ m: String) {
         mode = m
-        Task { try? await api.patchConfig(["mode": m]); showToast("已切换至\(modeLabel(m))模式") }
+        Task {
+            try? await api.patchConfig(["mode": m])
+            // Mode switch (global/direct) changes the routing logic; close existing
+            // connections so traffic re-dials through the new path immediately.
+            if closeOnSwitch {
+                try? await api.closeAllConnections()
+            }
+            // Refresh proxies after mode change (event-driven instead of polling)
+            await refreshProxies()
+            showToast("已切换至\(modeLabel(m))模式")
+        }
     }
 
     // Rules (read-only view of the kernel's active rule set).

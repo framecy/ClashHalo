@@ -95,15 +95,18 @@ struct LogsPage: View {
 
 @MainActor final class LogsViewModel: ObservableObject {
     @Published var logs: [Log] = []
-    
-    // Mirror of UserPreferences
-    @AppStorage("ui.logLevel") var logLevel = "warning"
-    
+
     private var logWS: WSHandle?
     private var logBuffer: [Log] = []
     private var logFlushTimer: Timer?
     private var logSeq = 0
     private let api = MihomoClient.shared
+    private let M = AppModel.shared
+
+    /// 日志级别从 M.configs["log-level"] 读取，修改时写回内核
+    var logLevel: String {
+        (M.configs["log-level"] as? String) ?? "warning"
+    }
     
     private static let logDF: DateFormatter = {
         let f = DateFormatter()
@@ -141,13 +144,16 @@ struct LogsPage: View {
     
     func changeLogLevel(_ level: String) {
         guard level != logLevel else { return }
-        logLevel = level
-        
+
         logs.removeAll(keepingCapacity: true)
         logBuffer.removeAll(keepingCapacity: true)
         logWS?.cancel()
-        
-        subscribeLogs()
+
+        // 写入内核持久化（log-level 是 load-time-only，需 patchPersistent）
+        Task {
+            await M.patchPersistent(["log-level": level])
+            subscribeLogs()
+        }
     }
     
     private func subscribeLogs() {
@@ -166,12 +172,12 @@ struct LogsPage: View {
     
     private func flushLogs() {
         guard !logBuffer.isEmpty else { return }
-        
+
         logs.append(contentsOf: logBuffer)
         logBuffer.removeAll(keepingCapacity: true)
-        
-        if logs.count > 150 {
-            logs = Array(logs.suffix(150))
+
+        if logs.count > 300 {
+            logs = Array(logs.suffix(300))
         }
     }
 }
