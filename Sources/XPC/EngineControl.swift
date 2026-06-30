@@ -6,7 +6,7 @@ import SwiftUI
     static let shared = EngineControl()
     /// Expected version of the installed helper. When the running helper reports a
     /// different version the app auto-reinstalls it (new binary = new permissions fix).
-    static let kExpectedHelperVersion = "1.0.11"
+    static let kExpectedHelperVersion = kSharedHelperVersion
     let api = MihomoClient.shared
 
     @Published var present = false
