@@ -2,15 +2,15 @@ import Foundation
 import Security
 import Darwin
 
-let kHelperVersion = "1.0.11"
+let kHelperVersion = kSharedHelperVersion
 
 private let kClientRequirement = "identifier \"com.clashpow.app\""
 
 /// Validate that an incoming XPC peer is the ClashPow app.
 /// Three layers, each more permissive than the last, to handle all signing variants:
 ///   1. Security framework: identifier check with basic-validate-only flags
-///   2. SecCodeCopyPath: bundle-root URL check
-///   3. proc_pidpath: raw executable path check (most reliable for ad-hoc builds)
+///   2. SecCodeCopyPath: bundle-root URL check (must be inside the .app bundle)
+///   3. proc_pidpath: raw executable path check (must be inside .app/Contents/MacOS/)
 func isAuthorizedClient(_ conn: NSXPCConnection) -> Bool {
     let pid = conn.processIdentifier
     guard pid > 0 else { return false }
@@ -36,8 +36,7 @@ func isAuthorizedClient(_ conn: NSXPCConnection) -> Bool {
             var pathURL: CFURL?
             if SecCodeCopyPath(sc, SecCSFlags(rawValue: 0), &pathURL) == errSecSuccess,
                let path = (pathURL as URL?)?.path {
-                let p = path.lowercased()
-                if p.contains("/clashhalo") || p.contains("/clashpow") {
+                if isClashAppBundlePath(path) {
                     log("isAuthorizedClient: SecCode-path fallback accepted pid \(pid): \(path)")
                     return true
                 }
@@ -50,8 +49,7 @@ func isAuthorizedClient(_ conn: NSXPCConnection) -> Bool {
     var pathBuf = [Int8](repeating: 0, count: 4096)
     if proc_pidpath(pid, &pathBuf, 4096) > 0 {
         let path = String(cString: pathBuf)
-        let p = path.lowercased()
-        if p.contains("/clashhalo") || p.contains("/clashpow") {
+        if isClashExecutablePath(path) {
             log("isAuthorizedClient: proc_pidpath fallback accepted pid \(pid): \(path)")
             return true
         }
@@ -59,6 +57,22 @@ func isAuthorizedClient(_ conn: NSXPCConnection) -> Bool {
 
     log("isAuthorizedClient: REJECTED pid \(pid)")
     return false
+}
+
+/// True only for a genuine ClashPow/ClashHalo .app bundle root path, not any
+/// path that merely contains the substring (prevents a rogue app at e.g.
+/// /tmp/clashpow-evil/x from impersonating the client).
+private func isClashAppBundlePath(_ path: String) -> Bool {
+    let p = path.lowercased()
+    return p.hasSuffix("/clashhalo.app") || p.hasSuffix("/clashpow.app")
+}
+
+/// True only for an executable inside ClashPow/ClashHalo.app/Contents/MacOS/.
+/// Requires the full bundle-internal structure, not a substring match.
+private func isClashExecutablePath(_ path: String) -> Bool {
+    let p = path.lowercased()
+    return p.contains("/clashhalo.app/contents/macos/") ||
+           p.contains("/clashpow.app/contents/macos/")
 }
 
 /// Only permit launching a binary at the canonical ClashPow kernel path.
@@ -212,6 +226,14 @@ class Helper: NSObject, HelperProtocol {
 }
 
 class HelperDelegate: NSObject, NSXPCListenerDelegate {
+    /// Tracks active connections per client PID. Cleanup only fires when a
+    /// client's LAST connection closes AND the process is confirmed gone —
+    /// this prevents short-lived one-shot connections (setGatewayMode,
+    /// verifyConnectivity) from triggering false cleanup while the app is
+    /// still running with other active connections.
+    private static var activeConnections: [Int32: Int] = [:]
+    private static let connLock = NSLock()
+
     func listener(_ listener: NSXPCListener, shouldAcceptNewConnection newConnection: NSXPCConnection) -> Bool {
         log("New connection attempt from pid: \(newConnection.processIdentifier)")
         guard isAuthorizedClient(newConnection) else {
@@ -220,14 +242,44 @@ class HelperDelegate: NSObject, NSXPCListenerDelegate {
         }
         newConnection.exportedInterface = NSXPCInterface(with: HelperProtocol.self)
         newConnection.exportedObject = Helper()
-        
+
         let clientPid = newConnection.processIdentifier
+
+        // Increment active connection count for this client
+        Self.connLock.lock()
+        Self.activeConnections[clientPid, default: 0] += 1
+        Self.connLock.unlock()
+
         newConnection.invalidationHandler = {
             log("Connection invalidated from pid \(clientPid)")
-            // To prevent accidental kernel cleanup on short-lived throwaway connections
-            // (e.g. setGatewayMode/verifyConnectivity), we wait briefly and re-verify
-            // that the client process is actually gone.
-            DispatchQueue.global().asyncAfter(deadline: .now() + 1.0) {
+
+            // Decrement; only proceed to cleanup check if this was the last connection
+            Self.connLock.lock()
+            let remaining = (Self.activeConnections[clientPid] ?? 1) - 1
+            if remaining <= 0 {
+                Self.activeConnections[clientPid] = nil
+            } else {
+                Self.activeConnections[clientPid] = remaining
+            }
+            Self.connLock.unlock()
+
+            guard remaining <= 0 else {
+                log("pid \(clientPid) still has \(remaining) active connection(s). Skipping cleanup check.")
+                return
+            }
+
+            // Last connection closed — wait and re-verify the process is actually gone.
+            // 2s grace handles the gap between one-shot connection teardown and a
+            // potential immediately-following new connection from the same client.
+            DispatchQueue.global().asyncAfter(deadline: .now() + 2.0) {
+                // Re-check: a new connection may have opened during the grace window
+                Self.connLock.lock()
+                let reopened = (Self.activeConnections[clientPid] ?? 0) > 0
+                Self.connLock.unlock()
+                guard !reopened else {
+                    log("pid \(clientPid) reopened a connection during grace. Skipping cleanup.")
+                    return
+                }
                 // kill(pid, 0) sends a null signal to detect process existence.
                 // Since helper runs as root, EPERM will not be returned if process exists,
                 // so any non-zero return means the process is gone (ESRCH).
@@ -239,7 +291,7 @@ class HelperDelegate: NSObject, NSXPCListenerDelegate {
                 }
             }
         }
-        
+
         newConnection.resume()
         return true
     }

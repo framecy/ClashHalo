@@ -226,11 +226,28 @@ extension AppModel {
                 showToast("开启网关中枢需要管理员授权…")
                 let ok = await engine.installPrivileged()
                 guard ok else { showToast("授权失败，未开启网关"); return }
+                // Verify XPC connectivity after install (catch bootstrap failures)
+                guard await XPCManager.shared.verifyConnectivity() else {
+                    showToast("特权服务安装后无法连接，未开启网关")
+                    engine.isRoot = false
+                    return
+                }
                 // Also requires root engine restart if not already
                 if !engine.runningAsRoot {
                     showToast("正在以 Root 权限重启核心…")
                     await engine.restart()
-                    try? await Task.sleep(nanoseconds: 2_000_000_000)
+                    // Poll until the root kernel is actually up (2s was a race —
+                    // mihomo needs variable time to bind 0.0.0.0:53 for Gateway DNS)
+                    var rootReady = false
+                    for _ in 0..<10 {
+                        try? await Task.sleep(nanoseconds: 1_000_000_000)
+                        await api.probe(timeout: 1.0)
+                        if api.reachable && engine.runningAsRoot { rootReady = true; break }
+                    }
+                    guard rootReady else {
+                        showToast("Root 内核启动超时，未开启网关")
+                        return
+                    }
                     await reconnect()
                 }
             }
@@ -420,10 +437,23 @@ extension AppModel {
                 showToast("TUN 开启失败：可能无管理员权限或路由被其他 VPN 占用冲突")
             } else {
                 // TUN disable cascades: Gateway mode requires TUN, so if we
-                // just turned TUN off, also tear down Gateway (sysctl + UI).
+                // just turned TUN off, also tear down Gateway (sysctl + UI +
+                // restore the allow-lan/dns.listen overrides Gateway applied).
                 if !want && gatewayModeOn {
                     _ = await engine.setGatewayMode(enabled: false)
                     gatewayModeOn = false
+                    // Restore config.yaml overrides so a later config switch /
+                    // Gateway re-enable doesn't read stale snapshot values.
+                    let restores: [String: Any] = [
+                        "allow-lan": preGatewayAllowLan ?? false,
+                        "dns": [
+                            "enable": true,
+                            "listen": preGatewayDNSListen ?? "127.0.0.1:1053",
+                            "enhanced-mode": "fake-ip"
+                        ]
+                    ]
+                    preGatewayAllowLan = nil; preGatewayDNSListen = nil
+                    engine.setTopLevelScalars(restores)
                 }
                 showToast(want ? "TUN 模式已开启" : "TUN 模式已关闭")
             }
