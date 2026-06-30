@@ -389,8 +389,8 @@ struct ConnDetailCard: View {
 
         if !newClosed.isEmpty {
             M.cachedClosedConnections.insert(contentsOf: newClosed, at: 0)
-            if M.cachedClosedConnections.count > 150 {
-                M.cachedClosedConnections.removeLast(M.cachedClosedConnections.count - 150)
+            if M.cachedClosedConnections.count > 200 {
+                M.cachedClosedConnections.removeLast(M.cachedClosedConnections.count - 200)
             }
         }
         M.activeConnsSet = activeIDs
