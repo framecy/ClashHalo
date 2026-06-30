@@ -440,7 +440,11 @@ struct GeoURLRow: View {
             Text(label).font(.dsBody).frame(width: 70, alignment: .leading)
             TextField("https://…", text: $text)
                 .textFieldStyle(.roundedBorder).font(.dsMono)
-                .onSubmit { Task { await M.patch(["geox-url": [sub: text]]) } }
+                .onSubmit {
+                    let geo = (M.configs["geox-url"] as? [String: Any] ?? [:])
+                        .merging([sub: text]) { _, new in new }
+                    Task { await M.patchPersistent(["geox-url": geo]) }
+                }
         }
         .padding(.vertical, 5)
         .onAppear {

@@ -62,9 +62,6 @@ import ServiceManagement
     var activeConnsSet: Set<String> = []
     var totalConnsCount = 0
 
-    // Logs (level configuration is preserved)
-    @AppStorage("ui.logLevel") var logLevel = "warning"
-
     // Traffic rate (numbers only, sparkline moved to DashboardViewModel)
     @Published var curDown: Int64 = 0
     @Published var curUp: Int64 = 0
@@ -89,7 +86,7 @@ import ServiceManagement
         Task { @MainActor in
             let line = "[\(Self.logDF.string(from: Date()))] \(msg)"
             kernelLogs.append(line)
-            if kernelLogs.count > 100 { kernelLogs.removeFirst() }
+            if kernelLogs.count > 200 { kernelLogs.removeFirst() }
             print("KernelLog: \(msg)")
         }
     }
@@ -314,8 +311,8 @@ import ServiceManagement
         pollTimer = nil
 
         if !isConnectionsPageActive {
-            // 后台慢速轮询：降低频率到 10 秒，减少内存分配
-            pollTimer = Timer.scheduledTimer(withTimeInterval: 10.0, repeats: true) { [weak self] _ in
+            // 后台慢速轮询：降低频率到 30 秒，减少内存分配
+            pollTimer = Timer.scheduledTimer(withTimeInterval: 30.0, repeats: true) { [weak self] _ in
                 Task {
                     guard let self else { return }
                     // 睡眠中或网络离线时跳过轮询
@@ -349,7 +346,9 @@ import ServiceManagement
         pollTask?.cancel()
         pollTask = Task { [weak self] in
             while let self, !Task.isCancelled, self.reachable, self.isMainWindowVisible || self.isMenuBarVisible {
-                await self.refreshProxies()
+                // Only refresh configs periodically; proxies are refreshed on-demand
+                // (mode/profile switch, manual test-all) to avoid triggering @Published
+                // groups diff every 3s when nothing changes.
                 await self.refreshConfigs()
                 try? await Task.sleep(nanoseconds: 3_000_000_000)
             }
@@ -614,6 +613,24 @@ import ServiceManagement
                 try await api.reloadConfig(path: engine.configFilePath)
                 await refreshConfigs()
                 await refreshProxies()
+
+                // Gateway cascade: reload re-reads config.yaml from disk, which
+                // has the original profile values. If Gateway was on, re-inject
+                // the overrides (allow-lan + dns.listen=0.0.0.0:53) so it keeps working.
+                if gatewayModeOn {
+                    let overrides: [String: Any] = [
+                        "allow-lan": true,
+                        "dns": [
+                            "enable": true,
+                            "listen": "0.0.0.0:53",
+                            "enhanced-mode": "fake-ip"
+                        ]
+                    ]
+                    engine.setTopLevelScalars(overrides)
+                    try await api.reloadConfig(path: engine.configFilePath)
+                    await refreshConfigs()
+                }
+
                 showToast("配置已重载")
             } catch {
                 showToast("重载失败：\(error.localizedDescription)")
