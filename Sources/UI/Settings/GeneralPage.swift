@@ -71,10 +71,10 @@ struct GeneralPage: View {
                         // 路由与连接
                         Card(title: "路由与连接", icon: "arrow.triangle.branch") {
                             VStack(spacing: 2) {
-                                PickerRow("日志级别", key: "log-level", options: [("silent","静默"),("error","error"),("warning","warning"),("info","info"),("debug","debug")])
-                                ToggleRow("TCP 并发连接", key: "tcp-concurrent")
+                                PickerRow("日志级别", key: "log-level", options: [("silent","静默"),("error","error"),("warning","warning"),("info","info"),("debug","debug")], persistent: true)
+                                ToggleRow("TCP 并发连接", key: "tcp-concurrent", persistent: true)
                                 ToggleRow("统一延迟测速", key: "unified-delay", persistent: true)
-                                TextRow("绑定网卡", key: "interface-name", placeholder: "自动")
+                                TextRow("绑定网卡", key: "interface-name", placeholder: "自动", persistent: true)
                                 PickerRow("进程匹配", key: "find-process-mode", options: [("always","总是"),("strict","严格"),("off","关闭")], persistent: true)
                                 NumRow("Keep-Alive 间隔 (秒)", key: "keep-alive-interval", persistent: true)
                                 NumRow("Keep-Alive 空闲 (秒)", key: "keep-alive-idle", persistent: true)
