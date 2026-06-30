@@ -163,7 +163,7 @@ struct YAMLPreview: Equatable {
     /// applied; a draft stays a draft (the caller decides when to promote).
     func updateRemote(_ id: String) async -> Bool {
         guard let p = profiles.first(where: { $0.id == id }), let url = p.url, let u = URL(string: url),
-              let (data, _) = try? await URLSession.shared.data(from: u),
+              let (data, _) = try? await session.data(from: u),
               let content = String(data: data, encoding: .utf8) else { return false }
         try? content.write(toFile: path(id), atomically: true, encoding: .utf8); touch(id); return true
     }
