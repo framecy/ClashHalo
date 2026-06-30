@@ -472,12 +472,14 @@ import ServiceManagement
                 do {
                     try await api.reloadConfig(path: engine.configFilePath)
                     await refreshConfigs()
+                    // Only enable sysctl IP forwarding after config is confirmed reloaded
+                    let ok = await engine.setGatewayMode(enabled: true)
+                    gatewayModeOn = ok
+                    logKernel(ok ? "网关中枢已恢复" : "网关中枢恢复失败")
                 } catch {
-                    logKernel("网关配置重载失败：\(error.localizedDescription)")
+                    logKernel("网关配置重载失败：\(error.localizedDescription)，跳过 sysctl 设置")
+                    gatewayModeOn = false
                 }
-                let ok = await engine.setGatewayMode(enabled: true)
-                gatewayModeOn = ok
-                logKernel(ok ? "网关中枢已恢复" : "网关中枢恢复失败")
             }
 
             logKernel("唤醒恢复完成")
