@@ -359,6 +359,13 @@ extension AppModel {
                 showToast("启用 TUN 需要管理员授权以安装特权服务…")
                 let ok = await engine.installPrivileged()
                 guard ok else { showToast("授权失败，TUN 未启用"); return }
+                // Verify XPC connectivity after installation to catch launchd bootstrap failures
+                let connected = await XPCManager.shared.verifyConnectivity()
+                guard connected else {
+                    showToast("特权服务安装后无法连接，请重启应用或检查系统日志")
+                    engine.isRoot = false  // Reset to prevent permanent lock
+                    return
+                }
             } else if engine.helperVersion != EngineControl.kExpectedHelperVersion,
                       engine.helperVersion != "?" {
                 // Installed helper is outdated — full upgrade (uninstall → install)
@@ -373,12 +380,15 @@ extension AppModel {
                 }
                 engine.refreshHelperVersion()
                 // upgradeDaemon goes through XPCManager directly (not
-                // installPrivileged), so it doesn't set isRoot. pollStatus would
-                // eventually re-sync it, but restart() below runs immediately and
-                // reads isRoot to choose root-vs-user launch — without this the
-                // 2s pollStatus window (isRoot=false during uninstall) could make
-                // it launch user-mode and TUN would fail.
-                engine.isRoot = true
+                // installPrivileged), so it doesn't set isRoot. We must verify
+                // the new helper is actually running before marking isRoot=true,
+                // otherwise a failed upgrade leaves us in a broken state.
+                if await XPCManager.shared.verifyConnectivity() {
+                    engine.isRoot = true
+                } else {
+                    showToast("Helper 升级后无法连接，TUN 未启用")
+                    return
+                }
             }
 
             showToast("正在以 Root 权限重启核心…")
@@ -456,7 +466,9 @@ extension AppModel {
         let d = UserDefaults.standard
         if !d.bool(forKey: Self.kDNSOverriddenKey) {
             let original = await EngineControl.currentSystemDNS()
-            d.set(original.joined(separator: ","), forKey: Self.kDNSSavedKey)
+            // Use sentinel value "Empty" if system DNS is unconfigured (common on fresh macOS)
+            let snapshot = original.isEmpty ? "Empty" : original.joined(separator: ",")
+            d.set(snapshot, forKey: Self.kDNSSavedKey)
             d.set(true, forKey: Self.kDNSOverriddenKey)
         }
         await EngineControl.applySystemDNS([gateway])
@@ -467,8 +479,9 @@ extension AppModel {
     func restoreTunnelDNS() async {
         let d = UserDefaults.standard
         guard d.bool(forKey: Self.kDNSOverriddenKey) else { return }
-        let saved = (d.string(forKey: Self.kDNSSavedKey) ?? "")
-            .split(separator: ",").map(String.init)
+        let savedString = d.string(forKey: Self.kDNSSavedKey) ?? ""
+        // Handle sentinel "Empty" by clearing DNS (networksetup needs "Empty" literal)
+        let saved = savedString == "Empty" ? ["Empty"] : savedString.split(separator: ",").map(String.init)
         await EngineControl.applySystemDNS(saved)
         d.set(false, forKey: Self.kDNSOverriddenKey)
         d.removeObject(forKey: Self.kDNSSavedKey)

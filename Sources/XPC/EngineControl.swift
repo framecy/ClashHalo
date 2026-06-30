@@ -769,7 +769,19 @@ import SwiftUI
             if isRoot {
                 if let helper = XPCManager.shared.helper() {
                     helper.startMihomo(binPath: kernelPath, homeDir: appSupport) { success in
-                        Task { @MainActor in if success { self.runningAsRoot = true } }
+                        Task { @MainActor in
+                            if success {
+                                self.runningAsRoot = true
+                            } else {
+                                // Helper failed to start mihomo (port conflict, binPath check failure, etc.)
+                                // Fallback to user-mode so the app isn't permanently stuck
+                                self.onLog?("⚠️ Root 模式启动失败，回退到用户模式")
+                                self.isRoot = false
+                                self.runningAsRoot = false
+                                // Retry in user mode
+                                self.ensureRunning()
+                            }
+                        }
                     }
                 }
             } else {
