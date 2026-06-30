@@ -468,15 +468,7 @@ import ServiceManagement
             // and reload so Gateway clients keep working.
             if preSleepGatewayOn && reachable {
                 logKernel("恢复网关中枢配置...")
-                let overrides: [String: Any] = [
-                    "allow-lan": true,
-                    "dns": [
-                        "enable": true,
-                        "listen": "0.0.0.0:53",
-                        "enhanced-mode": "fake-ip"
-                    ]
-                ]
-                engine.setTopLevelScalars(overrides)
+                engine.setTopLevelScalars(AppModel.gatewayOverrides)
                 do {
                     try await api.reloadConfig(path: engine.configFilePath)
                     await refreshConfigs()
@@ -618,15 +610,7 @@ import ServiceManagement
                 // has the original profile values. If Gateway was on, re-inject
                 // the overrides (allow-lan + dns.listen=0.0.0.0:53) so it keeps working.
                 if gatewayModeOn {
-                    let overrides: [String: Any] = [
-                        "allow-lan": true,
-                        "dns": [
-                            "enable": true,
-                            "listen": "0.0.0.0:53",
-                            "enhanced-mode": "fake-ip"
-                        ]
-                    ]
-                    engine.setTopLevelScalars(overrides)
+                    engine.setTopLevelScalars(AppModel.gatewayOverrides)
                     try await api.reloadConfig(path: engine.configFilePath)
                     await refreshConfigs()
                 }
