@@ -1,5 +1,11 @@
 import Foundation
 
+/// Single source of truth for the privileged helper version.
+/// Shared by both the Helper binary (compiled via make.sh) and the main app
+/// (Xcode target) since both include this file — prevents the two-location
+/// version drift that caused infinite upgrade loops.
+public let kSharedHelperVersion = "1.0.11"
+
 @objc(HelperProtocol)
 public protocol HelperProtocol {
     func getVersion(withReply reply: @escaping (String) -> Void)

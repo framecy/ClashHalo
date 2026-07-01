@@ -18,6 +18,14 @@ final class KernelManager: ObservableObject {
     private var binPath: String { NSHomeDirectory() + "/Library/Application Support/ClashPow/bin/mihomo" }
     @AppStorage("kernel.active") var activeTag = "内置"
 
+    /// URLSession with timeout for kernel downloads (2min resource timeout for large binaries)
+    private let session: URLSession = {
+        let config = URLSessionConfiguration.default
+        config.timeoutIntervalForRequest = 30
+        config.timeoutIntervalForResource = 120
+        return URLSession(configuration: config)
+    }()
+
     /// Whether a kernel is bundled inside the app.
     var hasBuiltin: Bool { Bundle.main.url(forResource: "mihomo", withExtension: nil) != nil }
 
@@ -112,7 +120,7 @@ final class KernelManager: ObservableObject {
         var req = URLRequest(url: url)
         req.setValue("application/vnd.github+json", forHTTPHeaderField: "Accept")
         req.setValue("ClashHalo", forHTTPHeaderField: "User-Agent")
-        guard let (data, resp) = try? await URLSession.shared.data(for: req) else { note = "网络错误"; return }
+        guard let (data, resp) = try? await session.data(for: req) else { note = "网络错误"; return }
         if let h = resp as? HTTPURLResponse, h.statusCode == 403 { note = "GitHub API 限流，请稍后再试"; return }
         struct Asset: Decodable { let name: String; let browser_download_url: String }
         struct Release: Decodable { let tag_name: String; let assets: [Asset] }
@@ -128,7 +136,7 @@ final class KernelManager: ObservableObject {
     func download() async {
         guard let url = URL(string: assetURL), !latestTag.isEmpty else { return }
         downloading = true; progress = 0; note = ""; defer { downloading = false }
-        guard let (tmp, _) = try? await URLSession.shared.download(from: url) else { note = "下载失败"; return }
+        guard let (tmp, _) = try? await session.download(from: url) else { note = "下载失败"; return }
         let fm = FileManager.default
         let tagDir = dir + "/\(latestTag)"
         try? fm.createDirectory(atPath: tagDir, withIntermediateDirectories: true)
