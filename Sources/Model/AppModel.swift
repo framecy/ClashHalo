@@ -308,19 +308,17 @@ import ServiceManagement
         pollTimer?.invalidate()
         pollTimer = nil
 
-        if !isConnectionsPageActive {
-            // 后台慢速轮询：降低频率到 30 秒，减少内存分配
+        // 后台慢速轮询：仅在窗口不可见且连接页未激活时运行
+        // 可见时 startPolling() + ConnectionsViewModel 已覆盖所有数据更新，无需重复
+        if !activeUI && !isConnectionsPageActive {
             pollTimer = Timer.scheduledTimer(withTimeInterval: 30.0, repeats: true) { [weak self] _ in
                 Task {
                     guard let self else { return }
-                    // 睡眠中或网络离线时跳过轮询
                     guard !self.sleeping && self.networkOnline else { return }
                     do {
                         let snapshot = try await self.api.fetchConnectionsSnapshot()
                         await self.recordHistoryOnly(from: snapshot)
-                    } catch {
-                        // Ignore
-                    }
+                    } catch { }
                 }
             }
         }

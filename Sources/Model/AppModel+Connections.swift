@@ -120,7 +120,10 @@ extension AppModel {
         closedConns = max(0, totalConnsCount - activeConnectionsCount)
         history.flushIfNeeded()
         lastDownTotal = s.downloadTotal
-        appMemoryMB = Double(Self.residentMemoryBytes()) / 1_000_000
+        // 仅在窗口可见时更新内存显示（避免后台轮询触发 task_info 系统调用）
+        if needDetailedStats {
+            appMemoryMB = Double(Self.residentMemoryBytes()) / 1_000_000
+        }
     }
 
     /// Single-pass dashboard aggregation (runs once per connections snapshot,

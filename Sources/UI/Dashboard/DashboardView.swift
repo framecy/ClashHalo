@@ -282,11 +282,11 @@ struct TrafficDistributionView: View, Equatable {
 
 // MARK: - Components
 
-struct Rank: Identifiable, Equatable { 
-    let id = UUID()
+struct Rank: Identifiable, Equatable {
+    var id: String { name }
     let name: String
-    let value: Double 
-    
+    let value: Double
+
     static func == (lhs: Self, rhs: Self) -> Bool {
         lhs.name == rhs.name && lhs.value == rhs.value
     }
@@ -319,7 +319,7 @@ struct RankList: View, Equatable {
                 Text("暂无活跃数据").font(.dsBody).foregroundColor(.secondary)
                     .frame(maxWidth: .infinity, minHeight: 120, alignment: .center)
             }
-            ForEach(Array(rows.enumerated()), id: \.offset) { i, r in
+            ForEach(Array(rows.enumerated()), id: \.element.id) { i, r in
                 VStack(spacing: 4) {
                     HStack(spacing: 8) {
                         Text("\(i+1)").font(.dsMono).foregroundColor(.secondary).frame(width: 14, alignment: .leading)
@@ -328,12 +328,14 @@ struct RankList: View, Equatable {
                         Text(mode == .bytes ? fmtBytes(r.value) : "\(Int(r.value))")
                             .font(.dsMono).foregroundColor(.secondary)
                     }
-                    GeometryReader { g in
-                        ZStack(alignment: .leading) {
-                            Capsule().fill(DS.Palette.track).frame(height: 2)
-                            Capsule().fill(accent.opacity(0.6)).frame(width: max(2, g.size.width * r.value/mx), height: 2)
+                    // 用 overlay 替代 GeometryReader，避免每行嵌套布局对象
+                    Capsule().fill(DS.Palette.track).frame(height: 2)
+                        .overlay(alignment: .leading) {
+                            GeometryReader { g in
+                                Capsule().fill(accent.opacity(0.6))
+                                    .frame(width: max(2, g.size.width * r.value / mx), height: 2)
+                            }
                         }
-                    }.frame(height: 2)
                 }
             }
         }
