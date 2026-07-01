@@ -18,7 +18,13 @@ private struct SafeDecoder: @unchecked Sendable {
     @Published var reachable = false
     @Published var version = "?"
 
-    private var session = URLSession(configuration: .default)
+    private var session: URLSession = {
+        let config = URLSessionConfiguration.ephemeral
+        config.urlCache = nil
+        config.requestCachePolicy = .reloadIgnoringLocalCacheData
+        config.httpShouldUsePipelining = true
+        return URLSession(configuration: config)
+    }()
 
     private var apiBase: String { "http://\(host):\(port)" }
     private var wsBase: String { "ws://\(host):\(port)" }
@@ -76,7 +82,7 @@ private struct SafeDecoder: @unchecked Sendable {
         let (data, resp) = try await session.data(for: req)
         if let h = resp as? HTTPURLResponse, h.statusCode != 200 { throw MihomoError.http(h.statusCode) }
         return try autoreleasepool {
-            try JSONDecoder().decode(T.self, from: data)
+            try SafeDecoder.shared.decode(T.self, from: data)
         }
     }
 
@@ -193,7 +199,7 @@ private struct SafeDecoder: @unchecked Sendable {
         
         do {
             let (data, _) = try await session.data(for: r)
-            let v = try JSONDecoder().decode(MihomoVersion.self, from: data)
+            let v = try SafeDecoder.shared.decode(MihomoVersion.self, from: data)
             version = v.version
             reachable = true
         } catch {

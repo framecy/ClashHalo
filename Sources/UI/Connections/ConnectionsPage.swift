@@ -158,7 +158,11 @@ struct ConnectionsPage: View {
     }
 
     private func matches(_ c: Conn) -> Bool {
-        q.isEmpty || "\(c.host)\(c.process)\(c.chain)\(c.rule)".localizedCaseInsensitiveContains(q)
+        q.isEmpty
+            || c.host.localizedCaseInsensitiveContains(q)
+            || c.process.localizedCaseInsensitiveContains(q)
+            || c.chain.localizedCaseInsensitiveContains(q)
+            || c.rule.localizedCaseInsensitiveContains(q)
     }
     
     private func prepareRuleEdit(for c: Conn) {
@@ -267,15 +271,23 @@ struct ConnDetailCard: View {
     }
     
     private func formatStartTime(_ isoString: String) -> String {
-        let formatter = ISO8601DateFormatter()
-        formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        let formatter = Self.isoFormatter
         if let date = formatter.date(from: isoString) {
-            let df = DateFormatter()
-            df.dateFormat = "yyyy-MM-dd HH:mm:ss"
-            return df.string(from: date)
+            return Self.displayFormatter.string(from: date)
         }
         return String(isoString.prefix(19)).replacingOccurrences(of: "T", with: " ")
     }
+
+    private static let isoFormatter: ISO8601DateFormatter = {
+        let f = ISO8601DateFormatter()
+        f.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        return f
+    }()
+    private static let displayFormatter: DateFormatter = {
+        let f = DateFormatter()
+        f.dateFormat = "yyyy-MM-dd HH:mm:ss"
+        return f
+    }()
 }
 
 @MainActor final class ConnectionsViewModel: ObservableObject {
@@ -396,16 +408,17 @@ struct ConnDetailCard: View {
             }
         }
         M.activeConnsSet = activeIDs
-        
-        M.cachedConns = next.sorted { $0.downRate + $0.upRate > $1.downRate + $1.upRate }
-        
+
+        let sorted = next.sorted { $0.downRate + $0.upRate > $1.downRate + $1.upRate }
+        M.cachedConns = sorted
+
         conns = M.cachedConns
         closedConnections = M.cachedClosedConnections
         M.activeConnectionsCount = activeIDs.count
-        
-        // Also update dashboard stats while on connections page
-        M.dash = AppModel.computeDashRaw(items)
-        
+
+        // Reuse the sorted array to avoid a second full scan in computeDash
+        M.dash = AppModel.computeDash(sorted)
+
         M.closedConns = max(0, M.totalConnsCount - activeIDs.count)
         M.history.flushIfNeeded()
         M.lastDownTotal = s.downloadTotal

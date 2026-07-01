@@ -91,10 +91,11 @@ extension AppModel {
             }
             prevConnBytes = bytes
 
-            // Limit prevConnBytes growth: cap at 2000 entries to prevent unbounded heap
+            // Limit prevConnBytes growth: cap at 2000 entries by keeping only the
+            // active connection IDs (which are already in `bytes`).
             if prevConnBytes.count > 2000 {
-                prevConnBytes.removeAll(keepingCapacity: false)
-                logKernel("连接追踪字典过大 (\(prevConnBytes.count))，已重置")
+                prevConnBytes = Dictionary(uniqueKeysWithValues: prevConnBytes.prefix(2000))
+                logKernel("连接追踪字典过大，已裁剪至 2000 条")
             }
 
             // Clean up old inactive devices (>10 mins)
