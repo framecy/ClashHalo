@@ -248,7 +248,7 @@ struct NetworkHubPage: View {
             VStack(spacing: 6) {
                 Image(systemName: active ? activeIcon : icon)
                     .font(.system(size: DS.Icon.md))
-                    .foregroundColor(active ? M.accent : .secondary)
+                    .foregroundColor(active ? DS.Palette.accent : .secondary)
                 Text(label)
                     .font(.system(size: 12, weight: active ? .semibold : .regular))
                     .foregroundColor(active ? .primary : .secondary)
@@ -440,7 +440,11 @@ struct GeoURLRow: View {
             Text(label).font(.dsBody).frame(width: 70, alignment: .leading)
             TextField("https://…", text: $text)
                 .textFieldStyle(.roundedBorder).font(.dsMono)
-                .onSubmit { Task { await M.patch(["geox-url": [sub: text]]) } }
+                .onSubmit {
+                    let geo = (M.configs["geox-url"] as? [String: Any] ?? [:])
+                        .merging([sub: text]) { _, new in new }
+                    Task { await M.patchPersistent(["geox-url": geo]) }
+                }
         }
         .padding(.vertical, 5)
         .onAppear {
@@ -643,11 +647,8 @@ struct KernelCard: View {
                     Spacer()
                     if M.reachable {
                         Button("重启内核", systemImage: "arrow.triangle.2.circlepath") {
-                            guard !M.engine.isBusy else { M.showToast("内核操作进行中，请稍候…"); return }
-                            M.engine.isBusy = true
-                            Task {
-                                defer { M.engine.isBusy = false }
-                                let wasTUN = M.tunOn   // restart re-reads disk (tun.enable=false) — preserve it
+                            M.withEngineBusy {
+                                let wasTUN = M.tunOn
                                 await M.engine.restart(); try? await Task.sleep(nanoseconds: 3_000_000_000); await M.reconnect()
                                 await M.reapplyTUN(wasOn: wasTUN)
                                 M.showToast("内核已重启")
@@ -687,7 +688,7 @@ struct KernelCard: View {
                             }
                             .controlSize(.small)
                             .buttonStyle(.borderedProminent)
-                            .tint(M.accent)
+                            .tint(DS.Palette.accent)
                             .disabled(km.downloading)
                         }
                     }
@@ -717,19 +718,16 @@ struct KernelCard: View {
     @ViewBuilder
     private func kernelRow(tag: String, label: String, icon: String, km: KernelManager) -> some View {
         HStack {
-            Image(systemName: icon).font(.dsBody).foregroundColor(tag == "内置" ? M.accent : .secondary)
+            Image(systemName: icon).font(.dsBody).foregroundColor(tag == "内置" ? DS.Palette.accent : .secondary)
             Text(label).font(.dsMono)
             Spacer()
             if km.activeTag == tag {
                 Label("使用中", systemImage: "checkmark.circle.fill")
-                    .font(.dsBody).foregroundColor(M.accent).frame(width: DS.Layout.fieldTrailing, alignment: .trailing)
+                    .font(.dsBody).foregroundColor(DS.Palette.accent).frame(width: DS.Layout.fieldTrailing, alignment: .trailing)
             } else {
                 Button("启用") {
-                    guard !M.engine.isBusy else { M.showToast("内核操作进行中，请稍候…"); return }
-                    M.engine.isBusy = true
-                    Task {
-                        defer { M.engine.isBusy = false }
-                        let wasTUN = M.tunOn   // kernel swap restarts the core from disk — preserve TUN
+                    M.withEngineBusy {
+                        let wasTUN = M.tunOn
                         await km.activate(tag); try? await Task.sleep(nanoseconds: 3_500_000_000); await M.reconnect()
                         await M.reapplyTUN(wasOn: wasTUN)
                     }

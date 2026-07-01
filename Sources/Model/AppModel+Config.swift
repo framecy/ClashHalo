@@ -5,12 +5,23 @@ import Foundation
 // proxy / TUN / engine), mode, and the read-only rules view.
 
 extension AppModel {
+    /// Gateway mode configuration overrides (allow-lan + DNS listen on 0.0.0.0:53)
+    static let gatewayOverrides: [String: Any] = [
+        "allow-lan": true,
+        "dns": [
+            "enable": true,
+            "listen": "0.0.0.0:53",
+            "enhanced-mode": "fake-ip"
+        ]
+    ]
+
     /// Promote an Imported (or re-activate an Applied) profile to the
     /// running kernel: persist → reload → mark applied. Pure side-effects;
     /// the user already consented at the call site (two-stage sheet or
     /// "设为活动" tap). Reload coalesces via `appliedHash`: a re-apply of
     /// unchanged content short-circuits before touching the kernel.
     func selectForApply(_ id: String) {
+        guard !engine.isBusy else { showToast("内核操作进行中，请稍候…"); return }
         guard let content = store.commit(id) else { showToast("配置为空"); return }
         let name = store.profiles.first { $0.id == id }?.name ?? ""
         let wasTunOn = tunOn
@@ -23,8 +34,11 @@ extension AppModel {
             showToast("已切换配置「\(name)」")
             return
         }
+        let oldPort = proxyPort
         pendingApplyID = id
+        engine.isBusy = true
         Task {
+            defer { engine.isBusy = false }
             let (ok, err) = await engine.setConfig(content)
             pendingApplyID = nil
             if ok {
@@ -32,6 +46,31 @@ extension AppModel {
                 showToast("已切换配置「\(name)」")
                 await reconnect()
                 await reapplyTUN(wasOn: wasTunOn)
+
+                // Port-change cascade: if the new profile uses a different
+                // mixed-port and the system proxy is on, re-set it so traffic
+                // doesn't leak to the old (now dead) port.
+                let newPort = proxyPort
+                if systemProxyOn && newPort != oldPort {
+                    let ok = await engine.setSystemProxy(enabled: true, port: newPort)
+                    if ok { showToast("系统代理已更新至端口 \(newPort)") }
+                }
+
+                // Gateway cascade: the new profile may have overwritten
+                // allow-lan / dns.listen. Re-apply the Gateway overrides so
+                // the gateway keeps working.
+                if gatewayModeOn {
+                    engine.setTopLevelScalars(Self.gatewayOverrides)
+                    do {
+                        try await api.reloadConfig(path: engine.configFilePath)
+                        await refreshConfigs()
+                    } catch {
+                        showToast("网关配置重载失败")
+                    }
+                }
+
+                // Refresh proxies after profile switch (event-driven)
+                await refreshProxies()
             } else {
                 showToast("配置错误：\(err ?? "")，已回滚")
             }
@@ -99,6 +138,17 @@ extension AppModel {
         if let tun = c["tun"] as? [String: Any] {
             tunOn = (tun["enable"] as? Bool) == true && engine.runningAsRoot
         }
+        // Gateway state inference (cautious): if UI thinks Gateway is off but
+        // config has the signature (allow-lan=true AND dns.listen=0.0.0.0:53),
+        // sync UI to true. Never sync false → avoids overwriting user's manual
+        // LAN-sharing configs. The write path (applyGatewayMode) remains authoritative.
+        if !gatewayModeOn {
+            let allowLan = (c["allow-lan"] as? Bool) == true
+            let dnsListen = (c["dns"] as? [String: Any])?["listen"] as? String
+            if allowLan && dnsListen == "0.0.0.0:53" {
+                gatewayModeOn = true
+            }
+        }
         // Keep system DNS in sync with the real TUN state. This is the single
         // point where tunOn is derived from reality, so it also recovers the
         // correct DNS after an app restart (TUN survived → keep redirect; TUN
@@ -113,9 +163,25 @@ extension AppModel {
 
     // MARK: Master switches
 
+    /// Guard + set + defer-reset wrapper for `engine.isBusy`. All long-running
+    /// kernel lifecycle operations (TUN/engine/Gateway toggle, restart, kernel
+    /// switch) must go through this so the isBusy flag has a single write path.
+    /// Returns `false` and shows a toast if the engine is already busy.
+    @discardableResult
+    func withEngineBusy(_ label: String = "操作", _ body: @escaping () async -> Void) -> Bool {
+        guard !engine.isBusy else { showToast("内核操作进行中，请稍候…"); return false }
+        engine.isBusy = true
+        Task {
+            defer { engine.isBusy = false }
+            await body()
+        }
+        return true
+    }
+
     func toggleSystemProxy() {
+        guard !engine.isBusy else { showToast("内核操作进行中，请稍候…"); return }
         let on = !systemProxyOn
-        let port = (configs["mixed-port"] as? Int) ?? (configs["port"] as? Int) ?? 7890
+        let port = proxyPort
         Task {
             let ok = await engine.setSystemProxy(enabled: on, port: port)
             if ok {
@@ -130,40 +196,27 @@ extension AppModel {
     }
 
     func toggleTUN() {
-        guard !engine.isBusy else { showToast("内核操作进行中，请稍候…"); return }
-        let want = !tunOn
-        engine.isBusy = true
-        Task {
-            defer { engine.isBusy = false }
-            await applyTUNState(want)
-        }
+        withEngineBusy { await self.applyTUNState(!self.tunOn) }
     }
 
     func toggleGatewayMode() {
-        guard !engine.isBusy else { showToast("系统配置中，请稍候…"); return }
         let want = !gatewayModeOn
-        
+
         // Active Gateway needs TUN, let's enforce it
         if want && !tunOn {
             showToast("正准备环境：网关中枢需要 TUN 模式…")
-            engine.isBusy = true
-            Task {
-                await applyTUNState(true)
-                if tunOn {
-                    await applyGatewayMode(true)
+            withEngineBusy {
+                await self.applyTUNState(true)
+                if self.tunOn {
+                    await self.applyGatewayMode(true)
                 } else {
-                    showToast("TUN 启动失败，无法开启网关中枢")
+                    self.showToast("TUN 启动失败，无法开启网关中枢")
                 }
-                engine.isBusy = false
             }
             return
         }
 
-        engine.isBusy = true
-        Task {
-            defer { engine.isBusy = false }
-            await applyGatewayMode(want)
-        }
+        withEngineBusy("系统配置") { await self.applyGatewayMode(want) }
     }
 
     private func applyGatewayMode(_ want: Bool) async {
@@ -173,33 +226,64 @@ extension AppModel {
                 showToast("开启网关中枢需要管理员授权…")
                 let ok = await engine.installPrivileged()
                 guard ok else { showToast("授权失败，未开启网关"); return }
+                // Verify XPC connectivity after install (catch bootstrap failures)
+                guard await XPCManager.shared.verifyConnectivity() else {
+                    showToast("特权服务安装后无法连接，未开启网关")
+                    engine.isRoot = false
+                    return
+                }
                 // Also requires root engine restart if not already
                 if !engine.runningAsRoot {
                     showToast("正在以 Root 权限重启核心…")
                     await engine.restart()
-                    try? await Task.sleep(nanoseconds: 2_000_000_000)
+                    // Poll until the root kernel is actually up (2s was a race —
+                    // mihomo needs variable time to bind 0.0.0.0:53 for Gateway DNS)
+                    var rootReady = false
+                    for _ in 0..<10 {
+                        try? await Task.sleep(nanoseconds: 1_000_000_000)
+                        await api.probe(timeout: 1.0)
+                        if api.reachable && engine.runningAsRoot { rootReady = true; break }
+                    }
+                    guard rootReady else {
+                        showToast("Root 内核启动超时，未开启网关")
+                        return
+                    }
                     await reconnect()
                 }
             }
 
             // Write configs for gateway mode (allow-lan and dns listen)
             let oldTun = tunOn
-            let overrides: [String: Any] = [
-                "allow-lan": true,
-                "dns": [
-                    "enable": true,
-                    "listen": "0.0.0.0:53",
-                    "enhanced-mode": "fake-ip"
-                ]
-            ]
-            engine.setTopLevelScalars(overrides)
+
+            // Snapshot current allow-lan / dns.listen values so Gateway
+            // disable can restore them later (avoid stale overrides).
+            preGatewayAllowLan = (configs["allow-lan"] as? Bool) ?? false
+            if let dns = configs["dns"] as? [String: Any] {
+                preGatewayDNSListen = dns["listen"] as? String
+            }
+
+            // Back up config.yaml before Gateway overwrites so we can
+            // roll back if the kernel crashes (e.g. port 53 conflict).
+            let cfgPath = engine.configFilePath
+            let backup = try? String(contentsOfFile: cfgPath, encoding: .utf8)
+
+            engine.setTopLevelScalars(Self.gatewayOverrides)
             showToast("正在重启核心以应用网关配置…")
             await engine.restart()
             try? await Task.sleep(nanoseconds: 2_000_000_000)
             await reconnect()
-            
-            // Verify kernel is actually up (not crashed due to port 53 conflict)
+
+            // Verify kernel is actually up (not crashed due to port 53 conflict).
+            // If unreachable, roll back config.yaml from backup and restart again.
             if !reachable {
+                if let b = backup {
+                    try? b.write(toFile: cfgPath, atomically: true, encoding: .utf8)
+                    showToast("端口冲突，正在回滚配置…")
+                    await engine.restart()
+                    try? await Task.sleep(nanoseconds: 2_000_000_000)
+                    await reconnect()
+                }
+                preGatewayAllowLan = nil; preGatewayDNSListen = nil
                 showToast("核心启动失败，请检查 53 端口是否被占用")
                 return
             }
@@ -216,13 +300,32 @@ extension AppModel {
                 showToast("网关中枢（旁路由）已成功开启")
             } else {
                 gatewayModeOn = false
+                preGatewayAllowLan = nil; preGatewayDNSListen = nil
                 showToast("底层 IP 转发开启失败")
             }
         } else {
+            // Restore config.yaml overrides that Gateway mode applied.
+            let restores: [String: Any] = [
+                "allow-lan": preGatewayAllowLan ?? false,
+                "dns": [
+                    "enable": true,
+                    "listen": preGatewayDNSListen ?? "127.0.0.1:1053",
+                    "enhanced-mode": "fake-ip"
+                ]
+            ]
+            preGatewayAllowLan = nil; preGatewayDNSListen = nil
+            engine.setTopLevelScalars(restores)
+
             let ok = await engine.setGatewayMode(enabled: false)
             if ok {
                 gatewayModeOn = false
-                showToast("网关中枢已关闭")
+                do {
+                    try await api.reloadConfig(path: engine.configFilePath)
+                    await refreshConfigs()
+                    showToast("网关中枢已关闭")
+                } catch {
+                    showToast("网关中枢已关闭，配置重载失败")
+                }
             } else {
                 showToast("网关中枢关闭失败")
             }
@@ -273,6 +376,13 @@ extension AppModel {
                 showToast("启用 TUN 需要管理员授权以安装特权服务…")
                 let ok = await engine.installPrivileged()
                 guard ok else { showToast("授权失败，TUN 未启用"); return }
+                // Verify XPC connectivity after installation to catch launchd bootstrap failures
+                let connected = await XPCManager.shared.verifyConnectivity()
+                guard connected else {
+                    showToast("特权服务安装后无法连接，请重启应用或检查系统日志")
+                    engine.isRoot = false  // Reset to prevent permanent lock
+                    return
+                }
             } else if engine.helperVersion != EngineControl.kExpectedHelperVersion,
                       engine.helperVersion != "?" {
                 // Installed helper is outdated — full upgrade (uninstall → install)
@@ -287,12 +397,15 @@ extension AppModel {
                 }
                 engine.refreshHelperVersion()
                 // upgradeDaemon goes through XPCManager directly (not
-                // installPrivileged), so it doesn't set isRoot. pollStatus would
-                // eventually re-sync it, but restart() below runs immediately and
-                // reads isRoot to choose root-vs-user launch — without this the
-                // 2s pollStatus window (isRoot=false during uninstall) could make
-                // it launch user-mode and TUN would fail.
-                engine.isRoot = true
+                // installPrivileged), so it doesn't set isRoot. We must verify
+                // the new helper is actually running before marking isRoot=true,
+                // otherwise a failed upgrade leaves us in a broken state.
+                if await XPCManager.shared.verifyConnectivity() {
+                    engine.isRoot = true
+                } else {
+                    showToast("Helper 升级后无法连接，TUN 未启用")
+                    return
+                }
             }
 
             showToast("正在以 Root 权限重启核心…")
@@ -323,6 +436,25 @@ extension AppModel {
             if want && !tunOn {
                 showToast("TUN 开启失败：可能无管理员权限或路由被其他 VPN 占用冲突")
             } else {
+                // TUN disable cascades: Gateway mode requires TUN, so if we
+                // just turned TUN off, also tear down Gateway (sysctl + UI +
+                // restore the allow-lan/dns.listen overrides Gateway applied).
+                if !want && gatewayModeOn {
+                    _ = await engine.setGatewayMode(enabled: false)
+                    gatewayModeOn = false
+                    // Restore config.yaml overrides so a later config switch /
+                    // Gateway re-enable doesn't read stale snapshot values.
+                    let restores: [String: Any] = [
+                        "allow-lan": preGatewayAllowLan ?? false,
+                        "dns": [
+                            "enable": true,
+                            "listen": preGatewayDNSListen ?? "127.0.0.1:1053",
+                            "enhanced-mode": "fake-ip"
+                        ]
+                    ]
+                    preGatewayAllowLan = nil; preGatewayDNSListen = nil
+                    engine.setTopLevelScalars(restores)
+                }
                 showToast(want ? "TUN 模式已开启" : "TUN 模式已关闭")
             }
         } else {
@@ -364,7 +496,9 @@ extension AppModel {
         let d = UserDefaults.standard
         if !d.bool(forKey: Self.kDNSOverriddenKey) {
             let original = await EngineControl.currentSystemDNS()
-            d.set(original.joined(separator: ","), forKey: Self.kDNSSavedKey)
+            // Use sentinel value "Empty" if system DNS is unconfigured (common on fresh macOS)
+            let snapshot = original.isEmpty ? "Empty" : original.joined(separator: ",")
+            d.set(snapshot, forKey: Self.kDNSSavedKey)
             d.set(true, forKey: Self.kDNSOverriddenKey)
         }
         await EngineControl.applySystemDNS([gateway])
@@ -375,8 +509,9 @@ extension AppModel {
     func restoreTunnelDNS() async {
         let d = UserDefaults.standard
         guard d.bool(forKey: Self.kDNSOverriddenKey) else { return }
-        let saved = (d.string(forKey: Self.kDNSSavedKey) ?? "")
-            .split(separator: ",").map(String.init)
+        let savedString = d.string(forKey: Self.kDNSSavedKey) ?? ""
+        // Handle sentinel "Empty" by clearing DNS (networksetup needs "Empty" literal)
+        let saved = savedString == "Empty" ? ["Empty"] : savedString.split(separator: ",").map(String.init)
         await EngineControl.applySystemDNS(saved)
         d.set(false, forKey: Self.kDNSOverriddenKey)
         d.removeObject(forKey: Self.kDNSSavedKey)
@@ -459,59 +594,67 @@ extension AppModel {
     }
 
     func toggleEngine() {
-        guard !engine.isBusy else { showToast("内核操作进行中，请稍候…"); return }
         let want = !reachable
-        engine.isBusy = true
-        Task {
-            defer { engine.isBusy = false }
+        withEngineBusy {
             if want {
-                logKernel("正在请求启动核心...")
-                showToast("正在启动核心...")
-                engine.ensureRunning()
+                self.logKernel("正在请求启动核心...")
+                self.showToast("正在启动核心...")
+                self.engine.ensureRunning()
 
                 // Wait and verify
                 for i in 1...5 {
                     try? await Task.sleep(nanoseconds: 1_000_000_000)
-                    await api.probe(timeout: 0.5)
-                    if api.reachable {
-                        logKernel("核心启动成功 (尝试 \(i))")
-                        await reconnect()
+                    await self.api.probe(timeout: 0.5)
+                    if self.api.reachable {
+                        self.logKernel("核心启动成功 (尝试 \(i))")
+                        await self.reconnect()
                         return
                     }
-                    logKernel("等待核心响应... (\(i)/5)")
+                    self.logKernel("等待核心响应... (\(i)/5)")
                 }
-                // Not reachable after retries — surface the REAL reason. A bad
-                // config makes mihomo exit immediately on start, which looks
-                // identical to a timeout; previously this was misreported as
-                // "权限不足", sending users to needlessly reinstall the helper.
-                if let cfgErr = await engine.validateConfig() {
-                    logKernel("配置错误，核心无法启动：\(cfgErr)")
-                    showToast("配置错误：\(cfgErr)")
+                // Not reachable after retries — surface the REAL reason.
+                if let cfgErr = await self.engine.validateConfig() {
+                    self.logKernel("配置错误，核心无法启动：\(cfgErr)")
+                    self.showToast("配置错误：\(cfgErr)")
                 } else {
-                    logKernel("错误：核心未响应（启动超时或权限不足）")
-                    showToast("核心启动失败，请检查内核与权限")
+                    self.logKernel("错误：核心未响应（启动超时或权限不足）")
+                    self.showToast("核心启动失败，请检查内核与权限")
                 }
             } else {
-                logKernel("正在停止核心...")
-                await engine.stopKernel()   // proper async stop (SIGTERM → wait → SIGKILL)
-                reachable = false
-                tunOn = false   // 核心停止 → TUN 必然失效，复位开关避免状态卡 on
-                await restoreTunnelDNS()   // kernel gone → tunnel DNS would black-hole resolution
-                // Clear system proxy so traffic isn't black-holed to a dead kernel
-                if systemProxyOn {
-                    let port = (configs["mixed-port"] as? Int) ?? (configs["port"] as? Int) ?? 7890
-                    _ = await engine.setSystemProxy(enabled: false, port: port)
-                    systemProxyOn = false
+                self.logKernel("正在停止核心...")
+                await self.engine.stopKernel()
+                self.reachable = false
+                self.tunOn = false
+                // 停核心时主动清理 Gateway 系统级 IP 转发（sysctl），防止残留
+                if self.gatewayModeOn {
+                    _ = await self.engine.setGatewayMode(enabled: false)
                 }
-                logKernel("核心已停止")
-                showToast("核心已停止")
+                self.gatewayModeOn = false
+                await self.restoreTunnelDNS()
+                if self.systemProxyOn {
+                    let port = self.proxyPort
+                    _ = await self.engine.setSystemProxy(enabled: false, port: port)
+                    self.systemProxyOn = false
+                }
+                self.logKernel("核心已停止")
+                self.showToast("核心已停止")
             }
         }
     }
 
     func setMode(_ m: String) {
         mode = m
-        Task { try? await api.patchConfig(["mode": m]); showToast("已切换至\(modeLabel(m))模式") }
+        Task {
+            try? await api.patchConfig(["mode": m])
+            // Mode switch (global/direct) changes the routing logic; close existing
+            // connections so traffic re-dials through the new path immediately.
+            if closeOnSwitch {
+                try? await api.closeAllConnections()
+            }
+            // Refresh proxies after mode change (event-driven instead of polling)
+            await refreshProxies()
+            showToast("已切换至\(modeLabel(m))模式")
+        }
     }
 
     // Rules (read-only view of the kernel's active rule set).
