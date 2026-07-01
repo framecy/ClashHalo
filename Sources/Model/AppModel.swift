@@ -83,12 +83,10 @@ import ServiceManagement
     @Published var pendingApplyID: String? = nil
     @Published var kernelLogs: [String] = []
     func logKernel(_ msg: String) {
-        Task { @MainActor in
-            let line = "[\(Self.logDF.string(from: Date()))] \(msg)"
-            kernelLogs.append(line)
-            if kernelLogs.count > 200 { kernelLogs.removeFirst() }
-            print("KernelLog: \(msg)")
-        }
+        let line = "[\(Self.logDF.string(from: Date()))] \(msg)"
+        kernelLogs.append(line)
+        if kernelLogs.count > 100 { kernelLogs.removeFirst() }
+        print("KernelLog: \(msg)")
     }
 
     // Master switches
