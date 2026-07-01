@@ -36,6 +36,16 @@ struct ContentView: View {
         } detail: { detail }
         .onAppear { M.isMainWindowVisible = true }
         .onDisappear { M.isMainWindowVisible = false }
+        // macOS 最小化不触发 onDisappear，需单独监听窗口通知
+        .onReceive(NotificationCenter.default.publisher(for: NSWindow.didMiniaturizeNotification)) { _ in
+            M.isMainWindowVisible = false
+        }
+        .onReceive(NotificationCenter.default.publisher(for: NSWindow.didDeminiaturizeNotification)) { _ in
+            M.isMainWindowVisible = true
+        }
+        .onReceive(NotificationCenter.default.publisher(for: NSWindow.didBecomeKeyNotification)) { _ in
+            if M.reachable { M.isMainWindowVisible = true }
+        }
     }
 
     // MARK: Sidebar
