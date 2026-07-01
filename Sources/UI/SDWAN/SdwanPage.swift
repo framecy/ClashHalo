@@ -119,7 +119,7 @@ struct SdwanTopologyView: View {
                 }
                 .frame(width: 80, height: 48)
                 .background(RoundedRectangle(cornerRadius: DS.Radius.control).fill(DS.Palette.cardBg))
-                .overlay(RoundedRectangle(cornerRadius: DS.Radius.control).stroke(M.accent, lineWidth: 1.2))
+                .overlay(RoundedRectangle(cornerRadius: DS.Radius.control).stroke(DS.Palette.accent, lineWidth: 1.2))
                 .position(hostPt)
 
                 ForEach(0..<activeIfaces.count, id: \.self) { idx in
@@ -170,7 +170,7 @@ struct SdwanTopologyView: View {
     private func lineColor(for k: IfaceKind) -> Color {
         switch k {
         case .physical: return .blue
-        case .proxyTun: return M.accent
+        case .proxyTun: return DS.Palette.accent
         case .tailscale: return .teal
         case .zerotier: return .orange
         case .oray: return .purple
@@ -208,7 +208,7 @@ struct SdwanPage: View {
                 VStack(spacing: 14) {
                     // status banner
                     HStack(spacing: 12) {
-                        Image(systemName: "shield.lefthalf.filled").font(.title).foregroundColor(hasDefaultViaTun ? .orange : M.accent)
+                        Image(systemName: "shield.lefthalf.filled").font(.title).foregroundColor(hasDefaultViaTun ? .orange : DS.Palette.accent)
                         VStack(alignment: .leading, spacing: 3) {
                             Text(hasDefaultViaTun ? "检测到 TUN 默认路由冲突" : "智能路由隔离已生效").font(.dsLabelBold)
                             if hasDefaultViaTun, let conflictIface = routes.first(where: { $0.dest == "default" || $0.dest.contains("0.0.0.0/0") })?.iface {
@@ -238,7 +238,7 @@ struct SdwanPage: View {
                         } else {
                             VStack {
                                 Text("0").font(.system(size: 24, weight: .bold, design: .monospaced))
-                                    .foregroundColor(M.accent)
+                                    .foregroundColor(DS.Palette.accent)
                                 Text("路由冲突").font(.dsBody).foregroundColor(.secondary)
                             }
                         }
@@ -272,7 +272,7 @@ struct SdwanPage: View {
                                     Text(routes[idx].dest).font(.dsMono)
                                     Spacer()
                                     Image(systemName: "arrow.right").font(.dsBody).foregroundColor(.secondary)
-                                    Text(routes[idx].iface).font(.dsMono).foregroundColor(M.accent)
+                                    Text(routes[idx].iface).font(.dsMono).foregroundColor(DS.Palette.accent)
                                 }
                                 .padding(.vertical, 4)
                                 if idx < routes.count - 1 {

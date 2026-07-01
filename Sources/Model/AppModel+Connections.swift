@@ -10,7 +10,7 @@ extension AppModel {
         if t.down != curDown { curDown = t.down }
         
         let now = Date()
-        if now.timeIntervalSince(lastUIUpdate) >= 2.0 {
+        if now.timeIntervalSince(lastUIUpdate) >= trafficRefreshInterval {
             lastUIUpdate = now
             downSeries.append(Double(t.down))
             if downSeries.count > 120 { downSeries.removeFirst() }
@@ -106,29 +106,7 @@ extension AppModel {
             activeConnectionsCount = activeIDs.count
             
             if route == "dashboard" || route == "connections" {
-                var next: [Conn] = []
-                for c in items {
-                    let conn = Conn(
-                        id: c.id,
-                        host: c.metadata.host?.isEmpty == false ? c.metadata.host! : (c.metadata.destinationIP ?? "?"),
-                        dstIP: c.metadata.destinationIP ?? "?",
-                        srcIP: c.metadata.sourceIP ?? "?",
-                        port: c.metadata.destinationPort ?? "",
-                        network: c.metadata.network.uppercased(),
-                        process: c.metadata.process ?? "—",
-                        processPath: c.metadata.processPath ?? "—",
-                        chain: c.chains.reversed().joined(separator: " → "),
-                        group: c.chains.last ?? "?",
-                        node: c.chains.first ?? "?",
-                        rule: c.rulePayload.isEmpty ? c.rule : "\(c.rule),\(c.rulePayload)",
-                        ruleType: c.rule,
-                        up: c.upload, down: c.download,
-                        upRate: 0, downRate: 0,
-                        start: c.start
-                    )
-                    next.append(conn)
-                }
-                dash = Self.computeDash(next)
+                dash = Self.computeDashRaw(items)
             }
         } else {
             // Background idle: Only sync basic count
@@ -146,19 +124,31 @@ extension AppModel {
 
     /// Single-pass dashboard aggregation (runs once per connections snapshot,
     /// not per SwiftUI render — the key fix for dashboard stutter).
-    static func computeDash(_ conns: [Conn]) -> DashStats {
+    static func computeDashRaw(_ conns: [ConnectionItem]) -> DashStats {
         var pg = [String: Double](), hosts = [String: Double](), nodes = [String: Double]()
         var procs = [String: Double](), rules = [String: Double]()
         var direct = 0.0, proxy = 0.0, reject = 0.0
         var hostSet = Set<String>()
         for c in conns {
-            let b = Double(c.up + c.down)
-            if c.group != "?" && !c.group.isEmpty { pg[c.group, default: 0] += b }
-            if c.host != "?" { hosts[c.host, default: 0] += b; hostSet.insert(c.host) }
-            if c.node != "?" { nodes[c.node, default: 0] += b }
-            if c.process != "—" { procs[c.process, default: 0] += b }
-            rules[c.ruleType, default: 0] += 1
-            switch c.category { case "direct": direct += b; case "reject": reject += b; default: proxy += b }
+            let b = Double(c.upload + c.download)
+            let group = c.chains.last ?? "?"
+            let host = c.metadata.host?.isEmpty == false ? c.metadata.host! : (c.metadata.destinationIP ?? "?")
+            let node = c.chains.first ?? "?"
+            let process = c.metadata.process ?? "—"
+            let ruleType = c.rule
+            
+            if group != "?" && !group.isEmpty { pg[group, default: 0] += b }
+            if host != "?" { hosts[host, default: 0] += b; hostSet.insert(host) }
+            if node != "?" { nodes[node, default: 0] += b }
+            if process != "—" { procs[process, default: 0] += b }
+            rules[ruleType, default: 0] += 1
+            
+            let category: String
+            if node == "DIRECT" || c.chains.contains("DIRECT") { category = "direct" }
+            else if node == "REJECT" || c.chains.contains("REJECT") { category = "reject" }
+            else { category = "proxy" }
+            
+            switch category { case "direct": direct += b; case "reject": reject += b; default: proxy += b }
         }
         func top(_ m: [String: Double]) -> [Rank] {
             m.sorted { $0.value > $1.value }.prefix(5).map { Rank(name: $0.key, value: $0.value) }

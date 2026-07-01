@@ -31,11 +31,11 @@ struct ProxiesPage: View {
                 }
                 .toggleStyle(.button)
                 .controlSize(.small)
-                .tint(M.accent)
+                .tint(DS.Palette.accent)
                 .help("切换节点时自动断开所有现有连接，使流量立即走新节点")
 
                 Button { M.testAll() } label: { Label("全部测速", systemImage: "bolt.fill") }
-                    .controlSize(.small).tint(M.accent).buttonStyle(.borderedProminent)
+                    .controlSize(.small).tint(DS.Palette.accent).buttonStyle(.borderedProminent)
             }
 
             ScrollView {
@@ -74,7 +74,7 @@ struct ProxiesPage: View {
         let cur = g.now
         let curDelay = M.nodes[cur]?.delay ?? 0
         let busy = g.all.contains { M.testing.contains($0) }
-        let c = M.accent
+        let c = DS.Palette.accent
 
         return Card {
             VStack(alignment: .leading, spacing: 6) {
@@ -137,7 +137,7 @@ struct ProxiesPage: View {
                     HStack(spacing: 10) {
                         Image(systemName: "chevron.right").font(.dsBody).foregroundColor(.secondary)
                             .rotationEffect(.degrees(isOpen ? 90 : 0))
-                        Image(systemName: groupIcon(g.type)).font(.dsBody).foregroundColor(M.accent).frame(width: 20)
+                        Image(systemName: groupIcon(g.type)).font(.dsBody).foregroundColor(DS.Palette.accent).frame(width: 20)
                         VStack(alignment: .leading, spacing: 2) {
                             HStack(spacing: 6) {
                                 Text(g.name).font(.dsBody).fontWeight(.semibold)
@@ -146,7 +146,7 @@ struct ProxiesPage: View {
                                     .background(Capsule().fill(DS.Palette.hairline))
                             }
                             HStack(spacing: 5) {
-                                Text(cur).font(.dsBody).foregroundColor(M.accent).lineLimit(1)
+                                Text(cur).font(.dsBody).foregroundColor(DS.Palette.accent).lineLimit(1)
                                 if curDelay > 0 { Text("\(curDelay)ms").font(.dsMono).foregroundColor(delayColor(curDelay)) }
                             }
                         }
@@ -183,9 +183,9 @@ struct ProxiesPage: View {
             VStack(alignment: .leading, spacing: 5) {
                 HStack(spacing: 6) {
                     Text(name).font(.dsBody).fontWeight(on ? .semibold : .regular)
-                        .foregroundColor(on ? M.accent : .primary).lineLimit(1)
+                        .foregroundColor(on ? DS.Palette.accent : .primary).lineLimit(1)
                     Spacer(minLength: 2)
-                    if on { Image(systemName: "checkmark.circle.fill").font(.dsBody).foregroundColor(M.accent) }
+                    if on { Image(systemName: "checkmark.circle.fill").font(.dsBody).foregroundColor(DS.Palette.accent) }
                 }
                 HStack(spacing: 6) {
                     Text(isGroup ? "组" : (node?.type ?? "—")).font(.dsBody).foregroundColor(.secondary)
@@ -201,8 +201,8 @@ struct ProxiesPage: View {
                 }
             }
             .padding(.horizontal, 10).padding(.vertical, 7)
-            .background(RoundedRectangle(cornerRadius: DS.Radius.control).fill(on ? M.accent.opacity(0.12) : DS.Palette.fillFaint))
-            .overlay(RoundedRectangle(cornerRadius: DS.Radius.control).stroke(on ? M.accent.opacity(0.45) : Color.clear, lineWidth: 1))
+            .background(RoundedRectangle(cornerRadius: DS.Radius.control).fill(on ? DS.Palette.accent.opacity(0.12) : DS.Palette.fillFaint))
+            .overlay(RoundedRectangle(cornerRadius: DS.Radius.control).stroke(on ? DS.Palette.accent.opacity(0.45) : Color.clear, lineWidth: 1))
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)

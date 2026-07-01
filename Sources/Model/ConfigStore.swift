@@ -29,6 +29,14 @@ struct YAMLPreview: Equatable {
     private var manifestPath: String { dir + "/manifest.json" }
     private let fm = FileManager.default
 
+    /// URLSession with timeout for subscription downloads (30s timeout prevents hanging on slow servers)
+    private let session: URLSession = {
+        let config = URLSessionConfiguration.default
+        config.timeoutIntervalForRequest = 30
+        config.timeoutIntervalForResource = 60
+        return URLSession(configuration: config)
+    }()
+
     func path(_ id: String) -> String { dir + "/\(id).yaml" }
 
     func load() {
@@ -125,7 +133,7 @@ struct YAMLPreview: Equatable {
     @discardableResult
     func importRemoteDraft(name: String, url: String) async -> String? {
         guard let u = URL(string: url) else { return nil }
-        guard let (data, _) = try? await URLSession.shared.data(from: u),
+        guard let (data, _) = try? await session.data(from: u),
               let content = String(data: data, encoding: .utf8), content.contains(":") else { return nil }
         let id = UUID().uuidString
         try? content.write(toFile: path(id), atomically: true, encoding: .utf8)
@@ -155,7 +163,7 @@ struct YAMLPreview: Equatable {
     /// applied; a draft stays a draft (the caller decides when to promote).
     func updateRemote(_ id: String) async -> Bool {
         guard let p = profiles.first(where: { $0.id == id }), let url = p.url, let u = URL(string: url),
-              let (data, _) = try? await URLSession.shared.data(from: u),
+              let (data, _) = try? await session.data(from: u),
               let content = String(data: data, encoding: .utf8) else { return false }
         try? content.write(toFile: path(id), atomically: true, encoding: .utf8); touch(id); return true
     }

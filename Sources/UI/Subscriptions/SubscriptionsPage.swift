@@ -18,7 +18,7 @@ struct SubscriptionsPage: View {
                 Button { Task { await updateAll() } } label: { Label("全部更新", systemImage: "arrow.clockwise") }
                     .controlSize(.small)
                 Button { editName = nil; fName = ""; fURL = ""; showSheet = true } label: { Label("添加订阅", systemImage: "plus") }
-                    .controlSize(.small).tint(M.accent).buttonStyle(.borderedProminent)
+                    .controlSize(.small).tint(DS.Palette.accent).buttonStyle(.borderedProminent)
             }
             ScrollView {
                 VStack(spacing: DS.Spacing.m) {
@@ -52,7 +52,7 @@ struct SubscriptionsPage: View {
                 Button("取消") { showSheet = false }
                 Spacer()
                 Button("保存") { Task { await save() } }
-                    .buttonStyle(.borderedProminent).tint(M.accent)
+                    .buttonStyle(.borderedProminent).tint(DS.Palette.accent)
                     .disabled(fName.trimmingCharacters(in: .whitespaces).isEmpty || !fURL.hasPrefix("http"))
             }
         }.padding(DS.Spacing.xl).frame(width: 460)
@@ -62,7 +62,7 @@ struct SubscriptionsPage: View {
         Card {
             VStack(alignment: .leading, spacing: 8) {
                 HStack {
-                    Image(systemName: "icloud.fill").foregroundColor(M.accent)
+                    Image(systemName: "icloud.fill").foregroundColor(DS.Palette.accent)
                     Text(p.name).font(.dsBody).fontWeight(.semibold)
                     Text("\(p.proxies?.count ?? 0) 节点").font(.dsBody)
                         .padding(.horizontal, 6).padding(.vertical, 1)
@@ -83,7 +83,7 @@ struct SubscriptionsPage: View {
                     let used = (s.Upload ?? 0) + (s.Download ?? 0)
                     let frac = min(1, Double(used) / Double(total))
                     VStack(alignment: .leading, spacing: 3) {
-                        ProgressView(value: frac).tint(frac > 0.85 ? .red : M.accent)
+                        ProgressView(value: frac).tint(frac > 0.85 ? .red : DS.Palette.accent)
                         HStack {
                             Text("\(fmtBytes(Double(used))) / \(fmtBytes(Double(total)))").font(.dsMono).foregroundColor(.secondary)
                             Spacer()
