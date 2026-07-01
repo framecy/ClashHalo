@@ -94,7 +94,9 @@ extension AppModel {
             // Limit prevConnBytes growth: cap at 2000 entries by keeping only the
             // active connection IDs (which are already in `bytes`).
             if prevConnBytes.count > 2000 {
-                prevConnBytes = Dictionary(uniqueKeysWithValues: prevConnBytes.prefix(2000))
+                let trimmed = prevConnBytes.prefix(2000)
+                prevConnBytes = Dictionary(trimmed.map { ($0.key, $0.value) },
+                                          uniquingKeysWith: { a, _ in a })
                 logKernel("连接追踪字典过大，已裁剪至 2000 条")
             }
 
