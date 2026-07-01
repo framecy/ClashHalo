@@ -23,23 +23,26 @@ struct LogsPage: View {
                     .controlSize(.small)
             }
 
-            HStack(spacing: 12) {
-                HStack(spacing: 8) {
-                    Image(systemName: "magnifyingglass").foregroundColor(.secondary)
-                    TextField("过滤日志内容…", text: $q).textFieldStyle(.plain).frame(maxWidth: 200)
-                }
+            HStack(spacing: DS.Spacing.xxl) {
                 Picker("", selection: Binding(get: { VM.logLevel }, set: { VM.changeLogLevel($0) })) {
                     Text("DEBUG").tag("debug"); Text("INFO").tag("info")
                     Text("WARN").tag("warning"); Text("ERROR").tag("error")
-                }.pickerStyle(.segmented).frame(width: 300).labelsHidden()
+                }.pickerStyle(.segmented).frame(width: 240).labelsHidden()
+                    .offset(x: -4)
                     .help("日志订阅级别（服务端过滤）。默认 WARN，避免每条连接刷屏。")
+                
+                HStack(spacing: DS.Spacing.s) {
+                    Image(systemName: "magnifyingglass").foregroundColor(.secondary)
+                    TextField("过滤日志内容…", text: $q).textFieldStyle(.plain).frame(maxWidth: 200)
+                }
+                
                 Spacer()
                 HStack(spacing: 6) {
-                    Circle().fill(paused ? Color.secondary : M.accent).frame(width: 6, height: 6)
+                    Circle().fill(paused ? Color.secondary : DS.Palette.accent).frame(width: 6, height: 6)
                     Text("\(rows.count) 行").font(.dsMono).foregroundColor(.secondary)
                 }
             }
-            .padding(.horizontal, 14).padding(.vertical, 10)
+            .padding(.horizontal, DS.Spacing.l).padding(.vertical, 10)
             .background(Color(nsColor: .windowBackgroundColor).opacity(0.3))
             Divider()
             ScrollViewReader { sp in
@@ -92,15 +95,18 @@ struct LogsPage: View {
 
 @MainActor final class LogsViewModel: ObservableObject {
     @Published var logs: [Log] = []
-    
-    // Mirror of UserPreferences
-    @AppStorage("ui.logLevel") var logLevel = "warning"
-    
+
     private var logWS: WSHandle?
     private var logBuffer: [Log] = []
     private var logFlushTimer: Timer?
     private var logSeq = 0
     private let api = MihomoClient.shared
+    private let M = AppModel.shared
+
+    /// 日志级别从 M.configs["log-level"] 读取，修改时写回内核
+    var logLevel: String {
+        (M.configs["log-level"] as? String) ?? "warning"
+    }
     
     private static let logDF: DateFormatter = {
         let f = DateFormatter()
@@ -138,13 +144,16 @@ struct LogsPage: View {
     
     func changeLogLevel(_ level: String) {
         guard level != logLevel else { return }
-        logLevel = level
-        
+
         logs.removeAll(keepingCapacity: true)
         logBuffer.removeAll(keepingCapacity: true)
         logWS?.cancel()
-        
-        subscribeLogs()
+
+        // 写入内核持久化（log-level 是 load-time-only，需 patchPersistent）
+        Task {
+            await M.patchPersistent(["log-level": level])
+            subscribeLogs()
+        }
     }
     
     private func subscribeLogs() {
@@ -163,12 +172,12 @@ struct LogsPage: View {
     
     private func flushLogs() {
         guard !logBuffer.isEmpty else { return }
-        
+
         logs.append(contentsOf: logBuffer)
         logBuffer.removeAll(keepingCapacity: true)
-        
-        if logs.count > 150 {
-            logs = Array(logs.suffix(150))
+
+        if logs.count > 300 {
+            logs = Array(logs.suffix(300))
         }
     }
 }

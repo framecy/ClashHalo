@@ -125,7 +125,7 @@ struct RulesPage: View {
             Spacer()
             
             let actionStr = r.action == .proxy ? (r.proxyGroup ?? "PROXY") : r.action.rawValue
-            Text(actionStr).font(.dsBody).foregroundColor(M.accent)
+            Text(actionStr).font(.dsBody).foregroundColor(DS.Palette.accent)
                 .opacity(r.isEnabled ? 1.0 : 0.5)
         }
         .padding(.vertical, 4)
