@@ -107,6 +107,33 @@ extension Font {
     // Display — dashboard hero stat numbers (was an inconsistent 18 / 22; unified
     // onto the 20 step, rounded for the numeric look).
     static let dsStatValue    = Font.system(size: 20, weight: .bold, design: .rounded)
+    // 10 — caption for version numbers and small secondary text
+    static let dsCaption      = Font.system(size: 10)
+}
+
+// MARK: - Input Styles
+
+struct DSTextFieldStyle: TextFieldStyle {
+    func _body(configuration: TextField<Self._Label>) -> some View {
+        configuration
+            .textFieldStyle(.plain)
+            .font(.dsBody)
+            .padding(.horizontal, DS.Spacing.m)
+            .padding(.vertical, DS.Spacing.s)
+            .background(DS.Palette.cardBg)
+            .cornerRadius(DS.Radius.control)
+            .overlay(
+                RoundedRectangle(cornerRadius: DS.Radius.control)
+                    .stroke(DS.Palette.border, lineWidth: 1)
+            )
+    }
+}
+
+extension View {
+    /// Apply standard input field styling
+    func inputStyle() -> some View {
+        self.textFieldStyle(DSTextFieldStyle())
+    }
 }
 
 // MARK: - Token gallery (visual self-check)

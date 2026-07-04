@@ -38,56 +38,74 @@ struct RuleFormView: View {
     var body: some View {
         VStack(spacing: 0) {
             Text(existingNode == nil ? "添加规则" : "编辑规则")
-                .font(.headline)
-                .padding()
-            
+                .font(.system(size: 16, weight: .semibold))
+                .padding(.top, DS.Spacing.l)
+                .padding(.bottom, DS.Spacing.m)
+
             Form {
                 Picker("规则类型", selection: $type) {
                     ForEach(MihomoRuleType.allCases, id: \.self) { t in
                         Text(t.rawValue).tag(t)
                     }
                 }
-                
+                .pickerStyle(.menu)
+
                 if type != .match {
-                    TextField("匹配内容", text: $match)
-                        .textFieldStyle(.roundedBorder)
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text("匹配内容").font(.dsBody).foregroundColor(.secondary)
+                        TextField("", text: $match)
+                            .inputStyle()
+                    }
                 }
-                
+
                 Picker("处理策略", selection: $action) {
                     Text("PROXY (代理)").tag(RuleAction.proxy)
                     Text("DIRECT (直连)").tag(RuleAction.direct)
                     Text("REJECT (拦截)").tag(RuleAction.reject)
                 }
-                
+                .pickerStyle(.segmented)
+
                 if action == .proxy {
                     Picker("目标代理组", selection: $proxyGroup) {
                         ForEach(proxyGroups, id: \.self) { g in
                             Text(g).tag(g)
                         }
                     }
+                    .pickerStyle(.menu)
                 }
-                
-                TextField("备注 (可选, 例如 no-resolve)", text: $note)
-                    .textFieldStyle(.roundedBorder)
+
+                VStack(alignment: .leading, spacing: 4) {
+                    Text("备注 (可选, 例如 no-resolve)").font(.dsBody).foregroundColor(.secondary)
+                    TextField("", text: $note)
+                        .inputStyle()
+                }
             }
-            .padding()
-            
+            .padding(.horizontal, DS.Spacing.l)
+            .padding(.vertical, DS.Spacing.m)
+
             if let err = errorMessage {
                 Text(err)
                     .foregroundColor(.red)
-                    .font(.footnote)
-                    .padding(.horizontal)
+                    .font(.dsBody)
+                    .padding(.horizontal, DS.Spacing.l)
+                    .padding(.vertical, 4)
             }
-            
-            HStack {
+
+            HStack(spacing: DS.Spacing.m) {
                 Button("取消") { dismiss() }
+                    .buttonStyle(.bordered)
+                    .controlSize(.large)
+
                 Spacer()
+
                 Button("保存") { save() }
                     .buttonStyle(.borderedProminent)
+                    .controlSize(.large)
             }
-            .padding()
+            .padding(.horizontal, DS.Spacing.l)
+            .padding(.vertical, DS.Spacing.l)
         }
-        .frame(width: 400, height: 350)
+        .frame(width: 480, height: 420)
         .onChange(of: type) { _, newType in 
             if let c = contextConn {
                 let newMatch: String
