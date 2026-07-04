@@ -171,7 +171,7 @@ struct ImportRemoteSheet: View {
                         .buttonStyle(.borderedProminent).disabled(name.isEmpty || busy)
                 }
             }
-        }.padding(DS.Spacing.xl).frame(width: 440)
+        }.padding(DS.Spacing.xl).frame(minWidth: 440, idealWidth: 480, maxWidth: 600)
     }
 
     private var previewSummary: some View {
@@ -259,7 +259,7 @@ struct AddLocalSheet: View {
                         .buttonStyle(.borderedProminent).disabled(name.isEmpty)
                 }
             }
-        }.padding(DS.Spacing.xl).frame(width: 400)
+        }.padding(DS.Spacing.xl).frame(minWidth: 400, idealWidth: 440, maxWidth: 560)
     }
 
     private func pickFile() {
@@ -305,7 +305,7 @@ struct ProfileEditSheet: View {
             Divider()
             YAMLEditor(text: $text, onChange: {})
         }
-        .frame(width: 680, height: 560)
+        .frame(minWidth: 680, idealWidth: 720, maxWidth: 900, minHeight: 560, idealHeight: 620, maxHeight: 800)
         .onAppear { text = M.store.content(profileID) }
     }
 }
