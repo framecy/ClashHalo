@@ -23,30 +23,58 @@ struct RulesPage: View {
             }
 
             // 工具栏
-            HStack(spacing: 10) {
-                Image(systemName: "magnifyingglass").foregroundColor(.secondary)
-                TextField("搜索规则类型 / 内容 / 策略", text: $q).textFieldStyle(.plain)
+            HStack(spacing: DS.Spacing.m) {
+                HStack(spacing: 6) {
+                    Image(systemName: "magnifyingglass")
+                        .foregroundColor(.secondary)
+                        .font(.dsBody)
+                    TextField("搜索规则类型 / 内容 / 策略", text: $q)
+                        .textFieldStyle(.plain)
+                        .font(.dsBody)
+                }
+                .padding(.horizontal, DS.Spacing.m)
+                .padding(.vertical, 6)
+                .background(
+                    RoundedRectangle(cornerRadius: DS.Radius.control)
+                        .fill(DS.Palette.cardBg)
+                )
+                .overlay(
+                    RoundedRectangle(cornerRadius: DS.Radius.control)
+                        .stroke(DS.Palette.border, lineWidth: 1)
+                )
+                .frame(maxWidth: 320)
+
                 Spacer()
-                
+
                 if !selection.isEmpty {
-                    Text("已选 \(selection.count) 项").font(.dsBody).foregroundColor(.secondary)
+                    Text("已选 \(selection.count) 项")
+                        .font(.dsBody)
+                        .foregroundColor(.secondary)
+
                     Button("启用") {
                         model.toggleNodes(ids: selection, isEnabled: true)
                         saveAndReloadKernel()
-                    }.buttonStyle(.bordered)
-                    
+                    }
+                    .buttonStyle(.bordered)
+                    .controlSize(.small)
+
                     Button("禁用") {
                         model.toggleNodes(ids: selection, isEnabled: false)
                         saveAndReloadKernel()
-                    }.buttonStyle(.bordered)
-                    
+                    }
+                    .buttonStyle(.bordered)
+                    .controlSize(.small)
+
                     Button("删除") {
                         model.deleteNodes(ids: selection)
                         selection.removeAll()
                         saveAndReloadKernel()
-                    }.buttonStyle(.bordered).tint(.red)
+                    }
+                    .buttonStyle(.bordered)
+                    .controlSize(.small)
+                    .tint(.red)
                 }
-                
+
                 Button(action: {
                     editingNode = nil
                     showingForm = true
@@ -54,9 +82,11 @@ struct RulesPage: View {
                     Label("添加规则", systemImage: "plus")
                 }
                 .buttonStyle(.borderedProminent)
+                .controlSize(.small)
             }
-            .padding(.horizontal, 14).padding(.vertical, 10)
-            .background(Color(nsColor: .windowBackgroundColor).opacity(0.3))
+            .padding(.horizontal, DS.Spacing.l)
+            .padding(.vertical, DS.Spacing.m)
+            .background(DS.Palette.cardBg.opacity(0.5))
             
             Divider()
 

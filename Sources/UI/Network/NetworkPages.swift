@@ -273,26 +273,45 @@ struct NumRow: View {
     let label: String; let key: String; let persistent: Bool
     init(_ label: String, key: String, persistent: Bool = false) { self.label = label; self.key = key; self.persistent = persistent }
     @State private var text = ""
+    @State private var hasChanges = false
+    @FocusState private var isFocused: Bool
+
     var body: some View {
         HStack {
             Text(label).font(.dsBody)
             Spacer()
-            TextField("0", text: $text)
-                .textFieldStyle(.roundedBorder)
-                .font(.dsMono)
-                .multilineTextAlignment(.trailing)
-                .frame(width: 90)
-                .onSubmit { commit() }
-                .frame(width: DS.Layout.fieldTrailing, alignment: .trailing)
+            HStack(spacing: 8) {
+                TextField("0", text: $text)
+                    .inputStyle()
+                    .font(.dsMono)
+                    .multilineTextAlignment(.trailing)
+                    .frame(width: 90)
+                    .focused($isFocused)
+                    .onSubmit { commit() }
+                    .onChange(of: text) { _, _ in
+                        hasChanges = text != intStr(M.configs[key])
+                    }
+                    .onChange(of: isFocused) { _, focused in
+                        if !focused && hasChanges { commit() }
+                    }
+
+                if hasChanges {
+                    Button("应用") { commit() }
+                        .buttonStyle(.borderedProminent)
+                        .controlSize(.small)
+                }
+            }
+            .frame(width: DS.Layout.fieldTrailing, alignment: .trailing)
         }
         .padding(.vertical, 5)
         .onAppear { text = intStr(M.configs[key]) }
-        .onChange(of: configValue) { text = intStr(M.configs[key]) }
+        .onChange(of: configValue) { _, _ in text = intStr(M.configs[key]); hasChanges = false }
     }
     private var configValue: String { intStr(M.configs[key]) }
     private func intStr(_ v: Any?) -> String { if let i = v as? Int { return "\(i)" }; if let d = v as? Double { return "\(Int(d))" }; return "0" }
     private func commit() {
         let n = Int(text) ?? 0
+        hasChanges = false
         Task { if persistent { await M.patchPersistent([key: n]) } else { await M.patch([key: n]) } }
     }
 }
@@ -324,19 +343,42 @@ struct TextRow: View {
     let label: String; let key: String; let placeholder: String; let persistent: Bool
     init(_ label: String, key: String, placeholder: String = "", persistent: Bool = false) { self.label = label; self.key = key; self.placeholder = placeholder; self.persistent = persistent }
     @State private var text = ""
+    @State private var hasChanges = false
+    @FocusState private var isFocused: Bool
+
     var body: some View {
         HStack {
             Text(label).font(.dsBody)
             Spacer()
-            TextField(placeholder, text: $text)
-                .textFieldStyle(.roundedBorder)
-                .font(.dsMono)
-                .multilineTextAlignment(.trailing)
-                .onSubmit { Task { if persistent { await M.patchPersistent([key: text]) } else { await M.patch([key: text]) } } }
-                .frame(width: DS.Layout.fieldTrailing, alignment: .trailing)
+            HStack(spacing: 8) {
+                TextField(placeholder, text: $text)
+                    .inputStyle()
+                    .font(.dsMono)
+                    .multilineTextAlignment(.trailing)
+                    .focused($isFocused)
+                    .onSubmit { commit() }
+                    .onChange(of: text) { _, _ in
+                        hasChanges = text != ((M.configs[key] as? String) ?? "")
+                    }
+                    .onChange(of: isFocused) { _, focused in
+                        if !focused && hasChanges { commit() }
+                    }
+
+                if hasChanges {
+                    Button("应用") { commit() }
+                        .buttonStyle(.borderedProminent)
+                        .controlSize(.small)
+                }
+            }
+            .frame(width: DS.Layout.fieldTrailing, alignment: .trailing)
         }
         .padding(.vertical, 5)
         .onAppear { text = (M.configs[key] as? String) ?? "" }
+        .onChange(of: M.configs[key] as? String) { _, _ in text = (M.configs[key] as? String) ?? ""; hasChanges = false }
+    }
+    private func commit() {
+        hasChanges = false
+        Task { if persistent { await M.patchPersistent([key: text]) } else { await M.patch([key: text]) } }
     }
 }
 
@@ -396,7 +438,8 @@ struct StringListRow: View {
             // Add row — visually the input affordance, set apart from the list above.
             HStack(spacing: DS.Spacing.s) {
                 TextField(placeholder, text: $draft)
-                    .textFieldStyle(.roundedBorder).font(.dsMono)
+                    .inputStyle()
+                    .font(.dsMono)
                     .overlay(RoundedRectangle(cornerRadius: DS.Radius.control).stroke(!draftValid ? DS.Palette.error.opacity(0.7) : Color.clear, lineWidth: 1))
                 Button { if !draft.isEmpty && draftValid { items.append(draft); draft = ""; commit() } } label: { Image(systemName: "plus.circle.fill") }
                     .buttonStyle(.borderless).disabled(!draftValid || draft.isEmpty)
