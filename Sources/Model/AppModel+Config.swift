@@ -236,15 +236,8 @@ extension AppModel {
                 if !engine.runningAsRoot {
                     showToast("正在以 Root 权限重启核心…")
                     await engine.restart()
-                    // Poll until the root kernel is actually up (2s was a race —
-                    // mihomo needs variable time to bind 0.0.0.0:53 for Gateway DNS)
-                    var rootReady = false
-                    for _ in 0..<10 {
-                        try? await Task.sleep(nanoseconds: 1_000_000_000)
-                        await api.probe(timeout: 1.0)
-                        if api.reachable && engine.runningAsRoot { rootReady = true; break }
-                    }
-                    guard rootReady else {
+                    // Wait for root kernel with smart backoff
+                    guard await waitForKernelReady(maxAttempts: 8) else {
                         showToast("Root 内核启动超时，未开启网关")
                         return
                     }
@@ -270,7 +263,6 @@ extension AppModel {
             engine.setTopLevelScalars(Self.gatewayOverrides)
             showToast("正在重启核心以应用网关配置…")
             await engine.restart()
-            try? await Task.sleep(nanoseconds: 2_000_000_000)
             await reconnect()
 
             // Verify kernel is actually up (not crashed due to port 53 conflict).
@@ -280,7 +272,6 @@ extension AppModel {
                     try? b.write(toFile: cfgPath, atomically: true, encoding: .utf8)
                     showToast("端口冲突，正在回滚配置…")
                     await engine.restart()
-                    try? await Task.sleep(nanoseconds: 2_000_000_000)
                     await reconnect()
                 }
                 preGatewayAllowLan = nil; preGatewayDNSListen = nil
@@ -410,16 +401,11 @@ extension AppModel {
 
             showToast("正在以 Root 权限重启核心…")
             await engine.restart()
-            // Poll until the root kernel is up — ensureRunning is fire-and-forget
-            // so the 2 s hardcoded sleep was a race: the startMihomo XPC callback
-            // (sets runningAsRoot) and mihomo startup both need variable time.
-            var rootReady = false
-            for _ in 0..<10 {
-                try? await Task.sleep(nanoseconds: 1_000_000_000)
-                await api.probe(timeout: 1.0)
-                if api.reachable && engine.runningAsRoot { rootReady = true; break }
+            // Wait for root kernel with smart backoff
+            guard await waitForKernelReady(maxAttempts: 8) else {
+                showToast("Root 内核启动超时，TUN 未启用")
+                return
             }
-            guard rootReady else { showToast("Root 内核启动超时，TUN 未启用"); return }
             await self.reconnect()
         }
 
@@ -601,17 +587,13 @@ extension AppModel {
                 self.showToast("正在启动核心...")
                 self.engine.ensureRunning()
 
-                // Wait and verify
-                for i in 1...5 {
-                    try? await Task.sleep(nanoseconds: 1_000_000_000)
-                    await self.api.probe(timeout: 0.5)
-                    if self.api.reachable {
-                        self.logKernel("核心启动成功 (尝试 \(i))")
-                        await self.reconnect()
-                        return
-                    }
-                    self.logKernel("等待核心响应... (\(i)/5)")
+                // Wait and verify with smart backoff (reduced from 5 fixed attempts)
+                if await self.waitForKernelReady(maxAttempts: 6) {
+                    self.logKernel("核心启动成功")
+                    await self.reconnect()
+                    return
                 }
+
                 // Not reachable after retries — surface the REAL reason.
                 if let cfgErr = await self.engine.validateConfig() {
                     self.logKernel("配置错误，核心无法启动：\(cfgErr)")
