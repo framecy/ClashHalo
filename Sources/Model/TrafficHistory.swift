@@ -57,6 +57,45 @@ import SwiftUI
 
     // Aggregates for the dashboard
     var today: Day { days[todayKey] ?? Day() }
+
+    var last7Days: Day {
+        let cal = Calendar.current
+        let now = Date()
+        var result = Day()
+        for i in 0..<7 {
+            if let date = cal.date(byAdding: .day, value: -i, to: now) {
+                let f = DateFormatter(); f.dateFormat = "yyyy-MM-dd"
+                let key = f.string(from: date)
+                if let d = days[key] {
+                    result.direct += d.direct
+                    result.proxy += d.proxy
+                    result.reject += d.reject
+                    for j in 0..<24 { result.hourlyDown[j] += d.hourlyDown[j] }
+                }
+            }
+        }
+        return result
+    }
+
+    var last30Days: Day {
+        let cal = Calendar.current
+        let now = Date()
+        var result = Day()
+        for i in 0..<30 {
+            if let date = cal.date(byAdding: .day, value: -i, to: now) {
+                let f = DateFormatter(); f.dateFormat = "yyyy-MM-dd"
+                let key = f.string(from: date)
+                if let d = days[key] {
+                    result.direct += d.direct
+                    result.proxy += d.proxy
+                    result.reject += d.reject
+                    for j in 0..<24 { result.hourlyDown[j] += d.hourlyDown[j] }
+                }
+            }
+        }
+        return result
+    }
+
     var month: Day {
         let prefix = String(todayKey.prefix(7))  // yyyy-MM
         var m = Day()
@@ -70,5 +109,27 @@ import SwiftUI
     var monthDailyTotals: [Double] {
         let prefix = String(todayKey.prefix(7))
         return days.filter { $0.key.hasPrefix(prefix) }.sorted { $0.key < $1.key }.map { $0.value.total }
+    }
+
+    /// Daily totals for the last 7 days
+    var last7DaysTotals: [Double] {
+        let cal = Calendar.current
+        let now = Date()
+        let f = DateFormatter(); f.dateFormat = "yyyy-MM-dd"
+        return (0..<7).reversed().compactMap { i in
+            guard let date = cal.date(byAdding: .day, value: -i, to: now) else { return 0 }
+            return days[f.string(from: date)]?.total ?? 0
+        }
+    }
+
+    /// Daily totals for the last 30 days
+    var last30DaysTotals: [Double] {
+        let cal = Calendar.current
+        let now = Date()
+        let f = DateFormatter(); f.dateFormat = "yyyy-MM-dd"
+        return (0..<30).reversed().compactMap { i in
+            guard let date = cal.date(byAdding: .day, value: -i, to: now) else { return 0 }
+            return days[f.string(from: date)]?.total ?? 0
+        }
     }
 }
