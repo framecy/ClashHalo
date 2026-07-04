@@ -156,6 +156,21 @@ import ServiceManagement
 
     private static let logDF: DateFormatter = { let f = DateFormatter(); f.dateFormat = "HH:mm:ss"; return f }()
 
+    /// Smart wait for kernel to be ready using exponential backoff.
+    /// Returns true if kernel is reachable, false if timeout.
+    private func waitForKernelReady(maxAttempts: Int = 8) async -> Bool {
+        let delays: [UInt64] = [300_000_000, 500_000_000, 700_000_000, 1_000_000_000,
+                                1_500_000_000, 2_000_000_000, 2_000_000_000, 2_000_000_000]
+        for i in 0..<min(maxAttempts, delays.count) {
+            try? await Task.sleep(nanoseconds: delays[i])
+            await api.probe(timeout: 0.5)
+            if api.reachable && engine.runningAsRoot {
+                return true
+            }
+        }
+        return false
+    }
+
     // MARK: Lifecycle
 
     func start() {
@@ -205,8 +220,8 @@ import ServiceManagement
             installSignalHandlers()
             observeSleepWake()
 
-            // 稍后检查 Helper 版本是否过旧，自动进行升级
-            try? await Task.sleep(nanoseconds: 4_000_000_000)
+            // 稍后检查 Helper 版本是否过旧，自动进行升级（延迟减少为2秒）
+            try? await Task.sleep(nanoseconds: 2_000_000_000)
             await engine.checkAndUpgradeHelperIfNeeded()
         }
     }
@@ -311,14 +326,24 @@ import ServiceManagement
         // 后台慢速轮询：仅在窗口不可见且连接页未激活时运行
         // 可见时 startPolling() + ConnectionsViewModel 已覆盖所有数据更新，无需重复
         if !activeUI && !isConnectionsPageActive {
+            var tickCount = 0
             pollTimer = Timer.scheduledTimer(withTimeInterval: 30.0, repeats: true) { [weak self] _ in
                 Task {
                     guard let self else { return }
                     guard !self.sleeping && self.networkOnline else { return }
+
+                    // Record traffic history
                     do {
                         let snapshot = try await self.api.fetchConnectionsSnapshot()
                         await self.recordHistoryOnly(from: snapshot)
                     } catch { }
+
+                    // Gateway health check every 2 minutes (every 4 ticks at 30s interval)
+                    tickCount += 1
+                    if self.gatewayModeOn && self.reachable && tickCount >= 4 {
+                        await self.verifyGatewayConfig()
+                        tickCount = 0
+                    }
                 }
             }
         }
@@ -341,11 +366,20 @@ import ServiceManagement
     private func startPolling() {
         pollTask?.cancel()
         pollTask = Task { [weak self] in
+            var gatewayCheckCounter = 0
             while let self, !Task.isCancelled, self.reachable, self.isMainWindowVisible || self.isMenuBarVisible {
                 // Only refresh configs periodically; proxies are refreshed on-demand
                 // (mode/profile switch, manual test-all) to avoid triggering @Published
                 // groups diff every 3s when nothing changes.
                 await self.refreshConfigs()
+
+                // Gateway health check every 30 seconds (every 10th poll at 3s interval)
+                gatewayCheckCounter += 1
+                if self.gatewayModeOn && gatewayCheckCounter >= 10 {
+                    await self.verifyGatewayConfig()
+                    gatewayCheckCounter = 0
+                }
+
                 try? await Task.sleep(nanoseconds: 3_000_000_000)
             }
         }
@@ -416,25 +450,22 @@ import ServiceManagement
         logKernel("系统唤醒，正在恢复连接与服务...")
 
         Task {
-            // Network interfaces need a moment to re-associate after wake
-            try? await Task.sleep(nanoseconds: 2_000_000_000)
+            // Network interfaces need a moment to re-associate after wake (reduced from 2s to 1s)
+            try? await Task.sleep(nanoseconds: 1_000_000_000)
 
             // Probe kernel health
-            await api.probe(timeout: 2.0)
+            await api.probe(timeout: 1.0)
 
             if !api.reachable {
                 // Kernel died during sleep — restart it
                 logKernel("唤醒后内核未响应，正在重启...")
                 engine.ensureRunning()
 
-                // Wait for kernel to come up
-                for i in 1...8 {
-                    try? await Task.sleep(nanoseconds: 1_000_000_000)
-                    await api.probe(timeout: 1.0)
-                    if api.reachable {
-                        logKernel("内核已重启 (尝试 \(i))")
-                        break
-                    }
+                // Wait for kernel to come up using smart backoff (reduced from 8 attempts)
+                if await waitForKernelReady(maxAttempts: 6) {
+                    logKernel("内核已重启")
+                } else {
+                    logKernel("内核重启超时")
                 }
             }
 
@@ -465,15 +496,29 @@ import ServiceManagement
             if preSleepGatewayOn && reachable {
                 logKernel("恢复网关中枢配置...")
                 engine.setTopLevelScalars(AppModel.gatewayOverrides)
-                do {
-                    try await api.reloadConfig(path: engine.configFilePath)
-                    await refreshConfigs()
-                    // Only enable sysctl IP forwarding after config is confirmed reloaded
-                    let ok = await engine.setGatewayMode(enabled: true)
-                    gatewayModeOn = ok
-                    logKernel(ok ? "网关中枢已恢复" : "网关中枢恢复失败")
-                } catch {
-                    logKernel("网关配置重载失败：\(error.localizedDescription)，跳过 sysctl 设置")
+
+                // Retry reload up to 3 times with exponential backoff
+                var restored = false
+                for attempt in 1...3 {
+                    do {
+                        try await api.reloadConfig(path: engine.configFilePath)
+                        await refreshConfigs()
+                        // Only enable sysctl IP forwarding after config is confirmed reloaded
+                        let ok = await engine.setGatewayMode(enabled: true)
+                        gatewayModeOn = ok
+                        restored = ok
+                        logKernel(ok ? "网关中枢已恢复" : "网关中枢恢复失败")
+                        break
+                    } catch {
+                        logKernel("网关配置重载失败（尝试 \(attempt)/3）：\(error.localizedDescription)")
+                        if attempt < 3 {
+                            try? await Task.sleep(nanoseconds: UInt64(attempt) * 1_000_000_000)
+                        }
+                    }
+                }
+
+                if !restored {
+                    logKernel("网关中枢恢复失败，已放弃重试")
                     gatewayModeOn = false
                 }
             }
@@ -508,9 +553,14 @@ import ServiceManagement
                         if onlineChanged || (currentIface != nil && currentIface != lastInterface) {
                             if let iface = currentIface { lastInterface = iface }
                             engine.isBusy = true
-                            defer { engine.isBusy = false }
                             await applyTUNState(true)
+                            engine.isBusy = false
                         }
+                    }
+
+                    // Gateway health check: verify config is still intact after network change
+                    if gatewayModeOn && reachable {
+                        await verifyGatewayConfig()
                     }
                 }
             }
@@ -549,8 +599,38 @@ import ServiceManagement
         let httpOn = dict[kCFNetworkProxiesHTTPEnable as String] as? Int == 1
         let httpHost = dict[kCFNetworkProxiesHTTPProxy as String] as? String
         let httpPort = dict[kCFNetworkProxiesHTTPPort as String] as? Int
-        
+
         systemProxyOn = httpOn && httpHost == "127.0.0.1" && httpPort == proxyPort
+    }
+
+    /// Verify Gateway config integrity and restore if needed.
+    /// Called after network changes and periodically to ensure long-running
+    /// Gateway mode stays healthy (config persists, sysctl stays set).
+    private func verifyGatewayConfig() async {
+        guard gatewayModeOn && reachable else { return }
+
+        // Check if config still has the Gateway overrides
+        let allowLan = (configs["allow-lan"] as? Bool) == true
+        let dnsListen = (configs["dns"] as? [String: Any])?["listen"] as? String
+        let configOK = allowLan && dnsListen == "0.0.0.0:53"
+
+        if !configOK {
+            logKernel("检测到网关配置丢失，正在恢复...")
+            engine.setTopLevelScalars(Self.gatewayOverrides)
+            do {
+                try await api.reloadConfig(path: engine.configFilePath)
+                await refreshConfigs()
+                // Re-verify sysctl after config restore
+                let sysctlOK = await engine.setGatewayMode(enabled: true)
+                if sysctlOK {
+                    logKernel("网关配置已自动恢复")
+                } else {
+                    logKernel("网关 sysctl 恢复失败")
+                }
+            } catch {
+                logKernel("网关配置恢复失败：\(error.localizedDescription)")
+            }
+        }
     }
 
     // MARK: Menu-bar app preferences
