@@ -171,9 +171,10 @@ struct SdwanTopologyView: View {
         switch k {
         case .physical: return .blue
         case .proxyTun: return DS.Palette.accent
-        case .tailscale: return .teal
+        case .tailscale: return .cyan
         case .zerotier: return .orange
         case .oray: return .purple
+        case .otherTun: return .gray
         default: return .secondary
         }
     }
@@ -185,7 +186,8 @@ struct SdwanTopologyView: View {
         case .tailscale: return "point.3.connected.trianglepath.dotted"
         case .zerotier: return "globe"
         case .oray: return "link"
-        default: return "network"
+        case .otherTun: return "network"
+        default: return "questionmark.circle"
         }
     }
 }
@@ -268,11 +270,30 @@ struct SdwanPage: View {
                         VStack(spacing: 4) {
                             if routes.isEmpty { Text("无 utun 路由").font(.dsBody).foregroundColor(.secondary).padding() }
                             ForEach(routes.indices, id: \.self) { idx in
+                                let route = routes[idx]
+                                let iface = ifaces.first(where: { $0.name == route.iface })
+                                let kind = iface?.kind ?? .otherTun
+
                                 HStack {
-                                    Text(routes[idx].dest).font(.dsMono)
+                                    Text(route.dest).font(.dsMono)
                                     Spacer()
                                     Image(systemName: "arrow.right").font(.dsBody).foregroundColor(.secondary)
-                                    Text(routes[idx].iface).font(.dsMono).foregroundColor(DS.Palette.accent)
+
+                                    // 带分类图标和颜色的接口名
+                                    HStack(spacing: 4) {
+                                        Image(systemName: icon(kind))
+                                            .foregroundColor(color(kind))
+                                            .font(.system(size: 10))
+                                        Text(route.iface)
+                                            .font(.dsMono)
+                                            .foregroundColor(color(kind))
+                                    }
+                                    .padding(.horizontal, 6)
+                                    .padding(.vertical, 2)
+                                    .background(
+                                        Capsule()
+                                            .fill(color(kind).opacity(0.12))
+                                    )
                                 }
                                 .padding(.vertical, 4)
                                 if idx < routes.count - 1 {
@@ -325,16 +346,18 @@ struct SdwanPage: View {
         case .tailscale: return "point.3.connected.trianglepath.dotted"
         case .zerotier: return "globe"
         case .oray: return "link"
-        default: return "network"
+        case .otherTun: return "network"
+        default: return "questionmark.circle"
         }
     }
     private func color(_ k: IfaceKind) -> Color {
         switch k {
         case .physical: return .blue
-        case .proxyTun: return .green
-        case .tailscale: return .teal
+        case .proxyTun: return DS.Palette.accent
+        case .tailscale: return .cyan
         case .zerotier: return .orange
         case .oray: return .purple
+        case .otherTun: return .gray
         default: return .secondary
         }
     }
