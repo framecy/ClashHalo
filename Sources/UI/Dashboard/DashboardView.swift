@@ -476,5 +476,5 @@ struct TrafficSparkline: View, Equatable {
 
 #Preview("Dashboard") {
     DashboardPage().environmentObject(AppModel.shared)
-        .frame(width: 1000, height: 760).preferredColorScheme(.dark)
+        .frame(minWidth: 1000, idealWidth: 1100, maxWidth: 1400, minHeight: 760, idealHeight: 840, maxHeight: 1100).preferredColorScheme(.dark)
 }

@@ -390,6 +390,9 @@ struct ConnDetailCard: View {
         }
         M.prevConnBytes = bytes
 
+        // Compute dashboard stats from raw items before conversion
+        M.dash = AppModel.computeDashRaw(items)
+
         // Detect closed connections
         var newClosed = [Conn]()
         for conn in M.cachedConns {
@@ -415,9 +418,6 @@ struct ConnDetailCard: View {
         conns = M.cachedConns
         closedConnections = M.cachedClosedConnections
         M.activeConnectionsCount = activeIDs.count
-
-        // Reuse the sorted array to avoid a second full scan in computeDash
-        M.dash = AppModel.computeDash(sorted)
 
         M.closedConns = max(0, M.totalConnsCount - activeIDs.count)
         M.history.flushIfNeeded()
