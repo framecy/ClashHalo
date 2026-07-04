@@ -376,25 +376,13 @@ extension AppModel {
                 }
             } else if engine.helperVersion != EngineControl.kExpectedHelperVersion,
                       engine.helperVersion != "?" {
-                // Installed helper is outdated — full upgrade (uninstall → install)
-                // so the old process is properly removed before the new one starts.
+                // Helper version mismatch detected during TUN toggle.
+                // This should rarely happen since app startup auto-upgrades,
+                // but handle it gracefully just in case.
                 showToast("特权服务需要更新，正在自动升级…")
-                let ok = await XPCManager.shared.upgradeDaemon()
-                guard ok else { showToast("Helper 升级失败，TUN 未启用"); return }
-                // Wait for new helper to come up
-                for _ in 0..<6 {
-                    try? await Task.sleep(nanoseconds: 500_000_000)
-                    if await XPCManager.shared.verifyConnectivity() { break }
-                }
-                engine.refreshHelperVersion()
-                // upgradeDaemon goes through XPCManager directly (not
-                // installPrivileged), so it doesn't set isRoot. We must verify
-                // the new helper is actually running before marking isRoot=true,
-                // otherwise a failed upgrade leaves us in a broken state.
-                if await XPCManager.shared.verifyConnectivity() {
-                    engine.isRoot = true
-                } else {
-                    showToast("Helper 升级后无法连接，TUN 未启用")
+                let upgraded = await engine.checkAndUpgradeHelperIfNeeded()
+                guard upgraded else {
+                    showToast("Helper 升级失败，TUN 未启用")
                     return
                 }
             }

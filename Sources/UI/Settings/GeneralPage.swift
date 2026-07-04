@@ -63,7 +63,8 @@ struct GeneralPage: View {
                                 VStack(alignment: .leading, spacing: 4) {
                                     Text("Zashboard URL").font(.dsBody).foregroundColor(.secondary)
                                     TextField("https://board.zash.run.place/", text: $M.zashboardURL)
-                                        .textFieldStyle(.roundedBorder)
+                                        .inputStyle()
+                                        .font(.dsMono)
                                 }
                             }
                         }
@@ -241,8 +242,7 @@ struct GeneralPage: View {
                 .resizable()
                 .frame(width: 64, height: 64)
                 .padding(.top, 20)
-                .padding(.top, 20)
-            
+
             VStack(spacing: 4) {
                 Text("ClashHalo")
                     .font(.dsSection)
@@ -252,24 +252,104 @@ struct GeneralPage: View {
                     .foregroundColor(.secondary)
             }
 
+            // Update check card
+            Card(title: "应用更新", icon: "arrow.down.circle") {
+                VStack(spacing: 12) {
+                    HStack {
+                        VStack(alignment: .leading, spacing: 4) {
+                            if M.updater.isChecking {
+                                Text("正在检查更新...")
+                                    .font(.dsBody)
+                            } else if M.updater.updateAvailable, let version = M.updater.latestVersion {
+                                Text("发现新版本：\(version)")
+                                    .font(.dsBody)
+                                    .foregroundColor(.orange)
+                            } else if M.updater.latestVersion != nil {
+                                Text("当前已是最新版本")
+                                    .font(.dsBody)
+                                    .foregroundColor(DS.Palette.ok)
+                            } else {
+                                Text("点击检查更新")
+                                    .font(.dsBody)
+                                    .foregroundColor(.secondary)
+                            }
+                        }
+                        Spacer()
+
+                        if M.updater.updateAvailable {
+                            Button(action: {
+                                Task {
+                                    M.showToast("开始下载更新...")
+                                    let ok = await M.updater.performUpdate()
+                                    if ok {
+                                        M.showToast("更新包已打开，请按提示安装")
+                                    } else {
+                                        M.showToast("更新下载失败")
+                                    }
+                                }
+                            }) {
+                                Text("下载更新")
+                                    .foregroundColor(.white)
+                                    .fontWeight(.medium)
+                                    .padding(.horizontal, DS.Spacing.l)
+                                    .padding(.vertical, 6)
+                                    .background(
+                                        RoundedRectangle(cornerRadius: 6)
+                                            .fill(Color.orange)
+                                    )
+                            }
+                            .buttonStyle(.plain)
+                            .disabled(M.updater.isDownloading)
+                        }
+
+                        Button(action: {
+                            Task {
+                                _ = await M.updater.checkForUpdates()
+                            }
+                        }) {
+                            Text("检查更新")
+                                .padding(.horizontal, 12)
+                                .padding(.vertical, 4)
+                                .background(
+                                    RoundedRectangle(cornerRadius: 6)
+                                        .stroke(Color.secondary.opacity(0.3), lineWidth: 1)
+                                )
+                        }
+                        .buttonStyle(.plain)
+                        .disabled(M.updater.isChecking || M.updater.isDownloading)
+                    }
+
+                    if M.updater.isDownloading {
+                        ProgressView(value: M.updater.downloadProgress)
+                            .progressViewStyle(.linear)
+                    }
+                }
+            }
+            .padding(.horizontal, 40)
+
             Text("ClashHalo 是一个基于 mihomo (Clash.Meta) 内核的 macOS 原生代理客户端。采用原生 SwiftUI 编写，通过独立特权 Helper (XPC) 进行权限分离，订阅凭据经 Keychain 安全存储。")
                 .font(.dsBody)
                 .multilineTextAlignment(.center)
                 .foregroundColor(.secondary)
                 .padding(.horizontal, 40)
                 .fixedSize(horizontal: false, vertical: true)
-            
+
             VStack(spacing: 8) {
                 Link(destination: URL(string: "https://github.com/MetaCubeX/mihomo")!) {
                     Label("mihomo (Clash.Meta) 核心", systemImage: "link")
                         .font(.dsBody)
                         .foregroundColor(DS.Palette.accent)
                 }
+                Link(destination: URL(string: "https://github.com/\(M.updater.repoOwner)/\(M.updater.repoName)")!) {
+                    Label("GitHub 项目主页", systemImage: "link")
+                        .font(.dsBody)
+                        .foregroundColor(DS.Palette.accent)
+                }
             }
             .padding(.top, 10)
-            
+
             Spacer()
-            
+
             Text("© 2026 ClashHalo Dev Team. All rights reserved.")
                 .font(.dsBody)
                 .foregroundColor(.secondary)
@@ -305,11 +385,8 @@ struct GeneralPage: View {
         defer { helperBusy = false }
         if engine.isRoot && helperNeedsUpdate {
             M.showToast("正在升级特权服务（v\(engine.helperVersion) → v\(EngineControl.kExpectedHelperVersion)）…")
-            let ok = await XPCManager.shared.upgradeDaemon()
-            guard ok else { M.showToast("升级失败或已取消授权"); return }
-            engine.isRoot = true
-            await waitForHelper()
-            engine.refreshHelperVersion()
+            let upgraded = await engine.checkAndUpgradeHelperIfNeeded()
+            guard upgraded else { M.showToast("升级失败或已取消授权"); return }
             await M.reconnect()
             M.showToast("特权服务已升级 ✓")
         } else if engine.isRoot {
@@ -630,5 +707,5 @@ struct ContentUnavailable: View {
 
 #Preview("Settings") {
     GeneralPage().environmentObject(AppModel.shared)
-        .frame(width: 900, height: 720).preferredColorScheme(.dark)
+        .frame(minWidth: 900, idealWidth: 1000, maxWidth: 1200, minHeight: 720, idealHeight: 800, maxHeight: 1000).preferredColorScheme(.dark)
 }
