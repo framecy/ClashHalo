@@ -9,21 +9,21 @@ struct ContentView: View {
     // 监控：实时状态与数据
     private let monitorTabs: [Tab] = [
         .init(id: "dashboard",   label: "仪表盘",   icon: "gauge"),
-        .init(id: "connections", label: "连接监控", icon: "link"),
+        .init(id: "connections", label: "连接",     icon: "link"),
         .init(id: "logs",        label: "日志",     icon: "doc.plaintext.fill"),
     ]
     // 代理：规则与节点
     private let proxyTabs: [Tab] = [
-        .init(id: "proxies", label: "代理",     icon: "diamond.fill"),
-        .init(id: "rules",   label: "分流规则", icon: "line.3.horizontal.decrease"),
-        .init(id: "subscriptions", label: "配置与订阅", icon: "icloud.and.arrow.down"),
+        .init(id: "proxies", label: "代理节点", icon: "diamond.fill"),
+        .init(id: "rules",   label: "规则",     icon: "line.3.horizontal.decrease"),
+        .init(id: "subscriptions", label: "订阅", icon: "icloud.and.arrow.down"),
     ]
     // 配置：profile · 网络(入站/TUN/DNS/嗅探/内核) · SD-WAN · 偏好
     private let configTabs: [Tab] = [
-        .init(id: "config",  label: "配置编辑", icon: "slider.horizontal.3"),
-        .init(id: "network", label: "网络",     icon: "network"),
-        .init(id: "map",     label: "SD-WAN 共存", icon: "shareplay"),
-        .init(id: "general", label: "通用设置", icon: "gearshape.fill"),
+        .init(id: "config",  label: "配置", icon: "slider.horizontal.3"),
+        .init(id: "network", label: "网络", icon: "network"),
+        .init(id: "map",     label: "SD-WAN", icon: "shareplay"),
+        .init(id: "general", label: "设置", icon: "gearshape.fill"),
     ]
 
     /// App 版本号(随 MARKETING_VERSION),展示于侧栏头部与关于页。
