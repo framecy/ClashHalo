@@ -78,11 +78,9 @@ struct ContentView: View {
             Image(nsImage: NSApp.applicationIconImage ?? NSImage())
                 .resizable()
                 .frame(width: 32, height: 32)
-            VStack(alignment: .leading, spacing: 0) {
-                HStack(spacing: 5) {
-                    Text("ClashHalo").font(.dsLabelBold)
-                    Text("v\(Self.appVersion) (\(Self.appBuild))").font(.dsBodyMedium).foregroundColor(.secondary)
-                }
+            VStack(alignment: .leading, spacing: 2) {
+                Text("ClashHalo").font(.dsLabelBold)
+                Text("v\(Self.appVersion) (\(Self.appBuild))").font(.dsCaption).foregroundColor(.secondary)
             }
             Spacer()
         }
