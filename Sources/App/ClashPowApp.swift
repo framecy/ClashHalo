@@ -68,7 +68,7 @@ struct ClashPowApp: App {
         Window("ClashHalo", id: "main") {
             ContentView()
                 .environmentObject(model)
-                .frame(minWidth: 940, minHeight: 620)
+                .frame(minWidth: 940, maxWidth: .infinity, minHeight: 620, maxHeight: .infinity)
                 // Locked to dark: the design tokens (DS.Palette.cardBg/…) are
                 // dark-only fixed colors, so a light scheme would render dark
                 // cards on a light background. Re-introduce a light theme only
