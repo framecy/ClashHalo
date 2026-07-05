@@ -5,6 +5,7 @@
 ## Unreleased
 
 ### Changed
+- **版本号调整为 v1.0.0**：统一 App Info.plist、Xcode `MARKETING_VERSION`、README 与发布包命名。
 - **项目名称统一为 ClashHalo**：Xcode 工程、Scheme、App 入口、Bundle ID、Helper Mach Service、运行时数据目录、日志目录、打包脚本和文档链接统一指向 ClashHalo。
 - **升级兼容迁移**：启动时自动迁移旧版数据目录，安装新版 Helper 时清理旧版特权服务残留，避免更名后配置丢失或旧守护进程冲突。
 
