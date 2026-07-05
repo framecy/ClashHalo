@@ -221,31 +221,34 @@ extension AppModel {
 
     private func applyGatewayMode(_ want: Bool) async {
         if want {
-            // Check helper privileges for sysctl
+            // Check helper privileges for sysctl and root-mode mihomo.
             if !engine.isRoot {
                 showToast("开启网关中枢需要管理员授权…")
                 let ok = await engine.installPrivileged()
                 guard ok else { showToast("授权失败，未开启网关"); return }
-                // Verify XPC connectivity after install (catch bootstrap failures)
-                guard await XPCManager.shared.verifyConnectivity() else {
-                    showToast("特权服务安装后无法连接，未开启网关")
-                    engine.isRoot = false
+            }
+            // Verify XPC connectivity even when a helper plist already exists;
+            // a stale or unloaded LaunchDaemon cannot enable forwarding.
+            guard await XPCManager.shared.verifyConnectivity() else {
+                showToast("特权服务无法连接，未开启网关")
+                engine.isRoot = false
+                return
+            }
+            engine.isRoot = true
+
+            // Gateway traffic must enter a root-owned TUN. If the helper exists
+            // but the current kernel is user-mode, restart it through the helper.
+            if !engine.runningAsRoot {
+                showToast("正在以 Root 权限重启核心…")
+                await engine.restart()
+                guard await waitForKernelReady(maxAttempts: 8) else {
+                    showToast("Root 内核启动超时，未开启网关")
                     return
                 }
-                // Also requires root engine restart if not already
-                if !engine.runningAsRoot {
-                    showToast("正在以 Root 权限重启核心…")
-                    await engine.restart()
-                    // Wait for root kernel with smart backoff
-                    guard await waitForKernelReady(maxAttempts: 8) else {
-                        showToast("Root 内核启动超时，未开启网关")
-                        return
-                    }
-                    await reconnect()
-                }
+                await reconnect()
             }
 
-            // Write configs for gateway mode (allow-lan and dns listen)
+            // Write configs for gateway mode (allow-lan and dns listen).
             let oldTun = tunOn
 
             // Snapshot current allow-lan / dns.listen values so Gateway
@@ -261,28 +264,38 @@ extension AppModel {
             let backup = try? String(contentsOfFile: cfgPath, encoding: .utf8)
 
             engine.setTopLevelScalars(Self.gatewayOverrides)
-            showToast("正在重启核心以应用网关配置…")
-            await engine.restart()
-            await reconnect()
-
-            // Verify kernel is actually up (not crashed due to port 53 conflict).
-            // If unreachable, roll back config.yaml from backup and restart again.
-            if !reachable {
+            engine.setTunEnabled(oldTun)
+            showToast("正在应用网关配置…")
+            do {
+                try await api.reloadConfig(path: cfgPath)
+                await refreshConfigs()
+            } catch {
                 if let b = backup {
                     try? b.write(toFile: cfgPath, atomically: true, encoding: .utf8)
                     showToast("端口冲突，正在回滚配置…")
-                    await engine.restart()
-                    await reconnect()
+                    try? await api.reloadConfig(path: cfgPath)
+                    await refreshConfigs()
                 }
                 preGatewayAllowLan = nil; preGatewayDNSListen = nil
-                showToast("核心启动失败，请检查 53 端口是否被占用")
+                showToast("网关配置应用失败，请检查 53 端口是否被占用")
                 return
             }
 
-            // Engine restart resets TUN runtime state and system DNS override,
-            // so we must reapply TUN if it was on.
-            if oldTun {
+            // A force reload can drop runtime TUN if the kernel rejects or
+            // normalizes the file value. Reconcile from the live config and
+            // re-run the normal TUN enable flow if needed.
+            if oldTun && !tunOn {
                 await reapplyTUN(wasOn: true)
+                guard tunOn else {
+                    if let b = backup {
+                        try? b.write(toFile: cfgPath, atomically: true, encoding: .utf8)
+                        try? await api.reloadConfig(path: cfgPath)
+                        await refreshConfigs()
+                    }
+                    preGatewayAllowLan = nil; preGatewayDNSListen = nil
+                    showToast("TUN 恢复失败，未开启网关中枢")
+                    return
+                }
             }
 
             let ok = await engine.setGatewayMode(enabled: true)

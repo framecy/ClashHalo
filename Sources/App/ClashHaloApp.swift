@@ -56,7 +56,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 // MARK: - App
 
 @main
-struct ClashPowApp: App {
+struct ClashHaloApp: App {
     @NSApplicationDelegateAdaptor(AppDelegate.self) var appDelegate
     @StateObject private var model = AppModel.shared
 

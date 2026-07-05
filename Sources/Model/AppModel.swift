@@ -720,7 +720,7 @@ import ServiceManagement
 
     /// Reveal the data/config directory in Finder.
     func openConfigDir() {
-        let dir = NSHomeDirectory() + "/Library/Application Support/ClashPow"
+        let dir = NSHomeDirectory() + "/Library/Application Support/ClashHalo"
         NSWorkspace.shared.open(URL(fileURLWithPath: dir))
     }
 
@@ -766,7 +766,7 @@ final class AppUpdater: ObservableObject {
     @Published var isDownloading = false
 
     let repoOwner = "framecy"
-    let repoName = "ClashPow"
+    let repoName = "ClashHalo"
     private var downloadTask: URLSessionDownloadTask?
 
     var onLog: ((String) -> Void)?

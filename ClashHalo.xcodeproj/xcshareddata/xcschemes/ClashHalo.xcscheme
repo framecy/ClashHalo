@@ -15,9 +15,9 @@
             <BuildableReference
                BuildableIdentifier = "primary"
                BlueprintIdentifier = "TARGET_CLASHPOW"
-               BuildableName = "ClashPow.app"
-               BlueprintName = "ClashPow"
-               ReferencedContainer = "container:ClashPow.xcodeproj">
+               BuildableName = "ClashHalo.app"
+               BlueprintName = "ClashHalo"
+               ReferencedContainer = "container:ClashHalo.xcodeproj">
             </BuildableReference>
          </BuildActionEntry>
       </BuildActionEntries>
@@ -44,9 +44,9 @@
          <BuildableReference
             BuildableIdentifier = "primary"
             BlueprintIdentifier = "TARGET_CLASHPOW"
-            BuildableName = "ClashPow.app"
-            BlueprintName = "ClashPow"
-            ReferencedContainer = "container:ClashPow.xcodeproj">
+            BuildableName = "ClashHalo.app"
+            BlueprintName = "ClashHalo"
+            ReferencedContainer = "container:ClashHalo.xcodeproj">
          </BuildableReference>
       </BuildableProductRunnable>
    </LaunchAction>
@@ -61,9 +61,9 @@
          <BuildableReference
             BuildableIdentifier = "primary"
             BlueprintIdentifier = "TARGET_CLASHPOW"
-            BuildableName = "ClashPow.app"
-            BlueprintName = "ClashPow"
-            ReferencedContainer = "container:ClashPow.xcodeproj">
+            BuildableName = "ClashHalo.app"
+            BlueprintName = "ClashHalo"
+            ReferencedContainer = "container:ClashHalo.xcodeproj">
          </BuildableReference>
       </BuildableProductRunnable>
    </ProfileAction>

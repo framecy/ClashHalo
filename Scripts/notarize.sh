@@ -8,7 +8,7 @@ TEAM_ID="${TEAM_ID:?TEAM_ID must be set}"
 APPLE_ID="${APPLE_ID:?APPLE_ID must be set}"
 APPLE_APP_SPECIFIC_PASSWORD="${APPLE_APP_SPECIFIC_PASSWORD:?APPLE_APP_SPECIFIC_PASSWORD must be set}"
 
-echo "=== ClashPow Notarize ==="
+echo "=== ClashHalo Notarize ==="
 
 echo "Submitting $TARGET for notarization..."
 xcrun notarytool submit "$TARGET" \

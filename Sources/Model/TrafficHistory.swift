@@ -10,7 +10,7 @@ import SwiftUI
     }
     @Published var days: [String: Day] = [:]   // key "yyyy-MM-dd"
 
-    private let path = NSHomeDirectory() + "/Library/Application Support/ClashPow/traffic-history.json"
+    private let path = NSHomeDirectory() + "/Library/Application Support/ClashHalo/traffic-history.json"
     private var dirty = false
     private var lastSave = Date.distantPast
 

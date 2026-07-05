@@ -4,7 +4,7 @@ import Foundation
 /// Shared by both the Helper binary (compiled via make.sh) and the main app
 /// (Xcode target) since both include this file — prevents the two-location
 /// version drift that caused infinite upgrade loops.
-public let kSharedHelperVersion = "1.0.11"
+public let kSharedHelperVersion = "1.0.12"
 
 @objc(HelperProtocol)
 public protocol HelperProtocol {

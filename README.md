@@ -42,7 +42,7 @@ ClashHalo 采用纯 Swift 的原生编排器架构：应用层负责界面与状
 
 ### 安装
 
-1. 从 [Releases](https://github.com/framecy/ClashPow/releases) 下载最新 DMG。
+1. 从 [Releases](https://github.com/framecy/ClashHalo/releases) 下载最新 DMG。
 2. 拖入 `Applications` 后首次打开。
 3. 如果系统拦截，右键应用选择「打开」，或执行：
 
@@ -77,10 +77,10 @@ ClashHalo 使用特权服务来管理系统代理和 TUN 模式：
 bash make.sh
 
 # 本地调试构建
-xcodebuild -project ClashPow.xcodeproj -scheme ClashPow -configuration Debug build
+xcodebuild -project ClashHalo.xcodeproj -scheme ClashHalo -configuration Debug build
 
 # Release 构建
-xcodebuild -scheme ClashPow -configuration Release -derivedDataPath .build clean build
+xcodebuild -scheme ClashHalo -configuration Release -derivedDataPath .build clean build
 ```
 
 ## 目录说明
@@ -119,7 +119,7 @@ xcodebuild -scheme ClashPow -configuration Release -derivedDataPath .build clean
 
 - [局域网网关中枢配置指南](Docs/GatewayGuide.md)
 - [更新记录](CHANGELOG.md)
-- [开发总结 (v1.1.0)](../Desktop/ClashPow_开发总结_2026-07-04.md)
+- [开发总结 (v1.1.0)](../Desktop/ClashHalo_开发总结_2026-07-04.md)
 
 ## 技术栈
 
@@ -144,5 +144,5 @@ MIT License
 
 ---
 
-**项目主页**: https://github.com/framecy/ClashPow  
-**问题反馈**: https://github.com/framecy/ClashPow/issues
+**项目主页**: https://github.com/framecy/ClashHalo  
+**问题反馈**: https://github.com/framecy/ClashHalo/issues
