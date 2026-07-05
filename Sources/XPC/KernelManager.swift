@@ -14,8 +14,8 @@ final class KernelManager: ObservableObject {
     @Published var note = ""
     @Published var builtinVersion = ""   // version of the bundled kernel, if any
 
-    private let dir = NSHomeDirectory() + "/Library/Application Support/ClashPow/kernels"
-    private var binPath: String { NSHomeDirectory() + "/Library/Application Support/ClashPow/bin/mihomo" }
+    private let dir = NSHomeDirectory() + "/Library/Application Support/ClashHalo/kernels"
+    private var binPath: String { NSHomeDirectory() + "/Library/Application Support/ClashHalo/bin/mihomo" }
     @AppStorage("kernel.active") var activeTag = "内置"
 
     /// URLSession with timeout for kernel downloads (2min resource timeout for large binaries)

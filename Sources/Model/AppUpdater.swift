@@ -16,7 +16,7 @@ final class AppUpdater: ObservableObject {
     @Published var isDownloading = false
 
     let repoOwner = "framecy"
-    let repoName = "ClashPow"
+    let repoName = "ClashHalo"
     private var downloadTask: URLSessionDownloadTask?
 
     var onLog: ((String) -> Void)?

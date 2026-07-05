@@ -23,14 +23,15 @@ import SwiftUI
     /// Injected log sink (set by AppModel) — avoids referencing AppModel here.
     var onLog: ((String) -> Void)?
 
-    private let appSupport = NSHomeDirectory() + "/Library/Application Support/ClashPow"
+    private let appSupport = NSHomeDirectory() + "/Library/Application Support/ClashHalo"
     /// Config file the running mihomo reads (`mihomo -d <appSupport>` → config.yaml).
     /// Used as the source of truth for controller endpoint discovery (B1).
     var configFilePath: String { appSupport + "/config.yaml" }
     private var binDir: String { appSupport + "/bin" }
     private var kernelPath: String { binDir + "/mihomo" }
-    private let plistPath = NSHomeDirectory() + "/Library/LaunchAgents/com.clashpow.mihomo.plist"
-    private let rootPlistPath = "/Library/LaunchDaemons/com.clashpow.mihomo.plist"
+    private let plistPath = NSHomeDirectory() + "/Library/LaunchAgents/com.clashhalo.mihomo.plist"
+    private let rootPlistPath = "/Library/LaunchDaemons/com.clashhalo.mihomo.plist"
+    private var legacyAppSupport: String { NSHomeDirectory() + "/Library/Application Support/ClashPow" }
 
     init() {
         // Poll helper status — 5s is sufficient since helper state changes are
@@ -88,6 +89,7 @@ import SwiftUI
     /// Ensure the mihomo binary and configuration directory are set up.
     func ensureInstalled() {
         let fm = FileManager.default
+        migrateLegacyAppSupportIfNeeded()
         try? fm.createDirectory(atPath: appSupport, withIntermediateDirectories: true)
         try? fm.createDirectory(atPath: binDir, withIntermediateDirectories: true)
         
@@ -113,7 +115,7 @@ import SwiftUI
             mode: rule
             log-level: info
             external-controller: 127.0.0.1:9092
-            secret: clashpow
+            secret: clashhalo
             dns:
               enable: true
               enhanced-mode: fake-ip
@@ -138,6 +140,19 @@ import SwiftUI
         normalizeGeoxURL()
         forceTUNDisabled()   // TUN is runtime-only (root) — never auto-enable from disk
         injectMemoryOptimization()
+    }
+
+    private func migrateLegacyAppSupportIfNeeded() {
+        let fm = FileManager.default
+        var isDir: ObjCBool = false
+        guard fm.fileExists(atPath: legacyAppSupport, isDirectory: &isDir), isDir.boolValue else { return }
+        guard !fm.fileExists(atPath: appSupport) else { return }
+        do {
+            try fm.moveItem(atPath: legacyAppSupport, toPath: appSupport)
+            onLog?("已迁移旧数据目录到 ClashHalo")
+        } catch {
+            onLog?("旧数据目录迁移失败：\(error.localizedDescription)")
+        }
     }
 
     /// Force `tun.enable: false` in the on-disk config. TUN requires root and must
@@ -613,7 +628,7 @@ import SwiftUI
         let path = configFilePath
         guard let text = try? String(contentsOfFile: path, encoding: .utf8) else { return }
         var lines = text.components(separatedBy: "\n")
-        let weak: Set<String> = ["", "clashpow", "caseqc", "123456", "admin", "password"]
+        let weak: Set<String> = ["", "clashhalo", "caseqc", "123456", "admin", "password"]
         var hasController = false, hasSecret = false, hasExtUI = false, hasExtUIName = false, changed = false
 
         func scalar(_ line: String, _ key: String) -> String? {
@@ -976,7 +991,7 @@ import SwiftUI
     func fetchHelperVersion(timeout: TimeInterval = 2.0) async -> String? {
         await withCheckedContinuation { (cont: CheckedContinuation<String?, Never>) in
             Task {
-                let conn = NSXPCConnection(machServiceName: "com.clashpow.helper", options: .privileged)
+                let conn = NSXPCConnection(machServiceName: "com.clashhalo.helper", options: .privileged)
                 conn.remoteObjectInterface = NSXPCInterface(with: HelperProtocol.self)
                 conn.resume()
                 let lock = NSLock(); var done = false

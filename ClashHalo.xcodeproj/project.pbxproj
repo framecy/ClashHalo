@@ -22,7 +22,7 @@
 		HASHSW1F1A5AD4866E444CB21D6A9A /* Hash.swift in Sources */ = {isa = PBXBuildFile; fileRef = HASHSWFFFFFF /* Hash.swift */; };
 		94B14BD55C274919B82F3C5E /* AppModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = A7EFEC0FDBC0406AA6A9D774 /* AppModel.swift */; };
 		9F1A5AD4866E444CB21D6A9A /* LogsPage.swift in Sources */ = {isa = PBXBuildFile; fileRef = 932DCE667C4747EEB24EB3B1 /* LogsPage.swift */; };
-		A001 /* ClashPowApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = B001 /* ClashPowApp.swift */; };
+		A001 /* ClashHaloApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = B001 /* ClashHaloApp.swift */; };
 		A002 /* ContentView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B002 /* ContentView.swift */; };
 		A004 /* DashboardView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B004 /* DashboardView.swift */; };
 		A006 /* Models.swift in Sources */ = {isa = PBXBuildFile; fileRef = B006 /* Models.swift */; };
@@ -70,7 +70,7 @@
 		AMC2 /* AppModel+Connections.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "Sources/Model/AppModel+Connections.swift"; sourceTree = SOURCE_ROOT; };
 		AMG2 /* AppModel+Config.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "Sources/Model/AppModel+Config.swift"; sourceTree = SOURCE_ROOT; };
 		AMP2 /* AppModel+Proxies.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "Sources/Model/AppModel+Proxies.swift"; sourceTree = SOURCE_ROOT; };
-		B001 /* ClashPowApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ClashPowApp.swift; sourceTree = "<group>"; };
+		B001 /* ClashHaloApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ClashHaloApp.swift; sourceTree = "<group>"; };
 		B002 /* ContentView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ContentView.swift; sourceTree = "<group>"; };
 		B004 /* DashboardView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DashboardView.swift; sourceTree = "<group>"; };
 		B006 /* Models.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Models.swift; sourceTree = "<group>"; };
@@ -78,7 +78,7 @@
 		BF9832249132493A9E51C30C /* ProxiesPage.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Sources/UI/Proxies/ProxiesPage.swift; sourceTree = SOURCE_ROOT; };
 		C6DEDA31B7B33D5919A12DEB /* RuleEditorModel.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = RuleEditorModel.swift; path = Sources/Core/RuleValidator/RuleEditorModel.swift; sourceTree = "<group>"; };
 		DST2 /* DesignTokens.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Sources/UI/DesignTokens.swift; sourceTree = SOURCE_ROOT; };
-		F001 /* ClashPow.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; path = ClashPow.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		F001 /* ClashHalo.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; path = ClashHalo.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		F010 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = Info.plist; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
@@ -96,7 +96,7 @@
 		G_APP /* App */ = {
 			isa = PBXGroup;
 			children = (
-				B001 /* ClashPowApp.swift */,
+				B001 /* ClashHaloApp.swift */,
 				B002 /* ContentView.swift */,
 			);
 			name = App;
@@ -129,7 +129,7 @@
 		G_PRODUCTS /* Products */ = {
 			isa = PBXGroup;
 			children = (
-				F001 /* ClashPow.app */,
+				F001 /* ClashHalo.app */,
 			);
 			name = Products;
 			sourceTree = "<group>";
@@ -223,9 +223,9 @@
 /* End PBXGroup section */
 
 /* Begin PBXNativeTarget section */
-		TARGET_CLASHPOW /* ClashPow */ = {
+		TARGET_CLASHPOW /* ClashHalo */ = {
 			isa = PBXNativeTarget;
-			buildConfigurationList = BUILD_CONFIGS /* Build configuration list for PBXNativeTarget "ClashPow" */;
+			buildConfigurationList = BUILD_CONFIGS /* Build configuration list for PBXNativeTarget "ClashHalo" */;
 			buildPhases = (
 				PHASE_SOURCES /* Sources */,
 				PHASE_RESOURCES /* Resources */,
@@ -235,9 +235,9 @@
 			);
 			dependencies = (
 			);
-			name = ClashPow;
-			productName = ClashPow;
-			productReference = F001 /* ClashPow.app */;
+			name = ClashHalo;
+			productName = ClashHalo;
+			productReference = F001 /* ClashHalo.app */;
 			productType = "com.apple.product-type.application";
 		};
 /* End PBXNativeTarget section */
@@ -249,14 +249,14 @@
 				BuildIndependentTargetsInParallel = 1;
 				LastUpgradeCheck = 1740;
 			};
-			buildConfigurationList = BUILD_CONFIGS_PROJECT /* Build configuration list for PBXProject "ClashPow" */;
+			buildConfigurationList = BUILD_CONFIGS_PROJECT /* Build configuration list for PBXProject "ClashHalo" */;
 			compatibilityVersion = "Xcode 15.0";
 			developmentRegion = en;
 			mainGroup = G_ROOT;
 			productRefGroup = G_PRODUCTS /* Products */;
 			projectDirPath = "";
 			targets = (
-				TARGET_CLASHPOW /* ClashPow */,
+				TARGET_CLASHPOW /* ClashHalo */,
 			);
 		};
 /* End PBXProject section */
@@ -278,7 +278,7 @@
 			files = (
 				AABBCCDD0000000000000001 /* HelperProtocol.swift in Sources */,
 				AABBCCDD0000000000000003 /* XPCManager.swift in Sources */,
-				A001 /* ClashPowApp.swift in Sources */,
+				A001 /* ClashHaloApp.swift in Sources */,
 				A002 /* ContentView.swift in Sources */,
 				A004 /* DashboardView.swift in Sources */,
 				94B14BD55C274919B82F3C5E /* AppModel.swift in Sources */,
@@ -329,9 +329,9 @@
 			buildSettings = {
 				ARCHS = arm64;
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
-				CODE_SIGN_ENTITLEMENTS = ClashPow.entitlements;
+				CODE_SIGN_ENTITLEMENTS = ClashHalo.entitlements;
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 26;
+				CURRENT_PROJECT_VERSION = 27;
 				ENABLE_HARDENED_RUNTIME = YES;
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_FILE = Sources/Info.plist;
@@ -340,7 +340,7 @@
 					"@executable_path/../Frameworks",
 				);
 				MARKETING_VERSION = 0.5.4;
-				PRODUCT_BUNDLE_IDENTIFIER = com.clashpow.app;
+				PRODUCT_BUNDLE_IDENTIFIER = com.clashhalo.app;
 				PRODUCT_NAME = ClashHalo;
 			};
 			name = Debug;
@@ -360,9 +360,9 @@
 			buildSettings = {
 				ARCHS = arm64;
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
-				CODE_SIGN_ENTITLEMENTS = ClashPow.entitlements;
+				CODE_SIGN_ENTITLEMENTS = ClashHalo.entitlements;
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 26;
+				CURRENT_PROJECT_VERSION = 27;
 				ENABLE_HARDENED_RUNTIME = YES;
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_FILE = Sources/Info.plist;
@@ -371,7 +371,7 @@
 					"@executable_path/../Frameworks",
 				);
 				MARKETING_VERSION = 0.5.4;
-				PRODUCT_BUNDLE_IDENTIFIER = com.clashpow.app;
+				PRODUCT_BUNDLE_IDENTIFIER = com.clashhalo.app;
 				PRODUCT_NAME = ClashHalo;
 			};
 			name = Release;
@@ -379,7 +379,7 @@
 /* End XCBuildConfiguration section */
 
 /* Begin XCConfigurationList section */
-		BUILD_CONFIGS /* Build configuration list for PBXNativeTarget "ClashPow" */ = {
+		BUILD_CONFIGS /* Build configuration list for PBXNativeTarget "ClashHalo" */ = {
 			isa = XCConfigurationList;
 			buildConfigurations = (
 				CFG_DEBUG_TARGET /* Debug */,
@@ -387,7 +387,7 @@
 			);
 			defaultConfigurationName = Release;
 		};
-		BUILD_CONFIGS_PROJECT /* Build configuration list for PBXProject "ClashPow" */ = {
+		BUILD_CONFIGS_PROJECT /* Build configuration list for PBXProject "ClashHalo" */ = {
 			isa = XCConfigurationList;
 			buildConfigurations = (
 				CFG_DEBUG /* Debug */,

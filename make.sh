@@ -7,20 +7,20 @@ mkdir -p "$BUILD"
 echo "[1/4] Building Helper Tool…"
 
 # Auto-increment build number
-BUILD_NUM=$(grep -oE 'CURRENT_PROJECT_VERSION = [0-9]+' "$ROOT/ClashPow.xcodeproj/project.pbxproj" | head -1 | awk '{print $3}' | tr -d ';')
+BUILD_NUM=$(grep -oE 'CURRENT_PROJECT_VERSION = [0-9]+' "$ROOT/ClashHalo.xcodeproj/project.pbxproj" | head -1 | awk '{print $3}' | tr -d ';')
 NEW_BUILD=$((BUILD_NUM + 1))
-sed -i '' "s/CURRENT_PROJECT_VERSION = $BUILD_NUM;/CURRENT_PROJECT_VERSION = $NEW_BUILD;/g" "$ROOT/ClashPow.xcodeproj/project.pbxproj"
+sed -i '' "s/CURRENT_PROJECT_VERSION = $BUILD_NUM;/CURRENT_PROJECT_VERSION = $NEW_BUILD;/g" "$ROOT/ClashHalo.xcodeproj/project.pbxproj"
 echo "      Bumped build number: $BUILD_NUM -> $NEW_BUILD"
 
 # Note: Embed Info.plist into the binary for proper identification
 swiftc \
     "$ROOT/Sources/Helper/main.swift" "$ROOT/Sources/XPC/ProxyManager.swift" "$ROOT/Sources/XPC/HelperProtocol.swift" \
-    -o "$BUILD/com.clashpow.helper" \
+    -o "$BUILD/com.clashhalo.helper" \
     -Xlinker -sectcreate -Xlinker __TEXT -Xlinker __info_plist -Xlinker "$ROOT/Helper-Info.plist"
 echo "      Helper compiled and Info.plist embedded."
 
 echo "[2/4] Building GUI (xcodebuild Release, sign later)…"
-xcodebuild -project "$ROOT/ClashPow.xcodeproj" -scheme ClashPow \
+xcodebuild -project "$ROOT/ClashHalo.xcodeproj" -scheme ClashHalo \
     -configuration Release -derivedDataPath "$BUILD/dd" \
     -destination 'platform=macOS,arch=arm64' \
     CODE_SIGNING_ALLOWED=NO build >/dev/null
@@ -36,16 +36,16 @@ mkdir -p "$APP/Contents/MacOS"
 rm -rf "$APP/Contents/Library/LaunchDaemons"
 rm -f "$RES/GeoSite.dat" "$RES/geoip.metadb" "$RES/ASN.mmdb"
 
-cp "$BUILD/com.clashpow.helper" "$APP/Contents/MacOS/com.clashpow.helper"
+cp "$BUILD/com.clashhalo.helper" "$APP/Contents/MacOS/com.clashhalo.helper"
 # B7: the LaunchDaemon plist is generated at install time by XPCManager.installDaemon
 # (single source of truth). Bundling a separate plist here was dead/misleading config.
 
-chmod 755 "$APP/Contents/MacOS/com.clashpow.helper"
+chmod 755 "$APP/Contents/MacOS/com.clashhalo.helper"
 
 # bundle geodata if available locally (B8: -s skips 0-byte/corrupt files so the
 # kernel falls back to its geox-url download instead of loading an empty .dat)
 for f in GeoSite.dat geoip.metadb ASN.mmdb; do
-    for src in "$HOME/.config/mihomo/$f" "$HOME/Library/Application Support/ClashPow/$f"; do
+    for src in "$HOME/.config/mihomo/$f" "$HOME/Library/Application Support/ClashHalo/$f"; do
         [ -s "$src" ] && cp "$src" "$RES/$f" && break
     done
 done
@@ -59,8 +59,8 @@ cp -R "$ROOT/Resources/Panels/zashboard/dist" "$RES/Panels/zashboard"
 # kernel if present, otherwise download the official darwin-arm64 release.
 MIHOMO_DST="$APP/Contents/MacOS/mihomo"
 if [ ! -s "$MIHOMO_DST" ]; then
-    for src in "$HOME/Library/Application Support/ClashPow/bin/mihomo" \
-               "$HOME/Library/Application Support/ClashPow/kernels"/*/mihomo \
+    for src in "$HOME/Library/Application Support/ClashHalo/bin/mihomo" \
+               "$HOME/Library/Application Support/ClashHalo/kernels"/*/mihomo \
                "$HOME/.config/mihomo/mihomo"; do
         [ -s "$src" ] && cp "$src" "$MIHOMO_DST" && echo "      Reused local mihomo: $src" && break
     done
@@ -80,7 +80,7 @@ else echo "      WARN: no mihomo bundled; app will download on first run."; fi
 echo "[4/4] Ad-hoc signing + DMG…"
 xattr -cr "$APP"
 # Sign helper tool
-codesign --force --sign - "$APP/Contents/MacOS/com.clashpow.helper"
+codesign --force --sign - "$APP/Contents/MacOS/com.clashhalo.helper"
 # Sign mihomo WITHOUT --options runtime: hardened runtime blocks AF_SYSTEM sockets
 # (utun device creation) that mihomo needs for TUN mode even when running as root.
 # Pre-signing before the bundle step prevents --deep from overriding this.
@@ -97,7 +97,7 @@ rm -rf "$STAGE"; mkdir -p "$STAGE"
 cp -R "$APP" "$STAGE/ClashHalo.app"
 ln -s /Applications "$STAGE/Applications"
 cat > "$STAGE/使用说明.txt" <<'GUIDE'
-ClashPow 使用说明
+ClashHalo 使用说明
 ====================================
 
 【关于签名（重要）】
@@ -106,15 +106,15 @@ ClashPow 使用说明
 未经签名的预期行为，按下方步骤即可正常使用。
 
 【安装】
-将左侧 ClashPow 拖入右侧「应用程序」(Applications) 文件夹。
+将左侧 ClashHalo 拖入右侧「应用程序」(Applications) 文件夹。
 
 【首次打开（绕过 Gatekeeper，任选其一）】
-方法一（推荐）：在「应用程序」中右键点击 ClashPow → 选择「打开」→
+方法一（推荐）：在「应用程序」中右键点击 ClashHalo → 选择「打开」→
             在弹窗中再次点击「打开」。仅首次需要。
 方法二：若提示被拦截，打开「系统设置 → 隐私与安全性」，在底部找到
        被拦截提示，点击「仍要打开」。
 方法三（终端，彻底清除隔离属性）：
-       xattr -dr com.apple.quarantine /Applications/ClashPow.app
+       xattr -dr com.apple.quarantine /Applications/ClashHalo.app
 
 【内核】
 本应用已内置官方 mihomo (Clash.Meta) 内核，开箱即用，无需额外配置。
@@ -134,15 +134,15 @@ macOS 14.0+ ，Apple Silicon (arm64)。
 
 【卸载】
  · 删除 /Applications/ClashHalo.app
- · 删除数据目录 ~/Library/Application Support/ClashPow
+ · 删除数据目录 ~/Library/Application Support/ClashHalo
  · 若安装过 TUN 特权服务，在终端执行：
-   sudo launchctl bootout system /Library/LaunchDaemons/com.clashpow.helper.plist
-   sudo rm -f /Library/LaunchDaemons/com.clashpow.helper.plist \
-              /Library/PrivilegedHelperTools/com.clashpow.helper
+   sudo launchctl bootout system /Library/LaunchDaemons/com.clashhalo.helper.plist
+   sudo rm -f /Library/LaunchDaemons/com.clashhalo.helper.plist \
+              /Library/PrivilegedHelperTools/com.clashhalo.helper
 GUIDE
 
-VERSION=$(grep -oE 'MARKETING_VERSION = [0-9.]+' "$ROOT/ClashPow.xcodeproj/project.pbxproj" | head -1 | awk '{print $3}')
-BUILD_NUM=$(grep -oE 'CURRENT_PROJECT_VERSION = [0-9]+' "$ROOT/ClashPow.xcodeproj/project.pbxproj" | head -1 | awk '{print $3}')
+VERSION=$(grep -oE 'MARKETING_VERSION = [0-9.]+' "$ROOT/ClashHalo.xcodeproj/project.pbxproj" | head -1 | awk '{print $3}')
+BUILD_NUM=$(grep -oE 'CURRENT_PROJECT_VERSION = [0-9]+' "$ROOT/ClashHalo.xcodeproj/project.pbxproj" | head -1 | awk '{print $3}')
 DMG_NAME="ClashHalo_v${VERSION}_build_${BUILD_NUM}_mac"
 DMG="$BUILD/${DMG_NAME}.dmg"
 rm -f "$DMG"

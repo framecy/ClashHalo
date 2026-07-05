@@ -26,7 +26,7 @@ public class XPCManager {
 
     public func helper() -> HelperProtocol? {
         if connection == nil {
-            let conn = NSXPCConnection(machServiceName: "com.clashpow.helper", options: .privileged)
+            let conn = NSXPCConnection(machServiceName: "com.clashhalo.helper", options: .privileged)
             conn.remoteObjectInterface = NSXPCInterface(with: HelperProtocol.self)
             conn.interruptionHandler = { [weak self] in
                 self?.onLog?("XPC 通讯中断")
@@ -57,7 +57,7 @@ public class XPCManager {
     /// the helper is loaded/running — use `verifyConnectivity()` for that.
     public func checkStatus() -> SMAppService.Status {
         let fm = FileManager.default
-        if fm.fileExists(atPath: "/Library/LaunchDaemons/com.clashpow.helper.plist") {
+        if fm.fileExists(atPath: "/Library/LaunchDaemons/com.clashhalo.helper.plist") {
             return .enabled
         }
         return .notFound
@@ -69,7 +69,7 @@ public class XPCManager {
     /// plist (installed but not loaded) therefore correctly reports unavailable.
     public func verifyConnectivity(timeout: TimeInterval = 1.5) async -> Bool {
         guard checkStatus() == .enabled else { return false }
-        let conn = NSXPCConnection(machServiceName: "com.clashpow.helper", options: .privileged)
+        let conn = NSXPCConnection(machServiceName: "com.clashhalo.helper", options: .privileged)
         conn.remoteObjectInterface = NSXPCInterface(with: HelperProtocol.self)
         conn.resume()
         return await withCheckedContinuation { (cont: CheckedContinuation<Bool, Never>) in
@@ -94,7 +94,7 @@ public class XPCManager {
     /// — the same pattern verifyConnectivity proves reliable — is used here too.
     public func callSystemProxy(enabled: Bool, port: Int, timeout: TimeInterval = 5.0) async -> Bool? {
         guard checkStatus() == .enabled else { return nil }
-        let conn = NSXPCConnection(machServiceName: "com.clashpow.helper", options: .privileged)
+        let conn = NSXPCConnection(machServiceName: "com.clashhalo.helper", options: .privileged)
         conn.remoteObjectInterface = NSXPCInterface(with: HelperProtocol.self)
         conn.resume()
         return await withCheckedContinuation { (cont: CheckedContinuation<Bool?, Never>) in
@@ -114,7 +114,7 @@ public class XPCManager {
 
     public func callGatewayMode(enabled: Bool, timeout: TimeInterval = 5.0) async -> Bool? {
         guard checkStatus() == .enabled else { return nil }
-        let conn = NSXPCConnection(machServiceName: "com.clashpow.helper", options: .privileged)
+        let conn = NSXPCConnection(machServiceName: "com.clashhalo.helper", options: .privileged)
         conn.remoteObjectInterface = NSXPCInterface(with: HelperProtocol.self)
         conn.resume()
         return await withCheckedContinuation { (cont: CheckedContinuation<Bool?, Never>) in
@@ -134,34 +134,36 @@ public class XPCManager {
 
     public func installDaemon() async -> Bool {
         let bundlePath = Bundle.main.bundlePath
-        let helperSrc = "\(bundlePath)/Contents/MacOS/com.clashpow.helper"
-        let helperDst = "/Library/PrivilegedHelperTools/com.clashpow.helper"
-        let plistDst = "/Library/LaunchDaemons/com.clashpow.helper.plist"
+        let helperSrc = "\(bundlePath)/Contents/MacOS/com.clashhalo.helper"
+        let helperDst = "/Library/PrivilegedHelperTools/com.clashhalo.helper"
+        let plistDst = "/Library/LaunchDaemons/com.clashhalo.helper.plist"
+        let legacyHelperDst = "/Library/PrivilegedHelperTools/com.clashpow.helper"
+        let legacyPlistDst = "/Library/LaunchDaemons/com.clashpow.helper.plist"
         
         let plistContent = """
         <?xml version="1.0" encoding="UTF-8"?>
         <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
         <plist version="1.0">
         <dict>
-            <key>Label</key><string>com.clashpow.helper</string>
-            <key>MachServices</key><dict><key>com.clashpow.helper</key><true/></dict>
+            <key>Label</key><string>com.clashhalo.helper</string>
+            <key>MachServices</key><dict><key>com.clashhalo.helper</key><true/></dict>
             <key>ProgramArguments</key><array><string>\(helperDst)</string></array>
-            <key>SMAuthorizedClients</key><array><string>identifier "com.clashpow.app"</string></array>
+            <key>SMAuthorizedClients</key><array><string>identifier "com.clashhalo.app"</string></array>
             <key>KeepAlive</key><true/>
             <key>RunAtLoad</key><true/>
-            <key>StandardOutPath</key><string>/Library/Logs/ClashPow/helper.out.log</string>
-            <key>StandardErrorPath</key><string>/Library/Logs/ClashPow/helper.err.log</string>
+            <key>StandardOutPath</key><string>/Library/Logs/ClashHalo/helper.out.log</string>
+            <key>StandardErrorPath</key><string>/Library/Logs/ClashHalo/helper.err.log</string>
         </dict>
         </plist>
         """
         
-        let tempPlist = NSTemporaryDirectory() + "com.clashpow.helper.plist"
+        let tempPlist = NSTemporaryDirectory() + "com.clashhalo.helper.plist"
         try? plistContent.write(toFile: tempPlist, atomically: true, encoding: .utf8)
         
         let script = """
         mkdir -p /Library/PrivilegedHelperTools; \
-        mkdir -p /Library/Logs/ClashPow; \
-        chmod 755 /Library/Logs/ClashPow; \
+        mkdir -p /Library/Logs/ClashHalo; \
+        chmod 755 /Library/Logs/ClashHalo; \
         cp "\(helperSrc)" "\(helperDst)"; \
         xattr -rd com.apple.quarantine "\(helperDst)" 2>/dev/null || true; \
         xattr -cr "\(helperDst)" 2>/dev/null || true; \
@@ -170,10 +172,12 @@ public class XPCManager {
         cp "\(tempPlist)" "\(plistDst)"; \
         chown root:wheel "\(plistDst)"; \
         chmod 644 "\(plistDst)"; \
+        launchctl bootout system "\(legacyPlistDst)" 2>/dev/null || true; \
+        rm -f "\(legacyPlistDst)" "\(legacyHelperDst)"; \
         launchctl bootout system "\(plistDst)" 2>/dev/null || true; \
-        launchctl enable system/com.clashpow.helper; \
+        launchctl enable system/com.clashhalo.helper; \
         launchctl bootstrap system "\(plistDst)"; \
-        launchctl kickstart -k system/com.clashpow.helper
+        launchctl kickstart -k system/com.clashhalo.helper
         """
         
         let ok = await EngineControl.runAdmin(script)
@@ -194,8 +198,10 @@ public class XPCManager {
     }
 
     public func uninstallDaemon() async -> Bool {
-        let plistDst = "/Library/LaunchDaemons/com.clashpow.helper.plist"
-        let helperDst = "/Library/PrivilegedHelperTools/com.clashpow.helper"
+        let plistDst = "/Library/LaunchDaemons/com.clashhalo.helper.plist"
+        let helperDst = "/Library/PrivilegedHelperTools/com.clashhalo.helper"
+        let legacyPlistDst = "/Library/LaunchDaemons/com.clashpow.helper.plist"
+        let legacyHelperDst = "/Library/PrivilegedHelperTools/com.clashpow.helper"
         
         // Use bootout (NOT `unload -w`): the -w flag persistently writes the
         // service into launchd's disabled database, after which a later
@@ -203,8 +209,11 @@ public class XPCManager {
         // tears down without poisoning future installs.
         let script = """
         launchctl bootout system "\(plistDst)" 2>/dev/null || true; \
+        launchctl bootout system "\(legacyPlistDst)" 2>/dev/null || true; \
         rm -f "\(plistDst)"; \
-        rm -f "\(helperDst)"
+        rm -f "\(helperDst)"; \
+        rm -f "\(legacyPlistDst)"; \
+        rm -f "\(legacyHelperDst)"
         """
         
         let ok = await EngineControl.runAdmin(script)
