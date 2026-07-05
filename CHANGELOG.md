@@ -2,12 +2,21 @@
 
 本项目所有重要变更记录于此。格式参考 [Keep a Changelog](https://keepachangelog.com/),版本遵循语义化版本。
 
+## Unreleased
+
+### Changed
+- **项目名称统一为 ClashHalo**：Xcode 工程、Scheme、App 入口、Bundle ID、Helper Mach Service、运行时数据目录、日志目录、打包脚本和文档链接统一指向 ClashHalo。
+- **升级兼容迁移**：启动时自动迁移旧版数据目录，安装新版 Helper 时清理旧版特权服务残留，避免更名后配置丢失或旧守护进程冲突。
+
+### Fixed
+- **网关模式开启可靠性**：修复 Helper 已安装但当前内核仍为用户态时网关开启失败的问题；网关配置改为可回滚热重载，Helper 同时设置 IPv4/IPv6 转发。
+
 ## [0.5.4] - 2026-07-01
 
 构建 0.5.4 稳定性、权限可靠性与安全加固更新。本次更新系统性排查并修复了「设置持久化」「核心开关级联」「macOS 特权服务权限死锁」三大类共 31 项问题，从根本上解决了设置重启丢失、Gateway 停止后系统状态残留、TUN 授权后卡死等痛点；同时收紧了特权辅助程序的客户端鉴权，消除了同名应用越权执行 root 命令的安全风险。
 
 ### Security
-- **特权服务客户端鉴权收紧**：`isAuthorizedClient` 的路径校验从宽松的子串匹配（任何路径含 `clashpow`/`clashhalo` 即通过）改为严格的 `.app` Bundle 结构匹配（`/ClashHalo.app/Contents/MacOS/`），彻底消除了本地同名 ad-hoc 签名应用连接特权 Helper 越权执行 root 命令的风险。
+- **特权服务客户端鉴权收紧**：`isAuthorizedClient` 的路径校验从宽松的子串匹配（任何路径含 `clashhalo`/`clashhalo` 即通过）改为严格的 `.app` Bundle 结构匹配（`/ClashHalo.app/Contents/MacOS/`），彻底消除了本地同名 ad-hoc 签名应用连接特权 Helper 越权执行 root 命令的风险。
 - **Helper 版本号单一来源**：将特权服务版本号提取为 `kSharedHelperVersion` 共享常量（Helper 与主程序共享编译），消除了此前分散在两处、发布时易漏改导致的「无限升级循环」隐患。
 
 ### Fixed
@@ -87,7 +96,7 @@
   - 仪表盘新增「Sub-Store」按钮，点击在浏览器中打开官方前端（https://sub-store.vercel.app），自动连接本地后端。
   - 移除了内嵌的 WebView 方案和侧边栏独立入口，采用与 Zashboard 一致的浏览器启动方式，保持 UI 简洁。
   - 后端自动检测 Node.js 路径（支持 homebrew, nvm, fnm 等安装方式）。
-  - 数据存储在 `~/Library/Application Support/ClashPow/sub-store-data/`。
+  - 数据存储在 `~/Library/Application Support/ClashHalo/sub-store-data/`。
 
 - **内存优化与自动保护机制**：
   - 新增 `AppModel.residentMemoryBytes()` 方法实时监控应用物理内存（RSS）占用。
@@ -152,7 +161,7 @@
   - 所有的 `Info.plist`、UI 硬编码文案、构建脚本 (`make.sh`) 及日志文件名全面变更为 `ClashHalo`，以适配全新品牌。
 
 ### Fixed
-- 修复因打包工具链及 App 重命名导致特权守护程序 (`com.clashpow.helper`) 的 `isAuthorizedClient` 路径鉴权失败、拒绝 XPC 握手的问题。通过重写底层路径验证逻辑及重新构建打包脚本予以解决。
+- 修复因打包工具链及 App 重命名导致特权守护程序 (`com.clashhalo.helper`) 的 `isAuthorizedClient` 路径鉴权失败、拒绝 XPC 握手的问题。通过重写底层路径验证逻辑及重新构建打包脚本予以解决。
 
 ## [0.4.9] - 2026-06-17
 
@@ -284,4 +293,3 @@
 - **字号刻度归一**:`system(size:)` 与语义字体(`.callout/.caption/.caption2/.headline/.subheadline/.title2`,共 ~91 处)统一到 24/20/14/12 刻度;离群尺寸(10/15/16/18/22/34/60)snap 到最近档,新增 `DS.Icon`(sm/md/lg/xl/hero)分离图标尺寸,`dsStatValue` 统一仪表盘大数字。
 - **间距/圆角/语义色**:on-grid padding → `DS.Spacing.*`;`cornerRadius` → `DS.Radius.card/control`;hairline 与状态色 → `DS.Palette.hairline/ok/warn/error`。
 - **网络入站页布局修复**:修正 `VStack` 括号错位导致的卡片间距不一致(仅首卡在容器内);卡片间距统一到 `DS.Spacing.l`;`StringListRow`/`NList` 的已有项改为 chip 背景,与新增输入框明确分隔。
-

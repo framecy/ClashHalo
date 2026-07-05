@@ -9,11 +9,11 @@ private struct SafeDecoder: @unchecked Sendable {
 @MainActor final class MihomoClient: ObservableObject {
     static let shared = MihomoClient()
 
-    // Connection settings (persisted). Defaults target the ClashPow engine's
+    // Connection settings (persisted). Defaults target the ClashHalo engine's
     // managed mihomo controller; auto-discovered from the engine at launch.
     @AppStorage("mihomo.host") var host: String = "127.0.0.1"
     @AppStorage("mihomo.port") var port: Int = 9092
-    @AppStorage("mihomo.secret") var secret: String = "clashpow"
+    @AppStorage("mihomo.secret") var secret: String = "clashhalo"
 
     @Published var reachable = false
     @Published var version = "?"

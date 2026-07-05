@@ -87,7 +87,7 @@ struct GatewayDevice: Identifiable, Equatable {
 // MARK: - Keychain Security Helper
 
 struct KeychainHelper {
-    static let service = "com.clashpow.secrets"
+    static let service = "com.clashhalo.secrets"
 
     @discardableResult
     static func save(key: String, value: String) -> Bool {
