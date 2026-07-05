@@ -4,9 +4,9 @@ import Darwin
 
 let kHelperVersion = kSharedHelperVersion
 
-private let kClientRequirement = "identifier \"com.clashpow.app\""
+private let kClientRequirement = "identifier \"com.clashhalo.app\""
 
-/// Validate that an incoming XPC peer is the ClashPow app.
+/// Validate that an incoming XPC peer is the ClashHalo app.
 /// Three layers, each more permissive than the last, to handle all signing variants:
 ///   1. Security framework: identifier check with basic-validate-only flags
 ///   2. SecCodeCopyPath: bundle-root URL check (must be inside the .app bundle)
@@ -59,15 +59,15 @@ func isAuthorizedClient(_ conn: NSXPCConnection) -> Bool {
     return false
 }
 
-/// True only for a genuine ClashPow/ClashHalo .app bundle root path, not any
+/// True only for a genuine ClashHalo app bundle root path, not any
 /// path that merely contains the substring (prevents a rogue app at e.g.
-/// /tmp/clashpow-evil/x from impersonating the client).
+/// /tmp/clashhalo-evil/x from impersonating the client).
 private func isClashAppBundlePath(_ path: String) -> Bool {
     let p = path.lowercased()
     return p.hasSuffix("/clashhalo.app") || p.hasSuffix("/clashpow.app")
 }
 
-/// True only for an executable inside ClashPow/ClashHalo.app/Contents/MacOS/.
+/// True only for an executable inside ClashHalo.app/Contents/MacOS/.
 /// Requires the full bundle-internal structure, not a substring match.
 private func isClashExecutablePath(_ path: String) -> Bool {
     let p = path.lowercased()
@@ -75,12 +75,12 @@ private func isClashExecutablePath(_ path: String) -> Bool {
            p.contains("/clashpow.app/contents/macos/")
 }
 
-/// Only permit launching a binary at the canonical ClashPow kernel path.
+/// Only permit launching a binary at the canonical ClashHalo kernel path.
 func isAllowedKernelPath(_ path: String) -> Bool {
     let std = (path as NSString).standardizingPath
     guard !std.contains(".."),
-          (std.hasSuffix("/Library/Application Support/ClashPow/bin/mihomo") ||
-           std.hasSuffix("/Library/Application Support/ClashHalo/bin/mihomo")) else { return false }
+          (std.hasSuffix("/Library/Application Support/ClashHalo/bin/mihomo") ||
+           std.hasSuffix("/Library/Application Support/ClashPow/bin/mihomo")) else { return false }
     let fm = FileManager.default
     var isDir: ObjCBool = false
     guard fm.fileExists(atPath: std, isDirectory: &isDir), !isDir.boolValue else { return false }
@@ -90,7 +90,7 @@ func isAllowedKernelPath(_ path: String) -> Bool {
 }
 
 func log(_ msg: String) {
-    let logDir = "/Library/Logs/ClashPow"
+    let logDir = "/Library/Logs/ClashHalo"
     let logFile = "\(logDir)/helper.log"
     let line = "[\(Date())] \(msg)\n"
     guard let data = line.data(using: .utf8) else { return }
@@ -158,7 +158,7 @@ class Helper: NSObject, HelperProtocol {
         env["GODEBUG"] = "madvdontneed=1"
         process.environment = env
 
-        let logDir = "/Library/Logs/ClashPow"
+        let logDir = "/Library/Logs/ClashHalo"
         try? FileManager.default.createDirectory(atPath: logDir, withIntermediateDirectories: true)
         let logFile = "\(logDir)/mihomo-root.log"
         FileManager.default.createFile(atPath: logFile, contents: nil)
@@ -210,18 +210,37 @@ class Helper: NSObject, HelperProtocol {
     }
 
     func setGatewayMode(enabled: Bool, withReply reply: @escaping (Bool) -> Void) {
-        let process = Process()
-        process.executableURL = URL(fileURLWithPath: "/usr/sbin/sysctl")
-        process.arguments = ["-w", "net.inet.ip.forwarding=\(enabled ? 1 : 0)"]
-        do {
-            try process.run()
-            process.waitUntilExit()
-            log("setGatewayMode: \(enabled) -> success")
-            reply(process.terminationStatus == 0)
-        } catch {
-            log("setGatewayMode: failed: \(error)")
-            reply(false)
+        let value = enabled ? "1" : "0"
+        let keys = [
+            "net.inet.ip.forwarding",
+            "net.inet6.ip6.forwarding"
+        ]
+        var ok = true
+
+        for key in keys {
+            let process = Process()
+            process.executableURL = URL(fileURLWithPath: "/usr/sbin/sysctl")
+            process.arguments = ["-w", "\(key)=\(value)"]
+            let err = Pipe()
+            process.standardError = err
+            process.standardOutput = Pipe()
+            do {
+                try process.run()
+                process.waitUntilExit()
+                if process.terminationStatus != 0 {
+                    let data = err.fileHandleForReading.readDataToEndOfFile()
+                    let msg = String(data: data, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+                    log("setGatewayMode: \(key)=\(value) failed status \(process.terminationStatus) \(msg)")
+                    ok = false
+                }
+            } catch {
+                log("setGatewayMode: \(key)=\(value) failed: \(error)")
+                ok = false
+            }
         }
+
+        log("setGatewayMode: \(enabled) -> \(ok ? "success" : "failed")")
+        reply(ok)
     }
 }
 
@@ -324,7 +343,7 @@ class HelperDelegate: NSObject, NSXPCListenerDelegate {
 
 log("Helper starting up (v\(kHelperVersion))...")
 let delegate = HelperDelegate()
-let listener = NSXPCListener(machServiceName: "com.clashpow.helper")
+let listener = NSXPCListener(machServiceName: "com.clashhalo.helper")
 listener.delegate = delegate
 log("Listener resuming...")
 listener.resume()

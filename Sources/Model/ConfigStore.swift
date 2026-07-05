@@ -24,8 +24,8 @@ struct YAMLPreview: Equatable {
     @Published var profiles: [Profile] = []
     @AppStorage("config.active") var activeID = ""
 
-    private let dir = NSHomeDirectory() + "/Library/Application Support/ClashPow/profiles"
-    private let configPath = NSHomeDirectory() + "/Library/Application Support/ClashPow/config.yaml"
+    private let dir = NSHomeDirectory() + "/Library/Application Support/ClashHalo/profiles"
+    private let configPath = NSHomeDirectory() + "/Library/Application Support/ClashHalo/config.yaml"
     private var manifestPath: String { dir + "/manifest.json" }
     private let fm = FileManager.default
 
