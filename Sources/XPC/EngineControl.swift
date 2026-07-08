@@ -19,6 +19,7 @@ import SwiftUI
     /// progress. UI entry points guard on this to prevent interleaving the long
     /// multi-await flows (e.g. TUN root-switch) with another start/stop/swap.
     @Published var isBusy = false
+    private var userProcess: Process?
 
     /// Injected log sink (set by AppModel) — avoids referencing AppModel here.
     var onLog: ((String) -> Void)?
@@ -800,6 +801,9 @@ import SwiftUI
                     }
                 }
             } else {
+                if self.userProcess?.isRunning == true {
+                    return
+                }
                 let process = Process()
                 process.executableURL = URL(fileURLWithPath: kernelPath)
                 process.arguments = ["-d", appSupport]
@@ -809,6 +813,7 @@ import SwiftUI
                 process.environment = env
                 do {
                     try process.run()
+                    self.userProcess = process
                     runningAsRoot = false
                 } catch {
                     print("ensureRunning: failed to start: \(error)")
@@ -944,6 +949,11 @@ import SwiftUI
     /// Exposed so callers (e.g. KernelManager.activate) can release bin/mihomo
     /// before overwriting it, avoiding "file busy" when a kernel is running.
     func stopKernel() async {
+        if let proc = userProcess, proc.isRunning {
+            proc.terminate()
+        }
+        userProcess = nil
+
         // Attempt graceful shutdown via REST API if reachable
         if api.reachable, let url = URL(string: "http://\(api.host):\(api.port)/shutdown") {
             var req = URLRequest(url: url)
