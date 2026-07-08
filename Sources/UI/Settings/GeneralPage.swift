@@ -707,5 +707,5 @@ struct ContentUnavailable: View {
 
 #Preview("Settings") {
     GeneralPage().environmentObject(AppModel.shared)
-        .frame(minWidth: 900, idealWidth: 1000, maxWidth: 1200, minHeight: 720, idealHeight: 800, maxHeight: 1000).preferredColorScheme(.dark)
+        .frame(minWidth: 900, idealWidth: 1000, maxWidth: 1200, minHeight: 720, idealHeight: 800, maxHeight: 1000)
 }

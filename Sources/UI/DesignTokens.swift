@@ -21,13 +21,13 @@ enum DS {
         static let cardBg = Color(nsColor: .init(name: nil, dynamicProvider: { appearance in
             appearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua
                 ? NSColor(red: 0x2A / 255.0, green: 0x2A / 255.0, blue: 0x2A / 255.0, alpha: 1)
-                : NSColor(red: 0xF5 / 255.0, green: 0xF5 / 255.0, blue: 0xF5 / 255.0, alpha: 1)
+                : NSColor.white
         }))
         /// Slightly lighter/darker surface variant.
         static let cardBgAlt = Color(nsColor: .init(name: nil, dynamicProvider: { appearance in
             appearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua
                 ? NSColor(red: 0x2C / 255.0, green: 0x2C / 255.0, blue: 0x2C / 255.0, alpha: 1)
-                : NSColor(red: 0xE8 / 255.0, green: 0xE8 / 255.0, blue: 0xE8 / 255.0, alpha: 1)
+                : NSColor(red: 0xEE / 255.0, green: 0xEE / 255.0, blue: 0xEE / 255.0, alpha: 1)
         }))
 
         /// Semantic status colors — use instead of raw `.green/.red/.orange`.
@@ -184,5 +184,4 @@ extension View {
     }
     .frame(width: 460, height: 620)
     .background(DS.Palette.cardBg)
-    .preferredColorScheme(.dark)
 }

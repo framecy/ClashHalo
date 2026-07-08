@@ -788,5 +788,5 @@ struct KernelCard: View {
 
 #Preview("Network 入站") {
     NetworkPage().environmentObject(AppModel.shared)
-        .frame(width: 900, height: 720).preferredColorScheme(.dark)
+        .frame(width: 900, height: 720)
 }
