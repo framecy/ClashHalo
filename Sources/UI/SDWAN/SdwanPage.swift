@@ -196,9 +196,11 @@ struct SdwanPage: View {
     @EnvironmentObject var M: AppModel
     @State private var ifaces: [NetIface] = []
     @State private var routes: [(dest: String, iface: String)] = []
+    @State private var conflicts: [RouteConflict] = []
 
     private var sdwanCount: Int { ifaces.filter { $0.kind.sdwan }.count }
     private var hasDefaultViaTun: Bool { routes.contains { $0.dest == "default" } }
+    private var hasConflicts: Bool { !conflicts.isEmpty || hasDefaultViaTun }
 
     var body: some View {
         VStack(spacing: 0) {
@@ -210,33 +212,48 @@ struct SdwanPage: View {
                 VStack(spacing: 14) {
                     // status banner
                     HStack(spacing: 12) {
-                        Image(systemName: "shield.lefthalf.filled").font(.title).foregroundColor(hasDefaultViaTun ? .orange : DS.Palette.accent)
+                        Image(systemName: "shield.lefthalf.filled").font(.title)
+                            .foregroundColor(hasConflicts ? .orange : DS.Palette.accent)
                         VStack(alignment: .leading, spacing: 3) {
-                            Text(hasDefaultViaTun ? "检测到 TUN 默认路由冲突" : "智能路由隔离已生效").font(.dsLabelBold)
-                            if hasDefaultViaTun, let conflictIface = routes.first(where: { $0.dest == "default" || $0.dest.contains("0.0.0.0/0") })?.iface {
+                            Text(hasConflicts ? "检测到路由冲突" : "智能路由隔离已生效").font(.dsLabelBold)
+                            if hasDefaultViaTun,
+                               let conflictIface = routes.first(where: {
+                                   $0.dest == "default" || $0.dest.contains("0.0.0.0/0")
+                               })?.iface {
                                 Text("接口 \(conflictIface) 接管了全局默认路由，与 SD-WAN 原生路由冲突。建议关闭自动路由。")
                                     .font(.dsBody).foregroundColor(.secondary)
+                            } else if !conflicts.isEmpty {
+                                let desc = conflicts.prefix(2)
+                                    .map { "\($0.sdwanIface) \($0.sdwanRoute) 被 \($0.tunRoute) 遮蔽" }
+                                    .joined(separator: "；")
+                                Text("TUN 路由遮蔽 SD-WAN：\(desc)。")
+                                    .font(.dsBody).foregroundColor(.secondary)
                             } else {
-                                Text("代理仅注入精确网段，未抢占默认路由；\(sdwanCount) 个 SD-WAN 接口路由保持完整。")
+                                Text("代理仅注入精确网段，未抢占 SD-WAN 路由；\(sdwanCount) 个接口路由完整。")
                                     .font(.dsBody).foregroundColor(.secondary)
                             }
                         }
                         Spacer()
-                        if hasDefaultViaTun {
+                        if hasConflicts {
                             Button("一键修复") {
                                 Task {
-                                    await M.patch([
-                                        "tun": [
-                                            "auto-route": false,
-                                            "auto-detect-interface": false
-                                        ]
-                                    ])
-                                    try? await Task.sleep(nanoseconds: 1_000_000_000)
+                                    let sdwanPrefixes = await NetScanner.sdwanExcludePrefixes()
+                                    let tunDict = M.configs["tun"] as? [String: Any]
+                                    let existing: [String] = tunDict?["route-exclude-address"] as? [String] ?? []
+                                    var combined: [String] = existing
+                                    combined.append(contentsOf: sdwanPrefixes)
+                                    let merged: [String] = Array(Set(combined)).sorted()
+                                    var fix: [String: Any] = ["route-exclude-address": merged]
+                                    if hasDefaultViaTun {
+                                        fix["auto-route"] = false
+                                        fix["auto-detect-interface"] = false
+                                    }
+                                    await M.patch(["tun": fix])
+                                    try? await Task.sleep(nanoseconds: 800_000_000)
                                     rescan()
                                 }
                             }
-                            .buttonStyle(.borderedProminent)
-                            .tint(.orange)
+                            .buttonStyle(.borderedProminent).tint(.orange)
                         } else {
                             VStack {
                                 Text("0").font(.system(size: 24, weight: .bold, design: .monospaced))
@@ -248,6 +265,35 @@ struct SdwanPage: View {
                     .padding(DS.Spacing.l)
                     .background(RoundedRectangle(cornerRadius: DS.Radius.card).fill(DS.Palette.cardBg))
                     .overlay(RoundedRectangle(cornerRadius: DS.Radius.card).stroke(DS.Palette.cardBgAlt))
+
+                    // Conflict detail card (shown when prefix-shadowing detected)
+                    if !conflicts.isEmpty {
+                        Card(title: "路由遮蔽冲突 · \(conflicts.count)", icon: "exclamationmark.triangle.fill") {
+                            VStack(spacing: 4) {
+                                ForEach(conflicts.indices, id: \.self) { idx in
+                                    let c = conflicts[idx]
+                                    HStack(spacing: 8) {
+                                        Image(systemName: "point.3.connected.trianglepath.dotted")
+                                            .foregroundColor(.cyan).font(.dsBody).frame(width: 20)
+                                        VStack(alignment: .leading, spacing: 2) {
+                                            Text("\(c.sdwanIface) → \(c.sdwanRoute)").font(.dsMono).foregroundColor(.cyan)
+                                            Text("被 \(c.tunIface) 的 \(c.tunRoute) 遮蔽")
+                                                .font(.dsBody).foregroundColor(.orange)
+                                        }
+                                        Spacer()
+                                        Text("路由冲突").font(.dsBody)
+                                            .padding(.horizontal, 6).padding(.vertical, 2)
+                                            .background(Capsule().fill(Color.orange.opacity(0.15)))
+                                            .foregroundColor(.orange)
+                                    }
+                                    .padding(.vertical, 4)
+                                    if idx < conflicts.count - 1 { Divider() }
+                                }
+                                Text("建议：点击\u{201C}一键修复\u{201D}将上述 SD-WAN 前缀注入 tun.route-exclude-address，防止 TUN 抢占。")
+                                    .font(.dsBody).foregroundColor(.secondary).padding(.top, 4)
+                            }
+                        }
+                    }
 
                     // Topology view of the network routing relation map
                     SdwanTopologyView(ifaces: ifaces, routes: routes)
@@ -335,8 +381,13 @@ struct SdwanPage: View {
     private func rescan() {
         ifaces = NetScanner.interfaces()
         Task {
-            let r = await NetScanner.tunRoutes()
-            await MainActor.run { routes = r }
+            async let r = NetScanner.tunRoutes()
+            async let c = NetScanner.conflictingRoutes()
+            let (routes_, conflicts_) = await (r, c)
+            await MainActor.run {
+                routes = routes_
+                conflicts = conflicts_
+            }
         }
     }
     private func icon(_ k: IfaceKind) -> String {
