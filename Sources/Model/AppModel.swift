@@ -163,12 +163,16 @@ import ServiceManagement
     /// Smart wait for kernel to be ready using exponential backoff.
     /// Returns true if kernel is reachable, false if timeout.
     func waitForKernelReady(maxAttempts: Int = 8) async -> Bool {
-        let delays: [UInt64] = [300_000_000, 500_000_000, 700_000_000, 1_000_000_000,
-                                1_500_000_000, 2_000_000_000, 2_000_000_000, 2_000_000_000]
+        await api.probe(timeout: 0.1)
+        if api.reachable {
+            return true
+        }
+        let delays: [UInt64] = [20_000_000, 50_000_000, 100_000_000, 200_000_000,
+                                300_000_000, 500_000_000, 1_000_000_000, 1_000_000_000]
         for i in 0..<min(maxAttempts, delays.count) {
             try? await Task.sleep(nanoseconds: delays[i])
-            await api.probe(timeout: 0.5)
-            if api.reachable && engine.runningAsRoot {
+            await api.probe(timeout: 0.2)
+            if api.reachable {
                 return true
             }
         }
