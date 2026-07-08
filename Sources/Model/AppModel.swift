@@ -826,13 +826,30 @@ final class AppUpdater: ObservableObject {
         Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "0.0.0"
     }
 
+    /// Current app build number from Info.plist
+    var currentBuild: Int {
+        Int(Bundle.main.infoDictionary?["CFBundleVersion"] as? String ?? "0") ?? 0
+    }
+
+    /// Helper to extract build number from filename (e.g. ClashHalo_v1.0.1_build_29_mac.dmg -> 29)
+    private func parseBuildNumber(from filename: String) -> Int? {
+        let pattern = "build_(\\d+)"
+        guard let regex = try? NSRegularExpression(pattern: pattern, options: []) else { return nil }
+        let nsString = filename as NSString
+        let results = regex.matches(in: filename, options: [], range: NSRange(location: 0, length: nsString.length))
+        guard let match = results.first, match.numberOfRanges > 1 else { return nil }
+        let buildStr = nsString.substring(with: match.range(at: 1))
+        return Int(buildStr)
+    }
+
     /// Check GitHub Releases for updates
     func checkForUpdates() async -> Bool {
         guard !isChecking else { return false }
         isChecking = true
         defer { isChecking = false }
 
-        onLog?("检查更新：当前版本 \(currentVersion)")
+        let currentDisplay = currentBuild > 0 ? "\(currentVersion) (\(currentBuild))" : currentVersion
+        onLog?("检查更新：当前版本 \(currentDisplay)")
 
         let urlString = "https://api.github.com/repos/\(repoOwner)/\(repoName)/releases/latest"
         guard let url = URL(string: urlString) else {
@@ -868,26 +885,36 @@ final class AppUpdater: ObservableObject {
             latestVersion = version
             releaseNotes = json["body"] as? String
 
-            // Compare versions
-            if isNewerVersion(version, than: currentVersion) {
-                onLog?("发现新版本：\(version)")
+            // Find the asset and parse its build number
+            var targetAsset: [String: Any]? = nil
+            var remoteBuild: Int? = nil
 
-                // Find the .dmg or .zip asset
-                if let assets = json["assets"] as? [[String: Any]] {
-                    for asset in assets {
-                        if let name = asset["name"] as? String,
-                           let downloadURLStr = asset["browser_download_url"] as? String,
-                           (name.hasSuffix(".dmg") || name.hasSuffix(".zip")) {
-                            downloadURL = downloadURLStr
-                            updateAvailable = true
-                            onLog?("找到更新包：\(name)")
-                            return true
-                        }
+            if let assets = json["assets"] as? [[String: Any]] {
+                for asset in assets {
+                    if let name = asset["name"] as? String,
+                       let downloadURLStr = asset["browser_download_url"] as? String,
+                       (name.hasSuffix(".dmg") || name.hasSuffix(".zip")) {
+                        targetAsset = asset
+                        remoteBuild = parseBuildNumber(from: name)
+                        break
                     }
                 }
+            }
 
-                onLog?("未找到可下载的更新包")
-                return false
+            // Compare versions and builds
+            if isNewer(newVersion: version, newBuild: remoteBuild, than: currentVersion, currentBuild: currentBuild) {
+                let displayVersion = remoteBuild != nil ? "\(version) (\(remoteBuild!))" : version
+                onLog?("发现新版本：\(displayVersion)")
+
+                if let asset = targetAsset, let downloadURLStr = asset["browser_download_url"] as? String {
+                    downloadURL = downloadURLStr
+                    updateAvailable = true
+                    onLog?("找到更新包：\(asset["name"] as? String ?? "")")
+                    return true
+                } else {
+                    onLog?("未找到可下载的更新包")
+                    return false
+                }
             } else {
                 onLog?("当前已是最新版本")
                 updateAvailable = false
@@ -899,10 +926,10 @@ final class AppUpdater: ObservableObject {
         }
     }
 
-    /// Compare two semantic versions (e.g., "1.2.3" vs "1.2.4")
-    private func isNewerVersion(_ new: String, than current: String) -> Bool {
-        let newParts = new.split(separator: ".").compactMap { Int($0) }
-        let currentParts = current.split(separator: ".").compactMap { Int($0) }
+    /// Compare two semantic versions and build numbers
+    private func isNewer(newVersion: String, newBuild: Int?, than currentVersion: String, currentBuild: Int) -> Bool {
+        let newParts = newVersion.split(separator: ".").compactMap { Int($0) }
+        let currentParts = currentVersion.split(separator: ".").compactMap { Int($0) }
 
         for i in 0..<max(newParts.count, currentParts.count) {
             let newVal = i < newParts.count ? newParts[i] : 0
@@ -912,6 +939,10 @@ final class AppUpdater: ObservableObject {
             if newVal < currentVal { return false }
         }
 
+        // Semantic versions are equal, compare build numbers
+        if let newB = newBuild {
+            return newB > currentBuild
+        }
         return false
     }
 
