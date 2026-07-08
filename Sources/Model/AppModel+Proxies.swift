@@ -52,6 +52,8 @@ extension AppModel {
 
         var gs: [ProxyGroup] = []
         var ns: [String: Node] = [:]
+        var n2p: [String: String] = [:]  // nodeName -> providerName
+
         for (name, e) in p.proxies {
             if let all = e.all {
                 gs.append(ProxyGroup(id: name, name: name, type: e.type, now: e.now ?? "", all: all))
@@ -60,8 +62,29 @@ extension AppModel {
                 ns[name] = Node(id: name, name: name, type: e.type, delay: delay)
             }
         }
+
+        // Also merge proxy-provider nodes (these are NOT in /proxies but in /providers/proxies)
+        if let providers = try? await api.fetchProviders() {
+            for (provName, prov) in providers.providers {
+                // Skip built-in "default" and rule providers
+                guard prov.vehicleType != "Compatible", let proxies = prov.proxies else { continue }
+                for e in proxies {
+                    let name = e.name
+                    // Skip if already registered as a proxy group or built-in
+                    if gs.contains(where: { $0.id == name }) { continue }
+                    if ["DIRECT", "REJECT", "REJECT-DROP", "PASS"].contains(name) { continue }
+                    let delay = e.history?.last?.delay ?? 0
+                    ns[name] = Node(id: name, name: name, type: e.type, delay: delay)
+                    n2p[name] = provName
+                }
+            }
+        }
+
         // Preserve existing measured delays for nodes that report 0 now
         for (k, v) in nodes where ns[k]?.delay == 0 && v.delay > 0 { ns[k]?.delay = v.delay }
+
+        // Store provider mapping for use by the test engine
+        nodeToProvider = n2p
 
         // Retrieve order from current active profile configuration file
         let yaml = store.content(store.activeID)
@@ -78,7 +101,7 @@ extension AppModel {
             if b.name == "GLOBAL" { return true }
             return a.name < b.name
         }
-        
+
         if sortedGroups != groups { groups = sortedGroups }
         if ns != nodes { nodes = ns }
     }
@@ -105,13 +128,55 @@ extension AppModel {
     }
 
     private func test(names: [String]) {
+        guard !names.isEmpty else { return }
         testing.formUnion(names)
+
+        // Partition: direct proxies vs proxy-provider nodes
+        var directNames: [String] = []
+        var providerNames: [String] = []   // unique provider names to healthcheck
+        var providerNodeNames: [String] = [] // which node names belong to providers
+
         for name in names {
+            if let prov = nodeToProvider[name] {
+                providerNodeNames.append(name)
+                if !providerNames.contains(prov) { providerNames.append(prov) }
+            } else {
+                directNames.append(name)
+            }
+        }
+
+        // Test direct proxies individually via /proxies/{name}/delay
+        for name in directNames {
             Task {
                 if let d = try? await api.testDelay(name: name) {
                     nodes[name]?.delay = d
                 }
                 testing.remove(name)
+            }
+        }
+
+        // Test provider nodes by triggering provider-level healthcheck,
+        // then reading updated delay from the provider's proxy history.
+        for provName in providerNames {
+            Task {
+                try? await api.healthCheckProvider(provName)
+                // Re-fetch provider to get updated delays
+                if let updated = try? await api.fetchProviders() {
+                    if let prov = updated.providers[provName], let proxies = prov.proxies {
+                        for px in proxies {
+                            let delay = px.history?.last?.delay ?? 0
+                            if nodes[px.name] != nil {
+                                nodes[px.name]?.delay = delay
+                            }
+                            testing.remove(px.name)
+                        }
+                    }
+                } else {
+                    // Fallback: clear testing state for all nodes in this provider
+                    for n in providerNodeNames where nodeToProvider[n] == provName {
+                        testing.remove(n)
+                    }
+                }
             }
         }
     }
