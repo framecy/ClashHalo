@@ -56,6 +56,9 @@ import ServiceManagement
     @Published var testing: Set<String> = []
     @Published var proxiesLoading = false
     @Published var proxiesError: String?
+    /// Maps proxy node name → proxy-provider name for nodes sourced from proxy-providers.
+    /// Used by the test engine to route healthcheck via /providers/proxies/{provider}/healthcheck.
+    var nodeToProvider: [String: String] = [:]
 
     // Connections (temporary caches for compatibility)
     @Published var activeConnectionsCount = 0
