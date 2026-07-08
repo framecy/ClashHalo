@@ -158,7 +158,6 @@ struct PageHead<Actions: View>: View {
     var body: some View {
         HStack(alignment: .center) {
             VStack(alignment: .leading, spacing: 4) {
-                Text(title).font(.dsPageTitle)
                 if let desc {
                     Text(desc).font(.dsBody).foregroundColor(.secondary)
                 }
