@@ -89,7 +89,6 @@ struct ContentView: View {
 
     private var statusFooter: some View {
         VStack(spacing: 8) {
-            statusToggle("核心运行", icon: "bolt.fill", isOn: Binding(get: { M.reachable }, set: { _ in M.toggleEngine() }), accent: false)
             statusToggle("系统代理", icon: "globe", isOn: Binding(get: { M.systemProxyOn }, set: { _ in M.toggleSystemProxy() }), accent: false)
             statusToggle("TUN 模式", icon: "shield.lefthalf.filled", isOn: Binding(get: { M.tunOn }, set: { _ in M.toggleTUN() }), accent: true)
             
