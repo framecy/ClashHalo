@@ -63,7 +63,10 @@ struct YAMLPreview: Equatable {
               geosite: https://cdn.jsdelivr.net/gh/Loyalsoldier/v2ray-rules-dat@release/geosite.dat
               geoip: https://cdn.jsdelivr.net/gh/Loyalsoldier/v2ray-rules-dat@release/geoip.dat
             """
-            let content = (try? String(contentsOfFile: configPath, encoding: .utf8)) ?? defaultContent
+            var content = (try? String(contentsOfFile: configPath, encoding: .utf8)) ?? defaultContent
+            if content.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                content = defaultContent
+            }
             try? content.write(toFile: path(id), atomically: true, encoding: .utf8)
             let p = Profile(id: id, name: "默认配置", source: "local", url: nil, importedAt: Date(), updatedAt: Date())
             profiles = [p]; activeID = id; save()
@@ -125,6 +128,16 @@ struct YAMLPreview: Equatable {
         profiles.append(p); save(); return id
     }
 
+    /// Import a remote subscription from pre-downloaded content, persist it as a draft, return its id.
+    @discardableResult
+    func importRemoteDraft(name: String, url: String, content: String) -> String {
+        let id = UUID().uuidString
+        try? content.write(toFile: path(id), atomically: true, encoding: .utf8)
+        let p = Profile(id: id, name: name, source: "remote", url: url,
+                        importedAt: Date(), updatedAt: Date(), isApplied: false, appliedHash: nil)
+        profiles.append(p); save(); return id
+    }
+
     /// Download a remote subscription, persist it as a draft, return its id.
     /// Differentiates two degenerate responses: zero bytes, or a body that
     /// does not look like YAML at all (no `:` separator). Mirrors the
@@ -133,13 +146,10 @@ struct YAMLPreview: Equatable {
     @discardableResult
     func importRemoteDraft(name: String, url: String) async -> String? {
         guard let u = URL(string: url) else { return nil }
-        guard let (data, _) = try? await session.data(from: u),
+        guard let (data, response) = try? await session.data(from: u),
+              let httpResponse = response as? HTTPURLResponse, httpResponse.statusCode == 200,
               let content = String(data: data, encoding: .utf8), content.contains(":") else { return nil }
-        let id = UUID().uuidString
-        try? content.write(toFile: path(id), atomically: true, encoding: .utf8)
-        let p = Profile(id: id, name: name, source: "remote", url: url,
-                        importedAt: Date(), updatedAt: Date(), isApplied: false, appliedHash: nil)
-        profiles.append(p); save(); return id
+        return importRemoteDraft(name: name, url: url, content: content)
     }
 
     /// Restore the legacy "import-and-apply in one shot" path for any
@@ -161,11 +171,33 @@ struct YAMLPreview: Equatable {
     /// Refresh a remote subscription's file contents, keeping the existing
     /// `isApplied` flag intact. A profile that was already applied stays
     /// applied; a draft stays a draft (the caller decides when to promote).
+    /// Does not overwrite the local file if download fails or returns invalid content.
     func updateRemote(_ id: String) async -> Bool {
-        guard let p = profiles.first(where: { $0.id == id }), let url = p.url, let u = URL(string: url),
-              let (data, _) = try? await session.data(from: u),
-              let content = String(data: data, encoding: .utf8) else { return false }
-        try? content.write(toFile: path(id), atomically: true, encoding: .utf8); touch(id); return true
+        guard let p = profiles.first(where: { $0.id == id }),
+              let url = p.url,
+              let u = URL(string: url) else { return false }
+        
+        do {
+            let (data, response) = try await session.data(from: u)
+            guard let httpResponse = response as? HTTPURLResponse, httpResponse.statusCode == 200 else {
+                return false
+            }
+            guard let content = String(data: data, encoding: .utf8), !content.isEmpty else {
+                return false
+            }
+            
+            // Validate that the content actually looks like YAML (e.g. contains ":")
+            // This prevents overwriting the file with HTML error pages or empty templates.
+            guard content.contains(":") else {
+                return false
+            }
+            
+            try content.write(toFile: path(id), atomically: true, encoding: .utf8)
+            touch(id)
+            return true
+        } catch {
+            return false
+        }
     }
 
     func remove(_ id: String) {

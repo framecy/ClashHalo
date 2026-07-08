@@ -39,7 +39,25 @@ struct ProxiesPage: View {
             }
 
             ScrollView {
-                if M.groups.isEmpty {
+                if let err = M.proxiesError {
+                    VStack(spacing: 16) {
+                        ContentUnavailable("加载代理失败", "exclamationmark.triangle.fill")
+                        Text(err)
+                            .font(.dsMono)
+                            .foregroundColor(.secondary)
+                            .multilineTextAlignment(.center)
+                            .padding(.horizontal, 40)
+                        Button {
+                            Task { await M.refreshProxies() }
+                        } label: {
+                            Label("重试", systemImage: "arrow.clockwise")
+                        }
+                        .buttonStyle(.bordered)
+                        .controlSize(.small)
+                    }
+                    .frame(maxHeight: .infinity)
+                    .padding(.top, 80)
+                } else if M.groups.isEmpty {
                     ContentUnavailable("正在加载代理…", "arrow.triangle.2.circlepath")
                         .frame(maxHeight: .infinity)
                 } else {
