@@ -58,8 +58,13 @@ struct ProxiesPage: View {
                     .frame(maxHeight: .infinity)
                     .padding(.top, 80)
                 } else if M.groups.isEmpty {
-                    ContentUnavailable("正在加载代理…", "arrow.triangle.2.circlepath")
-                        .frame(maxHeight: .infinity)
+                    if M.proxiesLoading {
+                        ContentUnavailable("正在加载代理…", "arrow.triangle.2.circlepath")
+                            .frame(maxHeight: .infinity)
+                    } else {
+                        ContentUnavailable("暂无可用代理组", "diamond.circle")
+                            .frame(maxHeight: .infinity)
+                    }
                 } else {
                     if displayMode == "grid" {
                         LazyVGrid(columns: [GridItem(.flexible(), spacing: 10), GridItem(.flexible(), spacing: 10)], spacing: 10) {
@@ -73,6 +78,11 @@ struct ProxiesPage: View {
                         .padding(.horizontal, DS.Spacing.xl).padding(.bottom, DS.Spacing.xxl)
                     }
                 }
+            }
+        }
+        .onAppear {
+            Task {
+                await M.refreshProxies()
             }
         }
     }
