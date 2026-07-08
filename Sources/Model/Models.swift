@@ -179,7 +179,27 @@ struct NetIface: Identifiable {
     var primaryIP: String { ipv4.first ?? "—" }
 }
 
+/// A route table entry parsed from netstat -rn
+struct RouteEntry {
+    let dest: String       // destination CIDR e.g. "100.64/10" or "default"
+    let gateway: String
+    let iface: String
+    let flags: String
+}
+
+/// Result of conflict detection: a SD-WAN route that is shadowed by TUN.
+struct RouteConflict {
+    let sdwanRoute: String    // e.g. "100.64/10"
+    let sdwanIface: String    // e.g. "utun1" (Tailscale)
+    let tunRoute: String      // e.g. "100/10" (the mihomo TUN route shadowing it)
+    let tunIface: String      // e.g. "utun9"
+    /// Human-readable CIDR form of the TUN shadow route.
+    var shadowCIDR: String { tunRoute }
+}
+
 enum NetScanner {
+    // MARK: - Interface enumeration
+
     /// Enumerate IPv4 interfaces via getifaddrs (no shell, no privileges).
     static func interfaces() -> [NetIface] {
         var head: UnsafeMutablePointer<ifaddrs>?
@@ -204,7 +224,6 @@ enum NetScanner {
             let up = (f & Int32(IFF_UP)) != 0 && (f & Int32(IFF_RUNNING)) != 0
             let addrs = ips[nm] ?? []
             let kind = classify(name: nm, flags: f, ips: addrs)
-            // hide empty bridge/thunderbolt ports and loopback
             if kind == .loopback { return nil }
             if addrs.isEmpty && !nm.hasPrefix("utun") { return nil }
             return NetIface(id: nm, ipv4: addrs, isUp: up, kind: kind)
@@ -233,29 +252,183 @@ enum NetScanner {
         return o2 >= 64 && o2 <= 127
     }
 
-    /// Routes touching utun interfaces (netstat, no root). Returns (dest, iface).
-    static func tunRoutes() async -> [(dest: String, iface: String)] {
+    // MARK: - Route table parsing
+
+    /// Full IPv4 route table scan (netstat -rn -f inet). Returns all entries.
+    static func allRoutes() async -> [RouteEntry] {
         await Task.detached(priority: .userInitiated) {
-            let task = Process(); task.executableURL = URL(fileURLWithPath: "/usr/sbin/netstat")
+            let task = Process()
+            task.executableURL = URL(fileURLWithPath: "/usr/sbin/netstat")
             task.arguments = ["-rn", "-f", "inet"]
-            let pipe = Pipe(); task.standardOutput = pipe
+            let pipe = Pipe(); task.standardOutput = pipe; task.standardError = Pipe()
             do {
                 try task.run()
                 let data = pipe.fileHandleForReading.readDataToEndOfFile()
                 task.waitUntilExit()
                 let out = String(data: data, encoding: .utf8) ?? ""
-                var rows: [(String, String)] = []
+                var rows: [RouteEntry] = []
                 for line in out.split(separator: "\n") {
                     let cols = line.split(whereSeparator: { $0 == " " || $0 == "\t" }).map(String.init)
+                    // Columns: Destination Gateway Flags [Refs Use] Netif [Expire]
                     guard cols.count >= 4 else { continue }
+                    let dest = cols[0]; let gw = cols[1]; let flags = cols[2]
                     let iface = cols.last ?? ""
-                    if iface.hasPrefix("utun") { rows.append((cols[0], iface)) }
+                    // Skip header lines
+                    if dest == "Destination" || dest == "Internet:" { continue }
+                    rows.append(RouteEntry(dest: dest, gateway: gw, iface: iface, flags: flags))
                 }
                 return rows
-            } catch {
-                return []
-            }
+            } catch { return [] }
         }.value
+    }
+
+    /// Routes touching utun interfaces only (used by the SD-WAN topology view).
+    static func tunRoutes() async -> [(dest: String, iface: String)] {
+        let all = await allRoutes()
+        return all.filter { $0.iface.hasPrefix("utun") }.map { ($0.dest, $0.iface) }
+    }
+
+    // MARK: - CIDR overlap detection
+
+    /// Parse a macOS netstat destination string into (baseAddress as UInt32, prefixLength).
+    /// Handles: "default" -> (0, 0), "100.64/10" -> abbreviated, "192.168.1.0/24" -> full,
+    /// bare host IPs, and single-octet shorthand like "100/10".
+    static func parseCIDR(_ dest: String) -> (UInt32, Int)? {
+        if dest == "default" { return (0, 0) }
+        let parts = dest.split(separator: "/", maxSplits: 1)
+        let prefix = parts.count == 2 ? Int(parts[1]) : nil
+
+        // Expand abbreviated IP (e.g. "100" -> "100.0.0.0", "100.64" -> "100.64.0.0")
+        var ipStr = String(parts[0])
+        let octets = ipStr.split(separator: ".").map(String.init)
+        if octets.count < 4 {
+            ipStr = (octets + Array(repeating: "0", count: 4 - octets.count)).joined(separator: ".")
+        }
+
+        guard let ip = ipToUInt32(ipStr) else { return nil }
+        // If no prefix length given, treat as host route (/32)
+        let pl = prefix ?? 32
+        guard pl >= 0 && pl <= 32 else { return nil }
+        let mask: UInt32 = pl == 0 ? 0 : (0xFFFFFFFF << (32 - pl))
+        return (ip & mask, pl)
+    }
+
+    private static func ipToUInt32(_ ip: String) -> UInt32? {
+        let parts = ip.split(separator: ".").compactMap { UInt32($0) }
+        guard parts.count == 4 else { return nil }
+        return (parts[0] << 24) | (parts[1] << 16) | (parts[2] << 8) | parts[3]
+    }
+
+    /// Returns true if CIDR `a` overlaps with CIDR `b` (either contains or is contained).
+    /// Two CIDRs overlap iff one's network contains the other's network base address.
+    static func cidrsOverlap(_ a: String, _ b: String) -> Bool {
+        guard let (aBase, aLen) = parseCIDR(a),
+              let (bBase, bLen) = parseCIDR(b) else { return false }
+        // default route overlaps everything
+        if aLen == 0 || bLen == 0 { return true }
+        // Check if A's network contains B's base: apply A's mask to B's base
+        let aMask: UInt32 = 0xFFFFFFFF << (32 - aLen)
+        if (bBase & aMask) == (aBase & aMask) { return true }
+        // Check if B's network contains A's base: apply B's mask to A's base
+        let bMask: UInt32 = 0xFFFFFFFF << (32 - bLen)
+        if (aBase & bMask) == (bBase & bMask) { return true }
+        return false
+    }
+
+    // MARK: - Conflict detection
+
+    /// Detect SD-WAN routes that are shadowed by mihomo TUN auto-route prefixes.
+    /// Returns list of conflicts, each describing which SD-WAN route is masked.
+    static func conflictingRoutes() async -> [RouteConflict] {
+        let all = await allRoutes()
+        let ifaces = interfaces()
+
+        // Identify TUN proxy interface names (e.g. utun9 with 198.18.x.x)
+        let tunIfaceNames = Set(ifaces.filter { $0.kind == .proxyTun }.map { $0.id })
+        // Identify SD-WAN interface names (Tailscale, ZeroTier, etc.)
+        let sdwanIfaceNames = Set(ifaces.filter { $0.kind.sdwan }.map { $0.id })
+
+        // Gather TUN routes
+        let tunRoutes = all.filter { tunIfaceNames.contains($0.iface) }
+        // Gather SD-WAN routes
+        let sdwanRoutes = all.filter { sdwanIfaceNames.contains($0.iface) }
+
+        var conflicts: [RouteConflict] = []
+        for sdwan in sdwanRoutes {
+            for tun in tunRoutes {
+                if cidrsOverlap(sdwan.dest, tun.dest) {
+                    // Check if TUN route would win (shorter prefix = wider, takes priority
+                    // in a split-tunnel scenario where mihomo injects many /3-/32 aggregates)
+                    if let (_, sdwanPfx) = parseCIDR(sdwan.dest),
+                       let (_, tunPfx) = parseCIDR(tun.dest),
+                       tunPfx <= sdwanPfx {
+                        let conflict = RouteConflict(
+                            sdwanRoute: sdwan.dest,
+                            sdwanIface: sdwan.iface,
+                            tunRoute: tun.dest,
+                            tunIface: tun.iface
+                        )
+                        // Deduplicate by sdwanRoute+sdwanIface pair
+                        if !conflicts.contains(where: { $0.sdwanRoute == conflict.sdwanRoute && $0.sdwanIface == conflict.sdwanIface }) {
+                            conflicts.append(conflict)
+                        }
+                    }
+                }
+            }
+        }
+        return conflicts
+    }
+
+    // MARK: - SD-WAN exclude prefix collection
+
+    /// Collect all CIDR prefixes belonging to active SD-WAN interfaces
+    /// so they can be injected into `tun.route-exclude-address`.
+    /// This includes:
+    /// - The point-to-point /32 address of the interface itself
+    /// - Known allocation ranges (Tailscale 100.64.0.0/10, ZeroTier 10.147.0.0/16)
+    /// - Any routes in the routing table that go via a SD-WAN utun
+    static func sdwanExcludePrefixes() async -> [String] {
+        let ifaces = interfaces()
+        let sdwanIfaces = ifaces.filter { $0.kind.sdwan }
+        guard !sdwanIfaces.isEmpty else { return [] }
+
+        var prefixes = Set<String>()
+
+        for iface in sdwanIfaces {
+            switch iface.kind {
+            case .tailscale:
+                // Always exclude the full Tailscale CGNAT allocation
+                prefixes.insert("100.64.0.0/10")
+                // Also exclude Tailscale's MagicDNS resolver
+                prefixes.insert("100.100.100.100/32")
+            case .zerotier:
+                prefixes.insert("10.147.0.0/16")
+            default:
+                break
+            }
+            // Add each host IP of the SD-WAN interface as /32
+            for ip in iface.ipv4 {
+                prefixes.insert("\(ip)/32")
+            }
+        }
+
+        // Also collect routes that explicitly go via SD-WAN utuns from routing table
+        let sdwanIfaceNames = Set(sdwanIfaces.map { $0.id })
+        let all = await allRoutes()
+        for route in all where sdwanIfaceNames.contains(route.iface) {
+            let d = route.dest
+            if d == "default" { continue }
+            // Normalize abbreviated CIDRs to full form
+            if let (base, pl) = parseCIDR(d) {
+                let o1 = (base >> 24) & 0xFF
+                let o2 = (base >> 16) & 0xFF
+                let o3 = (base >> 8) & 0xFF
+                let o4 = base & 0xFF
+                prefixes.insert("\(o1).\(o2).\(o3).\(o4)/\(pl)")
+            }
+        }
+
+        return prefixes.sorted()
     }
 }
 
