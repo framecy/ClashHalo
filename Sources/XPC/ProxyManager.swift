@@ -2,16 +2,13 @@ import Foundation
 import SystemConfiguration
 
 public class ProxyManager {
+    private static func log(_ msg: String) {
+        NSLog("[ClashHalo Helper ProxyManager] %@", msg)
+    }
+
     /// Set/clear the macOS system proxy via `networksetup`.
-    ///
-    /// Replaces the previous SCPreferences implementation: a root LaunchDaemon is
-    /// not attached to the user's GUI/preferences session, so SCPreferences
-    /// commit/apply ran but never took effect (helper logged the call, yet
-    /// `scutil --proxy` stayed HTTPEnable:0 and the call returned false →
-    /// "系统代理设置失败"). `networksetup` mutates the same preferences reliably
-    /// from any root context and applies immediately.
     public static func setSystemProxy(enabled: Bool, port: Int) -> Bool {
-        let services = enabledNetworkServices()
+        let services = activeNetworkServices()
         guard !services.isEmpty else { return false }
         var anyOK = false
         for svc in services {
@@ -29,6 +26,43 @@ public class ProxyManager {
             if ok { anyOK = true }
         }
         return anyOK
+    }
+
+    /// Filter services to only target the actually active network interfaces
+    private static func activeNetworkServices() -> [String] {
+        guard let listOut = runOutput(["-listnetworkserviceorder"]) else { return [] }
+        var activeServices: [String] = []
+        var currentService: String? = nil
+        for line in listOut.split(separator: "\n") {
+            let s = String(line).trimmingCharacters(in: .whitespaces)
+            if s.hasPrefix("(") {
+                if let firstIdx = s.firstIndex(of: ")") {
+                    let start = s.index(after: firstIdx)
+                    currentService = s[start...].trimmingCharacters(in: .whitespaces)
+                }
+            } else if s.hasPrefix("(Hardware Port:") {
+                if let devRange = s.range(of: "Device:"),
+                   let endBracket = s.firstIndex(of: ")") {
+                    let devStart = devRange.upperBound
+                    let dev = s[devStart..<endBracket].trimmingCharacters(in: .whitespacesAndNewlines)
+                    if !dev.isEmpty && isInterfaceActive(dev) {
+                        if let svc = currentService {
+                            activeServices.append(svc)
+                        }
+                    }
+                }
+            }
+        }
+        if activeServices.isEmpty {
+            return enabledNetworkServices()
+        }
+        return activeServices
+    }
+
+    private static func isInterfaceActive(_ iface: String) -> Bool {
+        guard !iface.isEmpty else { return false }
+        guard let out = runOutput("/sbin/ifconfig", [iface]) else { return false }
+        return out.contains("status: active") || out.contains("inet ")
     }
 
     /// All enabled network services (skips the header line and `*`-disabled ones).
@@ -51,10 +85,9 @@ public class ProxyManager {
         p.standardOutput = Pipe(); p.standardError = Pipe()
         
         let timer = DispatchSource.makeTimerSource(queue: DispatchQueue.global())
-        timer.schedule(deadline: .now() + 5.0)
+        timer.schedule(deadline: .now() + 3.0)
         timer.setEventHandler {
             if p.isRunning {
-                log("Process timeout: killing hung networksetup process")
                 p.terminate()
             }
         }
@@ -72,16 +105,19 @@ public class ProxyManager {
     }
 
     private static func runOutput(_ args: [String]) -> String? {
+        return runOutput("/usr/sbin/networksetup", args)
+    }
+
+    private static func runOutput(_ binPath: String, _ args: [String]) -> String? {
         let p = Process()
-        p.executableURL = URL(fileURLWithPath: "/usr/sbin/networksetup")
+        p.executableURL = URL(fileURLWithPath: binPath)
         p.arguments = args
         let pipe = Pipe(); p.standardOutput = pipe; p.standardError = Pipe()
         
         let timer = DispatchSource.makeTimerSource(queue: DispatchQueue.global())
-        timer.schedule(deadline: .now() + 5.0)
+        timer.schedule(deadline: .now() + 3.0)
         timer.setEventHandler {
             if p.isRunning {
-                log("Process Output timeout: killing hung networksetup process")
                 p.terminate()
             }
         }
