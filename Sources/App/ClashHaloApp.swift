@@ -69,11 +69,6 @@ struct ClashHaloApp: App {
             ContentView()
                 .environmentObject(model)
                 .frame(minWidth: 940, maxWidth: .infinity, minHeight: 620, maxHeight: .infinity)
-                // Locked to dark: the design tokens (DS.Palette.cardBg/…) are
-                // dark-only fixed colors, so a light scheme would render dark
-                // cards on a light background. Re-introduce a light theme only
-                // once the palette uses scheme-adaptive colors.
-                .preferredColorScheme(.dark)
                 .onAppear { model.start() }
         }
         .defaultSize(width: 1180, height: 780)
