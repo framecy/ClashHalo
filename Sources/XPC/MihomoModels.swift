@@ -14,8 +14,36 @@ struct ProxyEntry: Decodable {
     let history: [DelayHistory]?
     let udp: Bool?
     let alive: Bool?
+
+    enum CodingKeys: String, CodingKey {
+        case name, type, now, all, history, udp, alive
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        self.name = (try? container.decode(String.self, forKey: .name)) ?? ""
+        self.type = (try? container.decode(String.self, forKey: .type)) ?? "Unknown"
+        self.now = try? container.decode(String.self, forKey: .now)
+        self.all = try? container.decode([String].self, forKey: .all)
+        self.history = try? container.decode([DelayHistory].self, forKey: .history)
+        self.udp = try? container.decode(Bool.self, forKey: .udp)
+        self.alive = try? container.decode(Bool.self, forKey: .alive)
+    }
 }
-struct DelayHistory: Decodable { let time: String; let delay: Int }
+struct DelayHistory: Decodable {
+    let time: String
+    let delay: Int
+
+    enum CodingKeys: String, CodingKey {
+        case time, delay
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        self.time = (try? container.decode(String.self, forKey: .time)) ?? ""
+        self.delay = (try? container.decode(Int.self, forKey: .delay)) ?? 0
+    }
+}
 
 struct RulesPayload: Decodable { let rules: [RuleEntry] }
 struct RuleEntry: Decodable { let type: String; let payload: String; let proxy: String; let size: Int? }

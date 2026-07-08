@@ -156,6 +156,7 @@ import ServiceManagement
     private var memWS: WSHandle?
     private var pollTask: Task<Void, Never>?
     private var reconnectTask: Task<Void, Never>?
+    private var bgTickCount = 0
 
     private static let logDF: DateFormatter = { let f = DateFormatter(); f.dateFormat = "HH:mm:ss"; return f }()
 
@@ -320,6 +321,9 @@ import ServiceManagement
                 }
             }
             startPolling()
+            Task {
+                await refreshProxies()
+            }
         } else {
             trafficWS?.cancel()
             trafficWS = nil
@@ -335,9 +339,9 @@ import ServiceManagement
         // 后台慢速轮询：仅在窗口不可见且连接页未激活时运行
         // 可见时 startPolling() + ConnectionsViewModel 已覆盖所有数据更新，无需重复
         if !activeUI && !isConnectionsPageActive {
-            var tickCount = 0
+            bgTickCount = 0
             pollTimer = Timer.scheduledTimer(withTimeInterval: 30.0, repeats: true) { [weak self] _ in
-                Task {
+                Task { @MainActor in
                     guard let self else { return }
                     guard !self.sleeping && self.networkOnline else { return }
 
@@ -347,11 +351,16 @@ import ServiceManagement
                         await self.recordHistoryOnly(from: snapshot)
                     } catch { }
 
-                    // Gateway health check every 2 minutes (every 4 ticks at 30s interval)
-                    tickCount += 1
-                    if self.gatewayModeOn && self.reachable && tickCount >= 4 {
-                        await self.verifyGatewayConfig()
-                        tickCount = 0
+                    // Health check every 2 minutes (every 4 ticks at 30s interval)
+                    self.bgTickCount += 1
+                    if self.bgTickCount >= 4 {
+                        if self.gatewayModeOn && self.reachable {
+                            await self.verifyGatewayConfig()
+                        }
+                        if self.tunOn && self.reachable {
+                            await self.verifyTUNConfig()
+                        }
+                        self.bgTickCount = 0
                     }
                 }
             }
@@ -375,18 +384,23 @@ import ServiceManagement
     private func startPolling() {
         pollTask?.cancel()
         pollTask = Task { [weak self] in
-            var gatewayCheckCounter = 0
+            var checkCounter = 0
             while let self, !Task.isCancelled, self.reachable, self.isMainWindowVisible || self.isMenuBarVisible {
                 // Only refresh configs periodically; proxies are refreshed on-demand
                 // (mode/profile switch, manual test-all) to avoid triggering @Published
                 // groups diff every 3s when nothing changes.
                 await self.refreshConfigs()
 
-                // Gateway health check every 30 seconds (every 10th poll at 3s interval)
-                gatewayCheckCounter += 1
-                if self.gatewayModeOn && gatewayCheckCounter >= 10 {
-                    await self.verifyGatewayConfig()
-                    gatewayCheckCounter = 0
+                // Health check every 30 seconds (every 10th poll at 3s interval)
+                checkCounter += 1
+                if checkCounter >= 10 {
+                    if self.gatewayModeOn {
+                        await self.verifyGatewayConfig()
+                    }
+                    if self.tunOn {
+                        await self.verifyTUNConfig()
+                    }
+                    checkCounter = 0
                 }
 
                 try? await Task.sleep(nanoseconds: 3_000_000_000)
@@ -629,16 +643,27 @@ import ServiceManagement
             do {
                 try await api.reloadConfig(path: engine.configFilePath)
                 await refreshConfigs()
-                // Re-verify sysctl after config restore
-                let sysctlOK = await engine.setGatewayMode(enabled: true)
-                if sysctlOK {
-                    logKernel("网关配置已自动恢复")
-                } else {
-                    logKernel("网关 sysctl 恢复失败")
-                }
+                logKernel("网关配置已自动恢复")
             } catch {
                 logKernel("网关配置恢复失败：\(error.localizedDescription)")
             }
+        }
+
+        // ALWAYS verify and enforce sysctl IP forwarding when Gateway Mode is on
+        let sysctlOK = await engine.setGatewayMode(enabled: true)
+        if !sysctlOK {
+            logKernel("网关 sysctl 启用失败，请检查特权服务状态")
+        }
+    }
+
+    /// Verify TUN DNS redirection and re-apply if it was reset by the OS.
+    private func verifyTUNConfig() async {
+        guard tunOn && reachable && !sleeping else { return }
+        let gateway = tunnelDNSAddress()
+        let current = await EngineControl.currentSystemDNS()
+        if !current.contains(gateway) {
+            logKernel("检测到 TUN DNS 发生漂移，正在重新重定向...")
+            await enableTunnelDNS()
         }
     }
 
