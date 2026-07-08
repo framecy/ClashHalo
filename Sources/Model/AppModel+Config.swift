@@ -183,10 +183,26 @@ extension AppModel {
         let on = !systemProxyOn
         let port = proxyPort
         Task {
+            if on && !reachable {
+                showToast("正在启动核心以开启系统代理…")
+                engine.ensureRunning()
+                guard await waitForKernelReady(maxAttempts: 8) else {
+                    showToast("内核启动超时，无法开启系统代理")
+                    return
+                }
+                await reconnect()
+            }
+
             let ok = await engine.setSystemProxy(enabled: on, port: port)
             if ok {
                 systemProxyOn = on
                 showToast(on ? "系统代理已开启" : "系统代理已关闭")
+                
+                // Auto-stop kernel cascade: if both system proxy and TUN are now off, stop the kernel
+                if !on && !tunOn && reachable {
+                    showToast("已无代理服务运行，正在停止内核…")
+                    await stopEngine()
+                }
             } else {
                 systemProxyOn = !on // Revert the switch if operation fails
                 await api.probe()
@@ -353,6 +369,17 @@ extension AppModel {
     /// reconcile `tunOn` from the kernel's *actual* state. The shared body behind
     /// `toggleTUN` and `reapplyTUN`. Caller owns `engine.isBusy`.
     func applyTUNState(_ want: Bool) async {
+        if want && !reachable {
+            showToast("正在启动核心以启用 TUN…")
+            engine.isRoot = true
+            engine.ensureRunning()
+            guard await waitForKernelReady(maxAttempts: 8) else {
+                showToast("内核启动超时，TUN 无法启用")
+                return
+            }
+            await self.reconnect()
+        }
+
         var overrides: [String: Any] = [
             "tun": [
                 "enable": want,
@@ -383,7 +410,7 @@ extension AppModel {
                 // Verify XPC connectivity after installation to catch launchd bootstrap failures
                 let connected = await XPCManager.shared.verifyConnectivity()
                 guard connected else {
-                    showToast("特权服务安装后无法连接，请重启应用或检查系统日志")
+                    showToast("特权服务安装后无法连接，请重启应用或检查 system 日志")
                     engine.isRoot = false  // Reset to prevent permanent lock
                     return
                 }
@@ -443,6 +470,12 @@ extension AppModel {
                     engine.setTopLevelScalars(restores)
                 }
                 showToast(want ? "TUN 模式已开启" : "TUN 模式已关闭")
+
+                // Auto-stop kernel cascade: if both system proxy and TUN are now off, stop the kernel
+                if !want && !systemProxyOn && reachable {
+                    showToast("已无代理服务运行，正在停止内核…")
+                    await stopEngine()
+                }
             }
         } else {
             await api.probe()
@@ -580,6 +613,26 @@ extension AppModel {
         }
     }
 
+    func stopEngine() async {
+        logKernel("正在停止核心...")
+        await engine.stopKernel()
+        reachable = false
+        tunOn = false
+        // 停核心时主动清理 Gateway 系统级 IP 转发（sysctl），防止残留
+        if gatewayModeOn {
+            _ = await engine.setGatewayMode(enabled: false)
+        }
+        gatewayModeOn = false
+        await restoreTunnelDNS()
+        if systemProxyOn {
+            let port = proxyPort
+            _ = await engine.setSystemProxy(enabled: false, port: port)
+            systemProxyOn = false
+        }
+        logKernel("核心已停止")
+        showToast("核心已停止")
+    }
+
     func toggleEngine() {
         let want = !reachable
         withEngineBusy {
@@ -588,7 +641,7 @@ extension AppModel {
                 self.showToast("正在启动核心...")
                 self.engine.ensureRunning()
 
-                // Wait and verify with smart backoff (reduced from 5 fixed attempts)
+                // Wait and verify with smart backoff
                 if await self.waitForKernelReady(maxAttempts: 6) {
                     self.logKernel("核心启动成功")
                     await self.reconnect()
@@ -604,23 +657,7 @@ extension AppModel {
                     self.showToast("核心启动失败，请检查内核与权限")
                 }
             } else {
-                self.logKernel("正在停止核心...")
-                await self.engine.stopKernel()
-                self.reachable = false
-                self.tunOn = false
-                // 停核心时主动清理 Gateway 系统级 IP 转发（sysctl），防止残留
-                if self.gatewayModeOn {
-                    _ = await self.engine.setGatewayMode(enabled: false)
-                }
-                self.gatewayModeOn = false
-                await self.restoreTunnelDNS()
-                if self.systemProxyOn {
-                    let port = self.proxyPort
-                    _ = await self.engine.setSystemProxy(enabled: false, port: port)
-                    self.systemProxyOn = false
-                }
-                self.logKernel("核心已停止")
-                self.showToast("核心已停止")
+                await self.stopEngine()
             }
         }
     }
