@@ -729,9 +729,16 @@ struct KernelCard: View {
                             .disabled(km.checking)
                         if !km.assetURL.isEmpty {
                             Button {
-                                Task { await km.download() }
+                                Task {
+                                    M.withEngineBusy {
+                                        let wasTUN = M.tunOn
+                                        await km.download()
+                                        await M.reconnect()
+                                        await M.reapplyTUN(wasOn: wasTUN)
+                                    }
+                                }
                             } label: {
-                                if km.downloading { ProgressView().controlSize(.small) } else { Text("下载 \(km.channel == "alpha" ? "Alpha" : "正式版")") }
+                                if km.downloading { ProgressView().controlSize(.small) } else { Text("下载并切换") }
                             }
                             .controlSize(.small)
                             .buttonStyle(.borderedProminent)

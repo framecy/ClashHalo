@@ -14,6 +14,11 @@ final class KernelManager: ObservableObject {
     @Published var note = ""
     @Published var builtinVersion = ""   // version of the bundled kernel, if any
 
+    @AppStorage("kernel.stable.tag") var installedStableTag = ""
+    @AppStorage("kernel.alpha.date") var installedAlphaDate = ""
+    private var tempPublishDate = ""
+    private var tempTagName = ""
+
     private let dir = NSHomeDirectory() + "/Library/Application Support/ClashHalo/kernels"
     private var binPath: String { NSHomeDirectory() + "/Library/Application Support/ClashHalo/bin/mihomo" }
     @AppStorage("kernel.active") var activeTag = "内置"
@@ -79,7 +84,8 @@ final class KernelManager: ObservableObject {
     /// Switch to a downloaded kernel: copy binary to unified bin path + restart.
     func activate(_ tag: String) async {
         if tag == "内置" { await activateBuiltin(); return }
-        let src = dir + "/\(tag)/mihomo"
+        let slotName = tag == "正式版" ? "stable" : "alpha"
+        let src = dir + "/\(slotName)/mihomo"
         let fm = FileManager.default
         guard fm.fileExists(atPath: src) else { await MainActor.run { self.note = "内核文件缺失" }; return }
 
@@ -98,7 +104,7 @@ final class KernelManager: ObservableObject {
 
         if ok {
             activeTag = tag
-            await MainActor.run { self.note = "已启用 \(tag)，正在启动…" }
+            await MainActor.run { self.note = "已启用 \(tag) 内核，正在启动…" }
         } else {
             await MainActor.run { self.note = "启用失败：文件操作错误" }
         }
@@ -108,7 +114,14 @@ final class KernelManager: ObservableObject {
     func scanInstalled() {
         let fm = FileManager.default
         try? fm.createDirectory(atPath: dir, withIntermediateDirectories: true)
-        installedTags = (try? fm.contentsOfDirectory(atPath: dir))?.sorted() ?? []
+        var tags: [String] = []
+        if fm.fileExists(atPath: dir + "/stable/mihomo") {
+            tags.append("正式版")
+        }
+        if fm.fileExists(atPath: dir + "/alpha/mihomo") {
+            tags.append("Alpha")
+        }
+        installedTags = tags
     }
 
     func check() async {
@@ -122,14 +135,38 @@ final class KernelManager: ObservableObject {
         req.setValue("ClashHalo", forHTTPHeaderField: "User-Agent")
         guard let (data, resp) = try? await session.data(for: req) else { note = "网络错误"; return }
         if let h = resp as? HTTPURLResponse, h.statusCode == 403 { note = "GitHub API 限流，请稍后再试"; return }
+        
         struct Asset: Decodable { let name: String; let browser_download_url: String }
-        struct Release: Decodable { let tag_name: String; let assets: [Asset] }
+        struct Release: Decodable { 
+            let tag_name: String
+            let published_at: String
+            let assets: [Asset]
+        }
         guard let r = try? JSONDecoder().decode(Release.self, from: data) else { note = "解析失败"; return }
         latestTag = r.tag_name
+        
+        // Check if already latest version
+        if channel == "stable" {
+            let pureTag = r.tag_name.hasPrefix("v") ? String(r.tag_name.dropFirst()) : r.tag_name
+            if installedStableTag == pureTag {
+                note = "当前内核已是最新版本，无需更新"
+                assetURL = ""
+                return
+            }
+        } else if channel == "alpha" {
+            if installedAlphaDate == r.published_at {
+                note = "当前内核已是最新版本，无需更新"
+                assetURL = ""
+                return
+            }
+        }
+        
         // darwin-arm64, prefer non-"compatible"/non-go120 variant, .gz
         if let a = r.assets.first(where: { $0.name.contains("darwin-arm64") && $0.name.hasSuffix(".gz") && !$0.name.contains("compatible") && !$0.name.contains("go1") })
             ?? r.assets.first(where: { $0.name.contains("darwin-arm64") && $0.name.hasSuffix(".gz") }) {
             assetURL = a.browser_download_url
+            tempPublishDate = r.published_at
+            tempTagName = r.tag_name.hasPrefix("v") ? String(r.tag_name.dropFirst()) : r.tag_name
         } else { note = "未找到 darwin-arm64 资源" }
     }
 
@@ -138,11 +175,14 @@ final class KernelManager: ObservableObject {
         downloading = true; progress = 0; note = ""; defer { downloading = false }
         guard let (tmp, _) = try? await session.download(from: url) else { note = "下载失败"; return }
         let fm = FileManager.default
-        let tagDir = dir + "/\(latestTag)"
+        let slotName = channel == "alpha" ? "alpha" : "stable"
+        let tagDir = dir + "/\(slotName)"
         try? fm.createDirectory(atPath: tagDir, withIntermediateDirectories: true)
         
         // decompress .gz → mihomo on background thread
         let out = tagDir + "/mihomo"
+        try? fm.removeItem(atPath: out)
+        
         let ok = await Task.detached(priority: .userInitiated) {
             let p = Process(); p.executableURL = URL(fileURLWithPath: "/usr/bin/gunzip")
             p.arguments = ["-c", tmp.path]
@@ -161,8 +201,16 @@ final class KernelManager: ObservableObject {
 
         if ok {
             try? fm.setAttributes([.posixPermissions: 0o755], ofItemAtPath: out)
-            progress = 1; scanInstalled()
-            note = "已下载 \(latestTag)（\(channel == "alpha" ? "Alpha" : "正式版")）"
+            progress = 1
+            if channel == "stable" {
+                installedStableTag = tempTagName
+            } else {
+                installedAlphaDate = tempPublishDate
+            }
+            scanInstalled()
+            let tag = channel == "alpha" ? "Alpha" : "正式版"
+            note = "已成功下载并自动切换至 \(tag) 内核"
+            await activate(tag)
         } else {
             note = "解压失败"
         }
