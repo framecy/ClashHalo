@@ -466,7 +466,7 @@ extension AppModel {
 
     /// The TUN gateway to use as the system resolver. Prefers the live config's
     /// `tun.inet4-address` gateway; falls back to mihomo's default fake-ip gateway.
-    private func tunnelDNSAddress() -> String {
+    func tunnelDNSAddress() -> String {
         if let tun = configs["tun"] as? [String: Any],
            let addrs = tun["inet4-address"] as? [String],
            let first = addrs.first {

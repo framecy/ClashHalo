@@ -61,6 +61,7 @@ extension AppModel {
                 newGatewayDevices[ip]?.downloadRate = 0
             }
             
+            let localIPs = Set(NetScanner.interfaces().flatMap { $0.ipv4 })
             let nowTime = Date()
             for c in items {
                 activeIDs.insert(c.id)
@@ -76,9 +77,9 @@ extension AppModel {
                 history.record(category: cat, down: Int64(downRate), up: Int64(upRate), hour: hour)
                 
                 // Track LAN Gateway devices
-                let proc = c.metadata.process ?? "—"
                 let srcIP = c.metadata.sourceIP ?? ""
-                if (proc == "—" || proc.isEmpty) && srcIP != "127.0.0.1" && srcIP != "::1" && !srcIP.isEmpty {
+                let isLocal = srcIP.isEmpty || srcIP == "127.0.0.1" || srcIP == "::1" || localIPs.contains(srcIP)
+                if !isLocal {
                     var dev = newGatewayDevices[srcIP] ?? GatewayDevice(ip: srcIP, activeConnections: 0, uploadRate: 0, downloadRate: 0, totalUpload: 0, totalDownload: 0, firstSeen: nowTime, lastSeen: nowTime)
                     dev.activeConnections += 1
                     dev.uploadRate += Int64(upRate)
