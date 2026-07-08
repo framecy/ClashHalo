@@ -978,7 +978,7 @@ import SwiftUI
         }.value
 
         // Give it a moment to release ports / the binary
-        try? await Task.sleep(nanoseconds: 500_000_000)
+        try? await Task.sleep(nanoseconds: 100_000_000)
     }
 
     /// Stop and restart the kernel.
