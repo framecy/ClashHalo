@@ -18,6 +18,8 @@ final class AppUpdater: ObservableObject {
     let repoOwner = "framecy"
     let repoName = "ClashHalo"
     private var downloadTask: URLSessionDownloadTask?
+    private var lastLoggedProgress = -1
+    private var downloadContinuation: CheckedContinuation<URL?, Never>?
 
     var onLog: ((String) -> Void)?
 
@@ -117,7 +119,7 @@ final class AppUpdater: ObservableObject {
         return false
     }
 
-    /// Download the update package
+    /// Download the update package using custom delegate for dynamic progress reports
     func downloadUpdate() async -> URL? {
         guard let downloadURLString = downloadURL,
               let url = URL(string: downloadURLString) else {
@@ -127,35 +129,50 @@ final class AppUpdater: ObservableObject {
 
         isDownloading = true
         downloadProgress = 0
+        lastLoggedProgress = -1
         defer { isDownloading = false }
 
         onLog?("开始下载更新包...")
 
-        let tmpDir = FileManager.default.temporaryDirectory
-        let fileName = url.lastPathComponent
-        let destination = tmpDir.appendingPathComponent(fileName)
+        return await withCheckedContinuation { cont in
+            self.downloadContinuation = cont
+            let delegate = DownloadDelegate(
+                onProgress: { [weak self] progress in
+                    Task { @MainActor in
+                        self?.downloadProgress = progress
+                        let pct = Int(progress * 100)
+                        if pct % 10 == 0 && pct != self?.lastLoggedProgress {
+                            self?.lastLoggedProgress = pct
+                            self?.onLog?("下载进度：\(pct)%")
+                        }
+                    }
+                },
+                onComplete: { [weak self] result in
+                    Task { @MainActor in
+                        switch result {
+                        case .success(let dest):
+                            self?.downloadProgress = 1.0
+                            self?.onLog?("下载完成：\(dest.path)")
+                            cont.resume(returning: dest)
+                        case .failure(let error):
+                            self?.onLog?("下载失败：\(error.localizedDescription)")
+                            cont.resume(returning: nil)
+                        }
+                        self?.downloadContinuation = nil
+                    }
+                }
+            )
 
-        // Remove existing file if any
-        try? FileManager.default.removeItem(at: destination)
+            let config = URLSessionConfiguration.default
+            config.timeoutIntervalForRequest = 45
+            config.timeoutIntervalForResource = 600
 
-        do {
-            // Use a simple synchronous download for now
-            let (tempURL, response) = try await URLSession.shared.download(from: url)
+            let session = URLSession(configuration: config, delegate: delegate, delegateQueue: OperationQueue())
+            let task = session.downloadTask(with: url)
+            self.downloadTask = task
+            task.resume()
 
-            guard let httpResponse = response as? HTTPURLResponse,
-                  httpResponse.statusCode == 200 else {
-                onLog?("下载失败：服务器响应异常")
-                return nil
-            }
-
-            try FileManager.default.moveItem(at: tempURL, to: destination)
-            downloadProgress = 1.0
-            onLog?("下载完成：\(destination.path)")
-
-            return destination
-        } catch {
-            onLog?("下载失败：\(error.localizedDescription)")
-            return nil
+            session.finishTasksAndInvalidate()
         }
     }
 
@@ -218,6 +235,8 @@ final class AppUpdater: ObservableObject {
         downloadTask = nil
         isDownloading = false
         downloadProgress = 0
+        downloadContinuation?.resume(returning: nil)
+        downloadContinuation = nil
         onLog?("下载已取消")
     }
 
@@ -228,5 +247,59 @@ final class AppUpdater: ObservableObject {
         downloadURL = nil
         releaseNotes = nil
         downloadProgress = 0
+    }
+}
+
+/// A private delegate helper that handles the downloading callbacks and updates progress dynamically
+private final class DownloadDelegate: NSObject, URLSessionDownloadDelegate {
+    let onProgress: (Double) -> Void
+    let onComplete: (Result<URL, Error>) -> Void
+    private let lock = NSLock()
+    private var isCompleted = false
+
+    init(onProgress: @escaping (Double) -> Void, onComplete: @escaping (Result<URL, Error>) -> Void) {
+        self.onProgress = onProgress
+        self.onComplete = onComplete
+    }
+
+    func urlSession(_ session: URLSession, downloadTask: URLSessionDownloadTask, didWriteData bytesWritten: Int64, totalBytesWritten: Int64, totalBytesExpectedToWrite: Int64) {
+        let progress = totalBytesExpectedToWrite > 0 ? Double(totalBytesWritten) / Double(totalBytesExpectedToWrite) : 0
+        onProgress(progress)
+    }
+
+    func urlSession(_ session: URLSession, downloadTask: URLSessionDownloadTask, didFinishDownloadingTo location: URL) {
+        lock.lock()
+        guard !isCompleted else {
+            lock.unlock()
+            return
+        }
+        isCompleted = true
+        lock.unlock()
+
+        let tmpDir = FileManager.default.temporaryDirectory
+        let fileName = downloadTask.originalRequest?.url?.lastPathComponent ?? "ClashHalo_Update.dmg"
+        let destination = tmpDir.appendingPathComponent(fileName)
+
+        try? FileManager.default.removeItem(at: destination)
+
+        do {
+            try FileManager.default.moveItem(at: location, to: destination)
+            onComplete(.success(destination))
+        } catch {
+            onComplete(.failure(error))
+        }
+    }
+
+    func urlSession(_ session: URLSession, task: URLSessionTask, didCompleteWithError error: Error?) {
+        lock.lock()
+        guard !isCompleted else {
+            lock.unlock()
+            return
+        }
+        isCompleted = true
+        lock.unlock()
+
+        let err = error ?? NSError(domain: "AppUpdater", code: -1, userInfo: [NSLocalizedDescriptionKey: "下载未完成"])
+        onComplete(.failure(err))
     }
 }
