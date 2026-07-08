@@ -32,7 +32,24 @@ extension AppModel {
     }
 
     func refreshProxies() async {
-        guard let p = try? await api.fetchProxies() else { return }
+        guard reachable else {
+            proxiesLoading = false
+            proxiesError = "内核未连接"
+            return
+        }
+        proxiesLoading = true
+        defer { proxiesLoading = false }
+
+        let p: ProxiesPayload
+        do {
+            p = try await api.fetchProxies()
+            proxiesError = nil
+        } catch {
+            proxiesError = error.localizedDescription
+            logKernel("代理列表刷新失败：\(error.localizedDescription)")
+            return
+        }
+
         var gs: [ProxyGroup] = []
         var ns: [String: Node] = [:]
         for (name, e) in p.proxies {
