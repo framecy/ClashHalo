@@ -380,14 +380,28 @@ extension AppModel {
             await self.reconnect()
         }
 
-        var overrides: [String: Any] = [
-            "tun": [
-                "enable": want,
-                "stack": (configs["tun"] as? [String:Any])?["stack"] ?? "gvisor",
-                "auto-route": true,
-                "auto-detect-interface": true
-            ]
+        var tunOverrideMap: [String: Any] = [
+            "enable": want,
+            "stack": (configs["tun"] as? [String:Any])?["stack"] ?? "gvisor",
+            "auto-route": true,
+            "auto-detect-interface": true
         ]
+
+        // When enabling TUN, detect active SD-WAN interfaces (Tailscale, ZeroTier, etc.)
+        // and merge their CIDR prefixes into route-exclude-address so TUN auto-route
+        // does not shadow/hijack those routes (e.g. Tailscale 100.64.0.0/10).
+        if want {
+            let sdwanPrefixes = await NetScanner.sdwanExcludePrefixes()
+            if !sdwanPrefixes.isEmpty {
+                // Merge with any existing user-defined excludes from config
+                let existing = (configs["tun"] as? [String: Any])?["route-exclude-address"] as? [String] ?? []
+                let merged = Array(Set(existing + sdwanPrefixes)).sorted()
+                tunOverrideMap["route-exclude-address"] = merged
+                logKernel("TUN 路由排除：自动注入 SD-WAN 前缀 \(sdwanPrefixes.joined(separator: ", "))")
+            }
+        }
+
+        var overrides: [String: Any] = ["tun": tunOverrideMap]
         // Pin the outbound interface to the real default-route NIC when enabling
         // TUN. auto-detect-interface alone loses a startup race — auto-route
         // hijacks the default route before the monitor identifies the NIC, so
