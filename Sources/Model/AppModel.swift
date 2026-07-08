@@ -54,6 +54,8 @@ import ServiceManagement
     @Published var groups: [ProxyGroup] = []
     @Published var nodes: [String: Node] = [:]    // name → node
     @Published var testing: Set<String> = []
+    @Published var proxiesLoading = false
+    @Published var proxiesError: String?
 
     // Connections (temporary caches for compatibility)
     @Published var activeConnectionsCount = 0
@@ -289,6 +291,7 @@ import ServiceManagement
         reconnectTask = nil   // connected — no retry pending
 
         syncSystemProxyState()   // re-sync after reconnect in case proxy was toggled externally
+        await refreshProxies()
         reconcileActiveStreams()
     }
 
