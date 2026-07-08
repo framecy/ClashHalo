@@ -686,7 +686,7 @@ struct KernelCard: View {
             VStack(spacing: 10) {
                 HStack {
                     Circle().fill(M.reachable ? Color.green : Color.red).frame(width: 8, height: 8)
-                    Text(M.reachable ? "运行中 · mihomo \(M.version)" : "未连接").font(.dsBody).foregroundColor(.secondary)
+                    Text(M.reachable ? "运行中 · mihomo \(M.version)" : "已停止").font(.dsBody).foregroundColor(.secondary)
                     Spacer()
                     if M.reachable {
                         Button("重启内核", systemImage: "arrow.triangle.2.circlepath") {
@@ -698,6 +698,10 @@ struct KernelCard: View {
                             }
                         }.buttonStyle(.bordered).tint(.orange).controlSize(.small)
                     }
+                    Toggle("", isOn: Binding(get: { M.reachable }, set: { _ in M.toggleEngine() }))
+                        .toggleStyle(.switch)
+                        .controlSize(.small)
+                        .labelsHidden()
                 }
                 Divider()
                 HStack {
