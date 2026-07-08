@@ -740,9 +740,23 @@ import ServiceManagement
         guard !remotes.isEmpty else { showToast("无远程订阅"); return }
         showToast("正在更新订阅…")
         Task {
-            for p in remotes { _ = await store.updateRemote(p.id) }
+            var successCount = 0
+            var failNames: [String] = []
+            for p in remotes {
+                let ok = await store.updateRemote(p.id)
+                if ok {
+                    successCount += 1
+                } else {
+                    failNames.append(p.name)
+                }
+            }
             if !store.activeID.isEmpty { selectForApply(store.activeID) }
-            showToast("订阅已更新")
+            if failNames.isEmpty {
+                showToast("订阅已全部更新成功")
+            } else {
+                let failedList = failNames.joined(separator: ", ")
+                showToast("更新完成: 成功 \(successCount) 个, 失败 \(failNames.count) 个 (\(failedList))")
+            }
         }
     }
 

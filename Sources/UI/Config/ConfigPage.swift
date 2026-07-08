@@ -100,7 +100,19 @@ struct ConfigPage: View {
                 Button(role: .destructive) { M.store.discardDraft(p.id) } label: { Label("放弃导入", systemImage: "trash.slash") }
             }
             if p.source == "remote" {
-                Button { Task { _ = await M.store.updateRemote(p.id); if active { M.selectForApply(p.id) }; M.showToast("已更新订阅") } } label: { Label("更新订阅", systemImage: "arrow.clockwise") }
+                Button {
+                    Task {
+                        let ok = await M.store.updateRemote(p.id)
+                        if ok {
+                            if active { M.selectForApply(p.id) }
+                            M.showToast("订阅「\(p.name)」已更新成功")
+                        } else {
+                            M.showToast("订阅「\(p.name)」更新失败，已保留原配置")
+                        }
+                    }
+                } label: {
+                    Label("更新订阅", systemImage: "arrow.clockwise")
+                }
             }
             Divider()
             Button(role: .destructive) { M.store.remove(p.id) } label: { Label("删除", systemImage: "trash") }
@@ -207,15 +219,24 @@ struct ImportRemoteSheet: View {
 
     private func saveOnly() async {
         guard !previewContent.isEmpty else { dismiss(); return }
-        _ = M.store.importLocalDraft(name: name.isEmpty ? (URL(string: url)?.host ?? "远程配置") : name,
-                                     content: previewContent)
+        let nameToUse = name.isEmpty ? (URL(string: url)?.host ?? "远程配置") : name
+        if url.lowercased().hasPrefix("http://") || url.lowercased().hasPrefix("https://") {
+            _ = M.store.importRemoteDraft(name: nameToUse, url: url, content: previewContent)
+        } else {
+            _ = M.store.importLocalDraft(name: nameToUse, content: previewContent)
+        }
         dismiss()
     }
 
     private func saveAndApply() async {
         guard !previewContent.isEmpty else { dismiss(); return }
-        let id = M.store.importLocalDraft(name: name.isEmpty ? (URL(string: url)?.host ?? "远程配置") : name,
-                                          content: previewContent)
+        let nameToUse = name.isEmpty ? (URL(string: url)?.host ?? "远程配置") : name
+        let id: String
+        if url.lowercased().hasPrefix("http://") || url.lowercased().hasPrefix("https://") {
+            id = M.store.importRemoteDraft(name: nameToUse, url: url, content: previewContent)
+        } else {
+            id = M.store.importLocalDraft(name: nameToUse, content: previewContent)
+        }
         M.selectForApply(id)
         dismiss()
     }
