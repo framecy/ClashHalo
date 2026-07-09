@@ -22,6 +22,9 @@ extension AppModel {
     /// unchanged content short-circuits before touching the kernel.
     func selectForApply(_ id: String) {
         guard !engine.isBusy else { showToast("内核操作进行中，请稍候…"); return }
+        let oldActiveID = store.activeID
+        let backupContent = (try? String(contentsOfFile: engine.configFilePath, encoding: .utf8)) ?? ""
+        
         guard let content = store.commit(id) else { showToast("配置为空"); return }
         let name = store.profiles.first { $0.id == id }?.name ?? ""
         let wasTunOn = tunOn
@@ -73,6 +76,32 @@ extension AppModel {
                 await refreshProxies()
             } else {
                 showToast("配置错误：\(err ?? "")，已回滚")
+                if !oldActiveID.isEmpty {
+                    store.activeID = oldActiveID
+                    if oldActiveID == id {
+                        if !backupContent.isEmpty {
+                            try? backupContent.write(toFile: store.path(id), atomically: true, encoding: .utf8)
+                            try? backupContent.write(toFile: engine.configFilePath, atomically: true, encoding: .utf8)
+                            if let oldHash = store.profiles.first(where: { $0.id == id })?.appliedHash {
+                                store.markApplied(id, hash: oldHash)
+                            } else {
+                                // Fallback: if there was no applied hash, mark applied anyway as it was running
+                                store.markApplied(id, hash: Sha1.hex(backupContent))
+                            }
+                        }
+                    } else {
+                        if !backupContent.isEmpty {
+                            try? backupContent.write(toFile: engine.configFilePath, atomically: true, encoding: .utf8)
+                            if let oldHash = store.profiles.first(where: { $0.id == oldActiveID })?.appliedHash {
+                                store.markApplied(oldActiveID, hash: oldHash)
+                            }
+                        }
+                    }
+                }
+                if !backupContent.isEmpty {
+                    _ = await engine.setConfig(backupContent)
+                }
+                store.save()
             }
         }
     }
