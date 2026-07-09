@@ -44,7 +44,7 @@ struct ConfigPage: View {
         // Drafts are visually distinct from inactive-but-already-applied
         // profiles: amber outline + a small badge instead of the empty
         // circle + "设为活动" CTA used by inactive applied ones.
-        let draft = p.needsApply
+        let draft = p.needsApply && !active
         return VStack(alignment: .leading, spacing: 10) {
             HStack(spacing: 8) {
                 Image(systemName: p.source == "remote" ? "icloud.fill" : "doc.fill")
