@@ -89,7 +89,7 @@ struct YAMLPreview: Equatable {
         if reconciled { save() }
     }
 
-    private func save() {
+    func save() {
         let sanitized = profiles.map { p -> Profile in
             if let u = p.url {
                 KeychainHelper.save(key: p.id, value: u)
@@ -106,10 +106,9 @@ struct YAMLPreview: Equatable {
     func content(_ id: String) -> String { (try? String(contentsOfFile: path(id), encoding: .utf8)) ?? "" }
     func saveContent(_ id: String, _ text: String) {
         try? text.write(toFile: path(id), atomically: true, encoding: .utf8); touch(id)
-        // Editing a profile bumps it to "stale Applied" (same content hash as
-        // before markApplied re-stamps it) so the next activation will reload.
         if let i = profiles.firstIndex(where: { $0.id == id }) {
             profiles[i].appliedHash = nil
+            profiles[i].isApplied = false
             save()
         }
     }
