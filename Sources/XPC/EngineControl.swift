@@ -98,7 +98,11 @@ import SwiftUI
         // to a kernel the user already downloaded under kernels/ (B2 — avoids the
         // split where kernels/<tag>/mihomo exists but bin/mihomo stays empty).
         if !fm.fileExists(atPath: kernelPath) {
-            if let bundled = Bundle.main.url(forResource: "mihomo", withExtension: nil) {
+            let bundledExec = Bundle.main.bundleURL.appendingPathComponent("Contents/MacOS/mihomo")
+            if fm.fileExists(atPath: bundledExec.path) {
+                try? fm.copyItem(at: bundledExec, to: URL(fileURLWithPath: kernelPath))
+                try? fm.setAttributes([.posixPermissions: 0o755], ofItemAtPath: kernelPath)
+            } else if let bundled = Bundle.main.url(forResource: "mihomo", withExtension: nil) {
                 try? fm.copyItem(at: bundled, to: URL(fileURLWithPath: kernelPath))
                 try? fm.setAttributes([.posixPermissions: 0o755], ofItemAtPath: kernelPath)
             } else if let fallback = installedKernelFallback() {
@@ -826,13 +830,22 @@ import SwiftUI
     /// Returns true if helper is at the expected version (already up to date or just upgraded).
     @discardableResult
     func checkAndUpgradeHelperIfNeeded() async -> Bool {
-        // isRoot is set by pollStatus (every 5s); this check fires at 4s, before
-        // the first poll, so it would skip on every fresh launch. Actively verify
-        // connectivity here so the guard reflects reality, not poll timing.
         if !isRoot {
             isRoot = await XPCManager.shared.verifyConnectivity()
         }
-        guard isRoot else { return true }
+        if !isRoot {
+            onLog?("未检测到特权服务，开始自动安装…")
+            let ok = await installPrivileged()
+            if ok {
+                isRoot = await XPCManager.shared.verifyConnectivity()
+                if isRoot {
+                    onLog?("特权服务安装成功 ✓")
+                }
+            } else {
+                onLog?("特权服务授权被拒绝")
+            }
+        }
+        guard isRoot else { return false }
         // The version may not be fetched yet (pollStatus runs every 5s; this check
         // fires at 4s). Actively fetch it first so a needed upgrade isn't skipped
         // by the "?" guard and silently deferred forever.

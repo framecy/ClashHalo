@@ -135,6 +135,7 @@ struct ContentView: View {
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
         }
+        .background(DS.Palette.windowBg)
         .overlay(alignment: .bottom) {
             if let t = M.toast {
                 Text(t).font(.dsBody).padding(.horizontal, DS.Spacing.l).padding(.vertical, 9)
@@ -156,18 +157,19 @@ struct PageHead<Actions: View>: View {
     @ViewBuilder var actions: () -> Actions
 
     var body: some View {
-        HStack(alignment: .center) {
-            VStack(alignment: .leading, spacing: 4) {
-                if let desc {
-                    Text(desc).font(.dsBody).foregroundColor(.secondary)
+        Group {
+            if Actions.self != EmptyView.self {
+                HStack(alignment: .center) {
+                    Spacer()
+                    HStack(spacing: 10) {
+                        actions()
+                    }
                 }
-            }
-            Spacer()
-            HStack(spacing: 10) {
-                actions()
+                .padding(.horizontal, DS.Spacing.xl)
+                .padding(.top, DS.Spacing.m)
+                .padding(.bottom, DS.Spacing.xs)
             }
         }
-        .padding(.horizontal, DS.Spacing.l).padding(.top, DS.Spacing.l).padding(.bottom, DS.Spacing.l)
     }
 }
 
