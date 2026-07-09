@@ -29,6 +29,12 @@ enum DS {
                 ? NSColor(red: 0x2C / 255.0, green: 0x2C / 255.0, blue: 0x2C / 255.0, alpha: 1)
                 : NSColor(red: 0xEE / 255.0, green: 0xEE / 255.0, blue: 0xEE / 255.0, alpha: 1)
         }))
+        /// Root window/content area background.
+        static let windowBg = Color(nsColor: .init(name: nil, dynamicProvider: { appearance in
+            appearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua
+                ? NSColor(red: 0x1E / 255.0, green: 0x1E / 255.0, blue: 0x1E / 255.0, alpha: 1)
+                : NSColor(red: 0xF5 / 255.0, green: 0xF5 / 255.0, blue: 0xF7 / 255.0, alpha: 1)
+        }))
 
         /// Semantic status colors — use instead of raw `.green/.red/.orange`.
         static let ok    = Color.green   // running / connected / low latency / success
