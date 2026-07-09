@@ -37,16 +37,17 @@ struct DashboardPage: View {
 
     var body: some View {
         ScrollView {
-            VStack(alignment: .leading, spacing: 0) {
-                PageHead(title: "仪表盘", desc: nil) {
-                    HStack {
+            VStack(alignment: .leading, spacing: 16) {
+                HStack(alignment: .center) {
+                    Text(greeting()).font(.dsSection)
+                    Spacer()
+                    HStack(spacing: 8) {
                         zashboardButton
                         rangePicker
                     }
                 }
-
-                VStack(alignment: .leading, spacing: 16) {
-                    Text(greeting()).font(.dsSection).padding(.horizontal, DS.Spacing.xs)
+                .padding(.horizontal, DS.Spacing.xs)
+                .padding(.top, DS.Spacing.m)
 
                     // Row 1: Top stats bar (4 columns, height 64)
                     HStack(spacing: 16) {
@@ -153,9 +154,8 @@ struct DashboardPage: View {
                     }
 
 
-                }
-                .padding(.horizontal, DS.Spacing.l).padding(.bottom, DS.Spacing.l)
             }
+            .padding(.horizontal, DS.Spacing.l).padding(.bottom, DS.Spacing.l)
         }
     }
 
