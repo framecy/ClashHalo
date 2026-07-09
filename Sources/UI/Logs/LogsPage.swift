@@ -15,14 +15,6 @@ struct LogsPage: View {
             q.isEmpty || $0.text.localizedCaseInsensitiveContains(q)
         }
         VStack(spacing: 0) {
-            PageHead(title: "实时日志", desc: "结构化日志流 · 核心运行状态") {
-                Button { paused.toggle(); if paused { frozen = VM.logs } } label: {
-                    Label(paused ? "继续" : "暂停", systemImage: paused ? "play.fill" : "pause.fill")
-                }.controlSize(.small)
-                Button { exportLogs(rows) } label: { Label("导出", systemImage: "square.and.arrow.up") }
-                    .controlSize(.small)
-            }
-
             HStack(spacing: DS.Spacing.xxl) {
                 Picker("", selection: Binding(get: { VM.logLevel }, set: { VM.changeLogLevel($0) })) {
                     Text("DEBUG").tag("debug"); Text("INFO").tag("info")
@@ -37,6 +29,16 @@ struct LogsPage: View {
                 }
                 
                 Spacer()
+
+                HStack(spacing: 8) {
+                    Button { paused.toggle(); if paused { frozen = VM.logs } } label: {
+                        Label(paused ? "继续" : "暂停", systemImage: paused ? "play.fill" : "pause.fill")
+                    }.controlSize(.small)
+                    Button { exportLogs(rows) } label: { Label("导出", systemImage: "square.and.arrow.up") }
+                        .controlSize(.small)
+                }
+                .padding(.trailing, 8)
+                
                 HStack(spacing: 6) {
                     Circle().fill(paused ? Color.secondary : DS.Palette.accent).frame(width: 6, height: 6)
                     Text("\(rows.count) 行").font(.dsMono).foregroundColor(.secondary)
