@@ -381,54 +381,81 @@ enum NetScanner {
 
     // MARK: - SD-WAN exclude prefix collection
 
-    /// Collect all CIDR prefixes belonging to active SD-WAN interfaces
+    /// Collect all CIDR prefixes belonging to active SD-WAN / virtual interfaces
     /// so they can be injected into `tun.route-exclude-address`.
-    /// This includes:
-    /// - The point-to-point /32 address of the interface itself
-    /// - Known allocation ranges (Tailscale 100.64.0.0/10, ZeroTier 10.147.0.0/16)
-    /// - Any routes in the routing table that go via a SD-WAN utun
     static func sdwanExcludePrefixes() async -> [String] {
+        let routes = await sdwanExcludeRoutes()
+        return Array(routes.keys).sorted()
+    }
+
+    /// Collect all routes that should bypass TUN and their corresponding utun interface.
+    /// This includes:
+    /// - The host IP (/32) of the interfaces
+    /// - Known allocation ranges (Tailscale 100.64.0.0/10, ZeroTier 10.147.0.0/16)
+    /// - Routing table entries going through these interfaces
+    static func sdwanExcludeRoutes() async -> [String: String] {
         let ifaces = interfaces()
-        let sdwanIfaces = ifaces.filter { $0.kind.sdwan }
-        guard !sdwanIfaces.isEmpty else { return [] }
+        // Filter out all virtual interfaces (utun*) except proxyTun (Clash's own TUN)
+        let targetIfaces = ifaces.filter { $0.id.hasPrefix("utun") && $0.kind != .proxyTun }
+        guard !targetIfaces.isEmpty else { return [:] }
 
-        var prefixes = Set<String>()
+        var routes = [String: String]()
 
-        for iface in sdwanIfaces {
+        // 1. Map each interface's IPs
+        for iface in targetIfaces {
+            for ip in iface.ipv4 {
+                routes["\(ip)/32"] = iface.id
+                // If it is CGNAT IP, it is definitely Tailscale
+                if isCGNAT(ip) {
+                    routes["100.64.0.0/10"] = iface.id
+                    routes["100.100.100.100/32"] = iface.id
+                }
+            }
+            
+            // Add defaults based on classified kind
             switch iface.kind {
             case .tailscale:
-                // Always exclude the full Tailscale CGNAT allocation
-                prefixes.insert("100.64.0.0/10")
-                // Also exclude Tailscale's MagicDNS resolver
-                prefixes.insert("100.100.100.100/32")
+                routes["100.64.0.0/10"] = iface.id
+                routes["100.100.100.100/32"] = iface.id
             case .zerotier:
-                prefixes.insert("10.147.0.0/16")
+                routes["10.147.0.0/16"] = iface.id
             default:
                 break
             }
-            // Add each host IP of the SD-WAN interface as /32
-            for ip in iface.ipv4 {
-                prefixes.insert("\(ip)/32")
-            }
         }
 
-        // Also collect routes that explicitly go via SD-WAN utuns from routing table
-        let sdwanIfaceNames = Set(sdwanIfaces.map { $0.id })
+        // 2. Scan routing table to associate existing routes with target interfaces
+        let targetIfaceNames = Set(targetIfaces.map { $0.id })
         let all = await allRoutes()
-        for route in all where sdwanIfaceNames.contains(route.iface) {
+        for route in all where targetIfaceNames.contains(route.iface) {
             let d = route.dest
             if d == "default" { continue }
-            // Normalize abbreviated CIDRs to full form
             if let (base, pl) = parseCIDR(d) {
                 let o1 = (base >> 24) & 0xFF
                 let o2 = (base >> 16) & 0xFF
                 let o3 = (base >> 8) & 0xFF
                 let o4 = base & 0xFF
-                prefixes.insert("\(o1).\(o2).\(o3).\(o4)/\(pl)")
+                let normalizedDest = "\(o1).\(o2).\(o3).\(o4)/\(pl)"
+                routes[normalizedDest] = route.iface
+                
+                // If the routing dest points to MagicDNS or tailscale CIDR, bind it
+                if d == "100.100.100.100/32" || d.hasPrefix("100.100.100.100") {
+                    routes["100.64.0.0/10"] = route.iface
+                    routes["100.100.100.100/32"] = route.iface
+                }
             }
         }
 
-        return prefixes.sorted()
+        // 3. Fallback: if we found some utun interfaces but Tailscale CIDR was not mapped
+        // (e.g., interface has no IP yet or routing table is clean), map it to the first utun interface
+        if !routes.keys.contains(where: { $0.hasPrefix("100.64.") }) {
+            if let firstUtun = targetIfaces.first {
+                routes["100.64.0.0/10"] = firstUtun.id
+                routes["100.100.100.100/32"] = firstUtun.id
+            }
+        }
+
+        return routes
     }
 }
 
