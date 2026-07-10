@@ -242,6 +242,78 @@ class Helper: NSObject, HelperProtocol {
         log("setGatewayMode: \(enabled) -> \(ok ? "success" : "failed")")
         reply(ok)
     }
+
+    private static var addedRoutes = [String: String]()
+    fileprivate static let routesLock = NSLock()
+
+    fileprivate static func cleanupAllExcludeRoutesInternal() {
+        let routesToClean = addedRoutes
+        addedRoutes.removeAll()
+        
+        for (dest, iface) in routesToClean {
+            let process = Process()
+            process.executableURL = URL(fileURLWithPath: "/sbin/route")
+            let isHost = !dest.contains("/") || dest.hasSuffix("/32")
+            let destClean = dest.replacingOccurrences(of: "/32", with: "")
+            if isHost {
+                process.arguments = ["-n", "delete", "-host", destClean, "-interface", iface]
+            } else {
+                process.arguments = ["-n", "delete", "-net", dest, "-interface", iface]
+            }
+            process.standardOutput = Pipe()
+            process.standardError = Pipe()
+            do {
+                try process.run()
+                process.waitUntilExit()
+            } catch {
+                log("cleanupAllExcludeRoutesInternal: exec route delete failed for \(dest) -> \(iface): \(error)")
+            }
+        }
+    }
+
+    func setupExcludeRoutes(_ routes: [String: String], withReply reply: @escaping (Bool) -> Void) {
+        log("setupExcludeRoutes called: \(routes)")
+        Self.routesLock.lock()
+        Self.cleanupAllExcludeRoutesInternal()
+        
+        Self.addedRoutes = routes
+        let routesToApply = Self.addedRoutes
+        Self.routesLock.unlock()
+        
+        var allOk = true
+        for (dest, iface) in routesToApply {
+            let process = Process()
+            process.executableURL = URL(fileURLWithPath: "/sbin/route")
+            let isHost = !dest.contains("/") || dest.hasSuffix("/32")
+            let destClean = dest.replacingOccurrences(of: "/32", with: "")
+            if isHost {
+                process.arguments = ["-n", "add", "-host", destClean, "-interface", iface]
+            } else {
+                process.arguments = ["-n", "add", "-net", dest, "-interface", iface]
+            }
+            process.standardOutput = Pipe()
+            process.standardError = Pipe()
+            do {
+                try process.run()
+                process.waitUntilExit()
+                if process.terminationStatus != 0 {
+                    log("setupExcludeRoutes: route add \(dest) -> \(iface) status \(process.terminationStatus)")
+                }
+            } catch {
+                log("setupExcludeRoutes: exec route add failed for \(dest) -> \(iface): \(error)")
+                allOk = false
+            }
+        }
+        reply(allOk)
+    }
+
+    func cleanupAllExcludeRoutes(withReply reply: @escaping (Bool) -> Void) {
+        log("cleanupAllExcludeRoutes called")
+        Self.routesLock.lock()
+        Self.cleanupAllExcludeRoutesInternal()
+        Self.routesLock.unlock()
+        reply(true)
+    }
 }
 
 class HelperDelegate: NSObject, NSXPCListenerDelegate {
@@ -320,6 +392,11 @@ class HelperDelegate: NSObject, NSXPCListenerDelegate {
         
         // 1. Stop mihomo process first (fast, reliable, and does not depend on system configuration locks)
         Helper.stopMihomoInternal()
+        
+        // 1.5. Cleanup static routes
+        Helper.routesLock.lock()
+        Helper.cleanupAllExcludeRoutesInternal()
+        Helper.routesLock.unlock()
         
         // 2. Disable system proxy
         let proxyReset = ProxyManager.setSystemProxy(enabled: false, port: 7890)
