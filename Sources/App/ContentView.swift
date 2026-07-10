@@ -157,19 +157,30 @@ struct PageHead<Actions: View>: View {
     @ViewBuilder var actions: () -> Actions
 
     var body: some View {
-        Group {
-            if Actions.self != EmptyView.self {
-                HStack(alignment: .center) {
-                    Spacer()
-                    HStack(spacing: 10) {
-                        actions()
-                    }
+        HStack(alignment: .bottom) {
+            VStack(alignment: .leading, spacing: 4) {
+                Text(title)
+                    .font(.dsPageTitle)
+                    .foregroundColor(.primary)
+                if let desc = desc, !desc.isEmpty {
+                    Text(desc)
+                        .font(.dsBody)
+                        .foregroundColor(.secondary)
                 }
-                .padding(.horizontal, DS.Spacing.xl)
-                .padding(.top, DS.Spacing.m)
-                .padding(.bottom, DS.Spacing.xs)
+            }
+            
+            Spacer()
+            
+            if Actions.self != EmptyView.self {
+                HStack(spacing: 10) {
+                    actions()
+                }
+                .padding(.bottom, 2)
             }
         }
+        .padding(.horizontal, DS.Spacing.l)
+        .padding(.top, DS.Spacing.l)
+        .padding(.bottom, DS.Spacing.m)
     }
 }
 
