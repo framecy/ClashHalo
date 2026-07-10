@@ -86,13 +86,14 @@ bash make.sh
 - `Sources/XPC/HelperProtocol.swift`
 - `Sources/Helper/main.swift`
 
-必须保留的安全属性：
+必须保留的安全属性与路由规则：
 
 - Helper 只接受 ClashHalo `.app` 客户端连接；旧 ClashPow 路径只作为迁移兼容保留。
 - root 启动 mihomo 时只允许 canonical kernel path。
 - `installDaemon()` 生成 LaunchDaemon plist；不要再维护另一个打包时 plist 作为第二真相源。
 - `mihomo` 签名不要随意改成 hardened runtime；当前脚本特意避免影响 TUN/utun。
 - TUN 是运行时能力，启动时会强制 `tun.enable: false`，只应通过 UI/Helper 流程开启。
+- **状态驱动静态路由绕行**：系统存在其他非 `proxyTun` 的活跃 `utun` 接口（如 Tailscale）时，由 `AppModel+Config.swift` 中的 `refreshConfigs()` 自动对齐注入状态，通过特权 Helper 往系统路由表中添加 `/sbin/route -n add` 静态路由指回原虚拟接口（防止默认代理路由抢占）；关闭 TUN 或客户端 invalidated 断开连接时，Helper 必须自动通过 `addedRoutes` 清空注入的路由。
 
 ## UI 约定
 
