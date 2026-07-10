@@ -98,6 +98,7 @@ import ServiceManagement
     // Master switches
     @Published var systemProxyOn = false
     @Published var tunOn = false
+    var staticRoutesInjected = false
     @Published var gatewayModeOn = false
     /// Snapshot of allow-lan / dns.listen before Gateway mode overrode them,
     /// used to restore config.yaml when Gateway is disabled.

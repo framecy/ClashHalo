@@ -188,6 +188,37 @@ extension AppModel {
         } else if !tunOn && dnsRedirected {
             await restoreTunnelDNS()
         }
+
+        // Align static routes for excluded prefixes in sync with the real TUN state.
+        if tunOn && !staticRoutesInjected {
+            let excludeRoutes = await NetScanner.sdwanExcludeRoutes()
+            if !excludeRoutes.isEmpty {
+                if let helper = XPCManager.shared.helper() {
+                    helper.setupExcludeRoutes(excludeRoutes) { ok in
+                        self.logKernel("XPC Helper 注入静态路由: \(ok ? "成功" : "失败")")
+                        if ok {
+                            Task { @MainActor in
+                                self.staticRoutesInjected = true
+                            }
+                        }
+                    }
+                }
+            } else {
+                // If there are no routes to exclude, mark it as injected to prevent repeated checks
+                staticRoutesInjected = true
+            }
+        } else if !tunOn && staticRoutesInjected {
+            if let helper = XPCManager.shared.helper() {
+                helper.cleanupAllExcludeRoutes { ok in
+                    self.logKernel("XPC Helper 清理静态路由: \(ok ? "成功" : "失败")")
+                    if ok {
+                        Task { @MainActor in
+                            self.staticRoutesInjected = false
+                        }
+                    }
+                }
+            }
+        }
     }
 
     // MARK: Master switches
@@ -408,14 +439,6 @@ extension AppModel {
             }
         }
 
-        if !want {
-            if let helper = XPCManager.shared.helper() {
-                helper.cleanupAllExcludeRoutes { ok in
-                    self.logKernel("XPC Helper 清理静态路由: \(ok ? "成功" : "失败")")
-                }
-            }
-        }
-
         var tunOverrideMap: [String: Any] = [
             "enable": want,
             "stack": (configs["tun"] as? [String:Any])?["stack"] ?? "gvisor",
@@ -500,17 +523,6 @@ extension AppModel {
             if want && !tunOn {
                 showToast("TUN 开启失败：可能无管理员权限或路由被其他 VPN 占用冲突")
             } else {
-                if want {
-                    let excludeRoutes = await NetScanner.sdwanExcludeRoutes()
-                    if !excludeRoutes.isEmpty {
-                        if let helper = XPCManager.shared.helper() {
-                            helper.setupExcludeRoutes(excludeRoutes) { ok in
-                                self.logKernel("XPC Helper 注入静态路由: \(ok ? "成功" : "失败")")
-                            }
-                        }
-                    }
-                }
-
                 // TUN disable cascades: Gateway mode requires TUN, so if we
                 // just turned TUN off, also tear down Gateway (sysctl + UI +
                 // restore the allow-lan/dns.listen overrides Gateway applied).
