@@ -406,7 +406,14 @@ extension AppModel {
                 showToast("内核启动超时，TUN 无法启用")
                 return
             }
-            await self.reconnect()
+        }
+
+        if !want {
+            if let helper = XPCManager.shared.helper() {
+                helper.cleanupAllExcludeRoutes { ok in
+                    self.logKernel("XPC Helper 清理静态路由: \(ok ? "成功" : "失败")")
+                }
+            }
         }
 
         var tunOverrideMap: [String: Any] = [
@@ -493,6 +500,17 @@ extension AppModel {
             if want && !tunOn {
                 showToast("TUN 开启失败：可能无管理员权限或路由被其他 VPN 占用冲突")
             } else {
+                if want {
+                    let excludeRoutes = await NetScanner.sdwanExcludeRoutes()
+                    if !excludeRoutes.isEmpty {
+                        if let helper = XPCManager.shared.helper() {
+                            helper.setupExcludeRoutes(excludeRoutes) { ok in
+                                self.logKernel("XPC Helper 注入静态路由: \(ok ? "成功" : "失败")")
+                            }
+                        }
+                    }
+                }
+
                 // TUN disable cascades: Gateway mode requires TUN, so if we
                 // just turned TUN off, also tear down Gateway (sysctl + UI +
                 // restore the allow-lan/dns.listen overrides Gateway applied).
