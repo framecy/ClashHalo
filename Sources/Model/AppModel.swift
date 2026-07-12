@@ -99,6 +99,12 @@ import ServiceManagement
     @Published var systemProxyOn = false
     @Published var tunOn = false
     var staticRoutesInjected = false
+    /// In-flight guard so the B10 auto-teardown (config says TUN on but interface
+    /// gone) and the verifyTUNConfig 30 s probe don't both fire `applyTUNState`
+    /// concurrently with a user toggle / restart. Re-arming it to `false`
+    /// happens once that teardown lands and refreshConfigs reconciles `tunOn`.
+    /// Internal (not `private`) so the `AppModel+Config` extension can access it.
+    var tunAutoTeardownInFlight = false
     @Published var gatewayModeOn = false
     /// Snapshot of allow-lan / dns.listen before Gateway mode overrode them,
     /// used to restore config.yaml when Gateway is disabled.
@@ -748,7 +754,23 @@ import ServiceManagement
         guard tunOn && reachable && !sleeping else { return }
 
         // Check 1: Verify the TUN interface actually exists
-        if NetScanner.mihomoTunInterface() == nil {
+        if await NetScanner.mihomoTunInterface() == nil {
+            // Share the in-flight guard with refreshConfigs' B10 auto-teardown so
+            // the 3 s poll and this 30 s probe never both fire `applyTUNState`.
+            // Also hold `engine.isBusy` for the duration so a user toggle / restart
+            // landing mid-teardown is rejected (P2 root-cause: the detached
+            // teardown previously raced the user's applyTUNState). We bypass
+            // `withEngineBusy` here because it is fire-and-forget — the caller
+            // cannot await its body, so the in-flight guard would clear before
+            // the teardown actually finishes. Manual isBusy + defer guarantees
+            // the guard clears only after applyTUNState(false) truly completes.
+            guard !engine.isBusy, !tunAutoTeardownInFlight else { return }
+            tunAutoTeardownInFlight = true
+            engine.isBusy = true
+            defer {
+                engine.isBusy = false
+                tunAutoTeardownInFlight = false
+            }
             logKernel("检测到 TUN 接口丢失（可能与其他 utun 服务并存导致冲突），正在自动关闭...")
             showToast("TUN 接口异常，已自动关闭")
             await applyTUNState(false)
