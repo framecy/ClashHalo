@@ -632,6 +632,55 @@ import ServiceManagement
         let httpPort = dict[kCFNetworkProxiesHTTPPort as String] as? Int
 
         systemProxyOn = httpOn && httpHost == "127.0.0.1" && httpPort == proxyPort
+
+        // If our system proxy is active but the bypass domains are stale (missing
+        // LAN private ranges, e.g. upgraded from a build that only wrote
+        // localhost/127.0.0.1/*.local), silently re-apply the full bypass list so
+        // LAN hosts (NAS/routers at 10.x/192.168.x/172.16-31.x) stop being tunneled
+        // into mihomo (which returns 502). Idempotent — only acts when a gap is
+        // detected. This is how an app upgrade reaches "proxy already on" users
+        // without asking them to toggle the switch off and on.
+        if systemProxyOn {
+            reconcileProxyBypassIfNeeded()
+        }
+    }
+
+    /// Re-apply the full bypass-domain list if the current one is missing any
+    /// essential local range. Reads via `networksetup -getproxybypassdomains` and
+    /// rewrites through the helper / fallback path so the list stays in sync with
+    /// ProxyManager / setSystemProxyFallback. Cheap and idempotent.
+    private func reconcileProxyBypassIfNeeded() {
+        // Quick structural probe via the system configuration dictionary — the
+        // HTTP proxy bypass list is exposed as kCFNetworkProxiesHTTPProxy's
+        // sibling entries under common keys, but the authoritative host list is
+        // only available through networksetup, so read it there.
+        struct BypassProbe {
+            static let required = ["10.*", "192.168.*", "172.16.*", "169.254.*"]
+            static func current() -> [String] {
+                let p = Process()
+                p.executableURL = URL(fileURLWithPath: "/usr/sbin/networksetup")
+                p.arguments = ["-getproxybypassdomains", "Wi-Fi"]
+                let pipe = Pipe(); p.standardOutput = pipe; p.standardError = Pipe()
+                do {
+                    try p.run()
+                    let data = pipe.fileHandleForReading.readDataToEndOfFile()
+                    p.waitUntilExit()
+                    let out = String(data: data, encoding: .utf8) ?? ""
+                    return out.split(separator: "\n").map { String($0).trimmingCharacters(in: .whitespaces) }
+                } catch { return [] }
+            }
+        }
+        let current = Set(BypassProbe.current())
+        let missing = BypassProbe.required.contains { !current.contains($0) }
+        guard missing else { return }
+        logKernel("检测到系统代理 bypass 缺少局域网网段，正在自动补齐...")
+        Task {
+            // Re-run the full set system proxy flow with the current on-state so
+            // the new bypass list is written. We pass the live port so a custom
+            // mixed-port is honoured.
+            let ok = await engine.setSystemProxy(enabled: true, port: proxyPort)
+            if ok { logKernel("系统代理 bypass 已自动补齐局域网网段") }
+        }
     }
 
     /// Verify Gateway config integrity and restore if needed.
