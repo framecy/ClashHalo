@@ -664,9 +664,22 @@ import ServiceManagement
         }
     }
 
-    /// Verify TUN DNS redirection and re-apply if it was reset by the OS.
+    /// Verify TUN DNS redirection and interface existence, re-apply or disable if issues detected.
+    /// This catches two failure modes:
+    /// 1. DNS drift: system DNS was reset by macOS (e.g. network change)
+    /// 2. Interface loss: mihomo's utun disappeared while other utun interfaces remain
     private func verifyTUNConfig() async {
         guard tunOn && reachable && !sleeping else { return }
+
+        // Check 1: Verify the TUN interface actually exists
+        if NetScanner.mihomoTunInterface() == nil {
+            logKernel("检测到 TUN 接口丢失（可能与其他 utun 服务并存导致冲突），正在自动关闭...")
+            showToast("TUN 接口异常，已自动关闭")
+            await applyTUNState(false)
+            return
+        }
+
+        // Check 2: Verify DNS redirection is still active
         let gateway = tunnelDNSAddress()
         let current = await EngineControl.currentSystemDNS()
         if !current.contains(gateway) {
