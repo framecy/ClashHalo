@@ -1070,15 +1070,11 @@ import SwiftUI
     static func setSystemProxyFallback(enabled: Bool, port: Int) async -> Bool {
         let shell: String
         if enabled {
-            // Bypass domains include RFC1918 private ranges + link-local + CGNAT
-            // (Tailscale) so LAN/intranet/SD-WAN hosts never get tunneled. See
-            // ProxyManager.setSystemProxy for the rationale — this fallback must
-            // stay in sync with the XPC path.
-            let bypass = (
-                ["localhost", "127.0.0.1", "*.local", "10.*", "192.168.*", "169.254.*"]
-                + (16...31).map { "172.\($0).*" }
-                + (64...127).map { "100.\($0).*" }
-            ).joined(separator: " ")
+            // Bypass domains: the single-source `kProxyBypassDomains` (RFC1918 +
+            // link-local + CGNAT) so this fallback stays in lockstep with the XPC
+            // path and the GUI reconcile — no duplicated list to drift. See
+            // ProxyManager.setSystemProxy for the rationale.
+            let bypass = kProxyBypassDomains.joined(separator: " ")
             shell = """
             networksetup -listallnetworkservices | tail -n +2 | while read -r svc; do
                 [[ "$svc" == \\** ]] && continue

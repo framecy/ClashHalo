@@ -2,6 +2,18 @@
 
 本项目所有重要变更记录于此。格式参考 [Keep a Changelog](https://keepachangelog.com/),版本遵循语义化版本。
 
+## [1.0.7] - 2026-07-13
+
+### Fixed
+- **修复僵尸 utun 被误判为活跃 TUN 导致整机 DNS 瘫痪的严重问题**：当 mihomo 因崩溃或被重建到新 utun 而退出原接口，但旧 utun 的 `198.18.x.x` fake-ip 地址仍残留时，原 `mihomoTunInterface()` 仅凭地址前缀识别、用 `first(where:)` 可能选中已失效的僵尸接口，判定 TUN 仍活跃 → 不触发自动关闭 → 系统 DNS 持续钉死在无 mihomo 应答的 `198.18.0.1`，整机 DNS 瘫痪，且 30 秒健康检查的 DNS 漂移探针也被钉死网关欺骗、补救路径全失效。
+- **根因**：`getifaddrs` 只能看到接口名+地址+flags，无法获知 utun 由哪个进程持有；僵尸 utun 与新生成的活 utun 在接口枚举中并存，首匹配即返回的选取策略可能挑中僵尸。
+- **修复方案**：
+  - **路由表所有权仲裁**：`mihomoTunInterface()` 改为 async，当存在多个 `proxyTun` 候选时，用既有 `allRoutes()` 扫描路由表，挑选首个被路由表引用的候选——活 mihomo TUN（auto-route）必有 default / fake-ip 段 / 拆分宽路由指向其 utun，而僵尸 utun 通常只剩自连地址、无路由引用。识别为僵尸后落到既有「接口丢失」自愈路径，自动关闭 TUN 并恢复系统 DNS。
+  - **保守设计防误关**：仅单个候选时直接信任（不查路由表、不每 3 秒 fork netstat 常态开销，且避免 API 抖动误关健康 TUN）；多候选但路由表无法判定时回退首个候选（宁可漏判一次，下次轮询再仲裁，不误关正在工作的 TUN）。
+- **修复 TUN 自动关闭与用户操作并发抢写配置的竞态**：`refreshConfigs`（3 秒轮询）与 `verifyTUNConfig`（30 秒）两条自动关闭路径原先以 `tunAutoTeardownInFlight` 互斥彼此，但其 `detached Task` 跑的 `applyTUNState(false)` 不持有 `engine.isBusy`，导致自动关闭进行中用户开启 TUN 可被 `withEngineBusy` 放行，两条 `applyTUNState`（一关一开）并发抢写 `patchConfig` 与 `interface-name`，终态取决于竞态。
+- **修复方案**：两条自动 teardown 路径手工持有 `engine.isBusy=true` 并以 `defer` 单点复位 `isBusy` 与 `tunAutoTeardownInFlight`，使自动关闭期间用户 `toggleTUN` 等入口被 `guard !engine.isBusy` 挡下并提示「内核操作进行中」。绕过 `withEngineBusy`（其 fire-and-forget 语义会使守卫在关闭完成前过早复位）。同时修复 `verifyTUNConfig` 中守卫裸写复位可能因 `applyTUNState` 提前返回而永久卡死的既有隐患。
+- **bypass 列表彻底单一来源**：删除 `NetScanner.proxyBypassDomains`（GUI 侧的冗余副本，零引用），系统代理 bypass domains 统一由 `kProxyBypassDomains`（`Sources/XPC/HelperProtocol.swift`）单一常量提供，XPC Helper / 本地回退 / GUI 自愈 / SD-WAN 视图全部引用同一来源，从源头消除两份相同数组漂移的可能。
+
 ## [1.0.6] - 2026-07-12
 
 ### Fixed
