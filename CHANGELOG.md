@@ -2,6 +2,17 @@
 
 本项目所有重要变更记录于此。格式参考 [Keep a Changelog](https://keepachangelog.com/),版本遵循语义化版本。
 
+## [1.0.4] - 2026-07-12
+
+### Fixed
+- **系统代理局域网访问修复**：修复开启系统代理模式后无法访问局域网中其他 IP（如 NAS、路由器、打印机等 `192.168.x.x` / `10.x.x.x` / `172.16-31.x.x` 设备）的问题。根因是系统代理的 `proxy bypass domains` 仅包含 `localhost`、`127.0.0.1`、`*.local`，缺少 RFC1918 私有网段，导致局域网流量被错误转发到 mihomo 代理端口，而代理无法路由到这些内网地址。
+- **跨路径 bypass 一致性**：统一了 XPC 主路径 `ProxyManager.setSystemProxy` 与本地 shell 回退路径 `setSystemProxyFallback` 的 bypass domains 列表，避免 Helper 不可用时 fallback 行为不一致。补充的绕过网段包括：
+  - `10.*` / `192.168.*`（RFC1918 A/C 类私有网）
+  - `172.16.* ~ 172.31.*`（RFC1918 B 类全部 16 个子网）
+  - `169.254.*`（link-local 链路本地）
+  - `100.64.* ~ 100.127.*`（CGNAT / Tailscale 100.64.0.0/10 全部 64 个子网）
+- macOS 的 proxy bypass 匹配采用 shell 通配符，故每段私有 IP 前缀以 `.*` 兜底，实测所有局域网主机可正确绕过代理走直连，公网流量仍走代理。
+
 ## [1.0.3] - 2026-07-12
 
 ### Fixed
