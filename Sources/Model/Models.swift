@@ -388,6 +388,13 @@ enum NetScanner {
         return Array(routes.keys).sorted()
     }
 
+    /// Check if mihomo's TUN interface actually exists by scanning for a utun with fake-ip range.
+    /// Returns the interface name (e.g. "utun5") if found, nil otherwise.
+    static func mihomoTunInterface() -> String? {
+        let ifaces = interfaces()
+        return ifaces.first(where: { $0.kind == .proxyTun })?.id
+    }
+
     /// Collect all routes that should bypass TUN and their corresponding utun interface.
     /// This includes:
     /// - The host IP (/32) of the interfaces
