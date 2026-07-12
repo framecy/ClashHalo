@@ -200,6 +200,24 @@ struct RouteConflict {
 enum NetScanner {
     // MARK: - Interface enumeration
 
+    /// System-proxy bypass domains: localhost + loopback + mDNS + RFC1918
+    /// private ranges + link-local + CGNAT, so LAN/intranet hosts and SD-WAN
+    /// peers are never tunneled through the proxy (which would fail or be
+    /// rejected by the kernel, surfacing as HTTP 502 to LAN devices such as
+    /// NAS at 10.1.1.1). macOS bypass matching uses shell-style wildcards per
+    /// host/IP, so we cover each private octet-prefix with an explicit entry.
+    ///
+    /// Single source of truth for the bypass list — referenced by the XPC
+    /// Helper (`ProxyManager`), the local fallback path, and the GUI-side
+    /// self-healing reconcile, so all three paths can never drift. When adding
+    /// a range here, the CGNAT block (100.64.0.0/10) spans 64 octets (64..127).
+    static let proxyBypassDomains: [String] = {
+        var list = ["localhost", "127.0.0.1", "*.local", "10.*", "192.168.*", "169.254.*"]
+        list += (16...31).map { "172.\($0).*" }
+        list += (64...127).map { "100.\($0).*" }
+        return list
+    }()
+
     /// Enumerate IPv4 interfaces via getifaddrs (no shell, no privileges).
     static func interfaces() -> [NetIface] {
         var head: UnsafeMutablePointer<ifaddrs>?

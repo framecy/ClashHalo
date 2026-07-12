@@ -646,14 +646,13 @@ import ServiceManagement
     }
 
     /// Re-apply the full bypass-domain list if the current one is missing any
-    /// essential local range. Reads via `networksetup -getproxybypassdomains` and
-    /// rewrites through the helper / fallback path so the list stays in sync with
-    /// ProxyManager / setSystemProxyFallback. Cheap and idempotent.
+    /// essential local range. Writes directly via `networksetup` on the GUI side
+    /// (the user can change their own network services without root) — does NOT
+    /// route through the XPC Helper, so a stale installed Helper carrying the old
+    /// 3-entry list cannot clobber a correct one back to stale. Idempotent.
     private func reconcileProxyBypassIfNeeded() {
-        // Quick structural probe via the system configuration dictionary — the
-        // HTTP proxy bypass list is exposed as kCFNetworkProxiesHTTPProxy's
-        // sibling entries under common keys, but the authoritative host list is
-        // only available through networksetup, so read it there.
+        // Probe via networksetup since the authoritative host list is not in the
+        // SCDynamicStore proxy dictionary.
         struct BypassProbe {
             static let required = ["10.*", "192.168.*", "172.16.*", "169.254.*"]
             static func current() -> [String] {
@@ -673,13 +672,41 @@ import ServiceManagement
         let current = Set(BypassProbe.current())
         let missing = BypassProbe.required.contains { !current.contains($0) }
         guard missing else { return }
-        logKernel("检测到系统代理 bypass 缺少局域网网段，正在自动补齐...")
-        Task {
-            // Re-run the full set system proxy flow with the current on-state so
-            // the new bypass list is written. We pass the live port so a custom
-            // mixed-port is honoured.
-            let ok = await engine.setSystemProxy(enabled: true, port: proxyPort)
-            if ok { logKernel("系统代理 bypass 已自动补齐局域网网段") }
+        logKernel("检测到系统代理 bypass 缺少局域网网段，正在本地直接补齐（不经过 Helper）...")
+        Task.detached(priority: .utility) {
+            // Write directly via `networksetup` on the GUI side (the user can
+            // change their own network services without root), NOT through the
+            // XPC Helper. An out-of-date installed Helper still carries the old
+            // bypass list and would silently overwrite a correct one back to the
+            // stale 3-entry list — perpetuating the 502 instead of fixing it.
+            let list = Process()
+            list.executableURL = URL(fileURLWithPath: "/usr/sbin/networksetup")
+            list.arguments = ["-listallnetworkservices"]
+            let listPipe = Pipe(); list.standardOutput = listPipe; list.standardError = Pipe()
+            do {
+                try list.run()
+                let data = listPipe.fileHandleForReading.readDataToEndOfFile()
+                list.waitUntilExit()
+                let out = String(data: data, encoding: .utf8) ?? ""
+                // dropFirst() skips the "An asterisk (*) ..." header line
+                let services = out.split(separator: "\n").dropFirst().compactMap { line -> String? in
+                    let s = String(line).trimmingCharacters(in: .whitespaces)
+                    return (s.isEmpty || s.hasPrefix("*")) ? nil : s
+                }
+                let bypass = kProxyBypassDomains
+                for svc in services {
+                    let p = Process()
+                    p.executableURL = URL(fileURLWithPath: "/usr/sbin/networksetup")
+                    p.arguments = ["-setproxybypassdomains", svc] + bypass
+                    p.standardOutput = Pipe(); p.standardError = Pipe()
+                    try? p.run(); p.waitUntilExit()
+                }
+                await MainActor.run {
+                    self.logKernel("系统代理 bypass 已本地补齐局域网网段（共 \(services.count) 个网络服务）")
+                }
+            } catch {
+                await MainActor.run { self.logKernel("bypass 补齐失败：\(error.localizedDescription)") }
+            }
         }
     }
 
