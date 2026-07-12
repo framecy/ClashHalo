@@ -2,6 +2,13 @@
 
 本项目所有重要变更记录于此。格式参考 [Keep a Changelog](https://keepachangelog.com/),版本遵循语义化版本。
 
+## [1.0.3] - 2026-07-12
+
+### Fixed
+- **TUN 模式接口丢失自动恢复**：修复应用长时间运行后，当系统中并存多个 `utun` 虚拟接口（如 Tailscale、ZeroTier、系统 VPN 等）时，mihomo 自身 TUN 接口可能因异常退出而消失，但原有逻辑仅凭配置标志判定 TUN 状态，导致应用误判 TUN 仍处于开启、持续将系统 DNS 重定向到已不存在的接口，造成全局流量黑洞的严重问题。
+- **接口存在性三重校验**：新增 `NetScanner.mihomoTunInterface()` 方法，通过 198.18.x.x fake-ip 地址段精确识别 mihomo 实际创建的 TUN 接口（与其他 utun 服务区分），在 `refreshConfigs` 中改为「配置开启 + root 运行 + 接口实际存在」三重校验，只有三者同时满足才判定 TUN 活跃。
+- **健康检查接口巡检**：增强每 30 秒一次的 `verifyTUNConfig` 健康检查，新增 TUN 接口存在性巡检（原有仅检查 DNS 漂移）。一旦检测到接口丢失，自动关闭 TUN 模式并恢复系统 DNS，避免网络中断，并在日志与 Toast 中提示用户。
+
 ## [1.0.2] - 2026-07-10
 
 ### Fixed
