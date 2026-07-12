@@ -2,6 +2,13 @@
 
 本项目所有重要变更记录于此。格式参考 [Keep a Changelog](https://keepachangelog.com/),版本遵循语义化版本。
 
+## [1.0.5] - 2026-07-12
+
+### Fixed
+- **升级后自动补齐系统代理 bypass**：修复从旧版本升级后，已处于开启状态的系统代理 bypass 仍是旧列表（`localhost/127.0.0.1/*.local`，缺少局域网网段），导致局域网 IP 仍被转发到 mihomo 返回 502、无法访问 NAS/路由器等设备的问题。
+- **根因**：1.0.4 的 bypass 补齐点位于 `setSystemProxy` 函数内部，仅在该函数被调用时写入。升级后系统代理开关状态未变，不会重发 `setSystemProxy`，老用户无法享受修复。
+- **修复方案**：在 `syncSystemProxyState` 判定系统代理为我们所设（`127.0.0.1:port`）后，调用 `reconcileProxyBypassIfNeeded()`——读取当前 bypass，若缺少 `10.*`/`192.168.*`/`172.16.*`/`169.254.*` 关键网段，自动重跑一次 `setSystemProxy` 把完整 bypass 写回。幂等，仅在确实缺失时动作，已正确的用户零开销。让升级修复自动惠及"代理已开着"的老用户，无需手动重开关。
+
 ## [1.0.4] - 2026-07-12
 
 ### Fixed
