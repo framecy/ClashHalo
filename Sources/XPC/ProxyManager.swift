@@ -14,10 +14,44 @@ public class ProxyManager {
         for svc in services {
             let ok: Bool
             if enabled {
+                // Proxy bypass domains: localhost + loopback + mDNS + RFC1918
+                // private ranges + link-local + CGNAT, so LAN/intranet hosts and
+                // SD-WAN peers are never tunneled through the proxy (which would
+                // fail or be rejected by the kernel). macOS bypass matching uses
+                // shell-style wildcards per host/IP, so we cover each private
+                // octet-prefix with an explicit wildcard entry.
+                let bypass = [
+                    "localhost",
+                    "127.0.0.1",
+                    "*.local",
+                    "10.*",
+                    "192.168.*",
+                    "172.16.*", "172.17.*", "172.18.*", "172.19.*",
+                    "172.20.*", "172.21.*", "172.22.*", "172.23.*",
+                    "172.24.*", "172.25.*", "172.26.*", "172.27.*",
+                    "172.28.*", "172.29.*", "172.30.*", "172.31.*",
+                    "169.254.*",
+                    "100.64.*", "100.65.*", "100.66.*", "100.67.*",
+                    "100.68.*", "100.69.*", "100.70.*", "100.71.*",
+                    "100.72.*", "100.73.*", "100.74.*", "100.75.*",
+                    "100.76.*", "100.77.*", "100.78.*", "100.79.*",
+                    "100.80.*", "100.81.*", "100.82.*", "100.83.*",
+                    "100.84.*", "100.85.*", "100.86.*", "100.87.*",
+                    "100.88.*", "100.89.*", "100.90.*", "100.91.*",
+                    "100.92.*", "100.93.*", "100.94.*", "100.95.*",
+                    "100.96.*", "100.97.*", "100.98.*", "100.99.*",
+                    "100.100.*", "100.101.*", "100.102.*", "100.103.*",
+                    "100.104.*", "100.105.*", "100.106.*", "100.107.*",
+                    "100.108.*", "100.109.*", "100.110.*", "100.111.*",
+                    "100.112.*", "100.113.*", "100.114.*", "100.115.*",
+                    "100.116.*", "100.117.*", "100.118.*", "100.119.*",
+                    "100.120.*", "100.121.*", "100.122.*", "100.123.*",
+                    "100.124.*", "100.125.*", "100.126.*", "100.127.*"
+                ]
                 ok = run(["-setwebproxy", svc, "127.0.0.1", "\(port)"])
                     && run(["-setsecurewebproxy", svc, "127.0.0.1", "\(port)"])
                     && run(["-setsocksfirewallproxy", svc, "127.0.0.1", "\(port)"])
-                    && run(["-setproxybypassdomains", svc, "localhost", "127.0.0.1", "*.local"])
+                    && run(["-setproxybypassdomains", svc] + bypass)
             } else {
                 ok = run(["-setwebproxystate", svc, "off"])
                     && run(["-setsecurewebproxystate", svc, "off"])
