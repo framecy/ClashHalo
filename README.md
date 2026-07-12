@@ -1,8 +1,13 @@
 # ClashHalo
 
-> macOS 14+ 原生 SwiftUI 代理客户端，直接编排官方 `mihomo` (Clash.Meta) 内核。当前版本 **v1.0.2**。
+> macOS 14+ 原生 SwiftUI 代理客户端，直接编排官方 `mihomo` (Clash.Meta) 内核。当前版本 **v1.0.3**。
 
 ClashHalo 采用纯 Swift 的原生编排器架构：应用层负责界面与状态管理，独立签名的 Helper 处理特权操作，内核层直接驱动 `mihomo`。目标很明确，少一层中间件，少一层不稳定性。
+
+## 新特性 (v1.0.3)
+
+- **TUN 接口丢失自动恢复**：当系统并存多个 `utun` 虚拟接口（Tailscale、ZeroTier、系统 VPN 等）时，通过 198.18.x.x fake-ip 地址段精确识别 mihomo 自身 TUN 接口，一旦检测到接口异常消失，自动关闭 TUN 并恢复系统 DNS，杜绝长时间运行后的全局流量黑洞。
+- **TUN 状态三重校验**：TUN 活跃判定从「配置 + root」升级为「配置 + root + 接口实际存在」三重校验，并增加每 30 秒接口存在性健康巡检。
 
 ## 新特性 (v1.0.2)
 
