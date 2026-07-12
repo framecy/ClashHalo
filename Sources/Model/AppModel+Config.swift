@@ -170,13 +170,29 @@ extension AppModel {
         // a utun with the fake-ip range (198.18.x.x) is present before reporting TUN as active.
         if let tun = c["tun"] as? [String: Any] {
             let configEnabled = (tun["enable"] as? Bool) == true
-            let hasInterface = NetScanner.mihomoTunInterface() != nil
+            let hasInterface = await NetScanner.mihomoTunInterface() != nil
             let shouldBeOn = configEnabled && engine.runningAsRoot && hasInterface
 
-            // If config says TUN is on but interface is missing, log and auto-disable
-            if configEnabled && engine.runningAsRoot && !hasInterface && tunOn {
+            // If config says TUN is on but interface is missing, log and auto-disable.
+            // Guarded so it doesn't fire concurrently with a user toggle / restart
+            // (engine.isBusy) or duplicate the 30 s verifyTUNConfig probe
+            // (tunAutoTeardownInFlight) — both paths target the same teardown.
+            // We also hold `engine.isBusy` for the duration (P2 root-cause: the
+            // detached teardown previously raced the user's `applyTUNState`). We
+            // bypass `withEngineBusy` because it is fire-and-forget — the caller
+            // cannot await its body, so the in-flight guard would clear before
+            // the teardown finishes. Manual isBusy + defer guarantees the guard
+            // clears only after `applyTUNState(false)` truly completes.
+            if configEnabled && engine.runningAsRoot && !hasInterface && tunOn,
+               !engine.isBusy, !tunAutoTeardownInFlight {
+                tunAutoTeardownInFlight = true
+                engine.isBusy = true
                 logKernel("检测到 TUN 接口丢失（可能与其他 utun 服务冲突），正在自动关闭...")
                 Task {
+                    defer {
+                        self.engine.isBusy = false
+                        self.tunAutoTeardownInFlight = false
+                    }
                     await self.applyTUNState(false)
                 }
             }

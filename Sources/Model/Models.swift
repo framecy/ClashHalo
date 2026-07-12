@@ -200,23 +200,12 @@ struct RouteConflict {
 enum NetScanner {
     // MARK: - Interface enumeration
 
-    /// System-proxy bypass domains: localhost + loopback + mDNS + RFC1918
-    /// private ranges + link-local + CGNAT, so LAN/intranet hosts and SD-WAN
-    /// peers are never tunneled through the proxy (which would fail or be
-    /// rejected by the kernel, surfacing as HTTP 502 to LAN devices such as
-    /// NAS at 10.1.1.1). macOS bypass matching uses shell-style wildcards per
-    /// host/IP, so we cover each private octet-prefix with an explicit entry.
-    ///
-    /// Single source of truth for the bypass list — referenced by the XPC
-    /// Helper (`ProxyManager`), the local fallback path, and the GUI-side
-    /// self-healing reconcile, so all three paths can never drift. When adding
-    /// a range here, the CGNAT block (100.64.0.0/10) spans 64 octets (64..127).
-    static let proxyBypassDomains: [String] = {
-        var list = ["localhost", "127.0.0.1", "*.local", "10.*", "192.168.*", "169.254.*"]
-        list += (16...31).map { "172.\($0).*" }
-        list += (64...127).map { "100.\($0).*" }
-        return list
-    }()
+    // System-proxy bypass domains live in `Sources/XPC/HelperProtocol.swift` as
+    // `kProxyBypassDomains` (single source of truth shared by the XPC Helper,
+    // the local fallback, and the GUI-side reconcile). This enum previously
+    // held a duplicate copy that could drift; it was unreferenced and has been
+    // removed. Reference `kProxyBypassDomains` directly — it is visible here
+    // without import (same app-target compilation module).
 
     /// Enumerate IPv4 interfaces via getifaddrs (no shell, no privileges).
     static func interfaces() -> [NetIface] {
@@ -406,11 +395,36 @@ enum NetScanner {
         return Array(routes.keys).sorted()
     }
 
-    /// Check if mihomo's TUN interface actually exists by scanning for a utun with fake-ip range.
-    /// Returns the interface name (e.g. "utun5") if found, nil otherwise.
-    static func mihomoTunInterface() -> String? {
+    /// Check if mihomo's TUN interface actually exists by scanning for a utun
+    /// with the fake-ip range (198.18.x.x / 198.19.x.x per `classify`).
+    ///
+    /// Beyond a bare 198.18 match, this arbitrates among *multiple* proxyTun
+    /// candidates by consulting the route table. A live mihomo TUN (auto-route)
+    /// always has route entries pointing at its utun (default / fake-ip range /
+    /// split 0.0.0.0/1 + 128.0.0.0/1). A zombie utun — left behind after mihomo
+    /// crashed or rebuilt onto a new utun, but whose 198.18 address lingers —
+    /// has no routes. Returning the zombie would make callers believe TUN is
+    /// healthy, pinning system DNS at 198.18.0.1 on a dead interface → total
+    /// DNS blackout. So with multiple candidates we pick the one the route table
+    /// actually references.
+    ///
+    /// Conservative by design: with a single candidate we trust it as-is
+    /// (no route scan → no netstat fork on the common 3 s poll, and never risk
+    /// tearing down a healthy TUN on an API hiccup). With multiple candidates
+    /// but no route evidence either way (e.g. netstat failed), we fall back to
+    /// the first candidate rather than return nil — prefer a missed teardown
+    /// this tick to wrongly declaring the interface gone.
+    static func mihomoTunInterface() async -> String? {
         let ifaces = interfaces()
-        return ifaces.first(where: { $0.kind == .proxyTun })?.id
+        let candidates = ifaces.filter { $0.kind == .proxyTun }
+        if candidates.isEmpty { return nil }
+        if candidates.count == 1 { return candidates.first!.id }
+        let routes = await allRoutes()
+        let routed = Set(routes.map { $0.iface })
+        if let live = candidates.first(where: { routed.contains($0.id) }) {
+            return live.id
+        }
+        return candidates.first?.id
     }
 
     /// Collect all routes that should bypass TUN and their corresponding utun interface.
