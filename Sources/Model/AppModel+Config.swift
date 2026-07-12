@@ -164,8 +164,23 @@ extension AppModel {
         // B9: a user-mode kernel cannot create the utun device (operation not
         // permitted), so even if the config declares tun.enable=true it is not
         // actually active. Reflect the real state instead of the declared one.
+        // B10: Also verify the mihomo TUN interface actually exists. When other
+        // utun interfaces (Tailscale, VPN, etc.) coexist, the kernel may crash or
+        // lose its TUN while those survive, leaving stale config state. Check that
+        // a utun with the fake-ip range (198.18.x.x) is present before reporting TUN as active.
         if let tun = c["tun"] as? [String: Any] {
-            tunOn = (tun["enable"] as? Bool) == true && engine.runningAsRoot
+            let configEnabled = (tun["enable"] as? Bool) == true
+            let hasInterface = NetScanner.mihomoTunInterface() != nil
+            let shouldBeOn = configEnabled && engine.runningAsRoot && hasInterface
+
+            // If config says TUN is on but interface is missing, log and auto-disable
+            if configEnabled && engine.runningAsRoot && !hasInterface && tunOn {
+                logKernel("检测到 TUN 接口丢失（可能与其他 utun 服务冲突），正在自动关闭...")
+                Task {
+                    await self.applyTUNState(false)
+                }
+            }
+            tunOn = shouldBeOn
         }
         // Gateway state inference (cautious): if UI thinks Gateway is off but
         // config has the signature (allow-lan=true AND dns.listen=0.0.0.0:53),
