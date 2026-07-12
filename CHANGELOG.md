@@ -2,6 +2,16 @@
 
 本项目所有重要变更记录于此。格式参考 [Keep a Changelog](https://keepachangelog.com/),版本遵循语义化版本。
 
+## [1.0.6] - 2026-07-12
+
+### Fixed
+- **修复升级后系统代理被反复还原成旧 bypass 的严重回归**：v1.0.5 的「启动时自动补齐 bypass」逻辑通过 XPC 调用 Helper 重写 bypass，但若已安装的 Helper 仍是旧二进制（即便其报告的版本号与期望一致，二进制内容为旧版、仍写旧的 3 项 bypass），就会把刚补齐的正确 bypass 再覆盖回 `localhost/127.0.0.1/*.local`，使局域网设备持续返回 502。
+- **根因**：旧 Helper 二进制报告版本 `1.0.13` 与期望相同 → 版本比较"相等" → 不触发升级 → 旧二进制永不替换 → 修复点形同虚设。
+- **修复方案**：
+  - **bypass 列表单一真相**：新增共享常量 `kProxyBypassDomains`（HelperProtocol.swift，Helper 与主 app 均编译它），`ProxyManager`、`setSystemProxyFallback` 统一引用，杜绝三路径漂移。
+  - **bypass 自愈改走本地直接写**：`reconcileProxyBypassIfNeeded` 不再经 XPC/Helper，直接在 GUI 进程用 `networksetup -setproxybypassdomains` 对所有网络服务循环写入正确 bypass。用户对自己的网络服务有写权限，无需 root；也彻底避免被"假升级"的旧 Helper 把正确值覆盖回旧。
+  - **强制升级旧 Helper**：`kSharedHelperVersion` 1.0.13 → 1.0.14，触发已安装旧二进制被新版替换，纠正其 setSystemProxy 行为。
+
 ## [1.0.5] - 2026-07-12
 
 ### Fixed

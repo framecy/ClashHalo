@@ -1,8 +1,12 @@
 # ClashHalo
 
-> macOS 14+ 原生 SwiftUI 代理客户端，直接编排官方 `mihomo` (Clash.Meta) 内核。当前版本 **v1.0.5**。
+> macOS 14+ 原生 SwiftUI 代理客户端，直接编排官方 `mihomo` (Clash.Meta) 内核。当前版本 **v1.0.6**。
 
 ClashHalo 采用纯 Swift 的原生编排器架构：应用层负责界面与状态管理，独立签名的 Helper 处理特权操作，内核层直接驱动 `mihomo`。目标很明确，少一层中间件，少一层不稳定性。
+
+## 新特性 (v1.0.6)
+
+- **修复升级后系统代理失效回归**：解决 v1.0.5 在旧 Helper 未真正升级时反复把 bypass 还原成旧列表、导致局域网设备 502 的回归。bypass 列表抽为共享常量（`kProxyBypassDomains`）统一三路径；自愈逻辑改为本地直接写 `networksetup`，不再依赖可能过时的 Helper；并 bump Helper 版本号强制升级旧二进制。
 
 ## 新特性 (v1.0.5)
 
