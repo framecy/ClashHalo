@@ -2,6 +2,23 @@
 
 本项目所有重要变更记录于此。格式参考 [Keep a Changelog](https://keepachangelog.com/),版本遵循语义化版本。
 
+## [1.0.15] - 2026-07-14
+
+本次发布涵盖 v1.0.7 release 之后的全部修复：TUN 自愈链路加固、bypass 探测稳健化、并发守卫防泄漏。Helper 内核服务版本 `1.0.14 → 1.0.15`，触发已安装旧 Helper 强制升级。
+
+### Fixed
+- **BypassProbe 动态枚举网络服务、required 引用单一源、探测离主线程**：`reconcileProxyBypassIfNeeded` 三处加固——
+  1. 探测改用 `-listallnetworkservices` 枚举所有活跃服务逐个 `-getproxybypassdomains`，替换原硬编码 "Wi-Fi"，避免纯以太网/USB tether 主机上 `current==[]` → 持续误判 churn。
+  2. required 改为直接引用 `kProxyBypassDomains` 单一真源，覆盖完整 86 条（含 loopback/mDNS/172.16-31/CGNAT 100.64-127），消除与 Helper 列表漂移导致的 Tailscale 502。
+  3. 探测 fork networksetup 与 missing 判定整块搬入同一 `Task.detached`，离开 MainActor，消除每次重连主线程被同步子进程阻塞 ~30-100ms。
+- **handleNetworkChange 的 isBusy 裸写改 defer 复位，防 cancel 泄漏**：TUN 保活路径原先 `engine.isBusy = true; await ...; engine.isBusy = false` 裸写无 defer，若在 await 挂起点被 Task cancel 抛 CancellationError 则复位不执行 → `isBusy` 永久卡 true、所有后续 toggle 被永久 toast 拦截。改用 defer 单点复位，与同链 `verifyTUNConfig` / `refreshConfigs` B10 已采用的 defer 模式一致。
+- **mihomoTunInterface 单候选加保守路由校验自愈 zombie**：单 candidate utun 原先直接信任返回，mihomo 崩溃后其 198.18 地址残留于 `getifaddrs` 但路由已死会被误判存活 → 两条 auto-teardown 均不动 → 系统 DNS 钉死 198.18.0.1 但接口死 → 整机 DNS 黑屏无自愈。新增保守双判据：仅当候选 `isUp==false`（IFF_UP/IFF_RUNNING 已清）且 `route -n get 198.18.0.1` 解析的接口指向非该 utun 时才判为 zombie 返回 nil，复用既有 `applyTUNState(false)` 自愈通道。双判据规避刚 enable 路由注入 race 窗口，保住"宁可漏关一拍也不误关"的保守态。新增只读非 root helper `routeTargetInterface(ip:)`，纯 GUI 无需特权。
+- **zombie TUN 残留物理清理兜底**：上一条识别 zombie 后复用自愈通道已能逻辑关闭 TUN，但若 zombie utun 接口**物理残留**（198.18 地址在、socket 未回收），其 Supplemental DNS resolver 仍可能持续劫持 198.18.0.1，仅 networksetup 层 restoreDNS 解不彻底。补兜底链：
+  - `Models.swift` 新增 `hasDownedMihomoTun()` 同步探测（`proxyTun && !isUp`）作为物理清理门控，保持 198.18.x 共址段 VPN（Shadowrocket 等）UP 状态不被误清。
+  - auto-teardown 两路径（`verifyTUNConfig` + `refreshConfigs` B10）在 `applyTUNState(false)` 后，若 `hasDownedMihomoTun` 为真则经 XPC 下发 `ProxyManager.cleanupTUNResidual()`（`ifconfig down` + 删除 IP + `route flush`）物理中和残留接口。
+  - XPC schema：`@objc(HelperProtocol)` 新增 `cleanupTUNResidual`；`kSharedHelperVersion` 1.0.14→1.0.15 驱动旧 Helper 强制升级；`Helper-Info.plist` CFBundleVersion 同步 1.0.15；Helper main 加 `routesLock` 保护的转发；`XPCManager` 新增新鲜连接 `callCleanupTUNResidual` 包装（仿 `callSystemProxy`，超时 + 单次 resume 守卫）。
+  - 新旧 Helper 共存期：旧 Helper 无新方法，新鲜连接超时返回 nil，GUI 仅记失败日志、不误操作。
+
 ## [1.0.7] - 2026-07-13
 
 ### Fixed
