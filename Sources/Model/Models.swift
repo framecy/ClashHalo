@@ -418,13 +418,65 @@ enum NetScanner {
         let ifaces = interfaces()
         let candidates = ifaces.filter { $0.kind == .proxyTun }
         if candidates.isEmpty { return nil }
-        if candidates.count == 1 { return candidates.first!.id }
+        if candidates.count == 1 {
+            // Single candidate — historically trusted as-is to avoid a netstat
+            // fork on the common 3 s poll and to never wrongly tear down a healthy
+            // TUN on an API hiccup (see the doc comment above).
+            //
+            // BUT: a zombie utun whose 198.18 address lingers after mihomo died,
+            // with no other proxyTun candidate present, would be returned here
+            // and pin system DNS at 198.18.0.1 on a dead interface → total DNS
+            // blackout that no auto-teardown path would self-heal.
+            //
+            // Cheap conservative check before trusting it: `route -n get` the
+            // fake-ip gateway 198.18.0.1 — a live mihomo TUN (auto-route) always
+            // resolves it through its own utun. Require BOTH route divergence
+            // (route-get's interface != the candidate) AND the candidate's flags
+            // already down (IFF_UP/IFF_RUNNING cleared) before declaring it a
+            // zombie. The dual criteria sidesteps the TUN-just-enabled race
+            // window (route not yet injected but interface still up → still
+            // trusted) and keeps the worst-case behavior "miss a teardown this
+            // tick" rather than "wrongly tear down".
+            let only = candidates[0]
+            if !only.isUp,
+               case let resolved = await routeTargetInterface("198.18.0.1"),
+               resolved != only.id {
+                return nil
+            }
+            return only.id
+        }
         let routes = await allRoutes()
         let routed = Set(routes.map { $0.iface })
         if let live = candidates.first(where: { routed.contains($0.id) }) {
             return live.id
         }
         return candidates.first?.id
+    }
+
+    /// Resolve which interface the kernel routes `ip` through, via a read-only
+    /// non-privileged `route -n get <ip>`. Returns the BSD interface name from the
+    /// `interface:` line, or nil if route-get fails / the line is absent. Mirrors
+    /// the parsing in `EngineControl.defaultInterface()`, kept here in NetScanner so
+    /// the TUN-health probe stays self-contained.
+    private static func routeTargetInterface(_ ip: String) async -> String? {
+        await Task.detached(priority: .userInitiated) {
+            let p = Process()
+            p.executableURL = URL(fileURLWithPath: "/sbin/route")
+            p.arguments = ["-n", "get", ip]
+            let pipe = Pipe(); p.standardOutput = pipe; p.standardError = Pipe()
+            do { try p.run() } catch { return nil }
+            let data = pipe.fileHandleForReading.readDataToEndOfFile()
+            p.waitUntilExit()
+            guard let out = String(data: data, encoding: .utf8) else { return nil }
+            for line in out.split(separator: "\n") {
+                let t = line.trimmingCharacters(in: .whitespaces)
+                if t.hasPrefix("interface:") {
+                    let name = t.dropFirst("interface:".count).trimmingCharacters(in: .whitespaces)
+                    if !name.isEmpty { return name }
+                }
+            }
+            return nil
+        }.value
     }
 
     /// Collect all routes that should bypass TUN and their corresponding utun interface.
