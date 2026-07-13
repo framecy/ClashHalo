@@ -792,6 +792,17 @@ import ServiceManagement
             logKernel("检测到 TUN 接口丢失（可能与其他 utun 服务并存导致冲突），正在自动关闭...")
             showToast("TUN 接口异常，已自动关闭")
             await applyTUNState(false)
+            // Fallback (shared with refreshConfigs B10): physically neutralize a
+            // lingering downed mihomo utun via the privilege Helper so its DNS
+            // resolver can't keep pinning 198.18.0.1. Gated on hasDownedMihomoTun
+            // to spare co-resident VPNs sharing the 198.18.x range.
+            if NetScanner.hasDownedMihomoTun() {
+                logKernel("检测到僵尸 TUN 残留，请求特权服务物理清理...")
+                let ok = await XPCManager.shared.callCleanupTUNResidual()
+                if ok != true {
+                    logKernel("僵尸 TUN 物理清理: 特权服务未完成或不可达")
+                }
+            }
             return
         }
 

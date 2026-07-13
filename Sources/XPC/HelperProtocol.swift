@@ -4,7 +4,7 @@ import Foundation
 /// Shared by both the Helper binary (compiled via make.sh) and the main app
 /// (Xcode target) since both include this file — prevents the two-location
 /// version drift that caused infinite upgrade loops.
-public let kSharedHelperVersion = "1.0.14"
+public let kSharedHelperVersion = "1.0.15"
 
 /// System-proxy bypass domains — single source of truth shared by the Helper
 /// binary, the local shell fallback, and the GUI-side self-healing reconcile.
@@ -31,4 +31,8 @@ public protocol HelperProtocol {
     func setGatewayMode(enabled: Bool, withReply reply: @escaping (Bool) -> Void)
     func setupExcludeRoutes(_ routes: [String: String], withReply reply: @escaping (Bool) -> Void)
     func cleanupAllExcludeRoutes(withReply reply: @escaping (Bool) -> Void)
+    /// Physically neutralize lingering mihomo utun residue (down + delete IP +
+    /// route flush) after a TUN teardown the kernel did not reclaim. Brought
+    /// online as the privilege-side fallback for the GUI's zombie-utun probe.
+    func cleanupTUNResidual(withReply reply: @escaping (Bool) -> Void)
 }
