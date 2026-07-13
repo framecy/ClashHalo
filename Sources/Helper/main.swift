@@ -314,6 +314,19 @@ class Helper: NSObject, HelperProtocol {
         Self.routesLock.unlock()
         reply(true)
     }
+
+    func cleanupTUNResidual(withReply reply: @escaping (Bool) -> Void) {
+        log("cleanupTUNResidual called")
+        // Route-table mutations share the lock with setupExcludeRoutes /
+        // cleanupAllExcludeRoutes so we never delete routes while another call
+        // is injecting them. ifconfig down/IP-delete themselves are sequential
+        // underneath; the GUI gates this on hasDownedMihomoTun so it only runs
+        // when a mihomo utun residue actually exists.
+        Self.routesLock.lock()
+        let ok = ProxyManager.cleanupTUNResidual()
+        Self.routesLock.unlock()
+        reply(ok)
+    }
 }
 
 class HelperDelegate: NSObject, NSXPCListenerDelegate {

@@ -453,6 +453,21 @@ enum NetScanner {
         return candidates.first?.id
     }
 
+    /// True if a proxyTun utun bearing a mihomo 198.18/198.19 address still
+    /// exists in the interface table but is already DOWN (IFF_UP/IFF_RUNNING
+    /// cleared) — i.e. the zombie residue `mihomoTunInterface` would have
+    /// declared gone. Synchronous (no fork): relies only on `interfaces()`'s
+    /// getifaddrs flags. Used by the auto-teardown paths as the gate for the
+    /// XPC `cleanupTUNResidual` fallback — so the privilege-required physical
+    /// teardown (ifconfig down + delete IP + route flush) only fires when there
+    /// is an actual residual mihomo utun to neutralize, never when a healthy
+    /// TUN simply went away cleanly. This keeps the 198.18.x shared-address
+    /// space safe for co-resident VPN apps (Shadowrocket etc.) that keep their
+    /// own utun UP.
+    static func hasDownedMihomoTun() -> Bool {
+        interfaces().contains { $0.kind == .proxyTun && !$0.isUp }
+    }
+
     /// Resolve which interface the kernel routes `ip` through, via a read-only
     /// non-privileged `route -n get <ip>`. Returns the BSD interface name from the
     /// `interface:` line, or nil if route-get fails / the line is absent. Mirrors
