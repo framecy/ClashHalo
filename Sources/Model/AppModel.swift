@@ -589,9 +589,15 @@ import ServiceManagement
                         let currentIface = await EngineControl.defaultInterface()
                         if onlineChanged || (currentIface != nil && currentIface != lastInterface) {
                             if let iface = currentIface { lastInterface = iface }
+                            // Manual isBusy + defer (not `withEngineBusy`) because this runs
+                            // fire-and-forget inside a Task whose caller cannot await the body —
+                            // `withEngineBusy`'s guard would clear before applyTUNState(true)
+                            // truly completes, and a Task cancellation mid-await would otherwise
+                            // leak isBusy=true forever and block all later toggles (see the
+                            // analogous teardown pattern in verifyTUNConfig / refreshConfigs B10).
                             engine.isBusy = true
+                            defer { engine.isBusy = false }
                             await applyTUNState(true)
-                            engine.isBusy = false
                         }
                     }
 
