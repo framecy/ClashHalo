@@ -663,61 +663,73 @@ import ServiceManagement
     /// route through the XPC Helper, so a stale installed Helper carrying the old
     /// 3-entry list cannot clobber a correct one back to stale. Idempotent.
     private func reconcileProxyBypassIfNeeded() {
-        // Probe via networksetup since the authoritative host list is not in the
-        // SCDynamicStore proxy dictionary.
-        struct BypassProbe {
-            static let required = ["10.*", "192.168.*", "172.16.*", "169.254.*"]
-            static func current() -> [String] {
+        // Self-heal the system-proxy bypass list on every reconnect. Probe AND
+        // write both run off the MainActor inside one Task.detached — the probe
+        // forks `networksetup -getproxybypassdomains` per service, which would
+        // stall the main thread if done inline (each call ~30–100 ms). The
+        // authoritative required list is `kProxyBypassDomains` (single source of
+        // truth shared with the XPC Helper and the local fallback) so this
+        // reconcile and the Helper can never drift apart again.
+        Task.detached(priority: .utility) {
+            // Enumerate network services the same way the write side does
+            // (dropFirst skips the "An asterisk (*) ..." header, filter empty
+            // and disabled `*`-prefixed lines) — replaces the previous hardcoded
+            // `Wi-Fi` probe which mis-fired on Ethernet-only / tethered hosts.
+            func services() -> [String] {
+                let list = Process()
+                list.executableURL = URL(fileURLWithPath: "/usr/sbin/networksetup")
+                list.arguments = ["-listallnetworkservices"]
+                let listPipe = Pipe(); list.standardOutput = listPipe; list.standardError = Pipe()
+                guard (try? list.run()) != nil else { return [] }
+                let data = listPipe.fileHandleForReading.readDataToEndOfFile()
+                list.waitUntilExit()
+                let out = String(data: data, encoding: .utf8) ?? ""
+                return out.split(separator: "\n").dropFirst().compactMap { line -> String? in
+                    let s = String(line).trimmingCharacters(in: .whitespaces)
+                    return (s.isEmpty || s.hasPrefix("*")) ? nil : s
+                }
+            }
+            // Probe the current bypass of every active service. Reconcile fires
+            // (writes the authoritative list to ALL services) as soon as ANY one
+            // service is missing any required entry — the write side is already
+            // an all-services overwrite, so this only decides the gate.
+            func currentBypass(of svc: String) -> Set<String> {
                 let p = Process()
                 p.executableURL = URL(fileURLWithPath: "/usr/sbin/networksetup")
-                p.arguments = ["-getproxybypassdomains", "Wi-Fi"]
+                p.arguments = ["-getproxybypassdomains", svc]
                 let pipe = Pipe(); p.standardOutput = pipe; p.standardError = Pipe()
-                do {
-                    try p.run()
-                    let data = pipe.fileHandleForReading.readDataToEndOfFile()
-                    p.waitUntilExit()
-                    let out = String(data: data, encoding: .utf8) ?? ""
-                    return out.split(separator: "\n").map { String($0).trimmingCharacters(in: .whitespaces) }
-                } catch { return [] }
+                guard (try? p.run()) != nil else { return [] }
+                let data = pipe.fileHandleForReading.readDataToEndOfFile()
+                p.waitUntilExit()
+                let out = String(data: data, encoding: .utf8) ?? ""
+                return Set(out.split(separator: "\n").map { String($0).trimmingCharacters(in: .whitespaces) })
             }
-        }
-        let current = Set(BypassProbe.current())
-        let missing = BypassProbe.required.contains { !current.contains($0) }
-        guard missing else { return }
-        logKernel("检测到系统代理 bypass 缺少局域网网段，正在本地直接补齐（不经过 Helper）...")
-        Task.detached(priority: .utility) {
+            let svcs = services()
+            let required = kProxyBypassDomains
+            let missing = svcs.contains { svc in
+                let cur = currentBypass(of: svc)
+                return required.contains { !cur.contains($0) }
+            }
+            guard missing else { return }
+
+            await MainActor.run {
+                self.logKernel("检测到系统代理 bypass 缺少局域网网段，正在本地直接补齐（不经过 Helper）...")
+            }
             // Write directly via `networksetup` on the GUI side (the user can
             // change their own network services without root), NOT through the
             // XPC Helper. An out-of-date installed Helper still carries the old
             // bypass list and would silently overwrite a correct one back to the
             // stale 3-entry list — perpetuating the 502 instead of fixing it.
-            let list = Process()
-            list.executableURL = URL(fileURLWithPath: "/usr/sbin/networksetup")
-            list.arguments = ["-listallnetworkservices"]
-            let listPipe = Pipe(); list.standardOutput = listPipe; list.standardError = Pipe()
-            do {
-                try list.run()
-                let data = listPipe.fileHandleForReading.readDataToEndOfFile()
-                list.waitUntilExit()
-                let out = String(data: data, encoding: .utf8) ?? ""
-                // dropFirst() skips the "An asterisk (*) ..." header line
-                let services = out.split(separator: "\n").dropFirst().compactMap { line -> String? in
-                    let s = String(line).trimmingCharacters(in: .whitespaces)
-                    return (s.isEmpty || s.hasPrefix("*")) ? nil : s
-                }
-                let bypass = kProxyBypassDomains
-                for svc in services {
-                    let p = Process()
-                    p.executableURL = URL(fileURLWithPath: "/usr/sbin/networksetup")
-                    p.arguments = ["-setproxybypassdomains", svc] + bypass
-                    p.standardOutput = Pipe(); p.standardError = Pipe()
-                    try? p.run(); p.waitUntilExit()
-                }
-                await MainActor.run {
-                    self.logKernel("系统代理 bypass 已本地补齐局域网网段（共 \(services.count) 个网络服务）")
-                }
-            } catch {
-                await MainActor.run { self.logKernel("bypass 补齐失败：\(error.localizedDescription)") }
+            let bypass = kProxyBypassDomains
+            for svc in svcs {
+                let p = Process()
+                p.executableURL = URL(fileURLWithPath: "/usr/sbin/networksetup")
+                p.arguments = ["-setproxybypassdomains", svc] + bypass
+                p.standardOutput = Pipe(); p.standardError = Pipe()
+                try? p.run(); p.waitUntilExit()
+            }
+            await MainActor.run {
+                self.logKernel("系统代理 bypass 已本地补齐局域网网段（共 \(svcs.count) 个网络服务）")
             }
         }
     }
