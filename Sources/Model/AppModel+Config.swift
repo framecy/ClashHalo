@@ -194,6 +194,20 @@ extension AppModel {
                         self.tunAutoTeardownInFlight = false
                     }
                     await self.applyTUNState(false)
+                    // Fallback: if a mihomo utun residue (198.18 address, flags
+                    // down) still lingers after the logical teardown, ask the
+                    // privilege Helper to physically neutralize it (ifconfig
+                    // down + delete IP + route flush) so its Supplemental DNS
+                    // resolver cannot keep pinning 198.18.0.1. Only fires when a
+                    // downed proxyTun actually remains — never on a clean exit,
+                    // sparing co-resident VPNs sharing the 198.18.x range.
+                    if NetScanner.hasDownedMihomoTun() {
+                        self.logKernel("检测到僵尸 TUN 残留，请求特权服务物理清理...")
+                        let ok = await XPCManager.shared.callCleanupTUNResidual()
+                        if ok != true {
+                            self.logKernel("僵尸 TUN 物理清理: 特权服务未完成或不可达")
+                        }
+                    }
                 }
             }
             tunOn = shouldBeOn
