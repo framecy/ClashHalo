@@ -501,7 +501,7 @@ extension AppModel {
                 let existing = (configs["tun"] as? [String: Any])?["route-exclude-address"] as? [String] ?? []
                 let merged = Array(Set(existing + sdwanPrefixes)).sorted()
                 tunOverrideMap["route-exclude-address"] = merged
-                logKernel("TUN 路由排除：自动注入 SD-WAN 前缀 \(sdwanPrefixes.joined(separator: ", "))")
+                logKernel("TUN 路由排除：自动注入虚拟专网前缀 \(sdwanPrefixes.joined(separator: ", "))")
             }
         }
 

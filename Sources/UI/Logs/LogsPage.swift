@@ -15,37 +15,46 @@ struct LogsPage: View {
             q.isEmpty || $0.text.localizedCaseInsensitiveContains(q)
         }
         VStack(spacing: 0) {
-            HStack(spacing: DS.Spacing.xxl) {
+            HStack(alignment: .center, spacing: DS.Spacing.m) {
                 Picker("", selection: Binding(get: { VM.logLevel }, set: { VM.changeLogLevel($0) })) {
                     Text("DEBUG").tag("debug"); Text("INFO").tag("info")
                     Text("WARN").tag("warning"); Text("ERROR").tag("error")
-                }.pickerStyle(.segmented).frame(width: 240).labelsHidden()
-                    .offset(x: -4)
-                    .help("日志订阅级别（服务端过滤）。默认 WARN，避免每条连接刷屏。")
-                
-                HStack(spacing: DS.Spacing.s) {
-                    Image(systemName: "magnifyingglass").foregroundColor(.secondary)
-                    TextField("过滤日志内容…", text: $q).textFieldStyle(.plain).frame(maxWidth: 200)
                 }
-                
-                Spacer()
+                .pickerStyle(.segmented)
+                .labelsHidden()
+                .dsToolbarControl()
+                .frame(width: 240)
+                .help("日志订阅级别（服务端过滤）。默认 WARN，避免每条连接刷屏。")
 
-                HStack(spacing: 8) {
+                HStack(spacing: DS.Spacing.s) {
+                    Image(systemName: "magnifyingglass").foregroundColor(.secondary).font(.dsBody)
+                    TextField("过滤日志内容…", text: $q)
+                        .textFieldStyle(.plain)
+                        .font(.dsBody)
+                }
+                .dsSearchFieldChrome(maxWidth: 220)
+
+                Spacer(minLength: 0)
+
+                HStack(spacing: DS.Spacing.s) {
                     Button { paused.toggle(); if paused { frozen = VM.logs } } label: {
                         Label(paused ? "继续" : "暂停", systemImage: paused ? "play.fill" : "pause.fill")
-                    }.controlSize(.small)
+                    }
+                    .buttonStyle(.bordered)
+                    .dsToolbarControl()
                     Button { exportLogs(rows) } label: { Label("导出", systemImage: "square.and.arrow.up") }
-                        .controlSize(.small)
+                        .buttonStyle(.bordered)
+                        .dsToolbarControl()
                 }
-                .padding(.trailing, 8)
-                
-                HStack(spacing: 6) {
+
+                HStack(spacing: DS.Spacing.s - 2) {
                     Circle().fill(paused ? Color.secondary : DS.Palette.accent).frame(width: 6, height: 6)
                     Text("\(rows.count) 行").font(.dsMono).foregroundColor(.secondary)
                 }
             }
-            .padding(.horizontal, DS.Spacing.l).padding(.vertical, 10)
-            .background(Color(nsColor: .windowBackgroundColor).opacity(0.3))
+            .padding(.horizontal, DS.Layout.pageContentInset)
+            .padding(.vertical, DS.Spacing.m)
+            .background(DS.Palette.chromeBg)
             Divider()
             ScrollViewReader { sp in
                 ScrollView {
@@ -58,10 +67,10 @@ struct LogsPage: View {
                                 Text(l.text).font(.dsMono).textSelection(.enabled)
                                 Spacer(minLength: 0)
                             }
-                            .padding(.horizontal, 14).padding(.vertical, 1)
+                            .padding(.horizontal, DS.Spacing.m + 2).padding(.vertical, 1)
                             .id(l.id)
                         }
-                    }.padding(.vertical, 6)
+                    }.padding(.vertical, DS.Spacing.s - 2)
                 }
                 .onChange(of: VM.logs.count) {
                     // Newest-first: keep the latest line pinned to the top.
@@ -91,7 +100,7 @@ struct LogsPage: View {
         }
     }
     private func logColor(_ l: String) -> Color {
-        switch l { case "warning": return DS.Palette.warn; case "error": return DS.Palette.error; case "debug": return .secondary; default: return .blue }
+        switch l { case "warning": return DS.Palette.warn; case "error": return DS.Palette.error; case "debug": return .secondary; default: return DS.Palette.info }
     }
 }
 

@@ -47,7 +47,7 @@ struct NetworkPage: View {
                                 Text("作为网关中枢").font(.dsBody); Spacer()
                                 Toggle("", isOn: Binding(get: { M.gatewayModeOn }, set: { _ in M.toggleGatewayMode() }))
                                     .toggleStyle(.switch).labelsHidden()
-                            }.padding(.vertical, 5)
+                            }.padding(.vertical, DS.Spacing.s)
                         }
                         Text("开启后将自动配置 IP 转发并接管局域网内其他所有设备的流量（需配合 TUN）。其他设备需将网关和 DNS 指向本机的局域网 IP。")
                             .font(.dsBody).foregroundColor(.secondary).padding(.top, 6)
@@ -72,7 +72,7 @@ struct GatewayDevicesView: View {
                     .font(.dsBody)
                     .foregroundColor(.secondary)
                     .frame(maxWidth: .infinity, alignment: .center)
-                    .padding(.vertical, 10)
+                    .padding(.vertical, DS.Spacing.m)
             } else {
                 VStack(spacing: 8) {
                     let devices = Array(M.gatewayDevices.values).sorted(by: { $0.lastSeen > $1.lastSeen })
@@ -91,12 +91,12 @@ struct GatewayDeviceRow: View {
         HStack {
             VStack(alignment: .leading, spacing: 4) {
                 Text(dev.ip)
-                    .font(.system(size: 14, weight: .semibold, design: .monospaced))
+                    .font(.dsMonoBold)
                 HStack(spacing: 12) {
                     Label("\(dev.activeConnections) 连接", systemImage: "point.3.connected.trianglepath.dotted")
                     Label("\(dev.durationString)", systemImage: "clock")
                 }
-                .font(.system(size: 11))
+                .font(.dsCaption)
                 .foregroundColor(.secondary)
             }
             Spacer()
@@ -116,13 +116,13 @@ struct GatewayDeviceRow: View {
                     Text(fmtBytes(Double(dev.totalDownload)))
                         .frame(width: 72, alignment: .trailing)
                 }
-                .foregroundColor(.blue)
+                .foregroundColor(DS.Palette.info)
             }
-            .font(.system(size: 11, design: .monospaced))
+            .font(.dsCaption)
         }
         .padding(10)
         .background(Color.secondary.opacity(0.05))
-        .cornerRadius(6)
+        .clipShape(RoundedRectangle(cornerRadius: DS.Radius.chip, style: .continuous))
     }
 }
 
@@ -138,14 +138,14 @@ struct TunPage: View {
                             Text("启用 TUN").font(.dsBody); Spacer()
                             Toggle("", isOn: Binding(get: { M.tunOn }, set: { _ in M.toggleTUN() }))
                                 .toggleStyle(.switch).labelsHidden()
-                        }.padding(.vertical, 5)
+                        }.padding(.vertical, DS.Spacing.s)
                         NPicker("协议栈", "tun", "stack", [("gvisor","gVisor"),("system","System"),("mixed","Mixed")])
                         NToggle("自动路由", "tun", "auto-route")
                         NToggle("自动检测网卡", "tun", "auto-detect-interface")
                         NList("DNS 劫持", "tun", "dns-hijack", placeholder: "any:53")
                         NList("路由排除网段", "tun", "route-exclude-address", placeholder: "192.168.0.0/16")
                     }
-                    Text("用户态 UTUN (AF_SYSTEM)，不占 VPN 插槽。排除 SD-WAN 网段可避免抢占其路由。")
+                    Text("用户态 UTUN (AF_SYSTEM)，不占 VPN 插槽。在「网络拓扑」中排除虚拟网段，可避免抢占其路由。")
                         .font(.dsBody).foregroundColor(.secondary).padding(.top, 6)
                 }
                 }
@@ -201,11 +201,12 @@ struct NetworkHubPage: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            let info = tabInfo
-            PageHead(title: info.0, desc: info.1) {
-                if tab == "dns" {
-                    Button { M.flushDnsCache() } label: { Label("刷新缓存", systemImage: "arrow.clockwise") }.controlSize(.small)
-                    Button { M.clearAllCache() } label: { Label("清空", systemImage: "trash") }.controlSize(.small)
+            if tab == "dns" {
+                PageToolbar {
+                    Button { M.flushDnsCache() } label: { Label("刷新缓存", systemImage: "arrow.clockwise") }
+                        .buttonStyle(.bordered)
+                    Button { M.clearAllCache() } label: { Label("清空", systemImage: "trash") }
+                        .buttonStyle(.bordered)
                 }
             }
 
@@ -217,9 +218,10 @@ struct NetworkHubPage: View {
                 Spacer()
             }
             .padding(.horizontal, DS.Spacing.xxl)
+            .padding(.top, tab == "dns" ? 0 : DS.Spacing.m)
             .padding(.bottom, DS.Spacing.l)
 
-            Divider().opacity(0.4)
+            Divider().overlay(DS.Palette.separator)
             Group {
                 switch tab {
                 case "tun": TunPage()
@@ -232,32 +234,22 @@ struct NetworkHubPage: View {
         }
     }
 
-    private var tabInfo: (String, String) {
-        switch tab {
-        case "tun": return ("TUN 模式", "虚拟网卡驱动 · 协议栈选择 · 路由注入策略")
-        case "dns": return ("DNS 缓存", "内置 DNS 服务器 · Fake‑IP 映射与条目缓存分析")
-        case "sniffer": return ("流量嗅探", "协议解析 (TLS/HTTP/QUIC) · 真实域名还原")
-        case "kernel": return ("内核管理", "版本更新 · 核心状态 · 启动日志")
-        default: return ("网络入站", "端口监听 · 局域网共享 · 访问控制列表 (ACL)")
-        }
-    }
-
     private func tabButton(_ label: String, tag: String, icon: String, activeIcon: String) -> some View {
         let active = tab == tag
         return Button(action: { tab = tag }) {
             VStack(spacing: 6) {
                 Image(systemName: active ? activeIcon : icon)
-                    .font(.system(size: DS.Icon.md))
+                    .font(DS.Icon.font(DS.Icon.md))
                     .foregroundColor(active ? DS.Palette.accent : .secondary)
                 Text(label)
-                    .font(.system(size: 12, weight: active ? .semibold : .regular))
+                    .font(active ? .dsBodySemibold : .dsBody)
                     .foregroundColor(active ? .primary : .secondary)
             }
             .frame(width: 80)
-            .padding(.vertical, 8)
+            .padding(.vertical, DS.Spacing.s)
             .contentShape(Rectangle())
             .background(
-                RoundedRectangle(cornerRadius: DS.Radius.control)
+                RoundedRectangle(cornerRadius: DS.Radius.control, style: .continuous)
                     .fill(active ? DS.Palette.fill : Color.clear)
             )
         }
@@ -303,7 +295,7 @@ struct NumRow: View {
             }
             .frame(width: DS.Layout.fieldTrailing, alignment: .trailing)
         }
-        .padding(.vertical, 5)
+        .padding(.vertical, DS.Spacing.s)
         .onAppear { text = intStr(M.configs[key]) }
         .onChange(of: configValue) { _, _ in text = intStr(M.configs[key]); hasChanges = false }
     }
@@ -333,7 +325,7 @@ struct ToggleRow: View {
             .labelsHidden()
             .frame(width: DS.Layout.fieldTrailing, alignment: .trailing)
         }
-        .padding(.vertical, 5)
+        .padding(.vertical, DS.Spacing.s)
     }
 }
 
@@ -372,7 +364,7 @@ struct TextRow: View {
             }
             .frame(width: DS.Layout.fieldTrailing, alignment: .trailing)
         }
-        .padding(.vertical, 5)
+        .padding(.vertical, DS.Spacing.s)
         .onAppear { text = (M.configs[key] as? String) ?? "" }
         .onChange(of: M.configs[key] as? String) { _, _ in text = (M.configs[key] as? String) ?? ""; hasChanges = false }
     }
@@ -401,9 +393,10 @@ struct PickerRow: View {
                 ForEach(options, id: \.0) { Text($0.1).tag($0.0) }
             }
             .labelsHidden()
+            .dsMenuControl()
             .frame(width: DS.Layout.fieldTrailing, alignment: .trailing)
         }
-        .padding(.vertical, 5)
+        .padding(.vertical, DS.Spacing.s)
     }
 }
 
@@ -431,7 +424,7 @@ struct StringListRow: View {
                                 .buttonStyle(.borderless)
                         }
                         .padding(.horizontal, DS.Spacing.s).padding(.vertical, DS.Spacing.xs)
-                        .background(RoundedRectangle(cornerRadius: DS.Radius.control).fill(DS.Palette.hairline))
+                        .background(RoundedRectangle(cornerRadius: DS.Radius.control, style: .continuous).fill(DS.Palette.hairline))
                     }
                 }
             }
@@ -440,7 +433,7 @@ struct StringListRow: View {
                 TextField(placeholder, text: $draft)
                     .inputStyle()
                     .font(.dsMono)
-                    .overlay(RoundedRectangle(cornerRadius: DS.Radius.control).stroke(!draftValid ? DS.Palette.error.opacity(0.7) : Color.clear, lineWidth: 1))
+                    .overlay(RoundedRectangle(cornerRadius: DS.Radius.control, style: .continuous).stroke(!draftValid ? DS.Palette.error.opacity(0.7) : Color.clear, lineWidth: 1))
                 Button { if !draft.isEmpty && draftValid { items.append(draft); draft = ""; commit() } } label: { Image(systemName: "plus.circle.fill") }
                     .buttonStyle(.borderless).disabled(!draftValid || draft.isEmpty)
             }
@@ -482,14 +475,15 @@ struct GeoURLRow: View {
         HStack {
             Text(label).font(.dsBody).frame(width: 70, alignment: .leading)
             TextField("https://…", text: $text)
-                .textFieldStyle(.roundedBorder).font(.dsMono)
+                .inputStyle()
+                .font(.dsMono)
                 .onSubmit {
                     let geo = (M.configs["geox-url"] as? [String: Any] ?? [:])
                         .merging([sub: text]) { _, new in new }
                     Task { await M.patchPersistent(["geox-url": geo]) }
                 }
         }
-        .padding(.vertical, 5)
+        .padding(.vertical, DS.Spacing.s)
         .onAppear {
             let geo = M.configs["geox-url"] as? [String: Any] ?? [:]
             text = (geo[sub] as? String) ?? defaultURL
@@ -530,7 +524,7 @@ struct NToggle: View {
             .toggleStyle(.switch)
             .labelsHidden()
             .frame(width: DS.Layout.fieldTrailing, alignment: .trailing)
-        }.padding(.vertical, 5)
+        }.padding(.vertical, DS.Spacing.s)
     }
 }
 
@@ -559,8 +553,9 @@ struct NPicker: View {
                 }
             )) { ForEach(options, id: \.0) { Text($0.1).tag($0.0) } }
             .labelsHidden()
+            .dsMenuControl()
             .frame(width: DS.Layout.fieldTrailing, alignment: .trailing)
-        }.padding(.vertical, 5)
+        }.padding(.vertical, DS.Spacing.s)
     }
 }
 
@@ -575,7 +570,7 @@ struct NText: View {
         HStack {
             Text(label).font(.dsBody); Spacer()
             TextField(placeholder, text: $text)
-                .textFieldStyle(.roundedBorder)
+                .inputStyle()
                 .font(.dsMono)
                 .multilineTextAlignment(.trailing)
                 .onSubmit {
@@ -588,7 +583,7 @@ struct NText: View {
                     }
                 }
                 .frame(width: DS.Layout.fieldTrailing, alignment: .trailing)
-        }.padding(.vertical, 5)
+        }.padding(.vertical, DS.Spacing.s)
         .onAppear { text = (nestedDict(M, parent)[sub] as? String) ?? "" }
     }
 }
@@ -612,12 +607,14 @@ struct NList: View {
                             Button { items.remove(at: i); commit() } label: { Image(systemName: "minus.circle").font(.dsBody) }.buttonStyle(.borderless)
                         }
                         .padding(.horizontal, DS.Spacing.s).padding(.vertical, DS.Spacing.xs)
-                        .background(RoundedRectangle(cornerRadius: DS.Radius.control).fill(DS.Palette.hairline))
+                        .background(RoundedRectangle(cornerRadius: DS.Radius.control, style: .continuous).fill(DS.Palette.hairline))
                     }
                 }
             }
             HStack(spacing: DS.Spacing.s) {
-                TextField(placeholder, text: $draft).textFieldStyle(.roundedBorder).font(.dsMono)
+                TextField(placeholder, text: $draft)
+                    .inputStyle()
+                    .font(.dsMono)
                 Button { if !draft.isEmpty { items.append(draft); draft = ""; commit() } } label: { Image(systemName: "plus.circle.fill") }.buttonStyle(.borderless)
             }
         }.padding(.vertical, DS.Spacing.s)
@@ -664,7 +661,7 @@ struct KernelMgmtPage: View {
                                 ForEach(M.kernelLogs.indices, id: \.self) { i in
                                     Text(M.kernelLogs[i])
                                         .font(.dsMono)
-                                        .foregroundColor(M.kernelLogs[i].contains("错误") ? .red : .primary)
+                                        .foregroundColor(M.kernelLogs[i].contains("错误") ? DS.Palette.error : .primary)
                                 }
                             }
                         }
@@ -685,7 +682,7 @@ struct KernelCard: View {
         Card(title: "内核管理", icon: "cpu") {
             VStack(spacing: 10) {
                 HStack {
-                    Circle().fill(M.reachable ? Color.green : Color.red).frame(width: 8, height: 8)
+                    Circle().fill(M.reachable ? DS.Palette.ok : DS.Palette.error).frame(width: 8, height: 8)
                     Text(M.reachable ? "运行中 · mihomo \(M.version)" : "已停止").font(.dsBody).foregroundColor(.secondary)
                     Spacer()
                     if M.reachable {
@@ -696,7 +693,7 @@ struct KernelCard: View {
                                 await M.reapplyTUN(wasOn: wasTUN)
                                 M.showToast("内核已重启")
                             }
-                        }.buttonStyle(.bordered).tint(.orange).controlSize(.small)
+                        }.buttonStyle(.bordered).tint(DS.Palette.warn).controlSize(.small)
                     }
                     Toggle("", isOn: Binding(get: { M.reachable }, set: { _ in M.toggleEngine() }))
                         .toggleStyle(.switch)

@@ -13,8 +13,6 @@ struct GeneralPage: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            PageHead(title: "设置", desc: "应用通用偏好 · 特权辅助程序 · 进阶内核管理")
-
             // Premium flat tabs
             HStack(spacing: 24) {
                 Spacer()
@@ -25,9 +23,10 @@ struct GeneralPage: View {
                 Spacer()
             }
             .padding(.horizontal, DS.Spacing.xxl)
+            .padding(.top, DS.Spacing.m)
             .padding(.bottom, DS.Spacing.l)
 
-            Divider().opacity(0.4)
+            Divider().overlay(DS.Palette.separator)
 
             ScrollView {
                 VStack(spacing: 14) {
@@ -99,16 +98,16 @@ struct GeneralPage: View {
                         // 内核管理已移至「网络 → 内核」,此处不再重复。
                     } else if selectedTab == "privilege" {
                         Card(title: "系统权限", icon: "shield") {
-                            VStack(alignment: .leading, spacing: 16) {
-                                HStack(spacing: 12) {
+                            VStack(alignment: .leading, spacing: DS.Spacing.l) {
+                                HStack(spacing: DS.Spacing.m) {
                                     Image(systemName: engine.isRoot ? "shield.checkmark.fill" : "shield.fill")
-                                        .font(.system(size: DS.Icon.lg))
-                                        .foregroundColor(engine.isRoot ? .green : .secondary)
+                                        .font(DS.Icon.font(DS.Icon.lg))
+                                        .foregroundColor(engine.isRoot ? DS.Palette.ok : .secondary)
                                     
                                     VStack(alignment: .leading, spacing: 2) {
                                         Text("特权辅助程序")
                                             .font(.dsCardLabel)
-                                            .foregroundColor(engine.isRoot ? .green : .primary)
+                                            .foregroundColor(engine.isRoot ? DS.Palette.ok : .primary)
                                         Text(engine.isRoot ? "已启用特权服务，日常操作免密" : "未安装或未启用特权服务")
                                             .font(.dsBody)
                                             .foregroundColor(.secondary)
@@ -117,29 +116,17 @@ struct GeneralPage: View {
                                     Spacer()
                                     
                                     Button(action: { Task { await toggleHelper() } }) {
-                                        Group {
-                                            if helperBusy {
-                                                ProgressView().controlSize(.small)
-                                            } else if helperNeedsUpdate {
-                                                Text("更新")
-                                                    .foregroundColor(.white)
-                                                    .fontWeight(.medium)
-                                            } else {
-                                                Text(engine.isRoot ? "卸载" : "安装")
-                                                    .foregroundColor(engine.isRoot ? .red : .white)
-                                                    .fontWeight(.medium)
-                                            }
+                                        if helperBusy {
+                                            ProgressView().controlSize(.small)
+                                        } else if helperNeedsUpdate {
+                                            Text("更新")
+                                        } else {
+                                            Text(engine.isRoot ? "卸载" : "安装")
                                         }
-                                        .frame(minWidth: 44)
-                                        .padding(.horizontal, DS.Spacing.l)
-                                        .padding(.vertical, 6)
-                                        .background(
-                                            RoundedRectangle(cornerRadius: 6)
-                                                .fill(helperNeedsUpdate ? Color.orange :
-                                                      engine.isRoot ? Color.red.opacity(0.15) : DS.Palette.accent)
-                                        )
                                     }
-                                    .buttonStyle(.plain)
+                                    .buttonStyle(.borderedProminent)
+                                    .controlSize(.small)
+                                    .tint(helperNeedsUpdate ? DS.Palette.warn : (engine.isRoot ? DS.Palette.error : DS.Palette.accent))
                                     .disabled(helperBusy)
                                 }
                                 
@@ -152,31 +139,24 @@ struct GeneralPage: View {
                                     if helperNeedsUpdate {
                                         Text("\(engine.helperVersion) → \(EngineControl.kExpectedHelperVersion)")
                                             .font(.dsMono)
-                                            .foregroundColor(.orange)
+                                            .foregroundColor(DS.Palette.warn)
                                         Image(systemName: "exclamationmark.triangle.fill")
-                                            .foregroundColor(.orange)
+                                            .foregroundColor(DS.Palette.warn)
                                             .font(.dsBody)
                                     } else {
                                         Text(engine.helperVersion)
                                             .font(.dsMono)
                                             .foregroundColor(.secondary)
                                     }
-                                    Button(action: {
+                                    Button("检查") {
                                         engine.refreshHelperVersion()
                                         M.showToast(engine.isRoot ? "Helper 连通正常 · v\(engine.helperVersion)" : "Helper 未连通")
-                                    }) {
-                                        Text("检查")
-                                            .padding(.horizontal, 12)
-                                            .padding(.vertical, 4)
-                                            .background(
-                                                RoundedRectangle(cornerRadius: 6)
-                                                    .stroke(Color.secondary.opacity(0.3), lineWidth: 1)
-                                            )
                                     }
-                                    .buttonStyle(.plain)
+                                    .buttonStyle(.bordered)
+                                    .controlSize(.small)
                                 }
                             }
-                            .padding(.vertical, 4)
+                            .padding(.vertical, DS.Spacing.xs)
                         }
 
                         Text("ClashHalo 需要“特权辅助程序”才能安全地为您接管系统网络路由及代理设置。")
@@ -219,17 +199,17 @@ struct GeneralPage: View {
         return Button(action: { selectedTab = tag }) {
             VStack(spacing: 6) {
                 Image(systemName: active ? activeIcon : inactiveIcon)
-                    .font(.system(size: DS.Icon.md))
+                    .font(DS.Icon.font(DS.Icon.md))
                     .foregroundColor(active ? DS.Palette.accent : .secondary)
                 Text(label)
-                    .font(.system(size: 12, weight: active ? .semibold : .regular))
+                    .font(active ? .dsBodySemibold : .dsBody)
                     .foregroundColor(active ? .primary : .secondary)
             }
             .frame(width: 80)
-            .padding(.vertical, 8)
+            .padding(.vertical, DS.Spacing.s)
             .contentShape(Rectangle())
             .background(
-                RoundedRectangle(cornerRadius: DS.Radius.control)
+                RoundedRectangle(cornerRadius: DS.Radius.control, style: .continuous)
                     .fill(active ? DS.Palette.fill : Color.clear)
             )
         }
@@ -263,7 +243,7 @@ struct GeneralPage: View {
                             } else if M.updater.updateAvailable, let version = M.updater.latestVersion {
                                 Text("发现新版本：\(version)")
                                     .font(.dsBody)
-                                    .foregroundColor(.orange)
+                                    .foregroundColor(DS.Palette.warn)
                             } else if M.updater.latestVersion != nil {
                                 Text("当前已是最新版本")
                                     .font(.dsBody)
@@ -277,7 +257,7 @@ struct GeneralPage: View {
                         Spacer()
 
                         if M.updater.updateAvailable {
-                            Button(action: {
+                            Button("下载更新") {
                                 Task {
                                     M.showToast("开始下载更新...")
                                     let ok = await M.updater.performUpdate()
@@ -287,35 +267,20 @@ struct GeneralPage: View {
                                         M.showToast("更新下载失败")
                                     }
                                 }
-                            }) {
-                                Text("下载更新")
-                                    .foregroundColor(.white)
-                                    .fontWeight(.medium)
-                                    .padding(.horizontal, DS.Spacing.l)
-                                    .padding(.vertical, 6)
-                                    .background(
-                                        RoundedRectangle(cornerRadius: 6)
-                                            .fill(Color.orange)
-                                    )
                             }
-                            .buttonStyle(.plain)
+                            .buttonStyle(.borderedProminent)
+                            .controlSize(.small)
+                            .tint(DS.Palette.warn)
                             .disabled(M.updater.isDownloading)
                         }
 
-                        Button(action: {
+                        Button("检查更新") {
                             Task {
                                 _ = await M.updater.checkForUpdates()
                             }
-                        }) {
-                            Text("检查更新")
-                                .padding(.horizontal, 12)
-                                .padding(.vertical, 4)
-                                .background(
-                                    RoundedRectangle(cornerRadius: 6)
-                                        .stroke(Color.secondary.opacity(0.3), lineWidth: 1)
-                                )
                         }
-                        .buttonStyle(.plain)
+                        .buttonStyle(.bordered)
+                        .controlSize(.small)
                         .disabled(M.updater.isChecking || M.updater.isDownloading)
                     }
 
@@ -363,8 +328,10 @@ struct GeneralPage: View {
         return "已连接 · mihomo \(M.version)"
     }
     func field(_ l: String, text: Binding<String>, placeholder: String) -> some View {
-        HStack { Text(l).font(.dsBody).foregroundColor(.secondary).frame(width: 50, alignment: .leading)
-            TextField(placeholder, text: text).textFieldStyle(.roundedBorder) }
+        HStack {
+            Text(l).font(.dsBody).foregroundColor(.secondary).frame(width: 50, alignment: .leading)
+            TextField(placeholder, text: text).inputStyle()
+        }
     }
 
 
@@ -425,7 +392,7 @@ struct MenuBarPanel: View {
         VStack(alignment: .leading, spacing: DS.Spacing.s) {
             // Header
             HStack(spacing: DS.Spacing.s) {
-                Image(systemName: "bolt.fill").font(.system(size: DS.Icon.md)).foregroundColor(DS.Palette.accent)
+                Image(systemName: "bolt.fill").font(DS.Icon.font(DS.Icon.md)).foregroundColor(DS.Palette.accent)
                 VStack(alignment: .leading, spacing: 1) {
                     Text("ClashHalo").font(.dsCardLabel)
                     HStack(spacing: DS.Spacing.xs) {
@@ -455,7 +422,7 @@ struct MenuBarPanel: View {
                     modeTab("直连", "direct")
                 }
                 .padding(2)
-                .background(RoundedRectangle(cornerRadius: DS.Radius.control).fill(DS.Palette.fill))
+                .background(RoundedRectangle(cornerRadius: DS.Radius.control, style: .continuous).fill(DS.Palette.fill))
 
                 if M.menuBarGroups {
                     let selectable = M.groups.filter { $0.selectable }
@@ -487,7 +454,7 @@ struct MenuBarPanel: View {
                         }
                         .frame(maxWidth: .infinity)
                         .padding(.vertical, DS.Spacing.s)
-                        .background(RoundedRectangle(cornerRadius: DS.Radius.control).fill(DS.Palette.fill))
+                        .background(RoundedRectangle(cornerRadius: DS.Radius.control, style: .continuous).fill(DS.Palette.fill))
                         .foregroundColor(DS.Palette.accent)
                     }.buttonStyle(.plain).disabled(M.groups.isEmpty)
                 }
@@ -524,7 +491,7 @@ struct MenuBarPanel: View {
                 HStack(spacing: 0) {
                     VStack(alignment: .leading, spacing: 2) {
                         HStack(spacing: 4) {
-                            Image(systemName: "memorychip").font(.dsBody).foregroundColor(.purple)
+                            Image(systemName: "memorychip").font(.dsBody).foregroundColor(DS.Palette.roleOray)
                             Text("核心内存").font(.dsBodyMedium).foregroundColor(.secondary)
                         }
                         Text(fmtBytes(Double(M.memory))).font(.dsCardLabel)
@@ -536,7 +503,7 @@ struct MenuBarPanel: View {
                     
                     VStack(alignment: .leading, spacing: 2) {
                         HStack(spacing: 4) {
-                            Image(systemName: "app.dashed").font(.dsBody).foregroundColor(.orange)
+                            Image(systemName: "app.dashed").font(.dsBody).foregroundColor(DS.Palette.warn)
                             Text("应用内存").font(.dsBodyMedium).foregroundColor(.secondary)
                         }
                         Text(String(format: "%.0f MB", M.appMemoryMB)).font(.dsCardLabel)
@@ -575,7 +542,7 @@ struct MenuBarPanel: View {
                 }.buttonStyle(.plain)
                 Spacer()
                 Button { NSApplication.shared.terminate(nil) } label: {
-                    Image(systemName: "power").font(.system(size: DS.Icon.sm)).foregroundColor(.secondary)
+                    Image(systemName: "power").font(DS.Icon.font(DS.Icon.sm)).foregroundColor(.secondary)
                 }.buttonStyle(.plain).help("退出 ClashHalo")
             }.padding(.horizontal, DS.Spacing.xs)
         }
@@ -598,8 +565,7 @@ struct MenuBarPanel: View {
         VStack(alignment: .leading, spacing: DS.Spacing.s) { content() }
             .padding(DS.Spacing.m)
             .frame(maxWidth: .infinity, alignment: .leading)
-            .background(RoundedRectangle(cornerRadius: DS.Radius.card).fill(DS.Palette.cardBg))
-            .overlay(RoundedRectangle(cornerRadius: DS.Radius.card).stroke(DS.Palette.border))
+            .dsCardChrome()
     }
 
     /// Full-width segmented mode tab (equal thirds, selected = accent fill).
@@ -609,7 +575,7 @@ struct MenuBarPanel: View {
             Text(label).font(.dsBodyMedium)
                 .frame(maxWidth: .infinity)
                 .padding(.vertical, DS.Spacing.s - 2)
-                .background(RoundedRectangle(cornerRadius: DS.Radius.control - 2).fill(on ? DS.Palette.accent : Color.clear))
+                .background(RoundedRectangle(cornerRadius: DS.Radius.control - 2, style: .continuous).fill(on ? DS.Palette.accent : Color.clear))
                 .foregroundColor(on ? .white : .secondary)
         }.buttonStyle(.plain)
     }
@@ -683,8 +649,7 @@ struct MenuBarPanel: View {
             }
             .frame(maxWidth: .infinity)
             .padding(.vertical, DS.Spacing.s)
-            .background(RoundedRectangle(cornerRadius: DS.Radius.control).fill(DS.Palette.cardBg))
-            .overlay(RoundedRectangle(cornerRadius: DS.Radius.control).stroke(DS.Palette.border))
+            .dsControlChrome()
             .foregroundColor(.secondary)
         }.buttonStyle(.plain)
     }
@@ -696,11 +661,11 @@ struct ContentUnavailable: View {
     let text: String, icon: String
     init(_ t: String, _ i: String) { text = t; icon = i }
     var body: some View {
-        VStack(spacing: 10) {
-            Image(systemName: icon).font(.system(size: DS.Icon.xl)).foregroundColor(.secondary.opacity(0.5))
+        VStack(spacing: DS.Spacing.m) {
+            Image(systemName: icon).font(DS.Icon.font(DS.Icon.xl)).foregroundColor(.secondary.opacity(0.5))
             Text(text).font(.dsBody).foregroundColor(.secondary)
                 .multilineTextAlignment(.center).fixedSize(horizontal: false, vertical: true)
-        }.frame(maxWidth: .infinity, minHeight: 160).padding(40)
+        }.frame(maxWidth: .infinity, minHeight: 160).padding(DS.Spacing.xxxl)
     }
 }
 

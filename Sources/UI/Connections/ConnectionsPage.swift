@@ -29,31 +29,37 @@ struct ConnectionsPage: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            PageHead(title: "连接", desc: selectedTab == 0 ? "\(VM.conns.count) 个活跃连接 · 实时速率" : "\(VM.closedConnections.count) 个已关闭连接") {
-                Button(role: .destructive) { showConfirmDisconnect = true } label: { Label("全部断开", systemImage: "xmark.circle") }
-                    .controlSize(.small)
-            }
-
-            HStack(spacing: DS.Spacing.xxl) {
+            HStack(alignment: .center, spacing: DS.Spacing.m) {
                 Picker("", selection: $selectedTab) {
                     Text("连接中").tag(0)
                     Text("已关闭").tag(1)
                 }
                 .pickerStyle(.segmented)
+                .labelsHidden()
+                .dsToolbarControl()
                 .frame(width: 160)
-                .offset(x: -4)
-                
+
                 HStack(spacing: DS.Spacing.s) {
-                    Image(systemName: "magnifyingglass").foregroundColor(.secondary)
-                    TextField("搜索域名 / 进程 / 规则", text: $q).textFieldStyle(.plain)
+                    Image(systemName: "magnifyingglass").foregroundColor(.secondary).font(.dsBody)
+                    TextField("搜索域名 / 进程 / 规则", text: $q)
+                        .textFieldStyle(.plain)
+                        .font(.dsBody)
                 }
-                
-                Spacer()
+                .dsSearchFieldChrome(maxWidth: 280)
+
+                Spacer(minLength: 0)
 
                 Text("\(filteredRows.count) 匹配").font(.dsBody).foregroundColor(.secondary)
+
+                Button(role: .destructive) { showConfirmDisconnect = true } label: {
+                    Label("全部断开", systemImage: "xmark.circle")
+                }
+                .buttonStyle(.bordered)
+                .dsToolbarControl()
             }
-            .padding(.horizontal, DS.Spacing.l).padding(.vertical, 10)
-            .background(Color(nsColor: .windowBackgroundColor).opacity(0.3))
+            .padding(.horizontal, DS.Layout.pageContentInset)
+            .padding(.vertical, DS.Spacing.m)
+            .background(DS.Palette.chromeBg)
             Divider()
 
             if filteredRows.isEmpty {
@@ -99,6 +105,8 @@ struct ConnectionsPage: View {
                         }
                     }.width(36)
                 }
+                // Lock table content inset to the same token as the toolbar strip.
+                .contentMargins(.horizontal, DS.Layout.pageContentInset, for: .scrollContent)
                 .contextMenu(forSelectionType: Conn.ID.self) { ids in
                     if let id = ids.first, let c = filteredRows.first(where: { $0.id == id }) {
                         Button("添加/修改分流规则...") {
@@ -259,14 +267,14 @@ struct ConnDetailCard: View {
             }
             .font(.dsBody)
         }
-        .padding(20)
+        .padding(DS.Spacing.xl)
         .frame(width: 340)
         .background(.regularMaterial)
-        .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
-        .shadow(color: .black.opacity(0.3), radius: 30, x: 0, y: 15)
+        .clipShape(RoundedRectangle(cornerRadius: DS.Radius.panel, style: .continuous))
+        .shadow(color: DS.Palette.cardShadow, radius: 16, x: 0, y: 8)
         .overlay(
-            RoundedRectangle(cornerRadius: 16, style: .continuous)
-                .stroke(Color.primary.opacity(0.15), lineWidth: 1)
+            RoundedRectangle(cornerRadius: DS.Radius.panel, style: .continuous)
+                .stroke(DS.Palette.border, lineWidth: 1)
         )
     }
     
