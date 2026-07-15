@@ -18,11 +18,11 @@ struct ContentView: View {
         .init(id: "rules",   label: "规则",     icon: "line.3.horizontal.decrease"),
         .init(id: "subscriptions", label: "订阅", icon: "icloud.and.arrow.down"),
     ]
-    // 配置：profile · 网络(入站/TUN/DNS/嗅探/内核) · SD-WAN · 偏好
+    // 配置：profile · 网络(入站/TUN/DNS/嗅探/内核) · 网络拓扑 · 偏好
     private let configTabs: [Tab] = [
         .init(id: "config",  label: "配置", icon: "slider.horizontal.3"),
         .init(id: "network", label: "网络", icon: "network"),
-        .init(id: "map",     label: "SD-WAN", icon: "shareplay"),
+        .init(id: "map",     label: "网络拓扑", icon: "point.3.connected.trianglepath.dotted"),
         .init(id: "general", label: "设置", icon: "gearshape.fill"),
     ]
 
@@ -32,7 +32,7 @@ struct ContentView: View {
 
     var body: some View {
         NavigationSplitView {
-            sidebar.navigationSplitViewColumnWidth(min: 200, ideal: 210, max: 240)
+            sidebar.navigationSplitViewColumnWidth(min: DS.Layout.sidebarMin, ideal: DS.Layout.sidebarIdeal, max: DS.Layout.sidebarMax)
         } detail: { detail }
         .onAppear { M.isMainWindowVisible = true }
         .onDisappear { M.isMainWindowVisible = false }
@@ -53,18 +53,18 @@ struct ContentView: View {
     private var sidebar: some View {
         VStack(spacing: 0) {
             appHeader
-            Divider().opacity(0.4)
+            Divider().overlay(DS.Palette.separator)
             List(selection: $M.route) {
-                Section("监控") { rows(monitorTabs) }
-                Section("代理") { rows(proxyTabs) }
-
-                Section("配置") { rows(configTabs) }
+                rows(monitorTabs)
+                rows(proxyTabs)
+                rows(configTabs)
             }
             .listStyle(.sidebar)
             .scrollContentBackground(.hidden)
-            Divider().opacity(0.4)
+            Divider().overlay(DS.Palette.separator)
             statusFooter
         }
+        .background(DS.Palette.sidebarBg)
     }
 
     private func rows(_ tabs: [Tab]) -> some View {
@@ -84,14 +84,14 @@ struct ContentView: View {
             }
             Spacer()
         }
-        .padding(.horizontal, DS.Spacing.l).padding(.vertical, 14)
+        .padding(.horizontal, DS.Spacing.l).padding(.vertical, DS.Spacing.m)
     }
 
     private var statusFooter: some View {
-        VStack(spacing: 8) {
+        VStack(spacing: DS.Spacing.s) {
             statusToggle("系统代理", icon: "globe", isOn: Binding(get: { M.systemProxyOn }, set: { _ in M.toggleSystemProxy() }), accent: false)
             statusToggle("TUN 模式", icon: "shield.lefthalf.filled", isOn: Binding(get: { M.tunOn }, set: { _ in M.toggleTUN() }), accent: true)
-            
+
             HStack {
                 Circle().fill(M.reachable ? DS.Palette.ok : DS.Palette.error).frame(width: 6, height: 6)
                 Text(M.reachable ? "核心已就绪" : "核心已停止").font(.dsBody).foregroundColor(.secondary)
@@ -106,7 +106,7 @@ struct ContentView: View {
     }
 
     private func statusToggle(_ label: String, icon: String, isOn: Binding<Bool>, accent: Bool) -> some View {
-        HStack(spacing: 8) {
+        HStack(spacing: DS.Spacing.s) {
             Circle().fill(isOn.wrappedValue ? (accent ? DS.Palette.accent : DS.Palette.ok) : Color.secondary.opacity(0.3)).frame(width: 6, height: 6)
             Text(label).font(.dsBodyMedium).foregroundColor(isOn.wrappedValue ? .primary : .secondary)
             Spacer()
@@ -138,10 +138,10 @@ struct ContentView: View {
         .background(DS.Palette.windowBg)
         .overlay(alignment: .bottom) {
             if let t = M.toast {
-                Text(t).font(.dsBody).padding(.horizontal, DS.Spacing.l).padding(.vertical, 9)
+                Text(t).font(.dsBody).padding(.horizontal, DS.Spacing.l).padding(.vertical, DS.Spacing.s + 1)
                     .background(.ultraThinMaterial, in: Capsule())
-                    .overlay(Capsule().stroke(Color.primary.opacity(0.1)))
-                    .padding(.bottom, 26)
+                    .overlay(Capsule().stroke(DS.Palette.border))
+                    .padding(.bottom, DS.Spacing.xxl + 2)
                     .transition(.move(edge: .bottom).combined(with: .opacity))
             }
         }
@@ -151,42 +151,67 @@ struct ContentView: View {
 
 // MARK: - Components
 
+/// Page top bar. Title/desc are optional — non-dashboard pages pass empty title and only actions.
 struct PageHead<Actions: View>: View {
     let title: String
     let desc: String?
     @ViewBuilder var actions: () -> Actions
 
+    private var hasTitle: Bool { !title.isEmpty }
+    private var hasActions: Bool { Actions.self != EmptyView.self }
+
     var body: some View {
-        HStack(alignment: .bottom) {
-            VStack(alignment: .leading, spacing: 4) {
-                Text(title)
-                    .font(.dsPageTitle)
-                    .foregroundColor(.primary)
-                if let desc = desc, !desc.isEmpty {
-                    Text(desc)
-                        .font(.dsBody)
-                        .foregroundColor(.secondary)
+        if hasTitle || hasActions {
+            HStack(alignment: hasTitle ? .bottom : .center) {
+                if hasTitle {
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text(title)
+                            .font(.dsPageTitle)
+                            .foregroundColor(.primary)
+                        if let desc = desc, !desc.isEmpty {
+                            Text(desc)
+                                .font(.dsBody)
+                                .foregroundColor(.secondary)
+                        }
+                    }
+                    Spacer()
+                } else {
+                    Spacer(minLength: 0)
+                }
+
+                if hasActions {
+                    HStack(spacing: DS.Spacing.s) {
+                        actions()
+                    }
+                    .controlSize(.regular)
                 }
             }
-            
-            Spacer()
-            
-            if Actions.self != EmptyView.self {
-                HStack(spacing: 10) {
-                    actions()
-                }
-                .padding(.bottom, 2)
-            }
+            .padding(.horizontal, DS.Spacing.xl)
+            .padding(.top, hasTitle ? DS.Spacing.l : DS.Spacing.m)
+            .padding(.bottom, DS.Spacing.m)
         }
-        .padding(.horizontal, DS.Spacing.l)
-        .padding(.top, DS.Spacing.l)
-        .padding(.bottom, DS.Spacing.m)
     }
 }
 
 extension PageHead where Actions == EmptyView {
     init(title: String, desc: String? = nil) {
         self.init(title: title, desc: desc, actions: { EmptyView() })
+    }
+}
+
+/// Actions-only page toolbar (no title/desc). Prefer this on non-dashboard pages.
+struct PageToolbar<Actions: View>: View {
+    @ViewBuilder var actions: () -> Actions
+
+    var body: some View {
+        HStack(spacing: DS.Spacing.s) {
+            Spacer(minLength: 0)
+            actions()
+        }
+        .controlSize(.regular)
+        .padding(.horizontal, DS.Layout.pageContentInset)
+        .padding(.top, DS.Spacing.m)
+        .padding(.bottom, DS.Spacing.m)
     }
 }
 
@@ -210,7 +235,7 @@ struct Card<Content: View, Actions: View>: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
             if let title {
-                HStack(spacing: 6) {
+                HStack(spacing: DS.Spacing.s - 2) {
                     if let icon { Image(systemName: icon).font(.dsBody).foregroundColor(.secondary) }
                     Text(title).font(.dsBodyBold).foregroundColor(.secondary)
                     Spacer()
@@ -227,8 +252,7 @@ struct Card<Content: View, Actions: View>: View {
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
         .clipped()
-        .background(RoundedRectangle(cornerRadius: DS.Radius.card).fill(DS.Palette.cardBg))
-        .overlay(RoundedRectangle(cornerRadius: DS.Radius.card).stroke(DS.Palette.cardBgAlt))
+        .dsCardChrome()
     }
 }
 

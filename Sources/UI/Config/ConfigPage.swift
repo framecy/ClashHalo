@@ -10,11 +10,12 @@ struct ConfigPage: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            PageHead(title: "配置", desc: "本地 YAML 配置 · 远程订阅导入 · 一键切换并热重载") {
+            PageToolbar {
                 Button { showImportRemote = true } label: { Label("导入订阅", systemImage: "icloud.and.arrow.down") }
-                    .controlSize(.small)
+                    .buttonStyle(.bordered)
                 Button { showAddLocal = true } label: { Label("添加本地", systemImage: "doc.badge.plus") }
-                    .controlSize(.small).tint(DS.Palette.accent).buttonStyle(.borderedProminent)
+                    .buttonStyle(.borderedProminent)
+                    .tint(DS.Palette.accent)
             }
 
             ScrollView {
@@ -53,13 +54,13 @@ struct ConfigPage: View {
                 Text(p.name).font(.dsLabelBold).lineLimit(1)
                 if draft {
                     Text("待应用").font(.dsBodyBold).foregroundColor(DS.Palette.warn)
-                        .padding(.horizontal, 6).padding(.vertical, 2)
+                        .padding(.horizontal, DS.Spacing.s - 2).padding(.vertical, 2)
                         .background(Capsule().fill(DS.Palette.warn.opacity(0.15)))
                 }
                 Spacer()
                 if active {
                     Text("生效中").font(.dsBodyBold).foregroundColor(DS.Palette.accent)
-                        .padding(.horizontal, 6).padding(.vertical, 2)
+                        .padding(.horizontal, DS.Spacing.s - 2).padding(.vertical, 2)
                         .background(Capsule().fill(DS.Palette.accent.opacity(0.12)))
                 } else if pendingApply {
                     ProgressView().controlSize(.small)
@@ -69,7 +70,7 @@ struct ConfigPage: View {
             }
             Text(p.source == "remote" ? "远程订阅" : "本地文件").font(.dsBody).foregroundColor(.secondary)
 
-            Divider().opacity(0.4).padding(.vertical, 2)
+            Divider().opacity(0.4).padding(.vertical, DS.Spacing.xs / 2)
 
             HStack {
                 Text(relTime(p.updatedAt)).font(.dsBody).foregroundColor(.secondary)
@@ -87,10 +88,10 @@ struct ConfigPage: View {
         }
         .padding(DS.Spacing.l)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background(RoundedRectangle(cornerRadius: DS.Radius.card).fill(DS.Palette.cardBg))
-        .overlay(RoundedRectangle(cornerRadius: DS.Radius.card).stroke(active ? DS.Palette.accent.opacity(0.4) :
+        .background(RoundedRectangle(cornerRadius: DS.Radius.card, style: .continuous).fill(DS.Palette.cardBg))
+        .overlay(RoundedRectangle(cornerRadius: DS.Radius.card, style: .continuous).stroke(active ? DS.Palette.accent.opacity(0.4) :
                                                                       draft ? DS.Palette.warn.opacity(0.5) :
-                                                                      DS.Palette.cardBgAlt, lineWidth: (active || draft) ? 1.5 : 1))
+                                                                      DS.Palette.border, lineWidth: (active || draft) ? 1.5 : 1))
         .contentShape(Rectangle())
         .onTapGesture { if !active && !pendingApply { M.selectForApply(p.id) } }
         .contextMenu {
@@ -160,9 +161,9 @@ struct ImportRemoteSheet: View {
         VStack(alignment: .leading, spacing: DS.Spacing.l) {
             if stage == .pick {
                 Text("导入远程配置或订阅").font(.dsCardLabel)
-                TextField("名称", text: $name).textFieldStyle(.roundedBorder)
-                TextField("https://…/clash 或订阅链接", text: $url).textFieldStyle(.roundedBorder).font(.dsMono)
-                if !err.isEmpty { Text(err).font(.dsBody).foregroundColor(.red) }
+                TextField("名称", text: $name).inputStyle()
+                TextField("https://…/clash 或订阅链接", text: $url).inputStyle().font(.dsMono)
+                if !err.isEmpty { Text(err).font(.dsBody).foregroundColor(DS.Palette.error) }
                 HStack {
                     Button("取消") { dismiss() }
                     Spacer()
@@ -171,10 +172,11 @@ struct ImportRemoteSheet: View {
                     }
                     .buttonStyle(.borderedProminent).disabled(url.isEmpty || busy)
                 }
+                .controlSize(.small)
             } else {
                 Text("导入预览").font(.dsCardLabel)
                 previewSummary
-                if !err.isEmpty { Text(err).font(.dsBody).foregroundColor(.red) }
+                if !err.isEmpty { Text(err).font(.dsBody).foregroundColor(DS.Palette.error) }
                 HStack {
                     Button("放弃") { stage = .pick }
                     Spacer()
@@ -182,6 +184,7 @@ struct ImportRemoteSheet: View {
                     Button("导入并应用") { Task { await saveAndApply() } }
                         .buttonStyle(.borderedProminent).disabled(name.isEmpty || busy)
                 }
+                .controlSize(.small)
             }
         }.padding(DS.Spacing.xl).frame(minWidth: 440, idealWidth: 480, maxWidth: 600)
     }
@@ -255,12 +258,13 @@ struct AddLocalSheet: View {
         VStack(alignment: .leading, spacing: DS.Spacing.l) {
             if stage == .pick {
                 Text("添加本地配置").font(.dsCardLabel)
-                TextField("名称", text: $name).textFieldStyle(.roundedBorder)
+                TextField("名称", text: $name).inputStyle()
                 HStack {
                     Button("从文件导入…") { pickFile() }
                     Spacer()
                     Button("取消") { dismiss() }
                 }
+                .controlSize(.small)
             } else {
                 Text("导入预览").font(.dsCardLabel)
                 Text("检测到 \(preview.nodeCount) 个节点、\(preview.groupCount) 个分组、\(preview.ruleCount) 条规则")
@@ -279,6 +283,7 @@ struct AddLocalSheet: View {
                     Button("导入并应用") { Task { await saveDraft(apply: true) } }
                         .buttonStyle(.borderedProminent).disabled(name.isEmpty)
                 }
+                .controlSize(.small)
             }
         }.padding(DS.Spacing.xl).frame(minWidth: 400, idealWidth: 440, maxWidth: 560)
     }
@@ -322,7 +327,9 @@ struct ProfileEditSheet: View {
                     if M.store.activeID == profileID { M.activateProfile(profileID) }
                     dismiss()
                 }.buttonStyle(.borderedProminent)
-            }.padding(14)
+            }
+            .controlSize(.small)
+            .padding(DS.Spacing.m)
             Divider()
             YAMLEditor(text: $text, onChange: {})
         }

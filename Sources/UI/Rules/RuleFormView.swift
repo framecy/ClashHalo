@@ -38,7 +38,7 @@ struct RuleFormView: View {
     var body: some View {
         VStack(spacing: 0) {
             Text(existingNode == nil ? "添加规则" : "编辑规则")
-                .font(.system(size: 16, weight: .semibold))
+                .font(.dsSection)
                 .padding(.top, DS.Spacing.l)
                 .padding(.bottom, DS.Spacing.m)
 
@@ -49,9 +49,10 @@ struct RuleFormView: View {
                     }
                 }
                 .pickerStyle(.menu)
+                .dsMenuControl()
 
                 if type != .match {
-                    VStack(alignment: .leading, spacing: 4) {
+                    VStack(alignment: .leading, spacing: DS.Spacing.xs) {
                         Text("匹配内容").font(.dsBody).foregroundColor(.secondary)
                         TextField("", text: $match)
                             .inputStyle()
@@ -64,6 +65,7 @@ struct RuleFormView: View {
                     Text("REJECT (拦截)").tag(RuleAction.reject)
                 }
                 .pickerStyle(.segmented)
+                .controlSize(.small)
 
                 if action == .proxy {
                     Picker("目标代理组", selection: $proxyGroup) {
@@ -72,6 +74,7 @@ struct RuleFormView: View {
                         }
                     }
                     .pickerStyle(.menu)
+                    .dsMenuControl()
                 }
 
                 VStack(alignment: .leading, spacing: 4) {
@@ -85,22 +88,22 @@ struct RuleFormView: View {
 
             if let err = errorMessage {
                 Text(err)
-                    .foregroundColor(.red)
+                    .foregroundColor(DS.Palette.error)
                     .font(.dsBody)
                     .padding(.horizontal, DS.Spacing.l)
-                    .padding(.vertical, 4)
+                    .padding(.vertical, DS.Spacing.xs)
             }
 
             HStack(spacing: DS.Spacing.m) {
                 Button("取消") { dismiss() }
                     .buttonStyle(.bordered)
-                    .controlSize(.large)
+                    .controlSize(.small)
 
                 Spacer()
 
                 Button("保存") { save() }
                     .buttonStyle(.borderedProminent)
-                    .controlSize(.large)
+                    .controlSize(.small)
             }
             .padding(.horizontal, DS.Spacing.l)
             .padding(.vertical, DS.Spacing.l)
