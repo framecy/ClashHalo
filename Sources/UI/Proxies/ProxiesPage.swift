@@ -9,33 +9,36 @@ struct ProxiesPage: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            PageHead(title: "策略", desc: "\(M.groups.count) 组 · \(M.nodes.count) 节点") {
-                // Segmented control to toggle list/grid layouts
+            PageToolbar {
                 Picker("", selection: $displayMode) {
                     Image(systemName: "list.bullet").tag("list")
                     Image(systemName: "square.grid.2x2").tag("grid")
                 }
                 .pickerStyle(.segmented)
-                .frame(width: 55)
-                .controlSize(.small)
+                .labelsHidden()
+                .dsToolbarControl()
+                .frame(width: 56)
 
                 if displayMode == "list" {
                     Button {
                         collapsed = collapsed.count == M.groups.count ? [] : Set(M.groups.map(\.id))
                     } label: { Label(collapsed.count == M.groups.count ? "全部展开" : "全部折叠", systemImage: "rectangle.expand.vertical") }
-                        .controlSize(.small)
+                    .buttonStyle(.bordered)
+                    .dsToolbarControl()
                 }
 
                 Toggle(isOn: $M.closeOnSwitch) {
                     Label("切换断连", systemImage: "bolt.horizontal.circle")
                 }
                 .toggleStyle(.button)
-                .controlSize(.small)
                 .tint(DS.Palette.accent)
+                .dsToolbarControl()
                 .help("切换节点时自动断开所有现有连接，使流量立即走新节点")
 
                 Button { M.testAll() } label: { Label("全部测速", systemImage: "bolt.fill") }
-                    .controlSize(.small).tint(DS.Palette.accent).buttonStyle(.borderedProminent)
+                    .buttonStyle(.borderedProminent)
+                    .tint(DS.Palette.accent)
+                    .dsToolbarControl()
             }
 
             ScrollView {
@@ -170,7 +173,7 @@ struct ProxiesPage: View {
                             HStack(spacing: 6) {
                                 Text(g.name).font(.dsBody).fontWeight(.semibold)
                                 Text(g.type).font(.dsBody).foregroundColor(.secondary)
-                                    .padding(.horizontal, 5).padding(.vertical, 1)
+                                    .padding(.horizontal, DS.Spacing.xs + 1).padding(.vertical, 1)
                                     .background(Capsule().fill(DS.Palette.hairline))
                             }
                             HStack(spacing: 5) {
@@ -182,7 +185,7 @@ struct ProxiesPage: View {
                         Button { M.testGroup(g) } label: { Image(systemName: "bolt") }
                             .buttonStyle(.borderless).controlSize(.small).help("测速")
                         Text("\(g.all.count)").font(.dsBody)
-                            .padding(.horizontal, 7).padding(.vertical, 2)
+                            .padding(.horizontal, DS.Spacing.s - 1).padding(.vertical, 2)
                             .background(Capsule().fill(DS.Palette.hairline))
                     }
                     .contentShape(Rectangle())
@@ -190,7 +193,7 @@ struct ProxiesPage: View {
                 .buttonStyle(.plain)
 
                 if isOpen {
-                    Divider().padding(.vertical, 8)
+                    Divider().padding(.vertical, DS.Spacing.s)
                     LazyVGrid(columns: [GridItem(.adaptive(minimum: 168), spacing: 8)], spacing: 8) {
                         ForEach(g.all, id: \.self) { name in nodeChip(group: g, name: name) }
                     }
@@ -228,9 +231,9 @@ struct ProxiesPage: View {
                     }
                 }
             }
-            .padding(.horizontal, 10).padding(.vertical, 7)
-            .background(RoundedRectangle(cornerRadius: DS.Radius.control).fill(on ? DS.Palette.accent.opacity(0.12) : DS.Palette.fillFaint))
-            .overlay(RoundedRectangle(cornerRadius: DS.Radius.control).stroke(on ? DS.Palette.accent.opacity(0.45) : Color.clear, lineWidth: 1))
+            .padding(.horizontal, DS.Spacing.m - 2).padding(.vertical, DS.Spacing.s - 1)
+            .background(RoundedRectangle(cornerRadius: DS.Radius.control, style: .continuous).fill(on ? DS.Palette.accent.opacity(0.12) : DS.Palette.fillFaint))
+            .overlay(RoundedRectangle(cornerRadius: DS.Radius.control, style: .continuous).stroke(on ? DS.Palette.accent.opacity(0.45) : Color.clear, lineWidth: 1))
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)

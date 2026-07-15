@@ -2,37 +2,45 @@
 
 本文件给后续 AI 编码代理使用。进入本仓库后，先读本文件，再按需读 `README.md`、`CHANGELOG.md` 和相关源码。
 
+当前主干：`main` @ `b544988`，产品版本 **v1.0.15**（`MARKETING_VERSION`），build **40**，Helper **1.0.15**（`kSharedHelperVersion`）。
+
 ## 项目概览
 
-这是一个 macOS 14+ 原生 SwiftUI 代理客户端，项目名、Bundle ID、数据目录、Helper 服务和用户可见品牌统一为 **ClashHalo**。旧版 `ClashPow` 只应出现在迁移或清理兼容代码中。
+这是一个 macOS 14+ 原生 SwiftUI 代理客户端。项目名、Bundle ID、数据目录、Helper 服务和用户可见品牌统一为 **ClashHalo**。旧版 `ClashPow` 只应出现在迁移或清理兼容代码中。
 
-应用直接编排官方 `mihomo` 内核：
+应用直接编排官方 `mihomo` 内核，没有 Swift Package manifest，主要通过 `ClashHalo.xcodeproj` 构建。
 
-- GUI 层：SwiftUI、AppKit、Combine，入口在 `Sources/App/ClashHaloApp.swift`。
-- 状态层：`AppModel` 是中心状态和生命周期编排器，扩展文件按领域拆分。
-- 内核/API 层：`EngineControl` 管理内核进程、配置文件和 TUN/root 切换；`MihomoClient` 调用 mihomo REST/WebSocket API。
-- 特权层：`XPCManager` 与 `Sources/Helper/main.swift` 的 privileged helper 通信，处理系统代理、root 启动 mihomo、网关转发。
+分层：
 
-项目没有 Swift Package manifest，主要通过 `ClashHalo.xcodeproj` 构建。
+- GUI：SwiftUI / AppKit / Combine，入口 `Sources/App/ClashHaloApp.swift`
+- 状态：`AppModel`（`@MainActor`）是中心状态与生命周期编排器，按领域拆扩展文件
+- 内核/API：`EngineControl` 管进程、配置、TUN/root；`MihomoClient` 调 mihomo REST/WebSocket
+- 特权：`XPCManager` 与 `Sources/Helper/main.swift` 通信，处理系统代理、root 启动 mihomo、网关转发、静态路由与 zombie TUN 物理清理
 
 ## 关键路径
 
-- `Sources/App/`：App 入口、窗口、菜单栏、主路由。
-- `Sources/Model/`：核心状态、配置/订阅、连接和代理业务逻辑。
-- `Sources/XPC/`：mihomo API、内核控制、Helper XPC、系统代理实现。
-- `Sources/Helper/main.swift`：特权 Helper 服务入口和安全校验。
-- `Sources/UI/`：SwiftUI 页面与共享组件。
-- `Sources/UI/DesignTokens.swift`：设计系统，UI 颜色、字体、间距、圆角应优先从这里取。
-- `Sources/Core/RuleValidator/`：规则编辑/校验逻辑。
-- `Sources/Core/YamlEditor/`：基于行扫描的 YAML 规则提取/编辑能力。
-- `Resources/Panels/zashboard/dist/`：内置 Zashboard 静态资源。
-- `Docs/GatewayGuide.md`：局域网网关使用文档。
-- `make.sh`：本地 Release 打包主脚本，会自增 build number、构建 Helper/App、内置资源、ad-hoc 签名并生成 DMG。
-- `.githooks/pre-commit`：提交前扫描 secret 和 UI 设计系统漂移。
+- `Sources/App/`：App 入口、窗口、菜单栏、主路由
+- `Sources/Model/`：核心状态、配置/订阅、连接和代理业务
+  - `AppModel.swift`：共享状态、生命周期、网络/睡眠监听、bypass 自愈、TUN 健康巡检、自动更新
+  - `AppModel+Config.swift`：配置切换、`refreshConfigs`、系统代理/TUN/网关切换、`withEngineBusy`
+  - `AppModel+Proxies.swift` / `AppModel+Connections.swift`：代理与连接
+  - `Models.swift`：`NetScanner`（含 `mihomoTunInterface` / `hasDownedMihomoTun`）
+  - `ConfigStore.swift`：订阅 manifest；URL 存 Keychain
+- `Sources/XPC/`：
+  - `HelperProtocol.swift`：XPC 协议 + 共享常量 `kSharedHelperVersion` / `kProxyBypassDomains`
+  - `EngineControl.swift`：内核与配置热补丁、Helper 升级、系统代理/DNS
+  - `ProxyManager.swift`：系统代理、exclude routes、`cleanupTUNResidual`
+  - `XPCManager.swift`：连接、超时包装、`callCleanupTUNResidual`
+  - `MihomoClient.swift` / `KernelManager.swift`
+- `Sources/Helper/main.swift`：特权 Helper 入口、客户端鉴权、`routesLock` 保护的路由状态
+- `Sources/UI/`：SwiftUI 页面；`DesignTokens.swift` 是设计系统真相源
+- `Sources/Core/RuleValidator/`、`Sources/Core/YamlEditor/`：规则编辑与行扫描 YAML
+- `Resources/Panels/zashboard/dist/`：内置 Zashboard
+- `Docs/GatewayGuide.md`：局域网网关文档
+- `make.sh`：本地 Release 打包主脚本（会自增 build、构建 Helper/App、内置资源、ad-hoc 签名、生成 DMG）
+- `.githooks/pre-commit`：secret 扫描 + UI 设计系统漂移警告
 
 ## 构建与验证
-
-常用命令：
 
 ```bash
 xcodebuild -project ClashHalo.xcodeproj -scheme ClashHalo -configuration Debug build
@@ -42,91 +50,121 @@ bash make.sh
 
 注意：
 
-- `bash make.sh` 会修改 `ClashHalo.xcodeproj/project.pbxproj` 中的 `CURRENT_PROJECT_VERSION`，不要在普通验证时随手运行。
-- `make.sh` 可能访问 GitHub 下载 mihomo，并会把 DMG 复制到 `~/Desktop`。在受限网络或不需要打包时，用 `xcodebuild` 验证即可。
-- 项目当前没有专门的 XCTest target。修改核心逻辑后至少跑一次 Debug build；涉及打包、Helper 或 TUN 时再跑 Release/打包流程。
-- 运行 App 或安装 Helper 会影响本机系统代理、DNS、LaunchDaemon 和 mihomo 进程。除非任务要求，不要主动安装/卸载 Helper 或打开 TUN。
+- 不要用 `make.sh` 做普通验证；它会改 `CURRENT_PROJECT_VERSION`，可能拉 mihomo，并把 DMG 拷到 `~/Desktop`
+- 没有 XCTest target；核心逻辑至少 Debug build；涉及 Helper/TUN/打包再跑 Release
+- 除非任务明确要求，不要安装/卸载 Helper，不要打开 TUN，不要改本机系统代理/DNS/LaunchDaemon
 
 ## 运行时数据与系统影响
 
-应用运行时主要写入：
+运行时写入：
 
 - `~/Library/Application Support/ClashHalo/config.yaml`
 - `~/Library/Application Support/ClashHalo/profiles/`
 - `~/Library/Application Support/ClashHalo/bin/mihomo`
 - `~/Library/Application Support/ClashHalo/kernels/`
 
-特权安装会涉及：
+特权安装：
 
 - `/Library/LaunchDaemons/com.clashhalo.helper.plist`
 - `/Library/PrivilegedHelperTools/com.clashhalo.helper`
 - `/Library/Logs/ClashHalo/`
 
-退出清理逻辑在 `AppDelegate.performCleanup()`：会 `killall -9 mihomo`、恢复 DNS、清除系统代理。修改这里要非常谨慎，避免用户退出后断网。
+退出清理在 `AppDelegate.performCleanup()`：`killall -9 mihomo`、必要时恢复 DNS、清系统代理。这里改动必须非常克制，避免退出后断网。
 
 ## 架构约定
 
-- `AppModel` 标注 `@MainActor`，UI 状态更新应留在主 actor。
-- `AppModel.swift` 只放共享状态和生命周期；新业务优先放入已有扩展文件：
-  - `AppModel+Config.swift`
-  - `AppModel+Proxies.swift`
-  - `AppModel+Connections.swift`
-- 长耗时内核操作必须通过 `engine.isBusy` 或 `withEngineBusy` 串行化，避免 TUN、重启、配置热加载互相交错。
-- `MihomoClient.applyController(fromConfigAt:)` 会从当前 `config.yaml` 发现 controller host/port/secret；配置切换后不要硬编码 `127.0.0.1:9092`。
-- 配置编辑大量使用轻量行扫描而不是完整 YAML parser。改动时要保持 `EngineControl.readConfigFile`、`proxyProviders`、`ConfigStore.preview`、`YamlRuleASTEngine` 的行为一致。
-- `ConfigStore` 将订阅 URL 存 Keychain，manifest 中会清空 URL。不要把真实订阅、节点、token 写进仓库。
+- `AppModel` 是 `@MainActor`；UI 状态更新留在主 actor
+- `AppModel.swift` 只放共享状态与生命周期；新业务优先进现有扩展文件
+- 用户触发的长耗时内核操作走 `withEngineBusy` / `engine.isBusy` 串行化
+- **自动 teardown 例外**：`verifyTUNConfig` 与 `refreshConfigs` 的 TUN 自愈路径必须**手工**持有 `engine.isBusy` + `tunAutoTeardownInFlight`，并用 `defer` 单点复位；不要用 `withEngineBusy`（fire-and-forget 会在 teardown 完成前过早放行用户 toggle）
+- 任何 `engine.isBusy = true` 后的 `await` 路径都必须 `defer { engine.isBusy = false }`，防止 `CancellationError` 把锁永久卡死（见 `handleNetworkChange`）
+- `MihomoClient.applyController(fromConfigAt:)` 从当前 `config.yaml` 发现 controller；不要硬编码 `127.0.0.1:9092`
+- 配置编辑大量使用轻量行扫描，不是完整 YAML parser。改动时保持 `EngineControl.readConfigFile`、`proxyProviders`、`ConfigStore.preview`、`YamlRuleASTEngine` 行为一致
+- `ConfigStore` 把订阅 URL 存 Keychain，manifest 会清空 URL。禁止把真实订阅/节点/token 写进仓库
 
 ## Helper / TUN 高风险边界
 
-涉及以下文件时，优先做小步、可解释的改动：
+涉及这些文件时做小步、可解释改动：
 
 - `Sources/XPC/XPCManager.swift`
 - `Sources/XPC/EngineControl.swift`
 - `Sources/XPC/ProxyManager.swift`
 - `Sources/XPC/HelperProtocol.swift`
 - `Sources/Helper/main.swift`
+- `Sources/Model/Models.swift`（`NetScanner`）
+- `Sources/Model/AppModel.swift` / `AppModel+Config.swift`（自愈与并发）
 
-必须保留的安全属性与路由规则：
+必须保留的安全与路由规则：
 
-- Helper 只接受 ClashHalo `.app` 客户端连接；旧 ClashPow 路径只作为迁移兼容保留。
-- root 启动 mihomo 时只允许 canonical kernel path。
-- `installDaemon()` 生成 LaunchDaemon plist；不要再维护另一个打包时 plist 作为第二真相源。
-- `mihomo` 签名不要随意改成 hardened runtime；当前脚本特意避免影响 TUN/utun。
-- TUN 是运行时能力，启动时会强制 `tun.enable: false`，只应通过 UI/Helper 流程开启。
-- **状态驱动静态路由绕行**：系统存在其他非 `proxyTun` 的活跃 `utun` 接口（如 Tailscale）时，由 `AppModel+Config.swift` 中的 `refreshConfigs()` 自动对齐注入状态，通过特权 Helper 往系统路由表中添加 `/sbin/route -n add` 静态路由指回原虚拟接口（防止默认代理路由抢占）；关闭 TUN 或客户端 invalidated 断开连接时，Helper 必须自动通过 `addedRoutes` 清空注入的路由。
+- Helper 只接受 ClashHalo `.app` 客户端；旧 ClashPow 路径仅迁移兼容
+- root 启动 mihomo 只允许 canonical kernel path
+- `installDaemon()` 生成 LaunchDaemon plist；不要再维护第二份打包时 plist 真相源
+- `mihomo` 签名不要随意 hardened runtime；会影响 TUN/utun
+- TUN 是运行时能力：启动时强制 `tun.enable: false`，只应通过 UI/Helper 流程开启
+- Helper 版本唯一来源是 `kSharedHelperVersion`（`HelperProtocol.swift`），并同步 `Helper-Info.plist` 的 `CFBundleVersion`。需要强制升级旧 Helper 时才 bump
+- 系统代理 bypass 唯一来源是 `kProxyBypassDomains`（约 86 条：localhost/mDNS/RFC1918/link-local/CGNAT）。Helper、本地 fallback、`reconcileProxyBypassIfNeeded`、网络拓扑视图都只引用它
+- bypass 自愈在 GUI 进程本地写 `networksetup`，不要再经可能过时的 Helper 覆盖
+
+### TUN 自愈链路（v1.0.7 → v1.0.15）
+
+判定与清理是分层的，改一处必须想整条链：
+
+1. **识别 mihomo TUN**：`NetScanner.mihomoTunInterface()` 用 `198.18.x.x` 找 `proxyTun` 候选
+2. **多候选**：路由表所有权仲裁（`allRoutes()`），选被路由引用的活接口；判 zombie 则走接口丢失自愈
+3. **单候选**：保守双判据才判 zombie——`isUp == false` **且** `route -n get 198.18.0.1` 目标接口不是该 utun；否则信任返回（宁可漏关一拍，不误关健康 TUN）
+4. **活跃判定三重校验**：配置开启 + root 运行 + 接口真实存在
+5. **逻辑关闭**：`refreshConfigs`（约 3s）与 `verifyTUNConfig`（约 30s）两条 auto-teardown 持 `isBusy` + `tunAutoTeardownInFlight`，调用 `applyTUNState(false)` 并恢复 DNS
+6. **物理清理兜底**：逻辑关闭后若 `hasDownedMihomoTun()`（`proxyTun && !isUp`）为真，经 XPC 调 `cleanupTUNResidual`（`ifconfig down` + 删 IP + route flush）。门控避免误清仍 UP 的同址段 VPN（如 Shadowrocket）
+7. **旧 Helper 共存**：无 `cleanupTUNResidual` 时新鲜连接超时返回 nil，只记日志、不误操作
+
+### 网络拓扑 / 静态路由绕行
+
+系统存在其他非 `proxyTun` 活跃 `utun`（如 Tailscale）时，`refreshConfigs()` 对齐注入状态，经 Helper 执行 `/sbin/route -n add` 静态路由指回原虚拟接口。关闭 TUN 或客户端 invalidated 时，Helper 必须通过 `addedRoutes` 清空注入路由。
 
 ## UI 约定
 
-- 优先使用 `DS.Palette`、`DS.Spacing`、`DS.Radius`、`DS.Icon` 和 `Font.ds*`。
-- 新页面尽量复用 `PageHead`、`Card` 等现有组件。
-- 当前主窗口强制 dark scheme。不要只为单个页面临时引入浅色专用颜色。
-- `.githooks/pre-commit` 会警告 UI 中重新引入 raw `.font(.system(size: N))` 或偏离字体阶梯的 semantic font。
-- 这是工具型桌面应用，界面应密集、稳定、便于扫描；避免营销页式 hero、装饰性大卡片或与既有风格不一致的视觉重做。
+规范：`Docs/design.md`。实现真相源：`Sources/UI/DesignTokens.swift` + 共享组件（`PageHead` / `Card` / `ContentUnavailable`）。
 
-## 打包与发布注意事项
+- 颜色/间距/圆角/图标一律走 `DS.Palette`、`DS.Spacing`、`DS.Radius`、`DS.Icon`、`Font.ds*`
+- 表面层级：`windowBg` / `sidebarBg` / `cardBg` / `controlBg` / `chromeBg`；卡片用 `dsCardChrome()`（Light 细阴影，Dark 靠抬升色）
+- 主题跟随系统 Appearance，完整 Light/Dark；禁止页面级 `preferredColorScheme`
+- 网络拓扑角色色用 `rolePhysical` / `roleTailscale` / `roleZerotier` / `roleOray` / `roleOther`（`proxyTun` 用 `accent`）
+- 复用 `PageHead`、`Card`、form rows；工具型密度，避免营销式 hero
+- pre-commit 会警告 raw `.font(.system(size: N))` 与字体阶梯漂移
 
-- `make.sh` 是当前更贴近实际的本地打包脚本，产物名使用 ClashHalo。
-- `Scripts/package.sh` / `Scripts/notarize.sh` 是通用签名和 notarize 脚本，依赖外部证书和环境变量。
-- `make-dmg.sh` 依赖 `.dmg-temp` 目录和 Finder/AppleScript，更多是 DMG 外观处理脚本。
-- README 中版本号、CHANGELOG 和 Xcode 工程中的 `MARKETING_VERSION` 可能需要同步，改版本时一起检查。
+## 版本与发布
+
+改版本时一起核对：
+
+- `ClashHalo.xcodeproj`：`MARKETING_VERSION` / `CURRENT_PROJECT_VERSION`
+- `Sources/XPC/HelperProtocol.swift`：`kSharedHelperVersion`（仅在 Helper 协议/行为需要强制升级时 bump）
+- `Helper-Info.plist`：`CFBundleVersion`
+- `CHANGELOG.md`、`README.md`（README 版本号可能滞后，改发版时同步）
+
+打包：
+
+- `make.sh`：本地真实打包主路径
+- `Scripts/package.sh` / `Scripts/notarize.sh`：外部证书与环境变量
+- `make-dmg.sh`：DMG 外观脚本，依赖 `.dmg-temp` 与 Finder/AppleScript
 
 ## 安全与隐私
 
-- 不要提交真实代理节点、订阅 URL、API token、账号密码或私钥。
-- `.githooks/pre-commit` 会阻止明显 secret、UUID、私钥等内容；如果命中，不要简单绕过，先确认是否应改成示例值。
-- 日志和用户提示可用中文，保持现有风格。
+- 不提交真实代理节点、订阅 URL、API token、账号密码、私钥
+- pre-commit 命中 secret/UUID/私钥时不要绕过，先改成示例值
+- 日志和用户提示可用中文，保持现有风格
 
 ## 修改建议
 
-开始任务前：
+开始前：
 
-1. 用 `rg --files` 和 `rg` 定位相关文件。
-2. 先读现有实现，再按当前分层放置改动。
-3. 检查是否触及系统代理、DNS、LaunchDaemon、root mihomo 或用户配置文件。
+1. `rg --files` / `rg` 定位相关文件
+2. 先读现有实现，再按分层落改动
+3. 检查是否触及系统代理、DNS、LaunchDaemon、root mihomo、用户配置、路由表
 
-完成任务前：
+完成前：
 
-1. 跑适当的 `xcodebuild` 验证。
-2. 若改 UI，检查是否仍使用设计令牌。
-3. 若改配置热加载/TUN/Gateway，说明验证范围和未实际操作的系统级步骤。
-4. 保持改动聚焦，不做无关重命名、格式化或大规模重构。
+1. 跑适当的 `xcodebuild` 验证
+2. 改 UI 时确认仍用设计令牌，并检查 light/dark 两端
+3. 改配置热加载 / TUN / Gateway / bypass / Helper 协议时，写清验证范围与未实际操作的系统级步骤
+4. 改动聚焦；不做无关重命名、格式化或大规模重构
+5. 若改 XPC 协议，评估是否需要 bump `kSharedHelperVersion`，以及新旧 Helper 共存行为

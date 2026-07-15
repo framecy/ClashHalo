@@ -14,11 +14,12 @@ struct SubscriptionsPage: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            PageHead(title: "订阅", desc: "\(providers.count) 个 proxy-providers · 节点来源") {
+            PageToolbar {
                 Button { Task { await updateAll() } } label: { Label("全部更新", systemImage: "arrow.clockwise") }
-                    .controlSize(.small)
+                    .buttonStyle(.bordered)
                 Button { editName = nil; fName = ""; fURL = ""; showSheet = true } label: { Label("添加订阅", systemImage: "plus") }
-                    .controlSize(.small).tint(DS.Palette.accent).buttonStyle(.borderedProminent)
+                    .buttonStyle(.borderedProminent)
+                    .tint(DS.Palette.accent)
             }
             ScrollView {
                 VStack(spacing: DS.Spacing.m) {
@@ -44,15 +45,22 @@ struct SubscriptionsPage: View {
             Text(editName == nil ? "添加订阅" : "编辑订阅").font(.dsCardLabel)
             VStack(alignment: .leading, spacing: DS.Spacing.s) {
                 Text("名称").font(.dsBody).foregroundColor(.secondary)
-                TextField("如 US-Premium（不含空格）", text: $fName).textFieldStyle(.roundedBorder).font(.dsMono)
+                TextField("如 US-Premium（不含空格）", text: $fName)
+                    .inputStyle()
+                    .font(.dsMono)
                 Text("订阅链接").font(.dsBody).foregroundColor(.secondary)
-                TextField("https://…", text: $fURL).textFieldStyle(.roundedBorder).font(.dsMono)
+                TextField("https://…", text: $fURL)
+                    .inputStyle()
+                    .font(.dsMono)
             }
             HStack {
                 Button("取消") { showSheet = false }
+                    .controlSize(.small)
                 Spacer()
                 Button("保存") { Task { await save() } }
-                    .buttonStyle(.borderedProminent).tint(DS.Palette.accent)
+                    .buttonStyle(.borderedProminent)
+                    .tint(DS.Palette.accent)
+                    .controlSize(.small)
                     .disabled(fName.trimmingCharacters(in: .whitespaces).isEmpty || !fURL.hasPrefix("http"))
             }
         }.padding(DS.Spacing.xl).frame(width: 460)
@@ -65,7 +73,7 @@ struct SubscriptionsPage: View {
                     Image(systemName: "icloud.fill").foregroundColor(DS.Palette.accent)
                     Text(p.name).font(.dsBody).fontWeight(.semibold)
                     Text("\(p.proxies?.count ?? 0) 节点").font(.dsBody)
-                        .padding(.horizontal, 6).padding(.vertical, 1)
+                        .padding(.horizontal, DS.Spacing.s - 2).padding(.vertical, 1)
                         .background(Capsule().fill(DS.Palette.hairline))
                     Spacer()
                     if busy.contains(p.name) {
@@ -83,7 +91,7 @@ struct SubscriptionsPage: View {
                     let used = (s.Upload ?? 0) + (s.Download ?? 0)
                     let frac = min(1, Double(used) / Double(total))
                     VStack(alignment: .leading, spacing: 3) {
-                        ProgressView(value: frac).tint(frac > 0.85 ? .red : DS.Palette.accent)
+                        ProgressView(value: frac).tint(frac > 0.85 ? DS.Palette.error : DS.Palette.accent)
                         HStack {
                             Text("\(fmtBytes(Double(used))) / \(fmtBytes(Double(total)))").font(.dsMono).foregroundColor(.secondary)
                             Spacer()

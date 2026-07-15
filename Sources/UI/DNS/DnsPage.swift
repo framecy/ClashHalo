@@ -31,13 +31,16 @@ struct DnsPage: View {
 
                     Card(title: "DNS 解析测试", icon: "magnifyingglass") {
                         VStack(alignment: .leading, spacing: 8) {
-                            HStack {
+                            HStack(spacing: DS.Spacing.s) {
                                 TextField("输入域名，如 google.com", text: $query)
-                                    .textFieldStyle(.roundedBorder)
+                                    .inputStyle()
                                     .onSubmit { Task { await resolve() } }
                                 Button { Task { await resolve() } } label: {
                                     if resolving { ProgressView().controlSize(.small) } else { Text("解析") }
-                                }.disabled(query.isEmpty || resolving)
+                                }
+                                .buttonStyle(.bordered)
+                                .controlSize(.small)
+                                .disabled(query.isEmpty || resolving)
                             }
                             if !result.isEmpty {
                                 Text(result).font(.dsMono).foregroundColor(.secondary)
