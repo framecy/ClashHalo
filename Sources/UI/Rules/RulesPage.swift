@@ -17,14 +17,8 @@ struct RulesPage: View {
         let rows = model.nodes.filter(matches)
         
         VStack(spacing: 0) {
-            PageHead(title: "分流规则", desc: "\(model.nodes.count) 条 · 配置直编模式") {
-                Button { reloadModel() } label: { Label("刷新", systemImage: "arrow.clockwise") }
-                    .controlSize(.small)
-            }
-
-            // 工具栏
-            HStack(spacing: DS.Spacing.m) {
-                HStack(spacing: 6) {
+            HStack(alignment: .center, spacing: DS.Spacing.m) {
+                HStack(spacing: DS.Spacing.s) {
                     Image(systemName: "magnifyingglass")
                         .foregroundColor(.secondary)
                         .font(.dsBody)
@@ -32,19 +26,9 @@ struct RulesPage: View {
                         .textFieldStyle(.plain)
                         .font(.dsBody)
                 }
-                .padding(.horizontal, DS.Spacing.m)
-                .padding(.vertical, 6)
-                .background(
-                    RoundedRectangle(cornerRadius: DS.Radius.control)
-                        .fill(DS.Palette.cardBg)
-                )
-                .overlay(
-                    RoundedRectangle(cornerRadius: DS.Radius.control)
-                        .stroke(DS.Palette.border, lineWidth: 1)
-                )
-                .frame(maxWidth: 320)
+                .dsSearchFieldChrome(maxWidth: 320)
 
-                Spacer()
+                Spacer(minLength: 0)
 
                 if !selection.isEmpty {
                     Text("已选 \(selection.count) 项")
@@ -56,14 +40,14 @@ struct RulesPage: View {
                         saveAndReloadKernel()
                     }
                     .buttonStyle(.bordered)
-                    .controlSize(.small)
+                    .dsToolbarControl()
 
                     Button("禁用") {
                         model.toggleNodes(ids: selection, isEnabled: false)
                         saveAndReloadKernel()
                     }
                     .buttonStyle(.bordered)
-                    .controlSize(.small)
+                    .dsToolbarControl()
 
                     Button("删除") {
                         model.deleteNodes(ids: selection)
@@ -71,9 +55,13 @@ struct RulesPage: View {
                         saveAndReloadKernel()
                     }
                     .buttonStyle(.bordered)
-                    .controlSize(.small)
-                    .tint(.red)
+                    .tint(DS.Palette.error)
+                    .dsToolbarControl()
                 }
+
+                Button { reloadModel() } label: { Label("刷新", systemImage: "arrow.clockwise") }
+                    .buttonStyle(.bordered)
+                    .dsToolbarControl()
 
                 Button(action: {
                     editingNode = nil
@@ -82,12 +70,12 @@ struct RulesPage: View {
                     Label("添加规则", systemImage: "plus")
                 }
                 .buttonStyle(.borderedProminent)
-                .controlSize(.small)
+                .dsToolbarControl()
             }
-            .padding(.horizontal, DS.Spacing.l)
+            .padding(.horizontal, DS.Layout.pageContentInset)
             .padding(.vertical, DS.Spacing.m)
-            .background(DS.Palette.cardBg.opacity(0.5))
-            
+            .background(DS.Palette.chromeBg)
+
             Divider()
 
             if let err = model.errorMessage {
@@ -142,7 +130,7 @@ struct RulesPage: View {
             .labelsHidden()
             
             Text(r.type.rawValue).font(.dsBodyMedium)
-                .padding(.horizontal, 6).padding(.vertical, 2)
+                .padding(.horizontal, DS.Spacing.s - 2).padding(.vertical, 2)
                 .background(Capsule().fill(DS.Palette.hairline))
                 .frame(width: 150, alignment: .leading)
                 .opacity(r.isEnabled ? 1.0 : 0.5)
@@ -158,7 +146,7 @@ struct RulesPage: View {
             Text(actionStr).font(.dsBody).foregroundColor(DS.Palette.accent)
                 .opacity(r.isEnabled ? 1.0 : 0.5)
         }
-        .padding(.vertical, 4)
+        .padding(.vertical, DS.Spacing.xs)
         .contentShape(Rectangle())
         .contextMenu {
             Button {
