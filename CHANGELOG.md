@@ -2,6 +2,28 @@
 
 本项目所有重要变更记录于此。格式参考 [Keep a Changelog](https://keepachangelog.com/),版本遵循语义化版本。
 
+## [1.1.0] - 2026-07-16
+
+设计系统与 Shell 布局主版本：全页面统一 32pt 控件高度、侧栏/内容区 chrome 对齐、空状态与关于页重做。Helper 协议未变，仍为 `1.0.15`（无需强制升级旧 Helper）。
+
+### Added
+- **统一设计系统落地**：`Docs/design.md` + `DesignTokens.swift` 成为 UI 真相源；自绘 `DSSegmentedControl` / `DSMenuPicker` / `dsButton(...)` 固定 32pt / 圆角 6pt，替换原生 bezel 漂移。
+- **跨栏 chrome 对齐**：新增 `DS.Layout.chromeHeight`（`m + controlHeight + m` = 56）；侧栏顶栏、PageToolbar、连接/日志/规则/设置/网络顶栏同高；分割线统一通栏 `Divider().overlay(separator)`。
+- **Debug 构建脚本**：`Scripts/build-debug.sh` 本地验证不 bump build 号。
+
+### Changed
+- **侧栏导航重设计**：恢复「监控 / 代理 / 配置」分组；首组「监控」额外顶距；行高与组间距按 8pt 网格；footer 系统代理/TUN 放入 `controlBg` 抬升卡；侧栏宽度 212/236/280。
+- **配置页卡片**：顶距离开 chrome 分割线；`profileCardMinHeight` 统一卡片高度；header/footer 锁 32pt。
+- **网络拓扑页**：内容区补顶距，与配置页节奏一致。
+- **设置 → 关于**：从居中营销 hero 改为工具型 Card 堆叠（身份 / 版本明细 / 更新 / 链接 / 说明）。
+- **空状态统一**：`ContentUnavailable` 自身垂直居中填满；连接/代理/日志/订阅/规则/配置空态与内容态互斥，不再塞进 ScrollView 或叠魔术 `padding.top`。
+- **网络页 DNS 动作行**：挪到顶栏分割线下方，避免顶栏高度因 tab 抖动与侧栏错位。
+
+### Fixed
+- 侧栏与内容区分割线无法水平对齐。
+- 配置卡片贴顶、有/无 CTA 高度不一致。
+- 连接/代理/日志/订阅空状态图标位置漂移。
+
 ## [1.0.15] - 2026-07-14
 
 本次发布涵盖 v1.0.7 release 之后的全部修复：TUN 自愈链路加固、bypass 探测稳健化、并发守卫防泄漏。Helper 内核服务版本 `1.0.14 → 1.0.15`，触发已安装旧 Helper 强制升级。
