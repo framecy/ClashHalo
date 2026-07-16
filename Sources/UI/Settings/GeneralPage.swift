@@ -688,7 +688,11 @@ struct MenuBarPanel: View {
                 .frame(width: 16)
             Text(label).font(.dsBodyMedium).foregroundColor(isOn.wrappedValue ? .primary : .secondary)
             Spacer()
-            Toggle("", isOn: isOn).toggleStyle(.switch).controlSize(.mini).labelsHidden()
+            Toggle("", isOn: isOn)
+                .toggleStyle(.switch)
+                .controlSize(.mini)
+                .labelsHidden()
+                .tint(accent ? DS.Palette.accent : DS.Palette.ok)
         }
     }
 
