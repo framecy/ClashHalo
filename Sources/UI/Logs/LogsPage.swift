@@ -16,13 +16,12 @@ struct LogsPage: View {
         }
         VStack(spacing: 0) {
             HStack(alignment: .center, spacing: DS.Spacing.m) {
-                Picker("", selection: Binding(get: { VM.logLevel }, set: { VM.changeLogLevel($0) })) {
-                    Text("DEBUG").tag("debug"); Text("INFO").tag("info")
-                    Text("WARN").tag("warning"); Text("ERROR").tag("error")
-                }
-                .pickerStyle(.segmented)
-                .labelsHidden()
-                .dsToolbarControl()
+                DSSegmentedControl(selection: Binding(get: { VM.logLevel }, set: { VM.changeLogLevel($0) }), choices: [
+                    DSChoice("DEBUG", "debug"),
+                    DSChoice("INFO", "info"),
+                    DSChoice("WARN", "warning"),
+                    DSChoice("ERROR", "error")
+                ])
                 .frame(width: 240)
                 .help("日志订阅级别（服务端过滤）。默认 WARN，避免每条连接刷屏。")
 
@@ -40,11 +39,11 @@ struct LogsPage: View {
                     Button { paused.toggle(); if paused { frozen = VM.logs } } label: {
                         Label(paused ? "继续" : "暂停", systemImage: paused ? "play.fill" : "pause.fill")
                     }
-                    .buttonStyle(.bordered)
-                    .dsToolbarControl()
+                    .dsButton()
+
                     Button { exportLogs(rows) } label: { Label("导出", systemImage: "square.and.arrow.up") }
-                        .buttonStyle(.bordered)
-                        .dsToolbarControl()
+                        .dsButton()
+
                 }
 
                 HStack(spacing: DS.Spacing.s - 2) {
@@ -118,22 +117,22 @@ struct LogsPage: View {
     var logLevel: String {
         (M.configs["log-level"] as? String) ?? "warning"
     }
-    
+
     private static let logDF: DateFormatter = {
         let f = DateFormatter()
         f.dateFormat = "HH:mm:ss"
         return f
     }()
-    
+
     func start() {
         guard api.reachable else { return }
-        
+
         logs.removeAll()
         logBuffer.removeAll()
-        
+
         // Subscribe to logs stream
         subscribeLogs()
-        
+
         // Timer for flushing logs in batches (debounce)
         logFlushTimer = Timer.scheduledTimer(withTimeInterval: 0.5, repeats: true) { [weak self] _ in
             Task { @MainActor in
@@ -141,18 +140,18 @@ struct LogsPage: View {
             }
         }
     }
-    
+
     func stop() {
         logWS?.cancel()
         logWS = nil
         logFlushTimer?.invalidate()
         logFlushTimer = nil
-        
+
         // Completely clear memory
         logs.removeAll(keepingCapacity: false)
         logBuffer.removeAll(keepingCapacity: false)
     }
-    
+
     func changeLogLevel(_ level: String) {
         guard level != logLevel else { return }
 
@@ -166,7 +165,7 @@ struct LogsPage: View {
             subscribeLogs()
         }
     }
-    
+
     private func subscribeLogs() {
         guard api.reachable else { return }
         logWS = api.stream("/logs?level=\(logLevel)", type: LogTick.self) { [weak self] l in
@@ -175,12 +174,12 @@ struct LogsPage: View {
             }
         }
     }
-    
+
     private func onLog(_ l: LogTick) {
         logSeq += 1
         logBuffer.append(Log(id: logSeq, time: Self.logDF.string(from: Date()), level: l.type, text: l.payload))
     }
-    
+
     private func flushLogs() {
         guard !logBuffer.isEmpty else { return }
 

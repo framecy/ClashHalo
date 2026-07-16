@@ -9,12 +9,10 @@ struct DashboardPage: View {
     @State private var range: Range = .today
 
     private var rangePicker: some View {
-        Picker("", selection: $range) {
-            Text("今日").tag(Range.today); Text("本月").tag(Range.month)
-        }
-        .pickerStyle(.segmented)
-        .labelsHidden()
-        .dsToolbarControl()
+        DSSegmentedControl(selection: $range, choices: [
+            DSChoice("今日", Range.today),
+            DSChoice("本月", Range.month)
+        ])
         .frame(width: 120)
     }
 
@@ -34,8 +32,8 @@ struct DashboardPage: View {
         } label: {
             Label("面板", systemImage: "safari")
         }
-        .buttonStyle(.bordered)
-        .dsToolbarControl()
+        .dsButton()
+
     }
 
     var body: some View {
@@ -81,14 +79,13 @@ struct DashboardPage: View {
                         }
                         GridRow {
                             Card(title: "流量趋势", icon: "chart.xyaxis.line", actions: {
-                                Picker("", selection: $M.trafficRefreshInterval) {
-                                    Text("1s").tag(1.0)
-                                    Text("3s").tag(3.0)
-                                    Text("5s").tag(5.0)
-                                    Text("10s").tag(10.0)
-                                }.pickerStyle(.menu)
-                                    .frame(width: 72, height: 28)
-                                    .controlSize(.small)
+                                DSMenuPicker(selection: $M.trafficRefreshInterval, choices: [
+                                    DSChoice("1s", 1.0),
+                                    DSChoice("3s", 3.0),
+                                    DSChoice("5s", 5.0),
+                                    DSChoice("10s", 10.0)
+                                ])
+                                .frame(width: 72)
                             }) {
                                 VStack(spacing: 0) {
                                     HStack(spacing: DS.Spacing.l + 2) {
@@ -148,7 +145,7 @@ struct DashboardPage: View {
                         }
                         .frame(height: DS.Layout.cardRow)
                         .frame(maxWidth: .infinity)
-                        
+
                         Card(title: "热门节点", icon: "server.rack") {
                             RankList(rows: topNodes, accent: DS.Palette.warn, mode: .bytes).equatable()
                         }
@@ -197,25 +194,25 @@ struct TrafficDistributionView: View, Equatable {
     let proxy: Double
     let reject: Double
     let accent: Color
-    
+
     static func == (lhs: Self, rhs: Self) -> Bool {
         lhs.direct == rhs.direct && lhs.proxy == rhs.proxy && lhs.reject == rhs.reject && lhs.accent == rhs.accent
     }
-    
+
     struct TrafficSlice: Identifiable {
         let name: String
         let value: Double
         let color: Color
         var id: String { name }
     }
-    
+
     var body: some View {
         let data: [TrafficSlice] = [
             TrafficSlice(name: "直连", value: Double(direct), color: DS.Palette.info),
             TrafficSlice(name: "代理", value: Double(proxy), color: accent),
             TrafficSlice(name: "拦截", value: Double(reject), color: DS.Palette.error)
         ]
-        
+
         return HStack(spacing: 32) {
             ZStack {
                 Canvas { context, size in
@@ -228,14 +225,14 @@ struct TrafficDistributionView: View, Equatable {
                         let lineWidth = radius * 0.28
                         let strokeRadius = radius - lineWidth / 2
                         path.addArc(center: center, radius: strokeRadius, startAngle: .zero, endAngle: .degrees(360), clockwise: false)
-                        context.stroke(path, with: .color(Color.secondary.opacity(0.2)), style: StrokeStyle(lineWidth: lineWidth))
+                        context.stroke(path, with: .color(DS.Palette.hairline), style: StrokeStyle(lineWidth: lineWidth))
                         return
                     }
                     let center = CGPoint(x: size.width / 2, y: size.height / 2)
                     let radius = min(size.width, size.height) / 2
                     let lineWidth = radius * 0.28
                     let strokeRadius = radius - lineWidth / 2
-                    
+
                     var startAngle = Angle.degrees(-90)
                     for slice in data {
                         guard slice.value > 0 else { continue }
@@ -256,7 +253,7 @@ struct TrafficDistributionView: View, Equatable {
                         .lineLimit(1)
                         .minimumScaleFactor(0.5)
                 }
-                .padding(.horizontal, 24)
+                .padding(.horizontal, DS.Spacing.xxl)
             }
             .frame(width: 120, height: 120)
 
@@ -269,7 +266,7 @@ struct TrafficDistributionView: View, Equatable {
         .padding(.vertical, DS.Spacing.s)
         .padding(.horizontal, DS.Spacing.s)
     }
-    
+
     private func legendRow(_ l: String, _ v: String, _ c: Color) -> some View {
         HStack(spacing: DS.Spacing.m) {
             Circle().fill(c).frame(width: 8, height: 8)
@@ -310,11 +307,11 @@ struct RankList: View, Equatable {
     let rows: [Rank]
     let accent: Color
     let mode: Mode
-    
+
     static func == (lhs: Self, rhs: Self) -> Bool {
         lhs.rows == rhs.rows && lhs.accent == rhs.accent && lhs.mode == rhs.mode
     }
-    
+
     var body: some View {
         let mx = max(rows.first?.value ?? 1, 1)
         VStack(spacing: DS.Spacing.m - 2) {
@@ -414,18 +411,18 @@ struct MiniStat: View {
 struct HourlyBars: View, Equatable {
     let values: [Double]
     let accent: Color
-    
+
     static func == (lhs: Self, rhs: Self) -> Bool {
         lhs.values == rhs.values && lhs.accent == rhs.accent
     }
-    
+
     var body: some View {
         let mx = max(values.max() ?? 1, 1)
         GeometryReader { g in
             let bw = (g.size.width - CGFloat(values.count - 1) * 4) / CGFloat(values.count)
             HStack(alignment: .bottom, spacing: 4) {
                 ForEach(values.indices, id: \.self) { i in
-                    RoundedRectangle(cornerRadius: 3, style: .continuous)
+                    RoundedRectangle(cornerRadius: DS.Radius.bar, style: .continuous)
                         .fill(LinearGradient(colors: [accent, accent.opacity(0.5)], startPoint: .top, endPoint: .bottom))
                         .frame(width: max(2, bw), height: max(2, g.size.height * CGFloat(values[i]/mx)))
                 }
@@ -444,7 +441,7 @@ struct TrafficSparkline: View, Equatable {
     let down: [Double]
     let up: [Double]
     let accent: Color
-    
+
     static func == (lhs: Self, rhs: Self) -> Bool {
         lhs.down == rhs.down && lhs.up == rhs.up && lhs.accent == rhs.accent
     }
@@ -454,7 +451,7 @@ struct TrafficSparkline: View, Equatable {
             guard down.count > 1, size.width > 0 else { return }
             let maxV = max(down.max() ?? 1, up.max() ?? 1, 1)
             let stepX = size.width / CGFloat(down.count - 1)
-            
+
             // Draw download line (red)
             var downPath = Path()
             for (i, v) in down.enumerated() {
@@ -463,7 +460,7 @@ struct TrafficSparkline: View, Equatable {
                 if i == 0 { downPath.move(to: CGPoint(x: x, y: y)) } else { downPath.addLine(to: CGPoint(x: x, y: y)) }
             }
             context.stroke(downPath, with: .color(DS.Palette.download.opacity(0.9)), lineWidth: 1.5)
-            
+
             // Draw upload line (accent)
             var upPath = Path()
             for (i, v) in up.enumerated() {

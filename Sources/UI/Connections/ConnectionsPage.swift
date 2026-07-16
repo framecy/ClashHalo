@@ -6,17 +6,17 @@ struct ConnectionsPage: View {
     @State private var q = ""
     @State private var showConfirmDisconnect = false
     @State private var selectedTab = 0
-    
+
     struct RuleEditContext: Identifiable {
         let id = UUID()
         let node: RuleNode?
         let conn: Conn
     }
-    
+
     // Sort & Selection
     @State private var sortOrder = [KeyPathComparator(\Conn.downRate, order: .reverse)]
     @State private var selection: Conn.ID? = nil
-    
+
     // Rule Editor
     @StateObject private var ruleModel = RuleEditorModel(targetFilePath: "")
     @State private var activeRuleEdit: RuleEditContext? = nil
@@ -30,13 +30,10 @@ struct ConnectionsPage: View {
     var body: some View {
         VStack(spacing: 0) {
             HStack(alignment: .center, spacing: DS.Spacing.m) {
-                Picker("", selection: $selectedTab) {
-                    Text("连接中").tag(0)
-                    Text("已关闭").tag(1)
-                }
-                .pickerStyle(.segmented)
-                .labelsHidden()
-                .dsToolbarControl()
+                DSSegmentedControl(selection: $selectedTab, choices: [
+                    DSChoice("连接中", 0),
+                    DSChoice("已关闭", 1)
+                ])
                 .frame(width: 160)
 
                 HStack(spacing: DS.Spacing.s) {
@@ -54,8 +51,8 @@ struct ConnectionsPage: View {
                 Button(role: .destructive) { showConfirmDisconnect = true } label: {
                     Label("全部断开", systemImage: "xmark.circle")
                 }
-                .buttonStyle(.bordered)
-                .dsToolbarControl()
+                .dsButton(.destructive)
+
             }
             .padding(.horizontal, DS.Layout.pageContentInset)
             .padding(.vertical, DS.Spacing.m)
@@ -156,7 +153,7 @@ struct ConnectionsPage: View {
                 } else {
                     ruleModel.addNode(newNode)
                 }
-                
+
                 if ruleModel.save() {
                     M.reloadActiveConfig()
                     M.closeConnection(id: ctx.conn.id)
@@ -172,20 +169,20 @@ struct ConnectionsPage: View {
             || c.chain.localizedCaseInsensitiveContains(q)
             || c.rule.localizedCaseInsensitiveContains(q)
     }
-    
+
     private func prepareRuleEdit(for c: Conn) {
         let parts = c.rule.components(separatedBy: ",")
         var matchedExisting: RuleNode? = nil
-        
+
         let rType = parts.count >= 1 ? parts[0] : ""
         let rMatch = parts.count >= 2 ? parts[1] : ""
-        
+
         if parts.count >= 2 {
             if let existing = ruleModel.nodes.first(where: { $0.type.rawValue == rType && $0.match == rMatch }) {
                 matchedExisting = existing
             }
         }
-        
+
         var finalNode: RuleNode
         if let existing = matchedExisting {
             finalNode = existing
@@ -225,10 +222,10 @@ struct ConnectionsPage: View {
                 type = isIP ? .ipCidr : .domainSuffix
                 match = isIP ? "\(c.dstIP)/32" : c.host
             }
-            
+
             finalNode = RuleNode(type: type, match: match, action: .proxy, sort: 0, proxyGroup: c.group, note: c.process != "—" ? c.process : "")
         }
-        
+
         activeRuleEdit = RuleEditContext(node: finalNode, conn: c)
     }
 }
@@ -237,21 +234,21 @@ struct ConnectionsPage: View {
 struct ConnDetailCard: View {
     let conn: Conn
     let onClose: () -> Void
-    
+
     var body: some View {
-        VStack(alignment: .leading, spacing: 14) {
+        VStack(alignment: .leading, spacing: DS.Spacing.m) {
             HStack {
                 Label("连接详情", systemImage: "info.circle.fill")
-                    .font(.headline)
+                    .font(.dsSection)
                     .foregroundColor(.primary)
                 Spacer()
                 Button(action: onClose) { Image(systemName: "xmark.circle.fill").foregroundColor(.secondary) }
                     .buttonStyle(.plain)
             }
-            
+
             Divider()
-            
-            Grid(alignment: .leading, horizontalSpacing: 16, verticalSpacing: 10) {
+
+            Grid(alignment: .leading, horizontalSpacing: DS.Spacing.l, verticalSpacing: DS.Spacing.s) {
                 GridRow { Text("ID").foregroundColor(.secondary); Text(conn.id).font(.dsMono).lineLimit(1).truncationMode(.middle) }
                 GridRow { Text("目标域名").foregroundColor(.secondary); Text(conn.host).font(.dsBodyMedium).textSelection(.enabled) }
                 GridRow { Text("目标 IP").foregroundColor(.secondary); Text("\(conn.dstIP):\(conn.port)").font(.dsMono).textSelection(.enabled) }
@@ -269,15 +266,15 @@ struct ConnDetailCard: View {
         }
         .padding(DS.Spacing.xl)
         .frame(width: 340)
-        .background(.regularMaterial)
+        .background(DS.Palette.overlayBg)
         .clipShape(RoundedRectangle(cornerRadius: DS.Radius.panel, style: .continuous))
-        .shadow(color: DS.Palette.cardShadow, radius: 16, x: 0, y: 8)
+        .shadow(color: DS.Palette.cardShadow, radius: 8, x: 0, y: 2)
         .overlay(
             RoundedRectangle(cornerRadius: DS.Radius.panel, style: .continuous)
                 .stroke(DS.Palette.border, lineWidth: 1)
         )
     }
-    
+
     private func formatStartTime(_ isoString: String) -> String {
         let formatter = Self.isoFormatter
         if let date = formatter.date(from: isoString) {
@@ -301,16 +298,16 @@ struct ConnDetailCard: View {
 @MainActor final class ConnectionsViewModel: ObservableObject {
     @Published var conns: [Conn] = []
     @Published var closedConnections: [Conn] = []
-    
+
     private var pollTimer: Timer?
     private let api = MihomoClient.shared
     private let M = AppModel.shared
 
     func start() {
         guard api.reachable else { return }
-        
+
         M.isConnectionsPageActive = true
-        
+
         // HTTP polling instead of WebSocket — avoids kernel pushing full-payload
         // JSON every 1s which causes severe memory churn under high connection count.
         // Poll at 1.5s gives near-realtime UX while halving allocation frequency.
@@ -322,18 +319,18 @@ struct ConnDetailCard: View {
         // Immediate first fetch
         Task { await poll() }
     }
-    
+
     func stop() {
         pollTimer?.invalidate()
         pollTimer = nil
-        
+
         M.isConnectionsPageActive = false
-        
+
         // Completely reclaim memory arrays when not on this page
         conns.removeAll(keepingCapacity: false)
         closedConnections.removeAll(keepingCapacity: false)
     }
-    
+
     private func poll() async {
         guard api.reachable else { return }
         do {
@@ -343,11 +340,11 @@ struct ConnDetailCard: View {
             // Network transient — skip this tick
         }
     }
-    
+
     private func onConnections(_ s: ConnectionsSnapshot) {
         M.uploadTotal = s.uploadTotal
         M.downloadTotal = s.downloadTotal
-        
+
         if let m = s.memory, m > 0 {
             M.memory = m
             // Core Memory Guard
@@ -357,7 +354,7 @@ struct ConnDetailCard: View {
                 M.logKernel("核心内存占用过高 (\(m / 1_000_000)MB)，已自动清空 DNS 与 Fake‑IP 缓存")
             }
         }
-        
+
         let items = s.connections ?? []
         var next: [Conn] = []
         var bytes: [String: (up: Int64, down: Int64)] = [:]
@@ -430,7 +427,7 @@ struct ConnDetailCard: View {
         M.closedConns = max(0, M.totalConnsCount - activeIDs.count)
         M.history.flushIfNeeded()
         M.lastDownTotal = s.downloadTotal
-        
+
         M.appMemoryMB = Double(AppModel.residentMemoryBytes()) / 1_000_000
     }
 }

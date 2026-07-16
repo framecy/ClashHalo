@@ -12,10 +12,9 @@ struct ConfigPage: View {
         VStack(spacing: 0) {
             PageToolbar {
                 Button { showImportRemote = true } label: { Label("导入订阅", systemImage: "icloud.and.arrow.down") }
-                    .buttonStyle(.bordered)
+                    .dsButton()
                 Button { showAddLocal = true } label: { Label("添加本地", systemImage: "doc.badge.plus") }
-                    .buttonStyle(.borderedProminent)
-                    .tint(DS.Palette.accent)
+                    .dsButton(.prominent)
             }
 
             ScrollView {
@@ -46,7 +45,7 @@ struct ConfigPage: View {
         // profiles: amber outline + a small badge instead of the empty
         // circle + "设为活动" CTA used by inactive applied ones.
         let draft = p.needsApply && !active
-        return VStack(alignment: .leading, spacing: 10) {
+        return VStack(alignment: .leading, spacing: DS.Spacing.m) {
             HStack(spacing: 8) {
                 Image(systemName: p.source == "remote" ? "icloud.fill" : "doc.fill")
                     .font(.dsLabel)
@@ -65,7 +64,7 @@ struct ConfigPage: View {
                 } else if pendingApply {
                     ProgressView().controlSize(.small)
                 } else {
-                    Circle().stroke(Color.secondary.opacity(0.3), lineWidth: 1.5).frame(width: 12, height: 12)
+                    Circle().stroke(DS.Palette.track, lineWidth: 1.5).frame(width: 12, height: 12)
                 }
             }
             Text(p.source == "remote" ? "远程订阅" : "本地文件").font(.dsBody).foregroundColor(.secondary)
@@ -79,10 +78,10 @@ struct ConfigPage: View {
                     Image(systemName: "checkmark.circle.fill").foregroundColor(DS.Palette.accent).font(.dsLabel)
                 } else if draft {
                     Button { M.selectForApply(p.id) } label: { Text("应用此配置") }
-                        .buttonStyle(.borderedProminent).controlSize(.small).tint(DS.Palette.warn)
+                        .dsButton(.warning)
                 } else {
                     Button("设为活动") { M.selectForApply(p.id) }
-                        .buttonStyle(.plain).font(.dsBodySemibold).foregroundColor(.accentColor)
+                        .dsButton()
                 }
             }
         }
@@ -165,26 +164,26 @@ struct ImportRemoteSheet: View {
                 TextField("https://…/clash 或订阅链接", text: $url).inputStyle().font(.dsMono)
                 if !err.isEmpty { Text(err).font(.dsBody).foregroundColor(DS.Palette.error) }
                 HStack {
-                    Button("取消") { dismiss() }
+                    Button("取消") { dismiss() }.dsButton()
                     Spacer()
                     Button { Task { await fetchPreview() } } label: {
                         if busy { ProgressView().controlSize(.small) } else { Text("下载预览") }
                     }
-                    .buttonStyle(.borderedProminent).disabled(url.isEmpty || busy)
+                    .dsButton(.prominent).disabled(url.isEmpty || busy)
                 }
-                .controlSize(.small)
+
             } else {
                 Text("导入预览").font(.dsCardLabel)
                 previewSummary
                 if !err.isEmpty { Text(err).font(.dsBody).foregroundColor(DS.Palette.error) }
                 HStack {
-                    Button("放弃") { stage = .pick }
+                    Button("放弃") { stage = .pick }.dsButton()
                     Spacer()
-                    Button("添加到配置列表") { Task { await saveOnly() } }
+                    Button("添加到配置列表") { Task { await saveOnly() } }.dsButton()
                     Button("导入并应用") { Task { await saveAndApply() } }
-                        .buttonStyle(.borderedProminent).disabled(name.isEmpty || busy)
+                        .dsButton(.prominent).disabled(name.isEmpty || busy)
                 }
-                .controlSize(.small)
+
             }
         }.padding(DS.Spacing.xl).frame(minWidth: 440, idealWidth: 480, maxWidth: 600)
     }
@@ -260,11 +259,11 @@ struct AddLocalSheet: View {
                 Text("添加本地配置").font(.dsCardLabel)
                 TextField("名称", text: $name).inputStyle()
                 HStack {
-                    Button("从文件导入…") { pickFile() }
+                    Button("从文件导入…") { pickFile() }.dsButton()
                     Spacer()
-                    Button("取消") { dismiss() }
+                    Button("取消") { dismiss() }.dsButton()
                 }
-                .controlSize(.small)
+
             } else {
                 Text("导入预览").font(.dsCardLabel)
                 Text("检测到 \(preview.nodeCount) 个节点、\(preview.groupCount) 个分组、\(preview.ruleCount) 条规则")
@@ -276,14 +275,14 @@ struct AddLocalSheet: View {
                         .font(.dsBody).foregroundColor(.secondary)
                 }
                 HStack {
-                    Button("放弃") { stage = .pick }
+                    Button("放弃") { stage = .pick }.dsButton()
                     Spacer()
-                    Button("添加到配置列表") { Task { await saveDraft(apply: false) } }
+                    Button("添加到配置列表") { Task { await saveDraft(apply: false) } }.dsButton()
                         .disabled(name.isEmpty)
                     Button("导入并应用") { Task { await saveDraft(apply: true) } }
-                        .buttonStyle(.borderedProminent).disabled(name.isEmpty)
+                        .dsButton(.prominent).disabled(name.isEmpty)
                 }
-                .controlSize(.small)
+
             }
         }.padding(DS.Spacing.xl).frame(minWidth: 400, idealWidth: 440, maxWidth: 560)
     }
@@ -321,14 +320,14 @@ struct ProfileEditSheet: View {
             HStack {
                 Text("编辑配置").font(.dsCardLabel)
                 Spacer()
-                Button("取消") { dismiss() }
+                Button("取消") { dismiss() }.dsButton()
                 Button("保存并应用") {
                     M.store.saveContent(profileID, text)
                     if M.store.activeID == profileID { M.activateProfile(profileID) }
                     dismiss()
-                }.buttonStyle(.borderedProminent)
+                }.dsButton(.prominent)
             }
-            .controlSize(.small)
+
             .padding(DS.Spacing.m)
             Divider()
             YAMLEditor(text: $text, onChange: {})
