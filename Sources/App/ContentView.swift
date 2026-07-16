@@ -34,6 +34,10 @@ struct ContentView: View {
         NavigationSplitView {
             sidebar.navigationSplitViewColumnWidth(min: DS.Layout.sidebarMin, ideal: DS.Layout.sidebarIdeal, max: DS.Layout.sidebarMax)
         } detail: { detail }
+        // Force system controls (sidebar selection, switches, progress) onto
+        // Halo Green. Without this, List(.sidebar) keeps the system blue
+        // accent while content uses DS.Palette.accent.
+        .tint(DS.Palette.accent)
         .onAppear { M.isMainWindowVisible = true }
         .onDisappear { M.isMainWindowVisible = false }
         // macOS 最小化不触发 onDisappear，需单独监听窗口通知
@@ -212,6 +216,7 @@ struct ContentView: View {
                 .toggleStyle(.switch)
                 .controlSize(.mini)
                 .labelsHidden()
+                .tint(onColor)
         }
         .padding(.vertical, DS.Spacing.xs / 2)
     }

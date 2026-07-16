@@ -165,6 +165,7 @@ Card 内边距：`l`。
 ### 6.1 Shell
 
 - `NavigationSplitView` + sidebar list（系统 sidebar style）
+- **全局 accent 统一**：`Assets.xcassets/AccentColor` + `ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME` + 根视图 `.tint(DS.Palette.accent)`。侧栏选中 / 系统开关 / Progress 与内容区重点色共用 Halo Green，禁止继续依赖系统蓝
 - **跨栏对齐**：侧栏顶栏与内容区 `PageToolbar` / chrome 顶栏同高  
   `DS.Layout.chromeHeight`（= `m + controlHeight + m` = 56）  
   水平 inset 统一 `DS.Layout.pageContentInset`；**分割线通栏**（`Divider().overlay(separator)`，禁止 inset hairline）
