@@ -15,7 +15,7 @@ struct RulesPage: View {
 
     var body: some View {
         let rows = model.nodes.filter(matches)
-        
+
         VStack(spacing: 0) {
             HStack(alignment: .center, spacing: DS.Spacing.m) {
                 HStack(spacing: DS.Spacing.s) {
@@ -39,29 +39,28 @@ struct RulesPage: View {
                         model.toggleNodes(ids: selection, isEnabled: true)
                         saveAndReloadKernel()
                     }
-                    .buttonStyle(.bordered)
-                    .dsToolbarControl()
+                    .dsButton()
+
 
                     Button("禁用") {
                         model.toggleNodes(ids: selection, isEnabled: false)
                         saveAndReloadKernel()
                     }
-                    .buttonStyle(.bordered)
-                    .dsToolbarControl()
+                    .dsButton()
+
 
                     Button("删除") {
                         model.deleteNodes(ids: selection)
                         selection.removeAll()
                         saveAndReloadKernel()
                     }
-                    .buttonStyle(.bordered)
-                    .tint(DS.Palette.error)
-                    .dsToolbarControl()
+                    .dsButton(.destructive)
+
                 }
 
                 Button { reloadModel() } label: { Label("刷新", systemImage: "arrow.clockwise") }
-                    .buttonStyle(.bordered)
-                    .dsToolbarControl()
+                    .dsButton()
+
 
                 Button(action: {
                     editingNode = nil
@@ -69,8 +68,8 @@ struct RulesPage: View {
                 }) {
                     Label("添加规则", systemImage: "plus")
                 }
-                .buttonStyle(.borderedProminent)
-                .dsToolbarControl()
+                .dsButton(.prominent)
+
             }
             .padding(.horizontal, DS.Layout.pageContentInset)
             .padding(.vertical, DS.Spacing.m)
@@ -119,7 +118,7 @@ struct RulesPage: View {
     }
 
     private func row(_ r: RuleNode) -> some View {
-        HStack(spacing: 10) {
+        HStack(spacing: DS.Spacing.s) {
             Toggle("", isOn: Binding(
                 get: { r.isEnabled },
                 set: { _ in
@@ -128,20 +127,20 @@ struct RulesPage: View {
                 }
             ))
             .labelsHidden()
-            
+
             Text(r.type.rawValue).font(.dsBodyMedium)
                 .padding(.horizontal, DS.Spacing.s - 2).padding(.vertical, 2)
                 .background(Capsule().fill(DS.Palette.hairline))
                 .frame(width: 150, alignment: .leading)
                 .opacity(r.isEnabled ? 1.0 : 0.5)
-            
+
             Text(r.match.isEmpty ? "—" : r.match)
                 .font(.dsMono).lineLimit(1)
                 .strikethrough(!r.isEnabled)
                 .opacity(r.isEnabled ? 1.0 : 0.5)
-            
+
             Spacer()
-            
+
             let actionStr = r.action == .proxy ? (r.proxyGroup ?? "PROXY") : r.action.rawValue
             Text(actionStr).font(.dsBody).foregroundColor(DS.Palette.accent)
                 .opacity(r.isEnabled ? 1.0 : 0.5)
@@ -153,28 +152,28 @@ struct RulesPage: View {
                 editingNode = r
                 showingForm = true
             } label: { Label("编辑", systemImage: "pencil") }
-            
+
             Button {
                 model.toggleNode(id: r.id)
                 saveAndReloadKernel()
             } label: { Label(r.isEnabled ? "禁用" : "启用", systemImage: r.isEnabled ? "eye.slash" : "eye") }
-            
+
             Divider()
-            
+
             Button(role: .destructive) {
                 model.deleteNodes(ids: [r.id])
                 saveAndReloadKernel()
             } label: { Label("删除", systemImage: "trash") }
         }
     }
-    
+
     private func reloadModel() {
         if !M.engine.configFilePath.isEmpty {
             model.setTargetPath(M.engine.configFilePath)
             model.load()
         }
     }
-    
+
     private func saveAndReloadKernel() {
         if model.save() {
             M.reloadActiveConfig()

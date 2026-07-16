@@ -10,53 +10,49 @@ struct ProxiesPage: View {
     var body: some View {
         VStack(spacing: 0) {
             PageToolbar {
-                Picker("", selection: $displayMode) {
-                    Image(systemName: "list.bullet").tag("list")
-                    Image(systemName: "square.grid.2x2").tag("grid")
-                }
-                .pickerStyle(.segmented)
-                .labelsHidden()
-                .dsToolbarControl()
-                .frame(width: 56)
+                DSSegmentedControl(selection: $displayMode, choices: [
+                    DSChoice("", "list", systemImage: "list.bullet"),
+                    DSChoice("", "grid", systemImage: "square.grid.2x2")
+                ])
+                .frame(width: 64)
 
                 if displayMode == "list" {
                     Button {
                         collapsed = collapsed.count == M.groups.count ? [] : Set(M.groups.map(\.id))
                     } label: { Label(collapsed.count == M.groups.count ? "全部展开" : "全部折叠", systemImage: "rectangle.expand.vertical") }
-                    .buttonStyle(.bordered)
-                    .dsToolbarControl()
+                    .dsButton()
+
                 }
 
-                Toggle(isOn: $M.closeOnSwitch) {
+                Button {
+                    M.closeOnSwitch.toggle()
+                } label: {
                     Label("切换断连", systemImage: "bolt.horizontal.circle")
                 }
-                .toggleStyle(.button)
-                .tint(DS.Palette.accent)
-                .dsToolbarControl()
+                .dsButton(M.closeOnSwitch ? .prominent : .secondary)
                 .help("切换节点时自动断开所有现有连接，使流量立即走新节点")
 
                 Button { M.testAll() } label: { Label("全部测速", systemImage: "bolt.fill") }
-                    .buttonStyle(.borderedProminent)
-                    .tint(DS.Palette.accent)
-                    .dsToolbarControl()
+                    .dsButton(.prominent)
+
             }
 
             ScrollView {
                 if let err = M.proxiesError {
-                    VStack(spacing: 16) {
+                    VStack(spacing: DS.Spacing.l) {
                         ContentUnavailable("加载代理失败", "exclamationmark.triangle.fill")
                         Text(err)
                             .font(.dsMono)
                             .foregroundColor(.secondary)
                             .multilineTextAlignment(.center)
-                            .padding(.horizontal, 40)
+                            .padding(.horizontal, DS.Spacing.xxxl)
                         Button {
                             Task { await M.refreshProxies() }
                         } label: {
                             Label("重试", systemImage: "arrow.clockwise")
                         }
-                        .buttonStyle(.bordered)
-                        .controlSize(.small)
+                        .dsButton()
+
                     }
                     .frame(maxHeight: .infinity)
                     .padding(.top, 80)
@@ -70,7 +66,7 @@ struct ProxiesPage: View {
                     }
                 } else {
                     if displayMode == "grid" {
-                        LazyVGrid(columns: [GridItem(.flexible(), spacing: 10), GridItem(.flexible(), spacing: 10)], spacing: 10) {
+                        LazyVGrid(columns: [GridItem(.flexible(), spacing: DS.Spacing.m), GridItem(.flexible(), spacing: DS.Spacing.m)], spacing: DS.Spacing.m) {
                             ForEach(M.groups) { g in gridGroupCard(g) }
                         }
                         .padding(.horizontal, DS.Spacing.xl).padding(.bottom, DS.Spacing.xxl)
@@ -118,34 +114,17 @@ struct ProxiesPage: View {
                 }
 
                 HStack(spacing: 4) {
-                    // Menu click allows picking nodes instantly via popup
-                    Menu {
-                        ForEach(g.all, id: \.self) { name in
-                            Button {
-                                if g.selectable { M.select(group: g.id, name: name) }
-                            } label: {
-                                HStack {
-                                    if name == cur { Image(systemName: "checkmark") }
-                                    Text(name)
-                                    if let d = M.nodes[name]?.delay, d > 0 {
-                                        Text(" (\(d)ms)")
-                                    }
-                                }
-                            }
-                        }
-                    } label: {
-                        HStack(spacing: 4) {
-                            Text(cur).font(.dsBodyMedium).foregroundColor(c).lineLimit(1)
-                            if curDelay > 0 {
-                                Text("\(curDelay)ms").font(.dsMono).foregroundColor(delayColor(curDelay))
-                            }
-                            if busy {
-                                ProgressView().controlSize(.mini).scaleEffect(0.5)
-                            }
-                        }
+                    DSMenuPicker(selection: Binding(
+                        get: { g.now },
+                        set: { if g.selectable { M.select(group: g.id, name: $0) } }
+                    ), choices: g.all.map { DSChoice($0, $0) })
+                    .frame(maxWidth: .infinity)
+                    if curDelay > 0 {
+                        Text("\(curDelay)ms").font(.dsMono).foregroundColor(delayColor(curDelay))
                     }
-                    .menuStyle(.borderlessButton)
-                    .controlSize(.small)
+                    if busy {
+                        ProgressView().controlSize(.mini).scaleEffect(0.5)
+                    }
                     Spacer()
                     Text("\(g.all.count) 节点").font(.dsBody).foregroundColor(.secondary)
                 }
@@ -165,7 +144,7 @@ struct ProxiesPage: View {
                         if isOpen { collapsed.insert(g.id) } else { collapsed.remove(g.id) }
                     }
                 } label: {
-                    HStack(spacing: 10) {
+                    HStack(spacing: DS.Spacing.s) {
                         Image(systemName: "chevron.right").font(.dsBody).foregroundColor(.secondary)
                             .rotationEffect(.degrees(isOpen ? 90 : 0))
                         Image(systemName: groupIcon(g.type)).font(.dsBody).foregroundColor(DS.Palette.accent).frame(width: 20)
@@ -176,7 +155,7 @@ struct ProxiesPage: View {
                                     .padding(.horizontal, DS.Spacing.xs + 1).padding(.vertical, 1)
                                     .background(Capsule().fill(DS.Palette.hairline))
                             }
-                            HStack(spacing: 5) {
+                            HStack(spacing: DS.Spacing.xs) {
                                 Text(cur).font(.dsBody).foregroundColor(DS.Palette.accent).lineLimit(1)
                                 if curDelay > 0 { Text("\(curDelay)ms").font(.dsMono).foregroundColor(delayColor(curDelay)) }
                             }
@@ -211,7 +190,7 @@ struct ProxiesPage: View {
         return Button {
             if group.selectable { M.select(group: group.id, name: name) }
         } label: {
-            VStack(alignment: .leading, spacing: 5) {
+            VStack(alignment: .leading, spacing: DS.Spacing.xs) {
                 HStack(spacing: 6) {
                     Text(name).font(.dsBody).fontWeight(on ? .semibold : .regular)
                         .foregroundColor(on ? DS.Palette.accent : .primary).lineLimit(1)
@@ -240,4 +219,3 @@ struct ProxiesPage: View {
         .disabled(!group.selectable)
     }
 }
-
