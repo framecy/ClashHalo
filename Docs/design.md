@@ -165,8 +165,12 @@ Card 内边距：`l`。
 ### 6.1 Shell
 
 - `NavigationSplitView` + sidebar list（系统 sidebar style）
-- 侧栏头：App icon + 名称 + 版本
-- 侧栏底：系统代理 / TUN 开关 + 核心状态
+- **跨栏对齐**：侧栏顶栏与内容区 `PageToolbar` / chrome 顶栏同高  
+  `DS.Layout.chromeHeight`（= `m + controlHeight + m` = 56）  
+  水平 inset 统一 `DS.Layout.pageContentInset`；**分割线通栏**（`Divider().overlay(separator)`，禁止 inset hairline）
+- 侧栏头：App icon(32) + 名称 + 版本；底部分割线与内容 chrome 底线对齐
+- 侧栏分组：监控 / 代理 / 配置；首组额外 `sidebarSectionTop`，后续组 header 顶距 `l`；行 inset `sidebarRowVInset`
+- 侧栏底：通栏顶分割线 + 系统代理/TUN `controlBg` 抬升卡 + 核心状态行
 - 详情区背景：`windowBg`
 - Toast：底部居中 capsule + ultraThinMaterial
 
@@ -298,7 +302,7 @@ padding(.vertical, 5)                    // 用 DS.Spacing.*
 | 区域 | 建议 |
 |---|---|
 | 主窗口默认 | 1180×780，最小 940×620 |
-| 侧栏 | min 200 / ideal 220 / max 260 |
+| 侧栏 | min 212 / ideal 236 / max 280 |
 | 仪表盘栅格间距 | `DS.Spacing.l` |
 | 统计条高度 | `DS.Layout.statHeight` (64) |
 | 仪表盘卡片行高 | `DS.Layout.cardRow` (208) |
@@ -322,5 +326,6 @@ padding(.vertical, 5)                    // 用 DS.Spacing.*
 | 2026-07-14 | 初版：macOS 27 系统风格、完整 Light/Dark 令牌、工程约束与组件契约 |
 | 2026-07-15 | 自绘控件迁移：`DSSegmentedControl`/`DSMenuPicker`/`DSButtonStyle`+`dsButton(...)`；`Radius.control` 8→6；替换原生 Picker/Menu/标准按钮为自绘 32pt/圆角6pt |
 | 2026-07-16 | 全页面 design.md 收尾：raw `Color.secondary.opacity`→令牌、`.headline`→`dsSection`、浮层 `regularMaterial`→`overlayBg`+弱阴影、`cornerRadius:3`→新增 `Radius.bar`、非 grid 间距→`DS.Spacing`；补 `chromeBg`/`cardBgAlt`/`bar`/`cardRow` 契约 |
+| 2026-07-16 | v1.1.0 Shell 对齐：`chromeHeight` 跨栏统一、侧栏分组与 footer 抬升卡、配置卡 `profileCardMinHeight`、`ContentUnavailable` 居中契约、关于页工具型 Card 堆叠 |
 
 实现以代码为准；规范与代码冲突时，先修代码再回写本文。

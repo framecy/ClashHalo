@@ -13,6 +13,7 @@ struct GeneralPage: View {
 
     var body: some View {
         VStack(spacing: 0) {
+            // 顶栏与侧栏 appHeader / PageToolbar 同高：m + 32 + m，分割线通栏对齐
             DSSegmentedControl(selection: $selectedTab, choices: [
                 DSChoice("通用", "general", systemImage: "gearshape"),
                 DSChoice("高级设置", "advanced", systemImage: "slider.horizontal.3"),
@@ -20,8 +21,8 @@ struct GeneralPage: View {
                 DSChoice("关于", "about", systemImage: "info.circle")
             ])
             .padding(.horizontal, DS.Layout.pageContentInset)
-            .padding(.top, DS.Spacing.m)
-            .padding(.bottom, DS.Spacing.l)
+            .padding(.vertical, DS.Spacing.m)
+            .frame(height: DS.Layout.chromeHeight, alignment: .center)
 
             Divider().overlay(DS.Palette.separator)
 
@@ -168,65 +169,98 @@ struct GeneralPage: View {
         }
     }
 
+    /// 关于页：工具型 Card 堆叠（design.md §1/§6），禁止居中 hero / 营销文案。
     private var aboutView: some View {
-        VStack(spacing: 20) {
-            Image(nsImage: NSApp.applicationIconImage ?? NSImage())
-                .resizable()
-                .frame(width: 64, height: 64)
-                .padding(.top, DS.Spacing.xl)
+        let appVersion = ContentView.appVersion
+        let appBuild = ContentView.appBuild
+        let helperVersion = engine.helperVersion.isEmpty || engine.helperVersion == "?"
+            ? "—"
+            : engine.helperVersion
+        let kernelVersion = M.reachable ? M.version : "—"
+        let projectURL = URL(string: "https://github.com/\(M.updater.repoOwner)/\(M.updater.repoName)")!
+        let mihomoURL = URL(string: "https://github.com/MetaCubeX/mihomo")!
+        let issuesURL = URL(string: "https://github.com/\(M.updater.repoOwner)/\(M.updater.repoName)/issues")!
 
-            VStack(spacing: 4) {
-                Text("ClashHalo")
-                    .font(.dsSection)
-                    .fontWeight(.bold)
-                Text("Version \(Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "—") (build \(Bundle.main.infoDictionary?["CFBundleVersion"] as? String ?? "—"))")
-                    .font(.dsBody)
-                    .foregroundColor(.secondary)
+        return VStack(alignment: .leading, spacing: DS.Spacing.m) {
+            // 应用身份：左 icon + 名称版本，右状态点（非营销 hero）
+            Card {
+                HStack(spacing: DS.Spacing.m) {
+                    Image(nsImage: NSApp.applicationIconImage ?? NSImage())
+                        .resizable()
+                        .interpolation(.high)
+                        .frame(width: DS.Icon.xl, height: DS.Icon.xl)
+                        .clipShape(RoundedRectangle(cornerRadius: DS.Radius.control, style: .continuous))
+
+                    VStack(alignment: .leading, spacing: DS.Spacing.xs / 2) {
+                        Text("ClashHalo")
+                            .font(.dsCardLabel)
+                        Text("v\(appVersion) · build \(appBuild)")
+                            .font(.dsMono)
+                            .foregroundStyle(.secondary)
+                    }
+
+                    Spacer(minLength: 0)
+
+                    HStack(spacing: DS.Spacing.s) {
+                        Circle()
+                            .fill(M.reachable ? DS.Palette.ok : DS.Palette.error)
+                            .frame(width: 6, height: 6)
+                        Text(M.reachable ? "核心运行中" : "核心已停止")
+                            .font(.dsBody)
+                            .foregroundStyle(.secondary)
+                    }
+                }
             }
 
-            // Update check card
+            // 版本明细
+            Card(title: "版本信息", icon: "info.circle") {
+                VStack(spacing: 0) {
+                    aboutKVRow("应用版本", "v\(appVersion)")
+                    aboutKVRow("构建号", appBuild)
+                    aboutKVRow("内核 (mihomo)", kernelVersion)
+                    aboutKVRow("特权 Helper", helperVersion, last: true)
+                }
+            }
+
+            // 更新
             Card(title: "应用更新", icon: "arrow.down.circle") {
-                VStack(spacing: 12) {
-                    HStack {
-                        VStack(alignment: .leading, spacing: 4) {
-                            if M.updater.isChecking {
-                                Text("正在检查更新...")
+                VStack(alignment: .leading, spacing: DS.Spacing.m) {
+                    HStack(alignment: .center, spacing: DS.Spacing.m) {
+                        Circle()
+                            .fill(updateStatusColor)
+                            .frame(width: 6, height: 6)
+                        VStack(alignment: .leading, spacing: DS.Spacing.xs / 2) {
+                            Text(updateStatusTitle)
+                                .font(.dsBodyMedium)
+                                .foregroundStyle(updateStatusColor == DS.Palette.warn ? DS.Palette.warn : .primary)
+                            if let detail = updateStatusDetail {
+                                Text(detail)
                                     .font(.dsBody)
-                            } else if M.updater.updateAvailable, let version = M.updater.latestVersion {
-                                Text("发现新版本：\(version)")
-                                    .font(.dsBody)
-                                    .foregroundColor(DS.Palette.warn)
-                            } else if M.updater.latestVersion != nil {
-                                Text("当前已是最新版本")
-                                    .font(.dsBody)
-                                    .foregroundColor(DS.Palette.ok)
-                            } else {
-                                Text("点击检查更新")
-                                    .font(.dsBody)
-                                    .foregroundColor(.secondary)
+                                    .foregroundStyle(.secondary)
+                                    .lineLimit(2)
                             }
                         }
-                        Spacer()
+                        Spacer(minLength: 0)
 
                         if M.updater.updateAvailable {
                             Button("下载更新") {
                                 Task {
                                     M.showToast("开始下载更新...")
                                     let ok = await M.updater.performUpdate()
-                                    if ok {
-                                        M.showToast("更新包已打开，请按提示安装")
-                                    } else {
-                                        M.showToast("更新下载失败")
-                                    }
+                                    M.showToast(ok ? "更新包已打开，请按提示安装" : "更新下载失败")
                                 }
                             }
                             .dsButton(.warning)
                             .disabled(M.updater.isDownloading)
                         }
 
-                        Button("检查更新") {
-                            Task {
-                                _ = await M.updater.checkForUpdates()
+                        Button {
+                            Task { _ = await M.updater.checkForUpdates() }
+                        } label: {
+                            if M.updater.isChecking {
+                                ProgressView().controlSize(.small)
+                            } else {
+                                Text("检查更新")
                             }
                         }
                         .dsButton()
@@ -234,42 +268,134 @@ struct GeneralPage: View {
                     }
 
                     if M.updater.isDownloading {
-                        ProgressView(value: M.updater.downloadProgress)
-                            .progressViewStyle(.linear)
+                        VStack(alignment: .leading, spacing: DS.Spacing.xs) {
+                            ProgressView(value: M.updater.downloadProgress)
+                                .progressViewStyle(.linear)
+                                .tint(DS.Palette.accent)
+                            Text("下载中 \(Int(M.updater.downloadProgress * 100))%")
+                                .font(.dsCaption)
+                                .foregroundStyle(.secondary)
+                        }
+                    }
+
+                    if M.updater.updateAvailable, let notes = M.updater.releaseNotes, !notes.isEmpty {
+                        Text(notes)
+                            .font(.dsBody)
+                            .foregroundStyle(.secondary)
+                            .lineLimit(6)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .padding(DS.Spacing.m)
+                            .background(
+                                RoundedRectangle(cornerRadius: DS.Radius.control, style: .continuous)
+                                    .fill(DS.Palette.fillFaint)
+                            )
                     }
                 }
             }
-            .padding(.horizontal, DS.Spacing.xxxl)
 
-            Text("ClashHalo 是一个基于 mihomo (Clash.Meta) 内核的 macOS 原生代理客户端。采用原生 SwiftUI 编写，通过独立特权 Helper (XPC) 进行权限分离，订阅凭据经 Keychain 安全存储。")
-                .font(.dsBody)
-                .multilineTextAlignment(.center)
-                .foregroundColor(.secondary)
-                .padding(.horizontal, DS.Spacing.xxxl)
-                .fixedSize(horizontal: false, vertical: true)
-
-            VStack(spacing: 8) {
-                Link(destination: URL(string: "https://github.com/MetaCubeX/mihomo")!) {
-                    Label("mihomo (Clash.Meta) 核心", systemImage: "link")
-                        .font(.dsBody)
-                        .foregroundColor(DS.Palette.accent)
-                }
-                Link(destination: URL(string: "https://github.com/\(M.updater.repoOwner)/\(M.updater.repoName)")!) {
-                    Label("GitHub 项目主页", systemImage: "link")
-                        .font(.dsBody)
-                        .foregroundColor(DS.Palette.accent)
+            // 链接与许可
+            Card(title: "开源与链接", icon: "link") {
+                VStack(spacing: 0) {
+                    aboutLinkRow("项目主页", "GitHub · \(M.updater.repoOwner)/\(M.updater.repoName)", url: projectURL)
+                    aboutLinkRow("问题反馈", "Issues", url: issuesURL)
+                    aboutLinkRow("代理内核", "mihomo (Clash.Meta)", url: mihomoURL, last: true)
                 }
             }
-            .padding(.top, DS.Spacing.m)
 
-            Spacer()
-
-            Text("© 2026 ClashHalo Dev Team. All rights reserved.")
-                .font(.dsBody)
-                .foregroundColor(.secondary)
-                .padding(.bottom, DS.Spacing.xl)
+            Card(title: "说明", icon: "doc.text") {
+                VStack(alignment: .leading, spacing: DS.Spacing.s) {
+                    Text("macOS 原生 SwiftUI 客户端，直接编排 mihomo 内核。特权操作经独立 Helper (XPC) 执行；订阅 URL 存 Keychain。")
+                        .font(.dsBody)
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                    Text("仅用于网络技术学习与管理，不提供任何代理节点服务。请遵守所在地法律法规。")
+                        .font(.dsBody)
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                    Text("© 2026 ClashHalo · MIT License")
+                        .font(.dsCaption)
+                        .foregroundStyle(.secondary)
+                        .padding(.top, DS.Spacing.xs)
+                }
+            }
         }
-        .frame(maxWidth: .infinity, minHeight: 350)
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    private var updateStatusColor: Color {
+        if M.updater.isChecking || M.updater.isDownloading { return DS.Palette.info }
+        if M.updater.updateAvailable { return DS.Palette.warn }
+        if M.updater.latestVersion != nil { return DS.Palette.ok }
+        return DS.Palette.separator
+    }
+
+    private var updateStatusTitle: String {
+        if M.updater.isChecking { return "正在检查更新…" }
+        if M.updater.isDownloading { return "正在下载更新…" }
+        if M.updater.updateAvailable, let v = M.updater.latestVersion {
+            return "发现新版本 v\(v)"
+        }
+        if M.updater.latestVersion != nil { return "当前已是最新版本" }
+        return "尚未检查更新"
+    }
+
+    private var updateStatusDetail: String? {
+        if M.updater.isChecking || M.updater.isDownloading { return nil }
+        if M.updater.updateAvailable {
+            return "当前 v\(ContentView.appVersion) (build \(ContentView.appBuild)) · 可从 GitHub Releases 下载"
+        }
+        if let latest = M.updater.latestVersion {
+            return "远端最新 v\(latest) · 本地 v\(ContentView.appVersion) (build \(ContentView.appBuild))"
+        }
+        return "通过 GitHub Releases 检查新版本"
+    }
+
+    private func aboutKVRow(_ label: String, _ value: String, last: Bool = false) -> some View {
+        VStack(spacing: 0) {
+            HStack(spacing: DS.Spacing.s) {
+                Text(label)
+                    .font(.dsBody)
+                    .foregroundStyle(.secondary)
+                Spacer(minLength: 0)
+                Text(value)
+                    .font(.dsMono)
+                    .foregroundStyle(.primary)
+                    .textSelection(.enabled)
+                    .lineLimit(1)
+            }
+            .padding(.vertical, DS.Spacing.s)
+            if !last {
+                Divider().overlay(DS.Palette.separator)
+            }
+        }
+    }
+
+    private func aboutLinkRow(_ title: String, _ subtitle: String, url: URL, last: Bool = false) -> some View {
+        VStack(spacing: 0) {
+            Link(destination: url) {
+                HStack(spacing: DS.Spacing.s) {
+                    VStack(alignment: .leading, spacing: DS.Spacing.xs / 2) {
+                        Text(title)
+                            .font(.dsBodyMedium)
+                            .foregroundStyle(.primary)
+                        Text(subtitle)
+                            .font(.dsCaption)
+                            .foregroundStyle(.secondary)
+                            .lineLimit(1)
+                    }
+                    Spacer(minLength: 0)
+                    Image(systemName: "arrow.up.right")
+                        .font(DS.Icon.font(DS.Icon.sm))
+                        .foregroundStyle(.secondary)
+                }
+                .padding(.vertical, DS.Spacing.s)
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            if !last {
+                Divider().overlay(DS.Palette.separator)
+            }
+        }
     }
 
     var statusLine: String {
@@ -584,16 +710,36 @@ struct MenuBarPanel: View {
 }
 
 // MARK: - Shared empty state
+//
+// design.md §6.6：居中、弱图标、单行/两行说明，无插画。
+// 调用方放在 chrome 下方的剩余区域即可；组件自身填满并垂直居中，
+// 禁止再叠 padding.top / minHeight 魔术数，否则各页图标位置会漂移。
 
 struct ContentUnavailable: View {
-    let text: String, icon: String
-    init(_ t: String, _ i: String) { text = t; icon = i }
+    let text: String
+    let icon: String
+
+    init(_ text: String, _ icon: String) {
+        self.text = text
+        self.icon = icon
+    }
+
     var body: some View {
         VStack(spacing: DS.Spacing.m) {
-            Image(systemName: icon).font(DS.Icon.font(DS.Icon.xl)).foregroundColor(.secondary.opacity(0.5))
-            Text(text).font(.dsBody).foregroundColor(.secondary)
-                .multilineTextAlignment(.center).fixedSize(horizontal: false, vertical: true)
-        }.frame(maxWidth: .infinity, minHeight: 160).padding(DS.Spacing.xxxl)
+            Image(systemName: icon)
+                .font(DS.Icon.font(DS.Icon.xl))
+                .foregroundStyle(.secondary.opacity(0.45))
+                .symbolRenderingMode(.hierarchical)
+            Text(text)
+                .font(.dsBody)
+                .foregroundStyle(.secondary)
+                .multilineTextAlignment(.center)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+        .padding(.horizontal, DS.Spacing.xxl)
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .center)
+        // ScrollView 内无界高度时仍保持可扫描的最小占位，避免塌成一条
+        .frame(minHeight: 240)
     }
 }
 
