@@ -40,7 +40,7 @@ struct SdwanTopologyView: View {
 
     var body: some View {
         let activeIfaces = ifaces.filter { $0.isUp && !$0.ipv4.isEmpty }
-        
+
         // Filter and limit destinations to max 4 to fit nicely inside the card without crowding/overflow.
         var rawDests = Array(Set(routes.map { $0.dest }))
         if rawDests.isEmpty {
@@ -190,14 +190,14 @@ struct SdwanPage: View {
         VStack(spacing: 0) {
             PageToolbar {
                 Button { rescan() } label: { Label("重新扫描", systemImage: "arrow.clockwise") }
-                    .buttonStyle(.bordered)
+                    .dsButton()
             }
 
             ScrollView {
-                VStack(spacing: 14) {
+                VStack(spacing: DS.Spacing.m) {
                     // status banner
-                    HStack(spacing: 12) {
-                        Image(systemName: "shield.lefthalf.filled").font(.title)
+                    HStack(spacing: DS.Spacing.m) {
+                        Image(systemName: "shield.lefthalf.filled").font(DS.Icon.font(DS.Icon.lg))
                             .foregroundColor(hasConflicts ? DS.Palette.warn : DS.Palette.accent)
                         VStack(alignment: .leading, spacing: 3) {
                             Text(hasConflicts ? "检测到路由冲突" : "智能路由隔离已生效").font(.dsLabelBold)
@@ -238,7 +238,7 @@ struct SdwanPage: View {
                                     rescan()
                                 }
                             }
-                            .buttonStyle(.borderedProminent).tint(DS.Palette.warn).controlSize(.small)
+                            .dsButton(.warning)
                         } else {
                             VStack {
                                 Text("0").font(.dsStatValue)
@@ -345,7 +345,7 @@ struct SdwanPage: View {
     }
 
     private func ifaceRow(_ i: NetIface) -> some View {
-        HStack(spacing: 10) {
+        HStack(spacing: DS.Spacing.s) {
             Image(systemName: icon(i.kind)).foregroundColor(color(i.kind)).frame(width: 22)
             VStack(alignment: .leading, spacing: 1) {
                 HStack(spacing: 6) {

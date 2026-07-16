@@ -26,7 +26,7 @@ struct DnsPage: View {
                             NList("Fake-IP 过滤", "dns", "fake-ip-filter", placeholder: "*.lan")
                         }
                         Text("Fake-IP 为代理域名返回保留段虚拟 IP，避免 DNS 泄漏；上游支持 DoH/DoT/DoQ/UDP。")
-                            .font(.dsBody).foregroundColor(.secondary).padding(.top, 6)
+                            .font(.dsBody).foregroundColor(.secondary).padding(.top, DS.Spacing.s)
                     }
 
                     Card(title: "DNS 解析测试", icon: "magnifyingglass") {
@@ -38,8 +38,7 @@ struct DnsPage: View {
                                 Button { Task { await resolve() } } label: {
                                     if resolving { ProgressView().controlSize(.small) } else { Text("解析") }
                                 }
-                                .buttonStyle(.bordered)
-                                .controlSize(.small)
+                                .dsButton()
                                 .disabled(query.isEmpty || resolving)
                             }
                             if !result.isEmpty {

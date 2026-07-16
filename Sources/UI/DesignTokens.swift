@@ -200,7 +200,8 @@ enum DS {
 
     enum Radius {
         static let chip:    CGFloat = 6
-        static let control: CGFloat = 8
+        static let control: CGFloat = 6
+        static let bar:     CGFloat = 3
         static let card:    CGFloat = 10
         static let panel:   CGFloat = 12
     }
@@ -273,6 +274,183 @@ extension Font {
     static let dsCaption      = Font.system(size: 11)
 }
 
+// MARK: - Controls
+
+/// One option shared by the fixed-height segmented and menu controls.
+struct DSChoice<Value: Hashable>: Identifiable {
+    let value: Value
+    let title: String
+    let systemImage: String?
+
+    init(_ title: String, _ value: Value, systemImage: String? = nil) {
+        self.value = value
+        self.title = title
+        self.systemImage = systemImage
+    }
+
+    var id: Value { value }
+}
+
+/// Fixed 32pt segmented control. We deliberately do not use AppKit's segmented
+/// picker: its visual bezel varies between 24, 28 and 33pt across control sizes.
+struct DSSegmentedControl<Value: Hashable>: View {
+    @Binding var selection: Value
+    let choices: [DSChoice<Value>]
+
+    var body: some View {
+        HStack(spacing: 0) {
+            ForEach(choices) { choice in
+                let selected = selection == choice.value
+                Button { selection = choice.value } label: {
+                    Group {
+                        if let image = choice.systemImage {
+                            Label(choice.title, systemImage: image)
+                        } else {
+                            Text(choice.title)
+                        }
+                    }
+                    .font(.dsBodyMedium)
+                    .lineLimit(1)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .center)
+                    .foregroundColor(selected ? .white : .primary)
+                    .background(DS.Shape.control().fill(selected ? DS.Palette.accent : .clear))
+                    .contentShape(DS.Shape.control())
+                }
+                .buttonStyle(.plain)
+                .accessibilityAddTraits(selected ? .isSelected : [])
+            }
+        }
+        .frame(height: DS.Layout.controlHeight)
+        .background(DS.Shape.control().fill(DS.Palette.controlBg))
+        .overlay(DS.Shape.control().stroke(DS.Palette.border, lineWidth: 1))
+        .clipShape(DS.Shape.control())
+    }
+}
+
+/// Fixed 32pt menu selector. A popover list is used instead of SwiftUI `Menu`,
+/// whose AppKit button cell adds variable 24–33pt native chrome.
+struct DSMenuPicker<Value: Hashable>: View {
+    @Binding var selection: Value
+    let choices: [DSChoice<Value>]
+    @State private var isPresented = false
+
+    private var current: DSChoice<Value>? { choices.first { $0.value == selection } }
+
+    var body: some View {
+        Button { isPresented = true } label: {
+            HStack(spacing: DS.Spacing.s) {
+                if let image = current?.systemImage {
+                    Image(systemName: image)
+                }
+                Text(current?.title ?? "—")
+                    .lineLimit(1)
+                Spacer(minLength: DS.Spacing.s)
+                Image(systemName: "chevron.up.chevron.down")
+                    .font(.dsCaption)
+                    .foregroundColor(.secondary)
+            }
+            .font(.dsBody)
+            .padding(.horizontal, DS.Spacing.s)
+            .frame(height: DS.Layout.controlHeight, alignment: .center)
+            .background(DS.Shape.control().fill(DS.Palette.controlBg))
+            .overlay(DS.Shape.control().stroke(DS.Palette.border, lineWidth: 1))
+            .contentShape(DS.Shape.control())
+        }
+        .buttonStyle(.plain)
+        .popover(isPresented: $isPresented, arrowEdge: .bottom) {
+            ScrollView {
+                VStack(alignment: .leading, spacing: DS.Spacing.xs) {
+                    ForEach(choices) { choice in
+                        Button {
+                            selection = choice.value
+                            isPresented = false
+                        } label: {
+                            HStack(spacing: DS.Spacing.s) {
+                                if let image = choice.systemImage {
+                                    Image(systemName: image)
+                                        .frame(width: DS.Icon.sm)
+                                }
+                                Text(choice.title)
+                                    .lineLimit(1)
+                                Spacer(minLength: DS.Spacing.s)
+                                if choice.value == selection {
+                                    Image(systemName: "checkmark")
+                                        .foregroundColor(DS.Palette.accent)
+                                }
+                            }
+                            .font(.dsBody)
+                            .foregroundColor(.primary)
+                            .padding(.horizontal, DS.Spacing.s)
+                            .frame(height: DS.Layout.controlHeight, alignment: .leading)
+                            .contentShape(DS.Shape.control())
+                        }
+                        .buttonStyle(.plain)
+                    }
+                }
+                .padding(DS.Spacing.s)
+            }
+            .frame(minWidth: 180, maxWidth: 320, maxHeight: 288)
+            .background(DS.Palette.cardBg)
+        }
+    }
+}
+
+/// Visual variants for standard 32pt text actions.
+enum DSButtonVariant {
+    case secondary
+    case prominent
+    case warning
+    case destructive
+    case plain
+}
+
+/// The actual button chrome, not just an outer layout frame.
+struct DSButtonStyle: ButtonStyle {
+    let variant: DSButtonVariant
+    @Environment(\.isEnabled) private var isEnabled
+
+    init(_ variant: DSButtonVariant = .secondary) {
+        self.variant = variant
+    }
+
+    private var foreground: Color {
+        switch variant {
+        case .secondary: return .primary
+        case .prominent, .warning, .destructive: return .white
+        case .plain: return DS.Palette.accentStrong
+        }
+    }
+
+    private var fill: Color {
+        switch variant {
+        case .secondary: return DS.Palette.controlBg
+        case .prominent: return DS.Palette.accent
+        case .warning: return DS.Palette.warn
+        case .destructive: return DS.Palette.error
+        case .plain: return .clear
+        }
+    }
+
+    private var stroke: Color {
+        variant == .secondary ? DS.Palette.border : .clear
+    }
+
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label
+            .font(.dsBodyMedium)
+            .lineLimit(1)
+            .foregroundColor(foreground)
+            .padding(.horizontal, DS.Spacing.m)
+            .frame(height: DS.Layout.controlHeight, alignment: .center)
+            .background(DS.Shape.control().fill(fill))
+            .overlay(DS.Shape.control().stroke(stroke, lineWidth: 1))
+            .clipShape(DS.Shape.control())
+            .opacity(isEnabled ? 1 : 0.45)
+            .scaleEffect(configuration.isPressed ? 0.98 : 1)
+            .animation(.easeOut(duration: 0.12), value: configuration.isPressed)
+    }
+}
+
 // MARK: - Input Styles
 
 struct DSTextFieldStyle: TextFieldStyle {
@@ -305,19 +483,24 @@ extension View {
             .overlay(DS.Shape.control().stroke(DS.Palette.border, lineWidth: 1))
     }
 
-    /// Menu picker sized to match `inputStyle()` fields.
-    func dsMenuControl() -> some View {
-        self
-            .controlSize(.regular)
-            .frame(height: DS.Layout.controlHeight, alignment: .center)
+    /// Deprecated: native Picker chrome is not dimensionally stable. Use
+    /// `DSMenuPicker` or `DSSegmentedControl` instead.
+    @available(*, deprecated, message: "Use DSMenuPicker")
+    func dsMenuControl() -> some View { self.frame(height: DS.Layout.controlHeight) }
+
+    /// Deprecated: native Picker chrome is not dimensionally stable. Use
+    /// `DSSegmentedControl` instead.
+    @available(*, deprecated, message: "Use DSSegmentedControl")
+    func dsActionControl() -> some View { self.frame(height: DS.Layout.controlHeight) }
+
+    /// A standard text action with actual 32pt button chrome.
+    func dsButton(_ variant: DSButtonVariant = .secondary) -> some View {
+        self.buttonStyle(DSButtonStyle(variant))
     }
 
-    /// Toolbar control (segmented / bordered button).
-    /// `.regular` bezel + fixed 32pt frame aligns visual height with search chrome.
+    /// Toolbar alias for segmented/menu controls. Buttons must use `dsButton()`.
     func dsToolbarControl() -> some View {
-        self
-            .controlSize(.regular)
-            .frame(height: DS.Layout.controlHeight, alignment: .center)
+        self.dsActionControl()
     }
 
     /// Continuous card chrome: fill + border + light-only soft shadow.

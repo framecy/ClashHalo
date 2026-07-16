@@ -16,10 +16,9 @@ struct SubscriptionsPage: View {
         VStack(spacing: 0) {
             PageToolbar {
                 Button { Task { await updateAll() } } label: { Label("全部更新", systemImage: "arrow.clockwise") }
-                    .buttonStyle(.bordered)
+                    .dsButton()
                 Button { editName = nil; fName = ""; fURL = ""; showSheet = true } label: { Label("添加订阅", systemImage: "plus") }
-                    .buttonStyle(.borderedProminent)
-                    .tint(DS.Palette.accent)
+                    .dsButton(.prominent)
             }
             ScrollView {
                 VStack(spacing: DS.Spacing.m) {
@@ -55,12 +54,11 @@ struct SubscriptionsPage: View {
             }
             HStack {
                 Button("取消") { showSheet = false }
-                    .controlSize(.small)
+                    .dsButton()
+
                 Spacer()
                 Button("保存") { Task { await save() } }
-                    .buttonStyle(.borderedProminent)
-                    .tint(DS.Palette.accent)
-                    .controlSize(.small)
+                    .dsButton(.prominent)
                     .disabled(fName.trimmingCharacters(in: .whitespaces).isEmpty || !fURL.hasPrefix("http"))
             }
         }.padding(DS.Spacing.xl).frame(width: 460)

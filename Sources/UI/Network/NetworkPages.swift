@@ -20,7 +20,7 @@ struct NetworkPage: View {
                             NumRow("TProxy 端口", key: "tproxy-port", persistent: true)
                         }
                         Text("端口设为 0 即禁用。建议绝大多数应用使用混合端口（兼容 HTTP 与 SOCKS5）。")
-                            .font(.dsBody).foregroundColor(.secondary).padding(.top, 6)
+                            .font(.dsBody).foregroundColor(.secondary).padding(.top, DS.Spacing.s)
                     }
                     Card(title: "全局网络", icon: "globe") {
                         VStack(spacing: 2) {
@@ -39,7 +39,7 @@ struct NetworkPage: View {
                             StringListRow("免认证网段", key: "skip-auth-prefixes", placeholder: "127.0.0.1/8", persistent: true)
                         }
                         Text("开启“允许局域网”可将代理共享给同 Wi-Fi 下的其他设备；可用 IP 网段与认证做严格审查。")
-                            .font(.dsBody).foregroundColor(.secondary).padding(.top, 6)
+                            .font(.dsBody).foregroundColor(.secondary).padding(.top, DS.Spacing.s)
                     }
                     Card(title: "局域网网关 (旁路由)", icon: "network.badge.shield.half.filled") {
                         VStack(spacing: 2) {
@@ -50,7 +50,7 @@ struct NetworkPage: View {
                             }.padding(.vertical, DS.Spacing.s)
                         }
                         Text("开启后将自动配置 IP 转发并接管局域网内其他所有设备的流量（需配合 TUN）。其他设备需将网关和 DNS 指向本机的局域网 IP。")
-                            .font(.dsBody).foregroundColor(.secondary).padding(.top, 6)
+                            .font(.dsBody).foregroundColor(.secondary).padding(.top, DS.Spacing.s)
                     }
                     if M.gatewayModeOn {
                         GatewayDevicesView()
@@ -64,7 +64,7 @@ struct NetworkPage: View {
 
 struct GatewayDevicesView: View {
     @EnvironmentObject var M: AppModel
-    
+
     var body: some View {
         Card(title: "已接入设备 (\(M.gatewayDevices.count))", icon: "desktopcomputer.network") {
             if M.gatewayDevices.isEmpty {
@@ -120,8 +120,8 @@ struct GatewayDeviceRow: View {
             }
             .font(.dsCaption)
         }
-        .padding(10)
-        .background(Color.secondary.opacity(0.05))
+        .padding(DS.Spacing.m)
+        .background(DS.Palette.fillFaint)
         .clipShape(RoundedRectangle(cornerRadius: DS.Radius.chip, style: .continuous))
     }
 }
@@ -146,7 +146,7 @@ struct TunPage: View {
                         NList("路由排除网段", "tun", "route-exclude-address", placeholder: "192.168.0.0/16")
                     }
                     Text("用户态 UTUN (AF_SYSTEM)，不占 VPN 插槽。在「网络拓扑」中排除虚拟网段，可避免抢占其路由。")
-                        .font(.dsBody).foregroundColor(.secondary).padding(.top, 6)
+                        .font(.dsBody).foregroundColor(.secondary).padding(.top, DS.Spacing.s)
                 }
                 }
                 Spacer(minLength: 0)
@@ -169,7 +169,7 @@ struct SnifferPage: View {
                         NToggle("解析纯 IP", "sniffer", "parse-pure-ip")
                     }
                     Text("从 TLS / QUIC / HTTP 握手中提取真实域名用于分流，对走 IP 的连接尤为重要。默认嗅探协议：TLS(443,8443), HTTP(80,8080-8880), QUIC(443,8443)。修改后请重启核心生效。")
-                        .font(.dsBody).foregroundColor(.secondary).padding(.top, 6)
+                        .font(.dsBody).foregroundColor(.secondary).padding(.top, DS.Spacing.s)
                 }
                 }
                 Spacer(minLength: 0)
@@ -204,20 +204,16 @@ struct NetworkHubPage: View {
             if tab == "dns" {
                 PageToolbar {
                     Button { M.flushDnsCache() } label: { Label("刷新缓存", systemImage: "arrow.clockwise") }
-                        .buttonStyle(.bordered)
+                        .dsButton()
                     Button { M.clearAllCache() } label: { Label("清空", systemImage: "trash") }
-                        .buttonStyle(.bordered)
+                        .dsButton()
                 }
             }
 
-            HStack(spacing: 24) {
-                Spacer()
-                ForEach(tabs, id: \.1) { t in
-                    tabButton(t.0, tag: t.1, icon: t.2, activeIcon: t.3)
-                }
-                Spacer()
-            }
-            .padding(.horizontal, DS.Spacing.xxl)
+            DSSegmentedControl(selection: $tab, choices: tabs.map {
+                DSChoice($0.0, $0.1, systemImage: $0.2)
+            })
+            .padding(.horizontal, DS.Layout.pageContentInset)
             .padding(.top, tab == "dns" ? 0 : DS.Spacing.m)
             .padding(.bottom, DS.Spacing.l)
 
@@ -234,27 +230,7 @@ struct NetworkHubPage: View {
         }
     }
 
-    private func tabButton(_ label: String, tag: String, icon: String, activeIcon: String) -> some View {
-        let active = tab == tag
-        return Button(action: { tab = tag }) {
-            VStack(spacing: 6) {
-                Image(systemName: active ? activeIcon : icon)
-                    .font(DS.Icon.font(DS.Icon.md))
-                    .foregroundColor(active ? DS.Palette.accent : .secondary)
-                Text(label)
-                    .font(active ? .dsBodySemibold : .dsBody)
-                    .foregroundColor(active ? .primary : .secondary)
-            }
-            .frame(width: 80)
-            .padding(.vertical, DS.Spacing.s)
-            .contentShape(Rectangle())
-            .background(
-                RoundedRectangle(cornerRadius: DS.Radius.control, style: .continuous)
-                    .fill(active ? DS.Palette.fill : Color.clear)
-            )
-        }
-        .buttonStyle(.plain)
-    }
+
 }
 
 // MARK: - Reusable config form rows (read M.configs, write via M.patch)
@@ -289,8 +265,8 @@ struct NumRow: View {
 
                 if hasChanges {
                     Button("应用") { commit() }
-                        .buttonStyle(.borderedProminent)
-                        .controlSize(.small)
+                        .dsButton(.prominent)
+
                 }
             }
             .frame(width: DS.Layout.fieldTrailing, alignment: .trailing)
@@ -358,8 +334,8 @@ struct TextRow: View {
 
                 if hasChanges {
                     Button("应用") { commit() }
-                        .buttonStyle(.borderedProminent)
-                        .controlSize(.small)
+                        .dsButton(.prominent)
+
                 }
             }
             .frame(width: DS.Layout.fieldTrailing, alignment: .trailing)
@@ -383,17 +359,13 @@ struct PickerRow: View {
         HStack {
             Text(label).font(.dsBody)
             Spacer()
-            Picker("", selection: Binding<String>(
+            DSMenuPicker(selection: Binding<String>(
                 get: {
                     let val = (M.configs[key] as? String) ?? ""
                     return options.contains(where: { $0.0 == val }) ? val : (options.first?.0 ?? "")
                 },
                 set: { v in Task { if persistent { await M.patchPersistent([key: v]) } else { await M.patch([key: v]) } } }
-            )) {
-                ForEach(options, id: \.0) { Text($0.1).tag($0.0) }
-            }
-            .labelsHidden()
-            .dsMenuControl()
+            ), choices: options.map { DSChoice($0.1, $0.0) })
             .frame(width: DS.Layout.fieldTrailing, alignment: .trailing)
         }
         .padding(.vertical, DS.Spacing.s)
@@ -511,7 +483,7 @@ struct NToggle: View {
                     var currentParent = M.configs[parent] as? [String: Any] ?? [:]
                     currentParent[sub] = v
                     M.configs[parent] = currentParent
-                    
+
                     Task {
                         if persistent {
                             await M.patchPersistent([parent: [sub: v]])
@@ -537,7 +509,7 @@ struct NPicker: View {
     var body: some View {
         HStack {
             Text(label).font(.dsBody); Spacer()
-            Picker("", selection: Binding<String>(
+            DSMenuPicker(selection: Binding<String>(
                 get: {
                     let val = ((nestedDict(M, parent)[sub] as? String) ?? "").lowercased()
                     return options.first(where: { $0.0.lowercased() == val })?.0 ?? (options.first?.0 ?? "")
@@ -551,9 +523,7 @@ struct NPicker: View {
                         }
                     }
                 }
-            )) { ForEach(options, id: \.0) { Text($0.1).tag($0.0) } }
-            .labelsHidden()
-            .dsMenuControl()
+            ), choices: options.map { DSChoice($0.1, $0.0) })
             .frame(width: DS.Layout.fieldTrailing, alignment: .trailing)
         }.padding(.vertical, DS.Spacing.s)
     }
@@ -640,7 +610,7 @@ struct KernelMgmtPage: View {
             ScrollView {
                 VStack(spacing: DS.Spacing.l) {
                     KernelCard()
-                    
+
                     Card(title: "API 控制 (外部面板)", icon: "server.rack") {
                         VStack(spacing: 2) {
                             TextRow("API 监听地址", key: "external-controller", placeholder: "127.0.0.1:9090", persistent: true)
@@ -650,9 +620,9 @@ struct KernelMgmtPage: View {
                             TextRow("面板下载地址", key: "external-ui-url", placeholder: "https://github.com/Zephyruso/zashboard/releases/latest/download/dist-no-fonts.zip", persistent: true)
                         }
                         Text("内核内置面板 (如 Zashboard)。配置下载地址后，内核启动时会自动下载并解压到指定目录，您可通过 http://<API地址>/ui 访问。")
-                            .font(.dsBody).foregroundColor(.secondary).padding(.top, 6)
+                            .font(.dsBody).foregroundColor(.secondary).padding(.top, DS.Spacing.s)
                     }
-                    
+
                     Card(title: "启动日志", icon: "terminal") {
                         VStack(alignment: .leading, spacing: 4) {
                             if M.kernelLogs.isEmpty {
@@ -693,7 +663,7 @@ struct KernelCard: View {
                                 await M.reapplyTUN(wasOn: wasTUN)
                                 M.showToast("内核已重启")
                             }
-                        }.buttonStyle(.bordered).tint(DS.Palette.warn).controlSize(.small)
+                        }.dsButton(.warning)
                     }
                     Toggle("", isOn: Binding(get: { M.reachable }, set: { _ in M.toggleEngine() }))
                         .toggleStyle(.switch)
@@ -704,11 +674,10 @@ struct KernelCard: View {
                 HStack {
                     Text("更新通道").font(.dsBody)
                     Spacer()
-                    Picker("", selection: $km.channel) {
-                        Text("正式版").tag("stable"); Text("Alpha").tag("alpha")
-                    }
-                    .pickerStyle(.segmented)
-                    .labelsHidden()
+                    DSSegmentedControl(selection: $km.channel, choices: [
+                        DSChoice("正式版", "stable"),
+                        DSChoice("Alpha", "alpha")
+                    ])
                     .frame(width: DS.Layout.fieldTrailing, alignment: .trailing)
                 }
                 HStack {
@@ -721,8 +690,7 @@ struct KernelCard: View {
                     Spacer()
                     HStack(spacing: 8) {
                         Button("检查更新") { Task { await km.check() } }
-                            .buttonStyle(.bordered)
-                            .controlSize(.small)
+                            .dsButton()
                             .disabled(km.checking)
                         if !km.assetURL.isEmpty {
                             Button {
@@ -737,9 +705,7 @@ struct KernelCard: View {
                             } label: {
                                 if km.downloading { ProgressView().controlSize(.small) } else { Text("下载并切换") }
                             }
-                            .controlSize(.small)
-                            .buttonStyle(.borderedProminent)
-                            .tint(DS.Palette.accent)
+                            .dsButton(.prominent)
                             .disabled(km.downloading)
                         }
                     }
@@ -783,7 +749,7 @@ struct KernelCard: View {
                         await M.reapplyTUN(wasOn: wasTUN)
                     }
                 }
-                    .buttonStyle(.bordered).controlSize(.small).frame(width: DS.Layout.fieldTrailing, alignment: .trailing)
+                    .dsButton().frame(width: DS.Layout.fieldTrailing, alignment: .trailing)
             }
         }
         .padding(.vertical, 2)
