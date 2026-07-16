@@ -74,7 +74,7 @@ struct GatewayDevicesView: View {
                     .frame(maxWidth: .infinity, alignment: .center)
                     .padding(.vertical, DS.Spacing.m)
             } else {
-                VStack(spacing: 8) {
+                VStack(spacing: DS.Spacing.s) {
                     let devices = Array(M.gatewayDevices.values).sorted(by: { $0.lastSeen > $1.lastSeen })
                     ForEach(devices) { dev in
                         GatewayDeviceRow(dev: dev)
@@ -89,19 +89,19 @@ struct GatewayDeviceRow: View {
     let dev: GatewayDevice
     var body: some View {
         HStack {
-            VStack(alignment: .leading, spacing: 4) {
+            VStack(alignment: .leading, spacing: DS.Spacing.xs) {
                 Text(dev.ip)
                     .font(.dsMonoBold)
-                HStack(spacing: 12) {
+                HStack(spacing: DS.Spacing.m) {
                     Label("\(dev.activeConnections) 连接", systemImage: "point.3.connected.trianglepath.dotted")
                     Label("\(dev.durationString)", systemImage: "clock")
                 }
                 .font(.dsCaption)
                 .foregroundColor(.secondary)
             }
-            Spacer()
-            VStack(alignment: .trailing, spacing: 4) {
-                HStack(spacing: 4) {
+            Spacer(minLength: 0)
+            VStack(alignment: .trailing, spacing: DS.Spacing.xs) {
+                HStack(spacing: DS.Spacing.xs) {
                     Image(systemName: "arrow.up")
                     Text(fmtRate(Double(dev.uploadRate)))
                         .frame(width: 72, alignment: .trailing)
@@ -109,7 +109,7 @@ struct GatewayDeviceRow: View {
                         .frame(width: 72, alignment: .trailing)
                 }
                 .foregroundColor(DS.Palette.ok)
-                HStack(spacing: 4) {
+                HStack(spacing: DS.Spacing.xs) {
                     Image(systemName: "arrow.down")
                     Text(fmtRate(Double(dev.downloadRate)))
                         .frame(width: 72, alignment: .trailing)
@@ -201,23 +201,29 @@ struct NetworkHubPage: View {
 
     var body: some View {
         VStack(spacing: 0) {
+            // 顶栏与侧栏 appHeader / PageToolbar 同高：m + 32 + m，分割线通栏对齐
+            DSSegmentedControl(selection: $tab, choices: tabs.map {
+                DSChoice($0.0, $0.1, systemImage: $0.2)
+            })
+            .padding(.horizontal, DS.Layout.pageContentInset)
+            .padding(.vertical, DS.Spacing.m)
+            .frame(height: DS.Layout.chromeHeight, alignment: .center)
+
+            Divider().overlay(DS.Palette.separator)
+
+            // Tab 下方的上下文操作行：仅当当前 tab 提供页面级操作时显示
+            // 放在分割线下方，避免顶栏高度因 DNS 动作行抖动、与侧栏分割线错位
             if tab == "dns" {
-                PageToolbar {
+                HStack(spacing: DS.Spacing.s) {
+                    Spacer(minLength: 0)
                     Button { M.flushDnsCache() } label: { Label("刷新缓存", systemImage: "arrow.clockwise") }
                         .dsButton()
                     Button { M.clearAllCache() } label: { Label("清空", systemImage: "trash") }
                         .dsButton()
                 }
+                .padding(.horizontal, DS.Layout.pageContentInset)
+                .padding(.vertical, DS.Spacing.m)
             }
-
-            DSSegmentedControl(selection: $tab, choices: tabs.map {
-                DSChoice($0.0, $0.1, systemImage: $0.2)
-            })
-            .padding(.horizontal, DS.Layout.pageContentInset)
-            .padding(.top, tab == "dns" ? 0 : DS.Spacing.m)
-            .padding(.bottom, DS.Spacing.l)
-
-            Divider().overlay(DS.Palette.separator)
             Group {
                 switch tab {
                 case "tun": TunPage()
@@ -318,7 +324,7 @@ struct TextRow: View {
         HStack {
             Text(label).font(.dsBody)
             Spacer()
-            HStack(spacing: 8) {
+            HStack(spacing: DS.Spacing.s) {
                 TextField(placeholder, text: $text)
                     .inputStyle()
                     .font(.dsMono)

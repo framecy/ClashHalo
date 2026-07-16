@@ -56,13 +56,18 @@ struct ConnectionsPage: View {
             }
             .padding(.horizontal, DS.Layout.pageContentInset)
             .padding(.vertical, DS.Spacing.m)
+            .frame(height: DS.Layout.chromeHeight, alignment: .center)
             .background(DS.Palette.chromeBg)
-            Divider()
+            Divider().overlay(DS.Palette.separator)
 
             if filteredRows.isEmpty {
-                ContentUnavailable(q.isEmpty ? (selectedTab == 0 ? "暂无活跃连接" : "暂无已关闭连接") : "无匹配结果", "point.3.connected.trianglepath.dotted")
-                    .frame(maxHeight: .infinity)
-                    .onTapGesture { selection = nil }
+                ContentUnavailable(
+                    q.isEmpty
+                        ? (selectedTab == 0 ? "暂无活跃连接" : "暂无已关闭连接")
+                        : "无匹配结果",
+                    "point.3.connected.trianglepath.dotted"
+                )
+                .onTapGesture { selection = nil }
             } else {
                 Table(filteredRows, selection: $selection, sortOrder: $sortOrder) {
                     TableColumn("目标", value: \.host) { c in

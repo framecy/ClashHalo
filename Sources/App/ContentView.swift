@@ -49,69 +49,171 @@ struct ContentView: View {
     }
 
     // MARK: Sidebar
+    //
+    // Shell 契约 (Docs/design.md §6.1 / §9)：
+    // 侧栏与内容区共用同一 chrome 节奏：
+    //   top chrome 高度 = m + controlHeight + m（与 PageToolbar / 连接·日志·规则顶栏一致）
+    //   分割线 = 通栏 1pt separator（禁止 inset hairline，否则跨栏无法对齐）
+    // 列表分组「监控 / 代理 / 配置」；底 = 系统代理 / TUN + 核心状态。
 
     private var sidebar: some View {
         VStack(spacing: 0) {
             appHeader
+            // 通栏分割线：与内容区 PageToolbar / chrome 底部分割线对齐
             Divider().overlay(DS.Palette.separator)
+
             List(selection: $M.route) {
-                rows(monitorTabs)
-                rows(proxyTabs)
-                rows(configTabs)
+                sidebarSection("监控", tabs: monitorTabs, first: true)
+                sidebarSection("代理", tabs: proxyTabs)
+                sidebarSection("配置", tabs: configTabs)
             }
             .listStyle(.sidebar)
             .scrollContentBackground(.hidden)
+            .contentMargins(.top, 0, for: .scrollContent)
+            .contentMargins(.bottom, DS.Spacing.s, for: .scrollContent)
+
+            // 通栏分割线：与内容区底部 chrome 节奏一致
             Divider().overlay(DS.Palette.separator)
             statusFooter
         }
         .background(DS.Palette.sidebarBg)
     }
 
-    private func rows(_ tabs: [Tab]) -> some View {
-        ForEach(tabs, id: \.id) { t in
-            Label(t.label, systemImage: t.icon).tag(t.id)
+    @ViewBuilder
+    private func sidebarSection(_ title: String, tabs: [Tab], first: Bool = false) -> some View {
+        Section {
+            ForEach(tabs, id: \.id) { t in
+                Label {
+                    Text(t.label)
+                        .font(.dsBodyMedium)
+                        .lineLimit(1)
+                } icon: {
+                    Image(systemName: t.icon)
+                        .font(DS.Icon.font(DS.Icon.md, weight: .medium))
+                        .symbolRenderingMode(.hierarchical)
+                }
+                .tag(t.id)
+                .listRowInsets(EdgeInsets(
+                    top: DS.Layout.sidebarRowVInset,
+                    leading: DS.Spacing.s,
+                    bottom: DS.Layout.sidebarRowVInset,
+                    trailing: DS.Spacing.s
+                ))
+            }
+        } header: {
+            Text(title)
+                .font(.dsCaption)
+                .fontWeight(.semibold)
+                .foregroundStyle(.secondary)
+                .textCase(nil)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                // 首组「监控」额外顶距；后续组用 l 顶距拉开分组（macOS 无 listSectionSpacing）
+                .padding(.top, first ? DS.Layout.sidebarSectionTop : DS.Spacing.l)
+                .padding(.bottom, DS.Spacing.xs)
+                .padding(.leading, DS.Spacing.xs)
         }
     }
 
+    /// 与内容区 PageToolbar / chrome 顶栏同高：m + 32 + m，底部分割线通栏。
     private var appHeader: some View {
-        HStack(spacing: 12) {
+        HStack(spacing: DS.Spacing.m) {
             Image(nsImage: NSApp.applicationIconImage ?? NSImage())
                 .resizable()
-                .frame(width: 32, height: 32)
-            VStack(alignment: .leading, spacing: 2) {
-                Text("ClashHalo").font(.dsLabelBold)
-                Text("v\(Self.appVersion) (\(Self.appBuild))").font(.dsCaption).foregroundColor(.secondary)
+                .interpolation(.high)
+                .frame(width: DS.Layout.controlHeight, height: DS.Layout.controlHeight)
+                .clipShape(RoundedRectangle(cornerRadius: DS.Radius.control, style: .continuous))
+
+            VStack(alignment: .leading, spacing: 1) {
+                Text("ClashHalo")
+                    .font(.dsLabelBold)
+                    .foregroundStyle(.primary)
+                    .lineLimit(1)
+                Text("v\(Self.appVersion) · \(Self.appBuild)")
+                    .font(.dsCaption)
+                    .foregroundStyle(.secondary)
+                    .monospacedDigit()
+                    .lineLimit(1)
             }
-            Spacer()
+            Spacer(minLength: 0)
         }
-        .padding(.horizontal, DS.Spacing.l).padding(.vertical, DS.Spacing.m)
+        // 水平 inset 与内容区 pageContentInset 同源，跨栏视觉网格一致
+        .padding(.horizontal, DS.Layout.pageContentInset)
+        .frame(height: DS.Layout.chromeHeight, alignment: .center)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(DS.Palette.sidebarBg)
     }
 
     private var statusFooter: some View {
-        VStack(spacing: DS.Spacing.s) {
-            statusToggle("系统代理", icon: "globe", isOn: Binding(get: { M.systemProxyOn }, set: { _ in M.toggleSystemProxy() }), accent: false)
-            statusToggle("TUN 模式", icon: "shield.lefthalf.filled", isOn: Binding(get: { M.tunOn }, set: { _ in M.toggleTUN() }), accent: true)
+        VStack(alignment: .leading, spacing: DS.Spacing.m) {
+            // 控制卡：系统代理 / TUN，抬升一层，避免与导航列表糊在一起
+            VStack(spacing: DS.Spacing.s) {
+                statusToggle(
+                    "系统代理",
+                    icon: "globe",
+                    isOn: Binding(get: { M.systemProxyOn }, set: { _ in M.toggleSystemProxy() }),
+                    onColor: DS.Palette.ok
+                )
+                statusToggle(
+                    "TUN 模式",
+                    icon: "shield.lefthalf.filled",
+                    isOn: Binding(get: { M.tunOn }, set: { _ in M.toggleTUN() }),
+                    onColor: DS.Palette.accent
+                )
+            }
+            .padding(.horizontal, DS.Spacing.m)
+            .padding(.vertical, DS.Spacing.m)
+            .background(
+                RoundedRectangle(cornerRadius: DS.Radius.control, style: .continuous)
+                    .fill(DS.Palette.controlBg)
+            )
+            .overlay(
+                RoundedRectangle(cornerRadius: DS.Radius.control, style: .continuous)
+                    .stroke(DS.Palette.border, lineWidth: 1)
+            )
 
-            HStack {
-                Circle().fill(M.reachable ? DS.Palette.ok : DS.Palette.error).frame(width: 6, height: 6)
-                Text(M.reachable ? "核心已就绪" : "核心已停止").font(.dsBody).foregroundColor(.secondary)
-                Spacer()
+            HStack(spacing: DS.Spacing.s) {
+                Circle()
+                    .fill(M.reachable ? DS.Palette.ok : DS.Palette.error)
+                    .frame(width: 6, height: 6)
+                Text(M.reachable ? "核心已就绪" : "核心已停止")
+                    .font(.dsBody)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+                Spacer(minLength: 0)
                 if M.reachable {
-                    Text(M.version).font(.dsMono).foregroundColor(.secondary)
+                    Text(M.version)
+                        .font(.dsMono)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
                 }
             }
-            .padding(.top, DS.Spacing.xs)
+            .padding(.horizontal, DS.Spacing.xs)
         }
-        .padding(DS.Spacing.l)
+        // 与顶栏 / 内容区共用 pageContentInset，避免 footer 比 chrome 更缩进
+        .padding(.horizontal, DS.Layout.pageContentInset)
+        .padding(.top, DS.Spacing.m)
+        .padding(.bottom, DS.Spacing.l)
+        .background(DS.Palette.sidebarBg)
     }
 
-    private func statusToggle(_ label: String, icon: String, isOn: Binding<Bool>, accent: Bool) -> some View {
+    private func statusToggle(_ label: String, icon: String, isOn: Binding<Bool>, onColor: Color) -> some View {
         HStack(spacing: DS.Spacing.s) {
-            Circle().fill(isOn.wrappedValue ? (accent ? DS.Palette.accent : DS.Palette.ok) : Color.secondary.opacity(0.3)).frame(width: 6, height: 6)
-            Text(label).font(.dsBodyMedium).foregroundColor(isOn.wrappedValue ? .primary : .secondary)
-            Spacer()
-            Toggle("", isOn: isOn).toggleStyle(.switch).controlSize(.mini).labelsHidden()
+            Image(systemName: icon)
+                .font(DS.Icon.font(DS.Icon.sm, weight: .medium))
+                .foregroundStyle(isOn.wrappedValue ? onColor : .secondary)
+                .frame(width: DS.Icon.md, alignment: .center)
+            Text(label)
+                .font(.dsBodyMedium)
+                .foregroundStyle(isOn.wrappedValue ? .primary : .secondary)
+                .lineLimit(1)
+            Spacer(minLength: 0)
+            // 开关是状态控件，不与标准 32pt 按钮/tab 共用尺寸（design.md §6.7）
+            Toggle("", isOn: isOn)
+                .toggleStyle(.switch)
+                .controlSize(.mini)
+                .labelsHidden()
         }
+        .padding(.vertical, DS.Spacing.xs / 2)
     }
 
     // MARK: Detail
@@ -138,10 +240,13 @@ struct ContentView: View {
         .background(DS.Palette.windowBg)
         .overlay(alignment: .bottom) {
             if let t = M.toast {
-                Text(t).font(.dsBody).padding(.horizontal, DS.Spacing.l).padding(.vertical, DS.Spacing.s + 1)
+                Text(t)
+                    .font(.dsBody)
+                    .padding(.horizontal, DS.Spacing.l)
+                    .padding(.vertical, DS.Spacing.s)
                     .background(.ultraThinMaterial, in: Capsule())
                     .overlay(Capsule().stroke(DS.Palette.border))
-                    .padding(.bottom, DS.Spacing.xxl + 2)
+                    .padding(.bottom, DS.Spacing.xxl)
                     .transition(.move(edge: .bottom).combined(with: .opacity))
             }
         }
@@ -164,7 +269,7 @@ struct PageHead<Actions: View>: View {
         if hasTitle || hasActions {
             HStack(alignment: hasTitle ? .bottom : .center) {
                 if hasTitle {
-                    VStack(alignment: .leading, spacing: 4) {
+                    VStack(alignment: .leading, spacing: DS.Spacing.xs) {
                         Text(title)
                             .font(.dsPageTitle)
                             .foregroundColor(.primary)
@@ -174,7 +279,7 @@ struct PageHead<Actions: View>: View {
                                 .foregroundColor(.secondary)
                         }
                     }
-                    Spacer()
+                    Spacer(minLength: 0)
                 } else {
                     Spacer(minLength: 0)
                 }
@@ -185,7 +290,7 @@ struct PageHead<Actions: View>: View {
                     }
                 }
             }
-            .padding(.horizontal, DS.Spacing.xl)
+            .padding(.horizontal, DS.Layout.pageContentInset)
             .padding(.top, hasTitle ? DS.Spacing.l : DS.Spacing.m)
             .padding(.bottom, DS.Spacing.m)
         }
@@ -199,17 +304,25 @@ extension PageHead where Actions == EmptyView {
 }
 
 /// Actions-only page toolbar (no title/desc). Prefer this on non-dashboard pages.
+/// Matches design.md §6.5 / §6.1: fixed 32pt controls, pageContentInset, chromeBg strip.
+/// Height locked to `m + controlHeight + m` so the bottom Divider lines up with the sidebar header.
 struct PageToolbar<Actions: View>: View {
     @ViewBuilder var actions: () -> Actions
 
     var body: some View {
-        HStack(spacing: DS.Spacing.s) {
-            Spacer(minLength: 0)
-            actions()
+        VStack(spacing: 0) {
+            HStack(spacing: DS.Spacing.s) {
+                Spacer(minLength: 0)
+                actions()
+            }
+            .padding(.horizontal, DS.Layout.pageContentInset)
+            .padding(.vertical, DS.Spacing.m)
+            .frame(height: DS.Layout.chromeHeight, alignment: .center)
+            .frame(maxWidth: .infinity)
+            .background(DS.Palette.chromeBg)
+
+            Divider().overlay(DS.Palette.separator)
         }
-        .padding(.horizontal, DS.Layout.pageContentInset)
-        .padding(.top, DS.Spacing.m)
-        .padding(.bottom, DS.Spacing.m)
     }
 }
 
@@ -233,13 +346,19 @@ struct Card<Content: View, Actions: View>: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
             if let title {
-                HStack(spacing: DS.Spacing.s - 2) {
-                    if let icon { Image(systemName: icon).font(.dsBody).foregroundColor(.secondary) }
+                HStack(spacing: DS.Spacing.s) {
+                    if let icon {
+                        Image(systemName: icon)
+                            .font(.dsBody)
+                            .foregroundColor(.secondary)
+                    }
                     Text(title).font(.dsBodyBold).foregroundColor(.secondary)
-                    Spacer()
+                    Spacer(minLength: 0)
                     actions()
                 }
-                .padding(.horizontal, DS.Spacing.l).padding(.top, DS.Spacing.m).padding(.bottom, DS.Spacing.s)
+                .padding(.horizontal, DS.Spacing.l)
+                .padding(.top, DS.Spacing.m)
+                .padding(.bottom, DS.Spacing.s)
             }
             content()
                 .frame(maxWidth: .infinity, alignment: .leading)

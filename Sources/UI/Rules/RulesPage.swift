@@ -73,16 +73,15 @@ struct RulesPage: View {
             }
             .padding(.horizontal, DS.Layout.pageContentInset)
             .padding(.vertical, DS.Spacing.m)
+            .frame(height: DS.Layout.chromeHeight, alignment: .center)
             .background(DS.Palette.chromeBg)
 
-            Divider()
+            Divider().overlay(DS.Palette.separator)
 
             if let err = model.errorMessage {
                 ContentUnavailable("加载出错: \(err)", "exclamationmark.triangle")
-                .frame(maxHeight: .infinity)
             } else if model.nodes.isEmpty {
                 ContentUnavailable("没有规则 (未找到 rules: 节点)", "list.bullet.rectangle")
-                .frame(maxHeight: .infinity)
             } else {
                 List(selection: $selection) {
                     ForEach(rows) { r in

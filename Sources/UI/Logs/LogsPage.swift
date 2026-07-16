@@ -53,31 +53,36 @@ struct LogsPage: View {
             }
             .padding(.horizontal, DS.Layout.pageContentInset)
             .padding(.vertical, DS.Spacing.m)
+            .frame(height: DS.Layout.chromeHeight, alignment: .center)
             .background(DS.Palette.chromeBg)
-            Divider()
-            ScrollViewReader { sp in
-                ScrollView {
-                    LazyVStack(alignment: .leading, spacing: 2) {
-                        ForEach(rows.reversed()) { l in
-                            HStack(alignment: .top, spacing: 8) {
-                                Text(l.time).font(.dsMono).foregroundColor(.secondary)
-                                Text(l.level.uppercased()).font(.dsBodyBold)
-                                    .foregroundColor(logColor(l.level)).frame(width: 46, alignment: .leading)
-                                Text(l.text).font(.dsMono).textSelection(.enabled)
-                                Spacer(minLength: 0)
-                            }
-                            .padding(.horizontal, DS.Spacing.m + 2).padding(.vertical, 1)
-                            .id(l.id)
-                        }
-                    }.padding(.vertical, DS.Spacing.s - 2)
-                }
-                .onChange(of: VM.logs.count) {
-                    // Newest-first: keep the latest line pinned to the top.
-                    if !paused, let newest = rows.last { withAnimation { sp.scrollTo(newest.id, anchor: .top) } }
-                }
-            }
+            Divider().overlay(DS.Palette.separator)
             if source.isEmpty {
-                ContentUnavailable("等待日志流…", "doc.text.magnifyingglass").frame(maxHeight: .infinity)
+                ContentUnavailable("等待日志流…", "doc.text.magnifyingglass")
+            } else {
+                ScrollViewReader { sp in
+                    ScrollView {
+                        LazyVStack(alignment: .leading, spacing: DS.Spacing.xs / 2) {
+                            ForEach(rows.reversed()) { l in
+                                HStack(alignment: .top, spacing: DS.Spacing.s) {
+                                    Text(l.time).font(.dsMono).foregroundColor(.secondary)
+                                    Text(l.level.uppercased()).font(.dsBodyBold)
+                                        .foregroundColor(logColor(l.level)).frame(width: 46, alignment: .leading)
+                                    Text(l.text).font(.dsMono).textSelection(.enabled)
+                                    Spacer(minLength: 0)
+                                }
+                                .padding(.horizontal, DS.Spacing.m)
+                                .padding(.vertical, 1)
+                                .id(l.id)
+                            }
+                        }.padding(.vertical, DS.Spacing.xs)
+                    }
+                    .onChange(of: VM.logs.count) {
+                        // Newest-first: keep the latest line pinned to the top.
+                        if !paused, let newest = rows.last {
+                            withAnimation { sp.scrollTo(newest.id, anchor: .top) }
+                        }
+                    }
+                }
             }
         }
         .onAppear {

@@ -30,7 +30,7 @@ struct DnsPage: View {
                     }
 
                     Card(title: "DNS 解析测试", icon: "magnifyingglass") {
-                        VStack(alignment: .leading, spacing: 8) {
+                        VStack(alignment: .leading, spacing: DS.Spacing.s) {
                             HStack(spacing: DS.Spacing.s) {
                                 TextField("输入域名，如 google.com", text: $query)
                                     .inputStyle()
@@ -55,11 +55,11 @@ struct DnsPage: View {
                             Text("当前无 Fake-IP 连接（需内核启用 dns.enhanced-mode: fake-ip 且有代理流量）")
                                 .font(.dsBody).foregroundColor(.secondary)
                         } else {
-                            VStack(spacing: 4) {
+                            VStack(spacing: DS.Spacing.xs) {
                                 ForEach(fakeip.prefix(50)) { c in
                                     HStack {
                                         Text(c.host).font(.dsBody).lineLimit(1)
-                                        Spacer()
+                                        Spacer(minLength: 0)
                                         Text(c.dstIP).font(.dsMono).foregroundColor(DS.Palette.accent)
                                     }
                                 }

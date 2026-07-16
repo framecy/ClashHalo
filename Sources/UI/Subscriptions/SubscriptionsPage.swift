@@ -20,15 +20,17 @@ struct SubscriptionsPage: View {
                 Button { editName = nil; fName = ""; fURL = ""; showSheet = true } label: { Label("添加订阅", systemImage: "plus") }
                     .dsButton(.prominent)
             }
-            ScrollView {
-                VStack(spacing: DS.Spacing.m) {
-                    if providers.isEmpty {
-                        ContentUnavailable("无 HTTP 订阅 · 点右上角「添加订阅」", "icloud")
-                            .frame(maxHeight: .infinity)
+            if providers.isEmpty {
+                ContentUnavailable("无 HTTP 订阅 · 点右上角「添加订阅」", "icloud")
+            } else {
+                ScrollView {
+                    VStack(spacing: DS.Spacing.m) {
+                        ForEach(providers, id: \.name) { p in card(p) }
                     }
-                    ForEach(providers, id: \.name) { p in card(p) }
+                    .padding(.horizontal, DS.Layout.pageContentInset)
+                    .padding(.top, DS.Spacing.l)
+                    .padding(.bottom, DS.Spacing.xxl)
                 }
-                .padding(DS.Spacing.xl)
             }
         }
         .task { await reload() }
@@ -66,14 +68,15 @@ struct SubscriptionsPage: View {
 
     private func card(_ p: ProviderEntry) -> some View {
         Card {
-            VStack(alignment: .leading, spacing: 8) {
-                HStack {
+            VStack(alignment: .leading, spacing: DS.Spacing.s) {
+                HStack(spacing: DS.Spacing.s) {
                     Image(systemName: "icloud.fill").foregroundColor(DS.Palette.accent)
                     Text(p.name).font(.dsBody).fontWeight(.semibold)
                     Text("\(p.proxies?.count ?? 0) 节点").font(.dsBody)
-                        .padding(.horizontal, DS.Spacing.s - 2).padding(.vertical, 1)
+                        .padding(.horizontal, DS.Spacing.xs)
+                        .padding(.vertical, 1)
                         .background(Capsule().fill(DS.Palette.hairline))
-                    Spacer()
+                    Spacer(minLength: 0)
                     if busy.contains(p.name) {
                         ProgressView().controlSize(.small)
                     } else {
@@ -88,11 +91,11 @@ struct SubscriptionsPage: View {
                 if let s = p.subscriptionInfo, let total = s.Total, total > 0 {
                     let used = (s.Upload ?? 0) + (s.Download ?? 0)
                     let frac = min(1, Double(used) / Double(total))
-                    VStack(alignment: .leading, spacing: 3) {
+                    VStack(alignment: .leading, spacing: DS.Spacing.xs) {
                         ProgressView(value: frac).tint(frac > 0.85 ? DS.Palette.error : DS.Palette.accent)
                         HStack {
                             Text("\(fmtBytes(Double(used))) / \(fmtBytes(Double(total)))").font(.dsMono).foregroundColor(.secondary)
-                            Spacer()
+                            Spacer(minLength: 0)
                             if let exp = s.Expire, exp > 0 {
                                 Text("到期 " + dateStr(exp)).font(.dsMono).foregroundColor(.secondary)
                             }
