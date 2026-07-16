@@ -23,6 +23,8 @@
 - 侧栏与内容区分割线无法水平对齐。
 - 配置卡片贴顶、有/无 CTA 高度不一致。
 - 连接/代理/日志/订阅空状态图标位置漂移。
+- **内核关闭后 TUN 开关仍显示开启**：`stopKernel` 未清 `runningAsRoot`，且停核过程中进行中的 `refreshConfigs` 仍可能用旧的 `tun.enable` + 残留 utun 把 `tunOn` 写回 true。修复：`stopKernel` 复位 `runningAsRoot`；`refreshConfigs` 的 TUN 活跃判定增加 `reachable` 门控；`stopEngine` 强制磁盘 `tun.enable=false`、清理静态路由与僵尸 utun 残留。
+- **侧栏选中色与内容区重点色不一致**：系统 List/Switch 仍走系统蓝，内容区用 Halo Green。补 `AccentColor` 资源 + `GLOBAL_ACCENT_COLOR_NAME`，并在主窗口 / 菜单栏 / `ContentView` 统一 `.tint(DS.Palette.accent)`。
 
 ## [1.0.15] - 2026-07-14
 
