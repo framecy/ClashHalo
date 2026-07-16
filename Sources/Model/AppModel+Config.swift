@@ -171,7 +171,11 @@ extension AppModel {
         if let tun = c["tun"] as? [String: Any] {
             let configEnabled = (tun["enable"] as? Bool) == true
             let hasInterface = await NetScanner.mihomoTunInterface() != nil
-            let shouldBeOn = configEnabled && engine.runningAsRoot && hasInterface
+            // reachable is required: a stale in-flight /configs response after
+            // stopKernel must not re-arm the TUN switch when the core is already
+            // dead. runningAsRoot alone is insufficient (it was historically not
+            // cleared on stop; even after that fix, residual utun can still exist).
+            let shouldBeOn = reachable && configEnabled && engine.runningAsRoot && hasInterface
 
             // If config says TUN is on but interface is missing, log and auto-disable.
             // Guarded so it doesn't fire concurrently with a user toggle / restart
@@ -183,7 +187,7 @@ extension AppModel {
             // cannot await its body, so the in-flight guard would clear before
             // the teardown finishes. Manual isBusy + defer guarantees the guard
             // clears only after `applyTUNState(false)` truly completes.
-            if configEnabled && engine.runningAsRoot && !hasInterface && tunOn,
+            if reachable && configEnabled && engine.runningAsRoot && !hasInterface && tunOn,
                !engine.isBusy, !tunAutoTeardownInFlight {
                 tunAutoTeardownInFlight = true
                 engine.isBusy = true
@@ -733,9 +737,16 @@ extension AppModel {
 
     func stopEngine() async {
         logKernel("正在停止核心...")
+        // Snapshot residual state before stopKernel clears ownership flags.
+        // TUN is runtime-only, but reloads may have written tun.enable=true to
+        // disk to preserve a live root TUN — force it back off so the next
+        // ensureRunning cannot auto-bring TUN up from a dead session.
+        let hadTun = tunOn
+        let hadStaticRoutes = staticRoutesInjected
         await engine.stopKernel()
         reachable = false
         tunOn = false
+        engine.forceTUNDisabled()
         // 停核心时主动清理 Gateway 系统级 IP 转发（sysctl），防止残留
         if gatewayModeOn {
             _ = await engine.setGatewayMode(enabled: false)
@@ -746,6 +757,39 @@ extension AppModel {
             let port = proxyPort
             _ = await engine.setSystemProxy(enabled: false, port: port)
             systemProxyOn = false
+        }
+        // Clear SD-WAN static routes that were injected while TUN was live.
+        // stopKernel does not touch Helper route state; without this, excluded
+        // prefixes stay pinned after the core is gone.
+        if hadStaticRoutes {
+            if let helper = XPCManager.shared.helper() {
+                helper.cleanupAllExcludeRoutes { ok in
+                    self.logKernel("XPC Helper 清理静态路由: \(ok ? "成功" : "失败")")
+                    if ok {
+                        Task { @MainActor in
+                            self.staticRoutesInjected = false
+                        }
+                    }
+                }
+            } else {
+                staticRoutesInjected = false
+            }
+        }
+        // Physical residual: killall may leave a downed 198.18 utun whose
+        // Supplemental DNS resolver still pins the fake-ip gateway. Only act
+        // when a downed proxyTun is present (or TUN was on and still visible).
+        // Note: do not put `await` on the RHS of `||` — Swift autoclosure there
+        // does not support concurrency.
+        var residualVisible = NetScanner.hasDownedMihomoTun()
+        if !residualVisible && hadTun {
+            residualVisible = await NetScanner.mihomoTunInterface() != nil
+        }
+        if residualVisible {
+            logKernel("停核后检测到 TUN 残留，请求特权服务物理清理...")
+            let ok = await XPCManager.shared.callCleanupTUNResidual()
+            if ok != true {
+                logKernel("停核后 TUN 物理清理: 特权服务未完成或不可达")
+            }
         }
         logKernel("核心已停止")
         showToast("核心已停止")
