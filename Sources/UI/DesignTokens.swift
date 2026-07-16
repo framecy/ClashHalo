@@ -227,13 +227,23 @@ enum DS {
         static let fieldTrailing: CGFloat = 160
         /// Shared height for text fields, menu pickers, tabs, and toolbar controls.
         static let controlHeight: CGFloat = 32
-        /// Horizontal inset shared by toolbar strips and table/list content.
+        /// Top chrome band height shared by sidebar header and content toolbars.
+        /// `m + controlHeight + m` — keeps the bottom Divider aligned across columns.
+        static let chromeHeight: CGFloat = Spacing.m + controlHeight + Spacing.m
+        /// Horizontal inset shared by toolbar strips, table/list content, and sidebar header/footer.
         static let pageContentInset: CGFloat = Spacing.xl
         static let statHeight:    CGFloat = 64
         static let cardRow:       CGFloat = 208
-        static let sidebarMin:    CGFloat = 200
-        static let sidebarIdeal:  CGFloat = 220
-        static let sidebarMax:    CGFloat = 260
+        /// Config profile cards share a fixed min height so active/inactive CTAs don't change size.
+        static let profileCardMinHeight: CGFloat = 148
+        /// Sidebar column width — roomier than 200/220 so labels and section headers breathe.
+        static let sidebarMin:    CGFloat = 212
+        static let sidebarIdeal:  CGFloat = 236
+        static let sidebarMax:    CGFloat = 280
+        /// Sidebar nav row vertical inset (each side) — 8pt grid.
+        static let sidebarRowVInset: CGFloat = Spacing.s
+        /// Extra gap under app header before the first section ("监控").
+        static let sidebarSectionTop: CGFloat = Spacing.m
     }
 
     // MARK: Shapes

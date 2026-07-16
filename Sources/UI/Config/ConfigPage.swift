@@ -17,16 +17,21 @@ struct ConfigPage: View {
                     .dsButton(.prominent)
             }
 
-            ScrollView {
-                VStack(alignment: .leading, spacing: DS.Spacing.l) {
-                    if M.store.profiles.isEmpty {
-                        ContentUnavailable("暂无配置，点击右上角“+”导入", "doc.text")
-                    }
-                    LazyVGrid(columns: [GridItem(.adaptive(minimum: 280), spacing: DS.Spacing.l)], spacing: DS.Spacing.l) {
+            if M.store.profiles.isEmpty {
+                ContentUnavailable("暂无配置，点击右上角“+”导入", "doc.text")
+            } else {
+                ScrollView {
+                    LazyVGrid(
+                        columns: [GridItem(.adaptive(minimum: 280), spacing: DS.Spacing.l)],
+                        spacing: DS.Spacing.l
+                    ) {
                         ForEach(M.store.profiles) { p in profileCard(p) }
                     }
+                    // 顶距与 pageContentInset 节奏一致，避免卡片贴死 chrome 分割线
+                    .padding(.horizontal, DS.Layout.pageContentInset)
+                    .padding(.top, DS.Spacing.l)
+                    .padding(.bottom, DS.Spacing.xxl)
                 }
-                .padding(.horizontal, DS.Spacing.xl).padding(.bottom, DS.Spacing.xxl)
             }
         }
         .sheet(isPresented: $showImportRemote) { ImportRemoteSheet() }
@@ -45,37 +50,67 @@ struct ConfigPage: View {
         // profiles: amber outline + a small badge instead of the empty
         // circle + "设为活动" CTA used by inactive applied ones.
         let draft = p.needsApply && !active
-        return VStack(alignment: .leading, spacing: DS.Spacing.m) {
-            HStack(spacing: 8) {
+        let stroke: Color = active ? DS.Palette.accent.opacity(0.4)
+            : draft ? DS.Palette.warn.opacity(0.5)
+            : DS.Palette.border
+        let strokeWidth: CGFloat = (active || draft) ? 1.5 : 1
+
+        return VStack(alignment: .leading, spacing: 0) {
+            // Header row — fixed height so badges don't stretch cards unevenly
+            HStack(spacing: DS.Spacing.s) {
                 Image(systemName: p.source == "remote" ? "icloud.fill" : "doc.fill")
                     .font(.dsLabel)
                     .foregroundColor(active ? DS.Palette.accent : .secondary)
-                Text(p.name).font(.dsLabelBold).lineLimit(1)
+                    .frame(width: DS.Icon.md, alignment: .center)
+                Text(p.name)
+                    .font(.dsLabelBold)
+                    .lineLimit(1)
                 if draft {
-                    Text("待应用").font(.dsBodyBold).foregroundColor(DS.Palette.warn)
-                        .padding(.horizontal, DS.Spacing.s - 2).padding(.vertical, 2)
+                    Text("待应用")
+                        .font(.dsBodyBold)
+                        .foregroundColor(DS.Palette.warn)
+                        .padding(.horizontal, DS.Spacing.xs)
+                        .padding(.vertical, DS.Spacing.xs / 2)
                         .background(Capsule().fill(DS.Palette.warn.opacity(0.15)))
                 }
-                Spacer()
+                Spacer(minLength: 0)
                 if active {
-                    Text("生效中").font(.dsBodyBold).foregroundColor(DS.Palette.accent)
-                        .padding(.horizontal, DS.Spacing.s - 2).padding(.vertical, 2)
+                    Text("生效中")
+                        .font(.dsBodyBold)
+                        .foregroundColor(DS.Palette.accent)
+                        .padding(.horizontal, DS.Spacing.xs)
+                        .padding(.vertical, DS.Spacing.xs / 2)
                         .background(Capsule().fill(DS.Palette.accent.opacity(0.12)))
                 } else if pendingApply {
                     ProgressView().controlSize(.small)
                 } else {
-                    Circle().stroke(DS.Palette.track, lineWidth: 1.5).frame(width: 12, height: 12)
+                    Circle()
+                        .stroke(DS.Palette.track, lineWidth: 1.5)
+                        .frame(width: 12, height: 12)
                 }
             }
-            Text(p.source == "remote" ? "远程订阅" : "本地文件").font(.dsBody).foregroundColor(.secondary)
+            .frame(height: DS.Layout.controlHeight, alignment: .center)
 
-            Divider().opacity(0.4).padding(.vertical, DS.Spacing.xs / 2)
+            Text(p.source == "remote" ? "远程订阅" : "本地文件")
+                .font(.dsBody)
+                .foregroundColor(.secondary)
+                .padding(.top, DS.Spacing.xs)
 
-            HStack {
-                Text(relTime(p.updatedAt)).font(.dsBody).foregroundColor(.secondary)
-                Spacer()
+            Spacer(minLength: DS.Spacing.m)
+
+            Divider().overlay(DS.Palette.separator)
+
+            // Footer row — locked to controlHeight so active checkmark / CTA share size
+            HStack(spacing: DS.Spacing.s) {
+                Text(relTime(p.updatedAt))
+                    .font(.dsBody)
+                    .foregroundColor(.secondary)
+                    .lineLimit(1)
+                Spacer(minLength: 0)
                 if active {
-                    Image(systemName: "checkmark.circle.fill").foregroundColor(DS.Palette.accent).font(.dsLabel)
+                    Image(systemName: "checkmark.circle.fill")
+                        .foregroundColor(DS.Palette.accent)
+                        .font(.dsLabel)
                 } else if draft {
                     Button { M.selectForApply(p.id) } label: { Text("应用此配置") }
                         .dsButton(.warning)
@@ -84,13 +119,19 @@ struct ConfigPage: View {
                         .dsButton()
                 }
             }
+            .frame(height: DS.Layout.controlHeight, alignment: .center)
+            .padding(.top, DS.Spacing.m)
         }
         .padding(DS.Spacing.l)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .background(RoundedRectangle(cornerRadius: DS.Radius.card, style: .continuous).fill(DS.Palette.cardBg))
-        .overlay(RoundedRectangle(cornerRadius: DS.Radius.card, style: .continuous).stroke(active ? DS.Palette.accent.opacity(0.4) :
-                                                                      draft ? DS.Palette.warn.opacity(0.5) :
-                                                                      DS.Palette.border, lineWidth: (active || draft) ? 1.5 : 1))
+        .frame(maxWidth: .infinity, minHeight: DS.Layout.profileCardMinHeight, alignment: .topLeading)
+        .background(
+            RoundedRectangle(cornerRadius: DS.Radius.card, style: .continuous)
+                .fill(DS.Palette.cardBg)
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: DS.Radius.card, style: .continuous)
+                .stroke(stroke, lineWidth: strokeWidth)
+        )
         .contentShape(Rectangle())
         .onTapGesture { if !active && !pendingApply { M.selectForApply(p.id) } }
         .contextMenu {

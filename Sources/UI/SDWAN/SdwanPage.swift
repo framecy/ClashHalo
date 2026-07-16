@@ -338,7 +338,10 @@ struct SdwanPage: View {
                           systemImage: "lock.shield").font(.dsBody).foregroundColor(.secondary)
                     Spacer(minLength: 0)
                 }
-                .padding(.horizontal, DS.Spacing.xl).padding(.bottom, DS.Spacing.xxl)
+                // 顶距与配置页一致，避免内容贴死 chrome 分割线
+                .padding(.horizontal, DS.Layout.pageContentInset)
+                .padding(.top, DS.Spacing.l)
+                .padding(.bottom, DS.Spacing.xxl)
             }
         }
         .onAppear { rescan() }

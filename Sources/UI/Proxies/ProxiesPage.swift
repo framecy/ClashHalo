@@ -37,44 +37,56 @@ struct ProxiesPage: View {
 
             }
 
-            ScrollView {
-                if let err = M.proxiesError {
-                    VStack(spacing: DS.Spacing.l) {
-                        ContentUnavailable("加载代理失败", "exclamationmark.triangle.fill")
-                        Text(err)
-                            .font(.dsMono)
-                            .foregroundColor(.secondary)
-                            .multilineTextAlignment(.center)
-                            .padding(.horizontal, DS.Spacing.xxxl)
-                        Button {
-                            Task { await M.refreshProxies() }
-                        } label: {
-                            Label("重试", systemImage: "arrow.clockwise")
-                        }
-                        .dsButton()
-
+            if let err = M.proxiesError {
+                VStack(spacing: DS.Spacing.m) {
+                    Image(systemName: "exclamationmark.triangle.fill")
+                        .font(DS.Icon.font(DS.Icon.xl))
+                        .foregroundStyle(.secondary.opacity(0.45))
+                        .symbolRenderingMode(.hierarchical)
+                    Text("加载代理失败")
+                        .font(.dsBody)
+                        .foregroundStyle(.secondary)
+                    Text(err)
+                        .font(.dsMono)
+                        .foregroundStyle(.secondary)
+                        .multilineTextAlignment(.center)
+                        .padding(.horizontal, DS.Layout.pageContentInset)
+                    Button {
+                        Task { await M.refreshProxies() }
+                    } label: {
+                        Label("重试", systemImage: "arrow.clockwise")
                     }
-                    .frame(maxHeight: .infinity)
-                    .padding(.top, 80)
-                } else if M.groups.isEmpty {
-                    if M.proxiesLoading {
-                        ContentUnavailable("正在加载代理…", "arrow.triangle.2.circlepath")
-                            .frame(maxHeight: .infinity)
-                    } else {
-                        ContentUnavailable("暂无可用代理组", "diamond.circle")
-                            .frame(maxHeight: .infinity)
-                    }
+                    .dsButton()
+                }
+                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .center)
+            } else if M.groups.isEmpty {
+                if M.proxiesLoading {
+                    ContentUnavailable("正在加载代理…", "arrow.triangle.2.circlepath")
                 } else {
+                    ContentUnavailable("暂无可用代理组", "diamond.circle")
+                }
+            } else {
+                ScrollView {
                     if displayMode == "grid" {
-                        LazyVGrid(columns: [GridItem(.flexible(), spacing: DS.Spacing.m), GridItem(.flexible(), spacing: DS.Spacing.m)], spacing: DS.Spacing.m) {
+                        LazyVGrid(
+                            columns: [
+                                GridItem(.flexible(), spacing: DS.Spacing.m),
+                                GridItem(.flexible(), spacing: DS.Spacing.m)
+                            ],
+                            spacing: DS.Spacing.m
+                        ) {
                             ForEach(M.groups) { g in gridGroupCard(g) }
                         }
-                        .padding(.horizontal, DS.Spacing.xl).padding(.bottom, DS.Spacing.xxl)
+                        .padding(.horizontal, DS.Layout.pageContentInset)
+                        .padding(.top, DS.Spacing.l)
+                        .padding(.bottom, DS.Spacing.xxl)
                     } else {
-                        LazyVStack(spacing: 12) {
+                        LazyVStack(spacing: DS.Spacing.m) {
                             ForEach(M.groups) { g in groupCard(g) }
                         }
-                        .padding(.horizontal, DS.Spacing.xl).padding(.bottom, DS.Spacing.xxl)
+                        .padding(.horizontal, DS.Layout.pageContentInset)
+                        .padding(.top, DS.Spacing.l)
+                        .padding(.bottom, DS.Spacing.xxl)
                     }
                 }
             }
@@ -104,16 +116,16 @@ struct ProxiesPage: View {
         let c = DS.Palette.accent
 
         return Card {
-            VStack(alignment: .leading, spacing: 6) {
-                HStack(spacing: 6) {
-                    Image(systemName: groupIcon(g.type)).font(.dsBody).foregroundColor(c).frame(width: 14)
+            VStack(alignment: .leading, spacing: DS.Spacing.s) {
+                HStack(spacing: DS.Spacing.s) {
+                    Image(systemName: groupIcon(g.type)).font(.dsBody).foregroundColor(c).frame(width: DS.Icon.sm)
                     Text(g.name).font(.dsBodySemibold).lineLimit(1)
-                    Spacer()
+                    Spacer(minLength: 0)
                     Button { M.testGroup(g) } label: { Image(systemName: "bolt") }
                         .buttonStyle(.borderless).controlSize(.small).font(.dsBody)
                 }
 
-                HStack(spacing: 4) {
+                HStack(spacing: DS.Spacing.xs) {
                     DSMenuPicker(selection: Binding(
                         get: { g.now },
                         set: { if g.selectable { M.select(group: g.id, name: $0) } }
@@ -125,11 +137,10 @@ struct ProxiesPage: View {
                     if busy {
                         ProgressView().controlSize(.mini).scaleEffect(0.5)
                     }
-                    Spacer()
+                    Spacer(minLength: 0)
                     Text("\(g.all.count) 节点").font(.dsBody).foregroundColor(.secondary)
                 }
             }
-            .padding(.vertical, 2)
         }
     }
 
@@ -147,12 +158,13 @@ struct ProxiesPage: View {
                     HStack(spacing: DS.Spacing.s) {
                         Image(systemName: "chevron.right").font(.dsBody).foregroundColor(.secondary)
                             .rotationEffect(.degrees(isOpen ? 90 : 0))
-                        Image(systemName: groupIcon(g.type)).font(.dsBody).foregroundColor(DS.Palette.accent).frame(width: 20)
-                        VStack(alignment: .leading, spacing: 2) {
-                            HStack(spacing: 6) {
+                        Image(systemName: groupIcon(g.type)).font(.dsBody).foregroundColor(DS.Palette.accent).frame(width: DS.Icon.lg)
+                        VStack(alignment: .leading, spacing: DS.Spacing.xs / 2) {
+                            HStack(spacing: DS.Spacing.s) {
                                 Text(g.name).font(.dsBody).fontWeight(.semibold)
                                 Text(g.type).font(.dsBody).foregroundColor(.secondary)
-                                    .padding(.horizontal, DS.Spacing.xs + 1).padding(.vertical, 1)
+                                    .padding(.horizontal, DS.Spacing.xs)
+                                    .padding(.vertical, 1)
                                     .background(Capsule().fill(DS.Palette.hairline))
                             }
                             HStack(spacing: DS.Spacing.xs) {
@@ -160,11 +172,12 @@ struct ProxiesPage: View {
                                 if curDelay > 0 { Text("\(curDelay)ms").font(.dsMono).foregroundColor(delayColor(curDelay)) }
                             }
                         }
-                        Spacer()
+                        Spacer(minLength: 0)
                         Button { M.testGroup(g) } label: { Image(systemName: "bolt") }
                             .buttonStyle(.borderless).controlSize(.small).help("测速")
                         Text("\(g.all.count)").font(.dsBody)
-                            .padding(.horizontal, DS.Spacing.s - 1).padding(.vertical, 2)
+                            .padding(.horizontal, DS.Spacing.s)
+                            .padding(.vertical, DS.Spacing.xs / 2)
                             .background(Capsule().fill(DS.Palette.hairline))
                     }
                     .contentShape(Rectangle())
@@ -172,8 +185,8 @@ struct ProxiesPage: View {
                 .buttonStyle(.plain)
 
                 if isOpen {
-                    Divider().padding(.vertical, DS.Spacing.s)
-                    LazyVGrid(columns: [GridItem(.adaptive(minimum: 168), spacing: 8)], spacing: 8) {
+                    Divider().overlay(DS.Palette.separator).padding(.vertical, DS.Spacing.s)
+                    LazyVGrid(columns: [GridItem(.adaptive(minimum: 168), spacing: DS.Spacing.s)], spacing: DS.Spacing.s) {
                         ForEach(g.all, id: \.self) { name in nodeChip(group: g, name: name) }
                     }
                 }
@@ -191,26 +204,27 @@ struct ProxiesPage: View {
             if group.selectable { M.select(group: group.id, name: name) }
         } label: {
             VStack(alignment: .leading, spacing: DS.Spacing.xs) {
-                HStack(spacing: 6) {
+                HStack(spacing: DS.Spacing.s) {
                     Text(name).font(.dsBody).fontWeight(on ? .semibold : .regular)
                         .foregroundColor(on ? DS.Palette.accent : .primary).lineLimit(1)
-                    Spacer(minLength: 2)
+                    Spacer(minLength: DS.Spacing.xs / 2)
                     if on { Image(systemName: "checkmark.circle.fill").font(.dsBody).foregroundColor(DS.Palette.accent) }
                 }
-                HStack(spacing: 6) {
+                HStack(spacing: DS.Spacing.s) {
                     Text(isGroup ? "组" : (node?.type ?? "—")).font(.dsBody).foregroundColor(.secondary)
-                    Spacer(minLength: 2)
+                    Spacer(minLength: DS.Spacing.xs / 2)
                     if busy {
                         ProgressView().controlSize(.mini).scaleEffect(0.55)
                     } else if !isGroup {
-                        Circle().fill(delayColor(delay)).frame(width: 5, height: 5)
+                        Circle().fill(delayColor(delay)).frame(width: 6, height: 6)
                         Text(fmtDelay(delay)).font(.dsMono).foregroundColor(delayColor(delay))
                     } else {
                         Image(systemName: "chevron.right.circle").font(.dsBody).foregroundColor(.secondary)
                     }
                 }
             }
-            .padding(.horizontal, DS.Spacing.m - 2).padding(.vertical, DS.Spacing.s - 1)
+            .padding(.horizontal, DS.Spacing.m)
+            .padding(.vertical, DS.Spacing.s)
             .background(RoundedRectangle(cornerRadius: DS.Radius.control, style: .continuous).fill(on ? DS.Palette.accent.opacity(0.12) : DS.Palette.fillFaint))
             .overlay(RoundedRectangle(cornerRadius: DS.Radius.control, style: .continuous).stroke(on ? DS.Palette.accent.opacity(0.45) : Color.clear, lineWidth: 1))
             .contentShape(Rectangle())
