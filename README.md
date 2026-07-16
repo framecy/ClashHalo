@@ -1,45 +1,24 @@
 # ClashHalo
 
-> macOS 14+ 原生 SwiftUI 代理客户端，直接编排官方 `mihomo` (Clash.Meta) 内核。当前版本 **v1.0.7**。
+> macOS 14+ 原生 SwiftUI 代理客户端，直接编排官方 `mihomo` (Clash.Meta) 内核。当前版本 **v1.1.0**。
 
 ClashHalo 采用纯 Swift 的原生编排器架构：应用层负责界面与状态管理，独立签名的 Helper 处理特权操作，内核层直接驱动 `mihomo`。目标很明确，少一层中间件，少一层不稳定性。
 
-## 新特性 (v1.0.7)
+## 新特性 (v1.1.0)
 
-- **修复僵尸 TUN 接口导致整机 DNS 瘫痪**：解决内核崩溃或重建到新接口后、旧 utun 的 fake-ip 地址残留时被误判为活跃 TUN，使系统 DNS 钉死在失效网关造成全局 DNS 黑洞的问题。现以路由表所有权仲裁在多个候选 TUN 中精确识别真正活跃的接口，僵尸接口会被识别为丢失并触发既有自愈（自动关闭 + 恢复 DNS）。
-- **修复 TUN 自动关闭与手动开关并发冲突**：自动关闭 TUN 期间若用户开启 TUN，原先可能并发抢写配置落到非预期状态；现自动关闭全程持有操作锁，期间手动开关会被提示「内核操作进行中」并挡下。
-- **bypass 列表彻底单一来源**：移除 GUI 侧冗余的 bypass 副本，全应用统一引用同一常量，消除多份列表漂移风险。
+- **统一设计系统**：全页面 32pt 控件高度、自绘 tab/菜单/按钮，Light/Dark 完整跟随系统。
+- **Shell 跨栏对齐**：侧栏顶栏与内容区工具栏同高（56pt），分割线通栏对齐；侧栏恢复「监控 / 代理 / 配置」分组。
+- **配置卡片统一尺寸**：顶距离开工具栏，有/无 CTA 等高。
+- **空状态统一居中**：连接 / 代理 / 日志 / 订阅 / 规则 / 配置空态图标位置一致。
+- **关于页重做**：工具型 Card 堆叠（版本明细、更新、链接、说明），去掉营销式居中 hero。
 
-## 新特性 (v1.0.6)
+## 稳定性 (v1.0.15)
 
-- **修复升级后系统代理失效回归**：解决 v1.0.5 在旧 Helper 未真正升级时反复把 bypass 还原成旧列表、导致局域网设备 502 的回归。bypass 列表抽为共享常量（`kProxyBypassDomains`）统一三路径；自愈逻辑改为本地直接写 `networksetup`，不再依赖可能过时的 Helper；并 bump Helper 版本号强制升级旧二进制。
+- **TUN 自愈链路加固**：zombie 识别（路由表仲裁 + 单候选保守双判据）→ 逻辑关闭 → 物理清理兜底。
+- **bypass 探测稳健化**：动态枚举网络服务、required 引用单一源、探测离主线程。
+- **并发守卫防泄漏**：`isBusy` 一律 `defer` 复位，避免 cancel 永久卡死开关。
 
-## 新特性 (v1.0.5)
-
-- **升级后自动修复局域网访问**：从旧版本升级后，若系统代理已开启但 bypass 仍是旧列表，应用启动时自动检测并补齐局域网 bypass 网段，无需手动重开关系统代理即可访问 NAS、路由器等局域网设备。
-
-## 新特性 (v1.0.4)
-
-- **系统代理局域网直连**：修复开启系统代理后无法访问局域网其他 IP（NAS、路由器、打印机等）的问题。系统代理 bypass domains 现已覆盖 RFC1918 私有网段（`10.*`、`192.168.*`、`172.16-31.*`）、link-local（`169.254.*`）及 CGNAT/Tailscale（`100.64-127.*`），局域网流量绕过代理直连，公网流量仍走代理。
-
-## 新特性 (v1.0.3)
-
-- **TUN 接口丢失自动恢复**：当系统并存多个 `utun` 虚拟接口（Tailscale、ZeroTier、系统 VPN 等）时，通过 198.18.x.x fake-ip 地址段精确识别 mihomo 自身 TUN 接口，一旦检测到接口异常消失，自动关闭 TUN 并恢复系统 DNS，杜绝长时间运行后的全局流量黑洞。
-- **TUN 状态三重校验**：TUN 活跃判定从「配置 + root」升级为「配置 + root + 接口实际存在」三重校验，并增加每 30 秒接口存在性健康巡检。
-
-## 新特性 (v1.0.2)
-
-- **SD-WAN 虚拟接口自动绕行**：自动识别除本代理外所有活跃的 `utun` 虚拟接口（如 Tailscale、ZeroTier 等），防 TUN 模式接管时默认路由被代理劫持导致 ICMP 超时。
-- **特权静态路由自动注入**：应用开启/启动/热连时，自动通过特权 Helper 往系统注入静态直连路由指回原网口，退出或关闭时自动清理，保证局域网与 SD-WAN 的网络无缝通畅。
-
-## 主要特性 (v1.1.x)
-
-- **自动更新**: 支持通过 GitHub Releases 自动检查和下载更新
-- **Helper 自动升级**: App 升级后自动检测并升级特权服务，无需手动操作
-- **UI 优化**: 统一输入框样式，优化设计系统
-- **SD-WAN 增强**: UTUN 接口彩色分类，拓扑图和路由表视觉一致性提升
-
-## 你会用到什么
+## 主要特性
 
 - **系统代理 / TUN**
   - 一键切换系统代理。
@@ -77,9 +56,9 @@ xattr -dr com.apple.quarantine /Applications/ClashHalo.app
 
 ClashHalo 支持自动更新检查：
 
-1. 打开"设置 → 关于"
-2. 点击"检查更新"查看是否有新版本
-3. 如果有更新，点击"下载更新"
+1. 打开「设置 → 关于」
+2. 点击「检查更新」查看是否有新版本
+3. 如果有更新，点击「下载更新」
 4. 下载完成后会自动打开 DMG 安装包
 
 **注意**: 需要网络访问 GitHub API (api.github.com)
@@ -89,28 +68,30 @@ ClashHalo 支持自动更新检查：
 ClashHalo 使用特权服务来管理系统代理和 TUN 模式：
 
 - **自动升级**: App 升级后会自动检测并升级 Helper（启动后约 2 秒）
-- **手动管理**: 在"设置 → 权限"可以手动安装/卸载/升级
-- **版本检查**: 点击"检查"按钮验证连接状态和版本信息
-- **故障恢复**: 如遇问题，可在"设置 → 权限"卸载后重新安装
+- **手动管理**: 在「设置 → 权限」可以手动安装/卸载/升级
+- **版本检查**: 点击「检查」按钮验证连接状态和版本信息
+- **故障恢复**: 如遇问题，可在「设置 → 权限」卸载后重新安装
 
 ### 构建
 
 ```bash
-# 打包生成 DMG
+# 打包生成 DMG（会自增 build 号）
 bash make.sh
 
-# 本地调试构建
-xcodebuild -project ClashHalo.xcodeproj -scheme ClashHalo -configuration Debug build
+# 本地调试构建（不 bump build）
+bash Scripts/build-debug.sh
 
-# Release 构建
-xcodebuild -scheme ClashHalo -configuration Release -derivedDataPath .build clean build
+# 或直接 xcodebuild
+xcodebuild -project ClashHalo.xcodeproj -scheme ClashHalo -configuration Debug build
 ```
 
 ## 目录说明
 
 - `README.md`：项目入口与使用说明
 - `CHANGELOG.md`：版本变更记录
+- `Docs/design.md`：设计系统规范
 - `Docs/GatewayGuide.md`：局域网网关配置指南
+- `Agents.md`：给 AI 编码代理的工程约定
 - `Scripts/`：打包与签名脚本
 - `Sources/`：应用源代码
   - `Model/`：数据模型和业务逻辑
@@ -140,9 +121,9 @@ xcodebuild -scheme ClashHalo -configuration Release -derivedDataPath .build clea
 
 ## 文档
 
+- [设计系统](Docs/design.md)
 - [局域网网关中枢配置指南](Docs/GatewayGuide.md)
 - [更新记录](CHANGELOG.md)
-- [开发总结 (v1.1.0)](../Desktop/ClashHalo_开发总结_2026-07-04.md)
 
 ## 技术栈
 

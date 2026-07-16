@@ -2,7 +2,7 @@
 
 本文件给后续 AI 编码代理使用。进入本仓库后，先读本文件，再按需读 `README.md`、`CHANGELOG.md` 和相关源码。
 
-当前主干：`main` @ `b544988`，产品版本 **v1.0.15**（`MARKETING_VERSION`），build **40**，Helper **1.0.15**（`kSharedHelperVersion`）。
+当前主干：`main`，产品版本 **v1.1.0**（`MARKETING_VERSION`），Helper **1.0.15**（`kSharedHelperVersion`，协议未变无需强制升级）。打包时 `make.sh` 自增 `CURRENT_PROJECT_VERSION`。
 
 ## 项目概览
 
