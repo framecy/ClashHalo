@@ -13,23 +13,20 @@ struct GeneralPage: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            // Premium flat tabs
-            HStack(spacing: 24) {
-                Spacer()
-                tabButton("通用", icon: "gearshape", tag: "general")
-                tabButton("高级设置", icon: "slider.horizontal.3", tag: "advanced")
-                tabButton("权限", icon: "shield", tag: "privilege")
-                tabButton("关于", icon: "info.circle", tag: "about")
-                Spacer()
-            }
-            .padding(.horizontal, DS.Spacing.xxl)
+            DSSegmentedControl(selection: $selectedTab, choices: [
+                DSChoice("通用", "general", systemImage: "gearshape"),
+                DSChoice("高级设置", "advanced", systemImage: "slider.horizontal.3"),
+                DSChoice("权限", "privilege", systemImage: "shield"),
+                DSChoice("关于", "about", systemImage: "info.circle")
+            ])
+            .padding(.horizontal, DS.Layout.pageContentInset)
             .padding(.top, DS.Spacing.m)
             .padding(.bottom, DS.Spacing.l)
 
             Divider().overlay(DS.Palette.separator)
 
             ScrollView {
-                VStack(spacing: 14) {
+                VStack(spacing: DS.Spacing.m) {
                     if selectedTab == "general" {
                         // 菜单栏
                         Card(title: "菜单栏", icon: "menubar.rectangle") {
@@ -41,7 +38,7 @@ struct GeneralPage: View {
                                     .frame(width: DS.Layout.fieldTrailing, alignment: .trailing)
                             }
                             Text("开启后菜单栏面板内可逐组切换节点；策略组较多时可关闭以保持面板紧凑，节点切换仍可在「策略」页操作。")
-                                .font(.dsBody).foregroundColor(.secondary).padding(.top, 6)
+                                .font(.dsBody).foregroundColor(.secondary).padding(.top, DS.Spacing.s)
                         }
 
                         // GEO 数据库
@@ -53,7 +50,7 @@ struct GeneralPage: View {
                                 NumRow("更新间隔 (小时)", key: "geo-update-interval", persistent: true)
                             }
                             Text("DAT 模式使用 v2ray (.dat) 替代 MaxMind (.mmdb) 进行 GeoIP 匹配，文件更小；推荐“内存优先”加载器以降低后台占用。")
-                                .font(.dsBody).foregroundColor(.secondary).padding(.top, 6)
+                                .font(.dsBody).foregroundColor(.secondary).padding(.top, DS.Spacing.s)
                         }
 
                         // 外部面板
@@ -81,7 +78,7 @@ struct GeneralPage: View {
                                 ToggleRow("禁用 Keep-Alive", key: "disable-keep-alive", persistent: true)
                             }
                             Text("TCP 并发能极大加快多节点测速；统一延迟将握手时间计入以反映真实体感延迟；进程匹配使 macOS 能按 App 名分流。")
-                                .font(.dsBody).foregroundColor(.secondary).padding(.top, 6)
+                                .font(.dsBody).foregroundColor(.secondary).padding(.top, DS.Spacing.s)
                         }
 
                         // GEO 下载源
@@ -93,7 +90,7 @@ struct GeneralPage: View {
                                 GeoURLRow("ASN", sub: "asn", defaultURL: "https://github.com/P3TERX/GeoLite.mmdb/raw/download/GeoLite2-ASN.mmdb")
                             }
                             Text("修改下载源 URL 后会在下次更新时生效。")
-                                .font(.dsBody).foregroundColor(.secondary).padding(.top, 6)
+                                .font(.dsBody).foregroundColor(.secondary).padding(.top, DS.Spacing.s)
                         }
                         // 内核管理已移至「网络 → 内核」,此处不再重复。
                     } else if selectedTab == "privilege" {
@@ -103,7 +100,7 @@ struct GeneralPage: View {
                                     Image(systemName: engine.isRoot ? "shield.checkmark.fill" : "shield.fill")
                                         .font(DS.Icon.font(DS.Icon.lg))
                                         .foregroundColor(engine.isRoot ? DS.Palette.ok : .secondary)
-                                    
+
                                     VStack(alignment: .leading, spacing: 2) {
                                         Text("特权辅助程序")
                                             .font(.dsCardLabel)
@@ -112,9 +109,9 @@ struct GeneralPage: View {
                                             .font(.dsBody)
                                             .foregroundColor(.secondary)
                                     }
-                                    
+
                                     Spacer()
-                                    
+
                                     Button(action: { Task { await toggleHelper() } }) {
                                         if helperBusy {
                                             ProgressView().controlSize(.small)
@@ -124,14 +121,12 @@ struct GeneralPage: View {
                                             Text(engine.isRoot ? "卸载" : "安装")
                                         }
                                     }
-                                    .buttonStyle(.borderedProminent)
-                                    .controlSize(.small)
-                                    .tint(helperNeedsUpdate ? DS.Palette.warn : (engine.isRoot ? DS.Palette.error : DS.Palette.accent))
+                                    .dsButton(helperNeedsUpdate ? .warning : (engine.isRoot ? .destructive : .prominent))
                                     .disabled(helperBusy)
                                 }
-                                
+
                                 Divider()
-                                
+
                                 HStack {
                                     Text("版本")
                                         .font(.dsBody)
@@ -152,8 +147,8 @@ struct GeneralPage: View {
                                         engine.refreshHelperVersion()
                                         M.showToast(engine.isRoot ? "Helper 连通正常 · v\(engine.helperVersion)" : "Helper 未连通")
                                     }
-                                    .buttonStyle(.bordered)
-                                    .controlSize(.small)
+                                    .dsButton()
+
                                 }
                             }
                             .padding(.vertical, DS.Spacing.xs)
@@ -162,8 +157,8 @@ struct GeneralPage: View {
                         Text("ClashHalo 需要“特权辅助程序”才能安全地为您接管系统网络路由及代理设置。")
                             .font(.dsBody)
                             .foregroundColor(.secondary)
-                            .padding(.horizontal, 4)
-                            .padding(.top, 4)
+                            .padding(.horizontal, DS.Spacing.xs)
+                            .padding(.top, DS.Spacing.xs)
                     } else if selectedTab == "about" {
                         aboutView
                     }
@@ -173,55 +168,12 @@ struct GeneralPage: View {
         }
     }
 
-    private func tabButton(_ label: String, icon: String, tag: String) -> some View {
-        let active = selectedTab == tag
-        let activeIcon: String
-        let inactiveIcon: String
-        
-        switch tag {
-        case "general":
-            activeIcon = "gearshape.fill"
-            inactiveIcon = "gearshape"
-        case "advanced":
-            activeIcon = "slider.horizontal.3"
-            inactiveIcon = "slider.horizontal.3"
-        case "privilege":
-            activeIcon = "shield.fill"
-            inactiveIcon = "shield"
-        case "about":
-            activeIcon = "info.circle.fill"
-            inactiveIcon = "info.circle"
-        default:
-            activeIcon = icon
-            inactiveIcon = icon
-        }
-        
-        return Button(action: { selectedTab = tag }) {
-            VStack(spacing: 6) {
-                Image(systemName: active ? activeIcon : inactiveIcon)
-                    .font(DS.Icon.font(DS.Icon.md))
-                    .foregroundColor(active ? DS.Palette.accent : .secondary)
-                Text(label)
-                    .font(active ? .dsBodySemibold : .dsBody)
-                    .foregroundColor(active ? .primary : .secondary)
-            }
-            .frame(width: 80)
-            .padding(.vertical, DS.Spacing.s)
-            .contentShape(Rectangle())
-            .background(
-                RoundedRectangle(cornerRadius: DS.Radius.control, style: .continuous)
-                    .fill(active ? DS.Palette.fill : Color.clear)
-            )
-        }
-        .buttonStyle(.plain)
-    }
-
     private var aboutView: some View {
         VStack(spacing: 20) {
             Image(nsImage: NSApp.applicationIconImage ?? NSImage())
                 .resizable()
                 .frame(width: 64, height: 64)
-                .padding(.top, 20)
+                .padding(.top, DS.Spacing.xl)
 
             VStack(spacing: 4) {
                 Text("ClashHalo")
@@ -268,9 +220,7 @@ struct GeneralPage: View {
                                     }
                                 }
                             }
-                            .buttonStyle(.borderedProminent)
-                            .controlSize(.small)
-                            .tint(DS.Palette.warn)
+                            .dsButton(.warning)
                             .disabled(M.updater.isDownloading)
                         }
 
@@ -279,8 +229,7 @@ struct GeneralPage: View {
                                 _ = await M.updater.checkForUpdates()
                             }
                         }
-                        .buttonStyle(.bordered)
-                        .controlSize(.small)
+                        .dsButton()
                         .disabled(M.updater.isChecking || M.updater.isDownloading)
                     }
 
@@ -290,13 +239,13 @@ struct GeneralPage: View {
                     }
                 }
             }
-            .padding(.horizontal, 40)
+            .padding(.horizontal, DS.Spacing.xxxl)
 
             Text("ClashHalo 是一个基于 mihomo (Clash.Meta) 内核的 macOS 原生代理客户端。采用原生 SwiftUI 编写，通过独立特权 Helper (XPC) 进行权限分离，订阅凭据经 Keychain 安全存储。")
                 .font(.dsBody)
                 .multilineTextAlignment(.center)
                 .foregroundColor(.secondary)
-                .padding(.horizontal, 40)
+                .padding(.horizontal, DS.Spacing.xxxl)
                 .fixedSize(horizontal: false, vertical: true)
 
             VStack(spacing: 8) {
@@ -311,14 +260,14 @@ struct GeneralPage: View {
                         .foregroundColor(DS.Palette.accent)
                 }
             }
-            .padding(.top, 10)
+            .padding(.top, DS.Spacing.m)
 
             Spacer()
 
             Text("© 2026 ClashHalo Dev Team. All rights reserved.")
                 .font(.dsBody)
                 .foregroundColor(.secondary)
-                .padding(.bottom, 20)
+                .padding(.bottom, DS.Spacing.xl)
         }
         .frame(maxWidth: .infinity, minHeight: 350)
     }
@@ -416,13 +365,14 @@ struct MenuBarPanel: View {
 
             // Proxy card: mode · per-group node selectors · live rate · test
             card {
-                HStack(spacing: 0) {
-                    modeTab("规则", "rule")
-                    modeTab("全局", "global")
-                    modeTab("直连", "direct")
-                }
-                .padding(2)
-                .background(RoundedRectangle(cornerRadius: DS.Radius.control, style: .continuous).fill(DS.Palette.fill))
+                DSSegmentedControl(selection: Binding(
+                    get: { M.mode },
+                    set: { M.setMode($0) }
+                ), choices: [
+                    DSChoice("规则", "rule"),
+                    DSChoice("全局", "global"),
+                    DSChoice("直连", "direct")
+                ])
 
                 if M.menuBarGroups {
                     let selectable = M.groups.filter { $0.selectable }
@@ -497,10 +447,10 @@ struct MenuBarPanel: View {
                         Text(fmtBytes(Double(M.memory))).font(.dsCardLabel)
                     }
                     .frame(maxWidth: .infinity, alignment: .leading)
-                    
-                    Rectangle().fill(Color.secondary.opacity(0.2)).frame(width: 1, height: 24)
+
+                    Rectangle().fill(DS.Palette.separator).frame(width: 1, height: 24)
                         .padding(.horizontal, DS.Spacing.m)
-                    
+
                     VStack(alignment: .leading, spacing: 2) {
                         HStack(spacing: 4) {
                             Image(systemName: "app.dashed").font(.dsBody).foregroundColor(DS.Palette.warn)
@@ -568,18 +518,6 @@ struct MenuBarPanel: View {
             .dsCardChrome()
     }
 
-    /// Full-width segmented mode tab (equal thirds, selected = accent fill).
-    private func modeTab(_ label: String, _ tag: String) -> some View {
-        let on = M.mode == tag
-        return Button { M.setMode(tag) } label: {
-            Text(label).font(.dsBodyMedium)
-                .frame(maxWidth: .infinity)
-                .padding(.vertical, DS.Spacing.s - 2)
-                .background(RoundedRectangle(cornerRadius: DS.Radius.control - 2, style: .continuous).fill(on ? DS.Palette.accent : Color.clear))
-                .foregroundColor(on ? .white : .secondary)
-        }.buttonStyle(.plain)
-    }
-
     /// One profile row: tap to activate; active = accent checkmark + primary text.
     private func profileRow(_ p: Profile) -> some View {
         let active = p.id == M.store.activeID
@@ -603,21 +541,11 @@ struct MenuBarPanel: View {
         HStack(spacing: DS.Spacing.s) {
             Text(g.name).font(.dsBody).foregroundColor(.secondary).lineLimit(1)
             Spacer(minLength: DS.Spacing.s)
-            Menu {
-                ForEach(g.all, id: \.self) { name in
-                    Button { M.select(group: g.id, name: name) } label: {
-                        let d = M.nodes[name]?.delay ?? 0
-                        Text(name == g.now ? "✓ \(name)\(d > 0 ? "  \(d)ms" : "")"
-                                           : "\(name)\(d > 0 ? "  \(d)ms" : "")")
-                    }
-                }
-            } label: {
-                HStack(spacing: DS.Spacing.xs) {
-                    Circle().fill(delayColor(M.nodes[g.now]?.delay ?? 0)).frame(width: 6, height: 6)
-                    Text(g.now).font(.dsBodyMedium).foregroundColor(.primary).lineLimit(1)
-                    Image(systemName: "chevron.up.chevron.down").font(.dsBody).foregroundColor(.secondary)
-                }
-            }.menuStyle(.borderlessButton).fixedSize()
+            DSMenuPicker(selection: Binding(
+                get: { g.now },
+                set: { M.select(group: g.id, name: $0) }
+            ), choices: g.all.map { DSChoice($0, $0) })
+            .frame(width: 180)
         }
         .padding(.vertical, DS.Spacing.xs)
     }

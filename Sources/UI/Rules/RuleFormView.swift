@@ -2,26 +2,26 @@ import SwiftUI
 
 struct RuleFormView: View {
     @Environment(\.dismiss) var dismiss
-    
+
     let existingNode: RuleNode?
     let proxyGroups: [String]
     let contextConn: Conn?
     let onSave: (RuleNode) -> Void
-    
+
     @State private var type: MihomoRuleType = .domain
     @State private var match: String = ""
     @State private var action: RuleAction = .proxy
     @State private var proxyGroup: String = ""
     @State private var note: String = ""
-    
+
     @State private var errorMessage: String? = nil
-    
+
     init(existingNode: RuleNode? = nil, proxyGroups: [String], contextConn: Conn? = nil, onSave: @escaping (RuleNode) -> Void) {
         self.existingNode = existingNode
         self.proxyGroups = proxyGroups
         self.contextConn = contextConn
         self.onSave = onSave
-        
+
         if let node = existingNode {
             _type = State(initialValue: node.type)
             _match = State(initialValue: node.match)
@@ -34,7 +34,7 @@ struct RuleFormView: View {
             }
         }
     }
-    
+
     var body: some View {
         VStack(spacing: 0) {
             Text(existingNode == nil ? "添加规则" : "编辑规则")
@@ -43,13 +43,14 @@ struct RuleFormView: View {
                 .padding(.bottom, DS.Spacing.m)
 
             Form {
-                Picker("规则类型", selection: $type) {
-                    ForEach(MihomoRuleType.allCases, id: \.self) { t in
-                        Text(t.rawValue).tag(t)
-                    }
+                HStack {
+                    Text("规则类型").font(.dsBody)
+                    Spacer()
+                    DSMenuPicker(selection: $type, choices: MihomoRuleType.allCases.map {
+                        DSChoice($0.rawValue, $0)
+                    })
+                    .frame(width: DS.Layout.fieldTrailing)
                 }
-                .pickerStyle(.menu)
-                .dsMenuControl()
 
                 if type != .match {
                     VStack(alignment: .leading, spacing: DS.Spacing.xs) {
@@ -59,22 +60,21 @@ struct RuleFormView: View {
                     }
                 }
 
-                Picker("处理策略", selection: $action) {
-                    Text("PROXY (代理)").tag(RuleAction.proxy)
-                    Text("DIRECT (直连)").tag(RuleAction.direct)
-                    Text("REJECT (拦截)").tag(RuleAction.reject)
-                }
-                .pickerStyle(.segmented)
-                .controlSize(.small)
+                DSSegmentedControl(selection: $action, choices: [
+                    DSChoice("PROXY (代理)", RuleAction.proxy),
+                    DSChoice("DIRECT (直连)", RuleAction.direct),
+                    DSChoice("REJECT (拦截)", RuleAction.reject)
+                ])
 
                 if action == .proxy {
-                    Picker("目标代理组", selection: $proxyGroup) {
-                        ForEach(proxyGroups, id: \.self) { g in
-                            Text(g).tag(g)
-                        }
+                    HStack {
+                        Text("目标代理组").font(.dsBody)
+                        Spacer()
+                        DSMenuPicker(selection: $proxyGroup, choices: proxyGroups.map {
+                            DSChoice($0, $0)
+                        })
+                        .frame(width: DS.Layout.fieldTrailing)
                     }
-                    .pickerStyle(.menu)
-                    .dsMenuControl()
                 }
 
                 VStack(alignment: .leading, spacing: 4) {
@@ -96,20 +96,20 @@ struct RuleFormView: View {
 
             HStack(spacing: DS.Spacing.m) {
                 Button("取消") { dismiss() }
-                    .buttonStyle(.bordered)
-                    .controlSize(.small)
+                    .dsButton()
+
 
                 Spacer()
 
                 Button("保存") { save() }
-                    .buttonStyle(.borderedProminent)
-                    .controlSize(.small)
+                    .dsButton(.prominent)
+
             }
             .padding(.horizontal, DS.Spacing.l)
             .padding(.vertical, DS.Spacing.l)
         }
         .frame(width: 480, height: 420)
-        .onChange(of: type) { _, newType in 
+        .onChange(of: type) { _, newType in
             if let c = contextConn {
                 let newMatch: String
                 switch newType {
@@ -142,15 +142,15 @@ struct RuleFormView: View {
                 case .geosite, .ipAsn, .geoip, .srcGeoip, .dscp, .ruleSet, .subRule, .match:
                     newMatch = ""
                 }
-                
+
                 self.match = newMatch
             }
-            validateLive() 
+            validateLive()
         }
         .onChange(of: match) { _, _ in validateLive() }
         .onChange(of: action) { _, _ in validateLive() }
     }
-    
+
     private func validateLive() {
         // live validation clears error if it's becoming valid
         let node = RuleNode(
@@ -166,7 +166,7 @@ struct RuleFormView: View {
             errorMessage = nil
         }
     }
-    
+
     private func save() {
         let node = RuleNode(
             id: existingNode?.id ?? UUID(),
@@ -177,7 +177,7 @@ struct RuleFormView: View {
             proxyGroup: action == .proxy ? proxyGroup : nil,
             note: note.isEmpty ? nil : note
         )
-        
+
         let res = ValidationService.shared.validate(node: node)
         if res.isValid {
             onSave(node)
@@ -186,7 +186,7 @@ struct RuleFormView: View {
             errorMessage = res.errorMsg ?? "校验失败"
         }
     }
-    
+
     private func getDomainSuffix(_ host: String) -> String {
         let parts = host.components(separatedBy: ".")
         if parts.count <= 2 { return host }
@@ -199,7 +199,7 @@ struct RuleFormView: View {
         }
         return parts.suffix(2).joined(separator: ".")
     }
-    
+
     private func getDomainKeyword(_ host: String) -> String {
         let suffix = getDomainSuffix(host)
         return suffix.components(separatedBy: ".").first ?? suffix

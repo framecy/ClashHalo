@@ -183,7 +183,6 @@ struct PageHead<Actions: View>: View {
                     HStack(spacing: DS.Spacing.s) {
                         actions()
                     }
-                    .controlSize(.regular)
                 }
             }
             .padding(.horizontal, DS.Spacing.xl)
@@ -208,7 +207,6 @@ struct PageToolbar<Actions: View>: View {
             Spacer(minLength: 0)
             actions()
         }
-        .controlSize(.regular)
         .padding(.horizontal, DS.Layout.pageContentInset)
         .padding(.top, DS.Spacing.m)
         .padding(.bottom, DS.Spacing.m)
@@ -223,7 +221,7 @@ struct Card<Content: View, Actions: View>: View {
     var pad: Bool
     @ViewBuilder var actions: () -> Actions
     @ViewBuilder var content: () -> Content
-    
+
     init(title: String? = nil, icon: String? = nil, pad: Bool = true, @ViewBuilder actions: @escaping () -> Actions, @ViewBuilder content: @escaping () -> Content) {
         self.title = title
         self.icon = icon
