@@ -46,7 +46,7 @@ struct NSConnTable: NSViewRepresentable {
             case "chain":
                 swiftUIView = AnyView(
                     HStack(spacing: 4) {
-                        Text(item.chain).font(.dsBodySemibold).foregroundColor(item.category == "proxy" ? parent.M.accent : .secondary).lineLimit(1)
+                        Text(item.chain).font(.dsBodySemibold).foregroundColor(item.category == "proxy" ? DS.Palette.accent : .secondary).lineLimit(1)
                         Text(item.node).font(.dsMono).foregroundColor(.secondary).lineLimit(1)
                     }.frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .leading)
                 )

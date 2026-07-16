@@ -68,6 +68,7 @@ struct ClashHaloApp: App {
         Window("ClashHalo", id: "main") {
             ContentView()
                 .environmentObject(model)
+                .tint(DS.Palette.accent)
                 .frame(minWidth: 940, maxWidth: .infinity, minHeight: 620, maxHeight: .infinity)
                 .onAppear { model.start() }
         }
@@ -75,7 +76,9 @@ struct ClashHaloApp: App {
         .windowStyle(.titleBar)
 
         MenuBarExtra {
-            MenuBarPanel().environmentObject(model)
+            MenuBarPanel()
+                .environmentObject(model)
+                .tint(DS.Palette.accent)
         } label: {
             Image(model.reachable ? "StatusBarConnected" : "StatusBarDisconnected")
         }
