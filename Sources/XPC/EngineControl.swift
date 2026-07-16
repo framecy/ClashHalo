@@ -990,6 +990,11 @@ import SwiftUI
             try? t.run(); t.waitUntilExit()
         }.value
 
+        // Kernel is gone — clear the root-mode ownership flag. Leaving it true
+        // after stop makes refreshConfigs re-arm tunOn from a stale in-flight
+        // /configs response (enable && runningAsRoot && hasInterface).
+        runningAsRoot = false
+
         // Give it a moment to release ports / the binary
         try? await Task.sleep(nanoseconds: 100_000_000)
     }
