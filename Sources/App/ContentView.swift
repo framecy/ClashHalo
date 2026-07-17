@@ -104,8 +104,9 @@ struct ContentView: View {
         }
     }
 
-    /// 导航行：与 statusToggle 同结构（lg 图标槽 + s 间距 + bodyMedium 文案），
-    /// 选中态用 accent 胶囊底，避免系统 List 额外 inset。
+    /// 导航行：与 statusToggle 同结构（lg 图标槽 + s 间距 + bodyMedium 文案）。
+    /// 选中语言与 DSSegmentedControl 同源（design.md §6.1 / §6.8）：
+    /// accent 胶囊 + 白字/白 outline 图标；未选透明 + primary。
     private func sidebarNavRow(_ t: Tab) -> some View {
         let selected = M.route == t.id
         return Button {
@@ -177,13 +178,26 @@ struct ContentView: View {
             statusToggle(
                 "系统代理",
                 icon: "globe",
-                isOn: Binding(get: { M.systemProxyOn }, set: { _ in M.toggleSystemProxy() }),
+                isOn: Binding(
+                    get: { M.systemProxyOn },
+                    set: { newValue in
+                        // Ignore no-op / SwiftUI re-entrant sets; only act on edge.
+                        guard newValue != M.systemProxyOn else { return }
+                        M.toggleSystemProxy()
+                    }
+                ),
                 onColor: DS.Palette.ok
             )
             statusToggle(
                 "TUN 模式",
                 icon: "shield",
-                isOn: Binding(get: { M.tunOn }, set: { _ in M.toggleTUN() }),
+                isOn: Binding(
+                    get: { M.tunOn },
+                    set: { newValue in
+                        guard newValue != M.tunOn else { return }
+                        M.toggleTUN()
+                    }
+                ),
                 onColor: DS.Palette.accent
             )
 
