@@ -294,7 +294,7 @@ extension AppModel {
         Task {
             if on && !reachable {
                 showToast("正在启动核心以开启系统代理…")
-                engine.ensureRunning()
+                await engine.ensureRunningAsync()
                 guard await waitForKernelReady(maxAttempts: 8) else {
                     showToast("内核启动超时，无法开启系统代理")
                     return
@@ -480,8 +480,23 @@ extension AppModel {
     func applyTUNState(_ want: Bool) async {
         if want && !reachable {
             showToast("正在启动核心以启用 TUN…")
+            // TUN needs root. Verify helper before forcing isRoot — a stale
+            // isRoot=true + fire-and-forget ensureRunning used to no-op when the
+            // cached XPC proxy dropped startMihomo, then surface as "权限不足".
+            var helperOK = await XPCManager.shared.verifyConnectivity()
+            if !helperOK {
+                showToast("启用 TUN 需要管理员授权以安装特权服务…")
+                let installed = await engine.installPrivileged()
+                guard installed else { showToast("授权失败，TUN 未启用"); return }
+                helperOK = await XPCManager.shared.verifyConnectivity()
+                guard helperOK else {
+                    showToast("特权服务安装后无法连接，请重启应用或检查 system 日志")
+                    engine.isRoot = false
+                    return
+                }
+            }
             engine.isRoot = true
-            engine.ensureRunning()
+            await engine.ensureRunningAsync()
             guard await waitForKernelReady(maxAttempts: 8) else {
                 showToast("内核启动超时，TUN 无法启用")
                 return
@@ -523,7 +538,8 @@ extension AppModel {
             overrides["interface-name"] = ""
         }
 
-        // TUN requires root.
+        // TUN requires root. Covers: core already up in user-mode, or the
+        // !reachable branch above fell back to user-mode.
         if want && !engine.runningAsRoot {
             if !engine.isRoot {
                 showToast("启用 TUN 需要管理员授权以安装特权服务…")
@@ -536,16 +552,26 @@ extension AppModel {
                     engine.isRoot = false  // Reset to prevent permanent lock
                     return
                 }
-            } else if engine.helperVersion != EngineControl.kExpectedHelperVersion,
-                      engine.helperVersion != "?" {
-                // Helper version mismatch detected during TUN toggle.
-                // This should rarely happen since app startup auto-upgrades,
-                // but handle it gracefully just in case.
-                showToast("特权服务需要更新，正在自动升级…")
-                let upgraded = await engine.checkAndUpgradeHelperIfNeeded()
-                guard upgraded else {
-                    showToast("Helper 升级失败，TUN 未启用")
+            } else {
+                // Re-verify even when isRoot is true — after auto-stop cascade the
+                // flag can lag a dead LaunchDaemon, and restart would then no-op.
+                let connected = await XPCManager.shared.verifyConnectivity()
+                if !connected {
+                    showToast("特权服务无法连接，TUN 未启用")
+                    engine.isRoot = false
                     return
+                }
+                if engine.helperVersion != EngineControl.kExpectedHelperVersion,
+                   engine.helperVersion != "?" {
+                    // Helper version mismatch detected during TUN toggle.
+                    // This should rarely happen since app startup auto-upgrades,
+                    // but handle it gracefully just in case.
+                    showToast("特权服务需要更新，正在自动升级…")
+                    let upgraded = await engine.checkAndUpgradeHelperIfNeeded()
+                    guard upgraded else {
+                        showToast("Helper 升级失败，TUN 未启用")
+                        return
+                    }
                 }
             }
 
@@ -801,7 +827,7 @@ extension AppModel {
             if want {
                 self.logKernel("正在请求启动核心...")
                 self.showToast("正在启动核心...")
-                self.engine.ensureRunning()
+                await self.engine.ensureRunningAsync()
 
                 // Wait and verify with smart backoff
                 if await self.waitForKernelReady(maxAttempts: 6) {

@@ -760,69 +760,90 @@ import SwiftUI
         return nil
     }
 
-    /// Try to start the kernel if it's not responding
+    /// Fire-and-forget wrapper. Prefer `ensureRunningAsync()` when the caller
+    /// needs to wait for the start attempt (TUN re-enable, toggle engine, etc.).
     func ensureRunning() {
-        Task {
-            await api.probe()
-            
-            // If reachable, check if we need to upgrade to root
-            if api.reachable {
-                if isRoot && !runningAsRoot {
-                    // Before killing a working kernel, check the real process owner.
-                    // If it's already root (e.g. app restarted after a root session),
-                    // just set the flag instead of doing a needless restart.
-                    await syncRunningAsRootIfNeeded()
-                    if !runningAsRoot {
-                        print("ensureRunning: Upgrading to root process...")
-                        await restart()
-                    }
-                }
-                return
-            }
-            
-            let fm = FileManager.default
-            guard fm.fileExists(atPath: kernelPath) else {
-                onLog?("错误：未找到内核二进制 (\(kernelPath))。请在「内核管理」下载并启用内核。")
-                return
-            }
+        Task { await ensureRunningAsync() }
+    }
 
-            if isRoot {
-                if let helper = XPCManager.shared.helper() {
-                    helper.startMihomo(binPath: kernelPath, homeDir: appSupport) { success in
-                        Task { @MainActor in
-                            if success {
-                                self.runningAsRoot = true
-                            } else {
-                                // Helper failed to start mihomo (port conflict, binPath check failure, etc.)
-                                // Fallback to user-mode so the app isn't permanently stuck
-                                self.onLog?("⚠️ Root 模式启动失败，回退到用户模式")
-                                self.isRoot = false
-                                self.runningAsRoot = false
-                                // Retry in user mode
-                                self.ensureRunning()
-                            }
-                        }
-                    }
+    /// Start the kernel if it's not responding. Root start goes through a fresh
+    /// XPC connection (`callStartMihomo`); the cached `helper()` proxy is known
+    /// to silently drop start calls after long-lived use. Awaitable so TUN /
+    /// restart paths can wait for the helper reply instead of racing a detached
+    /// Task and timing out with a false "权限不足".
+    func ensureRunningAsync() async {
+        await api.probe()
+
+        // If reachable, check if we need to upgrade to root
+        if api.reachable {
+            if isRoot && !runningAsRoot {
+                // Before killing a working kernel, check the real process owner.
+                // If it's already root (e.g. app restarted after a root session),
+                // just set the flag instead of doing a needless restart.
+                await syncRunningAsRootIfNeeded()
+                if !runningAsRoot {
+                    print("ensureRunning: Upgrading to root process...")
+                    await restart()
                 }
+            }
+            return
+        }
+
+        let fm = FileManager.default
+        guard fm.fileExists(atPath: kernelPath) else {
+            onLog?("错误：未找到内核二进制 (\(kernelPath))。请在「内核管理」下载并启用内核。")
+            return
+        }
+
+        // Prefer root only when the helper is actually reachable. A stale
+        // isRoot=true after stop/cascade (or a dead LaunchDaemon) used to make
+        // the start path a silent no-op when the cached XPC proxy dropped the call.
+        if isRoot {
+            let connected = await XPCManager.shared.verifyConnectivity()
+            if !connected {
+                onLog?("特权服务不可达，回退到用户模式启动")
+                isRoot = false
             } else {
-                if self.userProcess?.isRunning == true {
+                let result = await XPCManager.shared.callStartMihomo(
+                    binPath: kernelPath,
+                    homeDir: appSupport
+                )
+                if result == true {
+                    runningAsRoot = true
                     return
                 }
-                let process = Process()
-                process.executableURL = URL(fileURLWithPath: kernelPath)
-                process.arguments = ["-d", appSupport]
-                var env = ProcessInfo.processInfo.environment
-                env["GOGC"] = "50"
-                env["GODEBUG"] = "madvdontneed=1"
-                process.environment = env
-                do {
-                    try process.run()
-                    self.userProcess = process
-                    runningAsRoot = false
-                } catch {
-                    print("ensureRunning: failed to start: \(error)")
+                // Helper replied false (binPath reject / spawn fail) or timed out.
+                // Do not permanently clear isRoot on a spawn failure — only when
+                // the helper itself is unreachable (nil). Fall back to user-mode
+                // so the app isn't stuck with a dead core.
+                if result == nil {
+                    onLog?("⚠️ Root 模式启动无响应，回退到用户模式")
+                    isRoot = false
+                } else {
+                    onLog?("⚠️ Root 模式启动失败，回退到用户模式")
                 }
+                runningAsRoot = false
             }
+        }
+
+        // User-mode start (primary path when helper is absent, or fallback).
+        if userProcess?.isRunning == true {
+            return
+        }
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: kernelPath)
+        process.arguments = ["-d", appSupport]
+        var env = ProcessInfo.processInfo.environment
+        env["GOGC"] = "50"
+        env["GODEBUG"] = "madvdontneed=1"
+        process.environment = env
+        do {
+            try process.run()
+            userProcess = process
+            runningAsRoot = false
+        } catch {
+            print("ensureRunning: failed to start: \(error)")
+            onLog?("用户模式启动失败：\(error.localizedDescription)")
         }
     }
 
@@ -999,15 +1020,16 @@ import SwiftUI
         try? await Task.sleep(nanoseconds: 100_000_000)
     }
 
-    /// Stop and restart the kernel.
+    /// Stop and restart the kernel. Awaits the start attempt so callers that
+    /// immediately `waitForKernelReady` do not race a fire-and-forget Task.
     func restart() async {
         await stopKernel()
-        ensureRunning()
+        await ensureRunningAsync()
     }
 
     /// Start the kernel without stopping first (caller already stopped + swapped
     /// the binary, e.g. KernelManager.activate).
-    func launch() async { ensureRunning() }
+    func launch() async { await ensureRunningAsync() }
 
     /// Re-probe the helper for its version (manual "检查" button feedback).
     func refreshHelperVersion() {

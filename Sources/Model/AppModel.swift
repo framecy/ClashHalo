@@ -496,7 +496,7 @@ import ServiceManagement
             if !api.reachable {
                 // Kernel died during sleep — restart it
                 logKernel("唤醒后内核未响应，正在重启...")
-                engine.ensureRunning()
+                await engine.ensureRunningAsync()
 
                 // Wait for kernel to come up using smart backoff (reduced from 8 attempts)
                 if await waitForKernelReady(maxAttempts: 6) {
