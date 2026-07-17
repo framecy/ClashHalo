@@ -6,16 +6,17 @@ struct ContentView: View {
 
     struct Tab { let id, label, icon: String }
 
+    // 侧栏图标约定：一律 outline（非 .fill），相近笔画密度；渲染见 sidebarIcon。
     // 监控：实时状态与数据
     private let monitorTabs: [Tab] = [
-        .init(id: "dashboard",   label: "仪表盘",   icon: "gauge"),
+        .init(id: "dashboard",   label: "仪表盘",   icon: "gauge.with.dots.needle.67percent"),
         .init(id: "connections", label: "连接",     icon: "link"),
-        .init(id: "logs",        label: "日志",     icon: "doc.plaintext.fill"),
+        .init(id: "logs",        label: "日志",     icon: "doc.text"),
     ]
     // 代理：规则与节点
     private let proxyTabs: [Tab] = [
-        .init(id: "proxies", label: "代理节点", icon: "diamond.fill"),
-        .init(id: "rules",   label: "规则",     icon: "line.3.horizontal.decrease"),
+        .init(id: "proxies", label: "代理节点", icon: "diamond"),
+        .init(id: "rules",   label: "规则",     icon: "list.bullet.rectangle"),
         .init(id: "subscriptions", label: "订阅", icon: "icloud.and.arrow.down"),
     ]
     // 配置：profile · 网络(入站/TUN/DNS/嗅探/内核) · 网络拓扑 · 偏好
@@ -23,7 +24,7 @@ struct ContentView: View {
         .init(id: "config",  label: "配置", icon: "slider.horizontal.3"),
         .init(id: "network", label: "网络", icon: "network"),
         .init(id: "map",     label: "网络拓扑", icon: "point.3.connected.trianglepath.dotted"),
-        .init(id: "general", label: "设置", icon: "gearshape.fill"),
+        .init(id: "general", label: "设置", icon: "gearshape"),
     ]
 
     /// App 版本号(随 MARKETING_VERSION),展示于侧栏头部与关于页。
@@ -34,9 +35,9 @@ struct ContentView: View {
         NavigationSplitView {
             sidebar.navigationSplitViewColumnWidth(min: DS.Layout.sidebarMin, ideal: DS.Layout.sidebarIdeal, max: DS.Layout.sidebarMax)
         } detail: { detail }
-        // Force system controls (sidebar selection, switches, progress) onto
-        // Halo Green. Without this, List(.sidebar) keeps the system blue
-        // accent while content uses DS.Palette.accent.
+        // Force system controls (sidebar selection, switches, progress) onto the
+        // brand accent (Medium Purple U). Without this, List(.sidebar) keeps the
+        // system blue while content uses DS.Palette.accent.
         .tint(DS.Palette.accent)
         .onAppear { M.isMainWindowVisible = true }
         .onDisappear { M.isMainWindowVisible = false }
@@ -59,24 +60,27 @@ struct ContentView: View {
     //   top chrome 高度 = m + controlHeight + m（与 PageToolbar / 连接·日志·规则顶栏一致）
     //   分割线 = 通栏 1pt separator（禁止 inset hairline，否则跨栏无法对齐）
     // 列表分组「监控 / 代理 / 配置」；底 = 系统代理 / TUN + 核心状态。
+    //
+    // 水平对齐：不用系统 List(.sidebar)（其 contentMargins/listRowInsets 仍会叠 2–4pt
+    // 系统内边距，footer 在 List 外永远算不准）。导航与 footer 共用
+    // pageContentInset + 同一套 icon 槽 / HStack spacing，像素级同左缘。
 
     private var sidebar: some View {
         VStack(spacing: 0) {
             appHeader
-            // 通栏分割线：与内容区 PageToolbar / chrome 底部分割线对齐
             Divider().overlay(DS.Palette.separator)
 
-            List(selection: $M.route) {
-                sidebarSection("监控", tabs: monitorTabs, first: true)
-                sidebarSection("代理", tabs: proxyTabs)
-                sidebarSection("配置", tabs: configTabs)
+            ScrollView {
+                VStack(alignment: .leading, spacing: 0) {
+                    sidebarSection("监控", tabs: monitorTabs, first: true)
+                    sidebarSection("代理", tabs: proxyTabs)
+                    sidebarSection("配置", tabs: configTabs)
+                }
+                .padding(.horizontal, DS.Layout.pageContentInset)
+                .padding(.bottom, DS.Spacing.s)
+                .frame(maxWidth: .infinity, alignment: .leading)
             }
-            .listStyle(.sidebar)
-            .scrollContentBackground(.hidden)
-            .contentMargins(.top, 0, for: .scrollContent)
-            .contentMargins(.bottom, DS.Spacing.s, for: .scrollContent)
 
-            // 通栏分割线：与内容区底部 chrome 节奏一致
             Divider().overlay(DS.Palette.separator)
             statusFooter
         }
@@ -85,37 +89,57 @@ struct ContentView: View {
 
     @ViewBuilder
     private func sidebarSection(_ title: String, tabs: [Tab], first: Bool = false) -> some View {
-        Section {
-            ForEach(tabs, id: \.id) { t in
-                Label {
-                    Text(t.label)
-                        .font(.dsBodyMedium)
-                        .lineLimit(1)
-                } icon: {
-                    Image(systemName: t.icon)
-                        .font(DS.Icon.font(DS.Icon.md, weight: .medium))
-                        .symbolRenderingMode(.hierarchical)
-                }
-                .tag(t.id)
-                .listRowInsets(EdgeInsets(
-                    top: DS.Layout.sidebarRowVInset,
-                    leading: DS.Spacing.s,
-                    bottom: DS.Layout.sidebarRowVInset,
-                    trailing: DS.Spacing.s
-                ))
-            }
-        } header: {
-            Text(title)
-                .font(.dsCaption)
-                .fontWeight(.semibold)
-                .foregroundStyle(.secondary)
-                .textCase(nil)
-                .frame(maxWidth: .infinity, alignment: .leading)
-                // 首组「监控」额外顶距；后续组用 l 顶距拉开分组（macOS 无 listSectionSpacing）
-                .padding(.top, first ? DS.Layout.sidebarSectionTop : DS.Spacing.l)
-                .padding(.bottom, DS.Spacing.xs)
-                .padding(.leading, DS.Spacing.xs)
+        Text(title)
+            .font(.dsCaption)
+            .fontWeight(.semibold)
+            .foregroundStyle(.secondary)
+            .textCase(nil)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(.top, first ? DS.Layout.sidebarSectionTop : DS.Spacing.l)
+            .padding(.bottom, DS.Spacing.xs)
+            .padding(.leading, DS.Spacing.xs)
+
+        ForEach(tabs, id: \.id) { t in
+            sidebarNavRow(t)
         }
+    }
+
+    /// 导航行：与 statusToggle 同结构（lg 图标槽 + s 间距 + bodyMedium 文案），
+    /// 选中态用 accent 胶囊底，避免系统 List 额外 inset。
+    private func sidebarNavRow(_ t: Tab) -> some View {
+        let selected = M.route == t.id
+        return Button {
+            M.route = t.id
+        } label: {
+            HStack(spacing: DS.Spacing.s) {
+                sidebarIcon(t.icon)
+                    .foregroundStyle(selected ? Color.white : Color.primary)
+                Text(t.label)
+                    .font(.dsBodyMedium)
+                    .foregroundStyle(selected ? Color.white : Color.primary)
+                    .lineLimit(1)
+                Spacer(minLength: 0)
+            }
+            .padding(.vertical, DS.Layout.sidebarRowVInset)
+            .padding(.horizontal, DS.Spacing.s)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(
+                RoundedRectangle(cornerRadius: DS.Radius.control, style: .continuous)
+                    .fill(selected ? DS.Palette.accent : Color.clear)
+            )
+            .contentShape(RoundedRectangle(cornerRadius: DS.Radius.control, style: .continuous))
+        }
+        .buttonStyle(.plain)
+        .accessibilityAddTraits(selected ? .isSelected : [])
+    }
+
+    /// 侧栏导航图标：统一 outline 字形、字重、渲染模式与占位框，避免 fill/line 混用导致视觉轻重不一。
+    private func sidebarIcon(_ name: String) -> some View {
+        Image(systemName: name)
+            .font(DS.Icon.font(DS.Icon.md, weight: .medium))
+            .symbolRenderingMode(.monochrome)
+            .frame(width: DS.Icon.lg, height: DS.Icon.lg, alignment: .center)
+            .contentShape(Rectangle())
     }
 
     /// 与内容区 PageToolbar / chrome 顶栏同高：m + 32 + m，底部分割线通栏。
@@ -148,37 +172,26 @@ struct ContentView: View {
     }
 
     private var statusFooter: some View {
-        VStack(alignment: .leading, spacing: DS.Spacing.m) {
-            // 控制卡：系统代理 / TUN，抬升一层，避免与导航列表糊在一起
-            VStack(spacing: DS.Spacing.s) {
-                statusToggle(
-                    "系统代理",
-                    icon: "globe",
-                    isOn: Binding(get: { M.systemProxyOn }, set: { _ in M.toggleSystemProxy() }),
-                    onColor: DS.Palette.ok
-                )
-                statusToggle(
-                    "TUN 模式",
-                    icon: "shield.lefthalf.filled",
-                    isOn: Binding(get: { M.tunOn }, set: { _ in M.toggleTUN() }),
-                    onColor: DS.Palette.accent
-                )
-            }
-            .padding(.horizontal, DS.Spacing.m)
-            .padding(.vertical, DS.Spacing.m)
-            .background(
-                RoundedRectangle(cornerRadius: DS.Radius.control, style: .continuous)
-                    .fill(DS.Palette.controlBg)
+        // 与导航 ScrollView 共用 pageContentInset；行内再 +s，与选中胶囊内图标同起点
+        VStack(alignment: .leading, spacing: DS.Spacing.s) {
+            statusToggle(
+                "系统代理",
+                icon: "globe",
+                isOn: Binding(get: { M.systemProxyOn }, set: { _ in M.toggleSystemProxy() }),
+                onColor: DS.Palette.ok
             )
-            .overlay(
-                RoundedRectangle(cornerRadius: DS.Radius.control, style: .continuous)
-                    .stroke(DS.Palette.border, lineWidth: 1)
+            statusToggle(
+                "TUN 模式",
+                icon: "shield",
+                isOn: Binding(get: { M.tunOn }, set: { _ in M.toggleTUN() }),
+                onColor: DS.Palette.accent
             )
 
             HStack(spacing: DS.Spacing.s) {
                 Circle()
                     .fill(M.reachable ? DS.Palette.ok : DS.Palette.error)
                     .frame(width: 6, height: 6)
+                    .frame(width: DS.Icon.lg, height: DS.Icon.lg, alignment: .center)
                 Text(M.reachable ? "核心已就绪" : "核心已停止")
                     .font(.dsBody)
                     .foregroundStyle(.secondary)
@@ -191,9 +204,9 @@ struct ContentView: View {
                         .lineLimit(1)
                 }
             }
-            .padding(.horizontal, DS.Spacing.xs)
+            .padding(.vertical, DS.Spacing.xs / 2)
+            .padding(.horizontal, DS.Spacing.s)
         }
-        // 与顶栏 / 内容区共用 pageContentInset，避免 footer 比 chrome 更缩进
         .padding(.horizontal, DS.Layout.pageContentInset)
         .padding(.top, DS.Spacing.m)
         .padding(.bottom, DS.Spacing.l)
@@ -202,10 +215,12 @@ struct ContentView: View {
 
     private func statusToggle(_ label: String, icon: String, isOn: Binding<Bool>, onColor: Color) -> some View {
         HStack(spacing: DS.Spacing.s) {
+            // 与导航行共用 md 字号 + monochrome + lg 槽
             Image(systemName: icon)
-                .font(DS.Icon.font(DS.Icon.sm, weight: .medium))
+                .font(DS.Icon.font(DS.Icon.md, weight: .medium))
+                .symbolRenderingMode(.monochrome)
                 .foregroundStyle(isOn.wrappedValue ? onColor : .secondary)
-                .frame(width: DS.Icon.md, alignment: .center)
+                .frame(width: DS.Icon.lg, height: DS.Icon.lg, alignment: .center)
             Text(label)
                 .font(.dsBodyMedium)
                 .foregroundStyle(isOn.wrappedValue ? .primary : .secondary)
@@ -219,6 +234,7 @@ struct ContentView: View {
                 .tint(onColor)
         }
         .padding(.vertical, DS.Spacing.xs / 2)
+        .padding(.horizontal, DS.Spacing.s)
     }
 
     // MARK: Detail

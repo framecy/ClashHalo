@@ -4,7 +4,7 @@
 
 **目标平台**：macOS 14+，视觉语言对齐现代 macOS 系统风格（macOS 27 一代：语义色、材质分层、连续圆角、工具型密度）。
 **主题**：完美支持 **Light / Dark**，跟随系统 Appearance，禁止页面级 `preferredColorScheme` 硬锁。
-**品牌**：单一 accent（Halo Green），无用户可选主题色。
+**品牌**：单一 accent（PANTONE Medium Purple U / `#65428A` 数字近似），无用户可选主题色。
 
 ---
 
@@ -65,15 +65,15 @@ ClashHalo 是**网络运维工具**，不是营销站点。
 
 | Token | 语义 | 使用 |
 |---|---|---|
-| `accent` | 品牌主色 / 主操作 / 选中 | `.dsButton(.prominent)`、当前节点、TUN on |
+| `accent` | 品牌主色 / 主操作 / 选中（Medium Purple U） | `.dsButton(.prominent)`、当前节点、TUN on |
 | `accentSoft` | 选中底 | 列表选中、chip 选中 fill |
 | `accentStrong` | 强调描边/深色文字上的 accent | 少用 |
 | `ok` | 成功 / 低延迟 / 在线 | 就绪点、延迟 <100ms |
 | `warn` | 警告 / 中延迟 / 需关注 | 冲突、中延迟、升级提示 |
 | `error` | 错误 / 高延迟 / 危险操作 | 失败、断开、ERROR 日志 |
 | `info` | 中性信息 / 直连 / 冷数据 | 直连分布、信息 chip |
-| `upload` | 上传流量 | 仪表盘上传 |
-| `download` | 下载流量 | 仪表盘下载（Light 端等同 accent，Dark 略提亮） |
+| `upload` | 上传流量 | 仪表盘上传（数据色，不跟品牌 accent） |
+| `download` | 下载流量 / 代理分布 | 仪表盘下载、流量分布「代理」环段（数据色，不跟品牌 accent） |
 
 ### 3.3 网络角色色（网络拓扑）
 
@@ -164,14 +164,15 @@ Card 内边距：`l`。
 
 ### 6.1 Shell
 
-- `NavigationSplitView` + sidebar list（系统 sidebar style）
-- **全局 accent 统一**：`Assets.xcassets/AccentColor` + `ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME` + 根视图 `.tint(DS.Palette.accent)`。侧栏选中 / 系统开关 / Progress 与内容区重点色共用 Halo Green，禁止继续依赖系统蓝
+- `NavigationSplitView` + **自绘侧栏导航**（不用 `List(.sidebar)`，避免系统 contentMargins/listRowInsets 叠出 2–4pt 无法对齐）
+- **全局 accent 统一**：`Assets.xcassets/AccentColor` + `ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME` + 根视图 `.tint(DS.Palette.accent)`。侧栏选中 / 系统开关 / Progress 与内容区重点色共用 PANTONE Medium Purple U，禁止继续依赖系统蓝
 - **跨栏对齐**：侧栏顶栏与内容区 `PageToolbar` / chrome 顶栏同高  
   `DS.Layout.chromeHeight`（= `m + controlHeight + m` = 56）  
   水平 inset 统一 `DS.Layout.pageContentInset`；**分割线通栏**（`Divider().overlay(separator)`，禁止 inset hairline）
 - 侧栏头：App icon(32) + 名称 + 版本；底部分割线与内容 chrome 底线对齐
 - 侧栏分组：监控 / 代理 / 配置；首组额外 `sidebarSectionTop`，后续组 header 顶距 `l`；行 inset `sidebarRowVInset`
-- 侧栏底：通栏顶分割线 + 系统代理/TUN `controlBg` 抬升卡 + 核心状态行
+- **侧栏图标一律 outline**（禁止混用 `.fill` / half-filled）：`md` 字号 + `medium` 字重 + `.monochrome`；固定 `lg×lg` 槽位对齐；footer 状态图标同规
+- 侧栏底：通栏顶分割线 + 系统代理/TUN/核心状态**平铺**。导航与 footer **共用** `pageContentInset` + 行内 `s` 水平 padding + 同宽图标槽，图标列像素级同左缘
 - 详情区背景：`windowBg`
 - Toast：底部居中 capsule + ultraThinMaterial
 
@@ -328,5 +329,6 @@ padding(.vertical, 5)                    // 用 DS.Spacing.*
 | 2026-07-15 | 自绘控件迁移：`DSSegmentedControl`/`DSMenuPicker`/`DSButtonStyle`+`dsButton(...)`；`Radius.control` 8→6；替换原生 Picker/Menu/标准按钮为自绘 32pt/圆角6pt |
 | 2026-07-16 | 全页面 design.md 收尾：raw `Color.secondary.opacity`→令牌、`.headline`→`dsSection`、浮层 `regularMaterial`→`overlayBg`+弱阴影、`cornerRadius:3`→新增 `Radius.bar`、非 grid 间距→`DS.Spacing`；补 `chromeBg`/`cardBgAlt`/`bar`/`cardRow` 契约 |
 | 2026-07-16 | v1.1.0 Shell 对齐：`chromeHeight` 跨栏统一、侧栏分组与 footer 抬升卡、配置卡 `profileCardMinHeight`、`ContentUnavailable` 居中契约、关于页工具型 Card 堆叠 |
+| 2026-07-17 | v1.1.1：品牌 accent → PANTONE Medium Purple U `#65428A`；`download`/`upload` 与 brand 解耦；侧栏弃用 `List(.sidebar)` 改为自绘导航；图标一律 outline + monochrome + `lg` 槽；footer 平铺并对齐导航图标列 |
 
 实现以代码为准；规范与代码冲突时，先修代码再回写本文。
