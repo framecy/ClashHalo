@@ -2,6 +2,21 @@
 
 本项目所有重要变更记录于此。格式参考 [Keep a Changelog](https://keepachangelog.com/),版本遵循语义化版本。
 
+## [1.1.1] - 2026-07-17
+
+品牌色与侧栏对齐热修：主题色切到 PANTONE Medium Purple U，侧栏改为自绘导航并对齐 footer 图标列。Helper 协议未变，仍为 `1.0.15`（无需强制升级旧 Helper）。
+
+### Changed
+- **品牌主题色 → PANTONE Medium Purple U**：`DS.Palette.accent` / `accentSoft` / `accentStrong` 与 `Assets.xcassets/AccentColor` 统一到 `#65428A`（Dark 端提亮以保证对比）；系统控件仍走全局 `.tint` + `GLOBAL_ACCENT_COLOR_NAME`。
+- **数据可视化色与品牌色解耦**：`download` 保留独立绿色系；仪表盘策略组排名与流量分布「代理」环段改用 `DS.Palette.download`，不再跟品牌 accent。
+- **侧栏改为自绘导航**：弃用 `List(.sidebar)`，避免系统 contentMargins/listRowInsets 叠出 2–4pt 无法对齐；导航与 footer 共用 `pageContentInset` + 同宽图标槽，图标列像素级同左缘。
+- **侧栏图标统一 outline**：导航与 footer 一律 outline 字形 + `monochrome` + 固定 `lg` 槽位（仪表盘/日志/代理/规则/设置/系统代理/TUN）。
+- **侧栏 footer 平铺**：系统代理 / TUN / 核心状态取消 `controlBg` 抬升卡，与导航行同结构对齐。
+
+### Fixed
+- 侧栏导航图标 fill/outline 混用、视觉大小不一。
+- 侧栏导航与 footer 图标列因系统 List inset 无法对齐。
+
 ## [1.1.0] - 2026-07-16
 
 设计系统与 Shell 布局主版本：全页面统一 32pt 控件高度、侧栏/内容区 chrome 对齐、空状态与关于页重做。Helper 协议未变，仍为 `1.0.15`（无需强制升级旧 Helper）。
@@ -10,6 +25,7 @@
 - **统一设计系统落地**：`Docs/design.md` + `DesignTokens.swift` 成为 UI 真相源；自绘 `DSSegmentedControl` / `DSMenuPicker` / `dsButton(...)` 固定 32pt / 圆角 6pt，替换原生 bezel 漂移。
 - **跨栏 chrome 对齐**：新增 `DS.Layout.chromeHeight`（`m + controlHeight + m` = 56）；侧栏顶栏、PageToolbar、连接/日志/规则/设置/网络顶栏同高；分割线统一通栏 `Divider().overlay(separator)`。
 - **Debug 构建脚本**：`Scripts/build-debug.sh` 本地验证不 bump build 号。
+- **全局 AccentColor**：`Assets.xcassets/AccentColor` + `GLOBAL_ACCENT_COLOR_NAME`，系统控件与品牌色同源。
 
 ### Changed
 - **侧栏导航重设计**：恢复「监控 / 代理 / 配置」分组；首组「监控」额外顶距；行高与组间距按 8pt 网格；footer 系统代理/TUN 放入 `controlBg` 抬升卡；侧栏宽度 212/236/280。
@@ -18,13 +34,14 @@
 - **设置 → 关于**：从居中营销 hero 改为工具型 Card 堆叠（身份 / 版本明细 / 更新 / 链接 / 说明）。
 - **空状态统一**：`ContentUnavailable` 自身垂直居中填满；连接/代理/日志/订阅/规则/配置空态与内容态互斥，不再塞进 ScrollView 或叠魔术 `padding.top`。
 - **网络页 DNS 动作行**：挪到顶栏分割线下方，避免顶栏高度因 tab 抖动与侧栏错位。
+- **侧栏选中 / 系统开关 / Progress**：统一到品牌 accent（不再走系统蓝）。
 
 ### Fixed
 - 侧栏与内容区分割线无法水平对齐。
 - 配置卡片贴顶、有/无 CTA 高度不一致。
 - 连接/代理/日志/订阅空状态图标位置漂移。
 - **内核关闭后 TUN 开关仍显示开启**：`stopKernel` 未清 `runningAsRoot`，且停核过程中进行中的 `refreshConfigs` 仍可能用旧的 `tun.enable` + 残留 utun 把 `tunOn` 写回 true。修复：`stopKernel` 复位 `runningAsRoot`；`refreshConfigs` 的 TUN 活跃判定增加 `reachable` 门控；`stopEngine` 强制磁盘 `tun.enable=false`、清理静态路由与僵尸 utun 残留。
-- **侧栏选中色与内容区重点色不一致**：系统 List/Switch 仍走系统蓝，内容区用 Halo Green。补 `AccentColor` 资源 + `GLOBAL_ACCENT_COLOR_NAME`，并在主窗口 / 菜单栏 / `ContentView` 统一 `.tint(DS.Palette.accent)`。
+- **侧栏选中色与内容区重点色不一致**：系统 List/Switch 仍走系统蓝，内容区用品牌 accent。补 `AccentColor` 资源 + `GLOBAL_ACCENT_COLOR_NAME`，并在主窗口 / 菜单栏 / `ContentView` 统一 `.tint(DS.Palette.accent)`。
 
 ## [1.0.15] - 2026-07-14
 

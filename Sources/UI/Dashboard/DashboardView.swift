@@ -125,7 +125,7 @@ struct DashboardPage: View {
                         .frame(maxWidth: .infinity)
 
                         Card(title: "策略组排名", icon: "rectangle.3.group.fill") {
-                            RankList(rows: policyGroupRows, accent: DS.Palette.accent, mode: .bytes).equatable()
+                            RankList(rows: policyGroupRows, accent: DS.Palette.download, mode: .bytes).equatable()
                         }
                         .frame(height: DS.Layout.cardRow)
                         .frame(maxWidth: .infinity)
@@ -169,11 +169,12 @@ struct DashboardPage: View {
 
     private var distribution: some View {
         let day = range == .today ? M.history.today : M.history.month
+        // Data-viz colors only (info / download / error) — not brand accent.
         return TrafficDistributionView(
             direct: day.direct,
             proxy: day.proxy,
             reject: day.reject,
-            accent: DS.Palette.accent
+            proxyColor: DS.Palette.download
         ).equatable()
     }
 
@@ -193,10 +194,11 @@ struct TrafficDistributionView: View, Equatable {
     let direct: Double
     let proxy: Double
     let reject: Double
-    let accent: Color
+    /// Proxy series color — data token, not brand accent.
+    let proxyColor: Color
 
     static func == (lhs: Self, rhs: Self) -> Bool {
-        lhs.direct == rhs.direct && lhs.proxy == rhs.proxy && lhs.reject == rhs.reject && lhs.accent == rhs.accent
+        lhs.direct == rhs.direct && lhs.proxy == rhs.proxy && lhs.reject == rhs.reject && lhs.proxyColor == rhs.proxyColor
     }
 
     struct TrafficSlice: Identifiable {
@@ -209,7 +211,7 @@ struct TrafficDistributionView: View, Equatable {
     var body: some View {
         let data: [TrafficSlice] = [
             TrafficSlice(name: "直连", value: Double(direct), color: DS.Palette.info),
-            TrafficSlice(name: "代理", value: Double(proxy), color: accent),
+            TrafficSlice(name: "代理", value: Double(proxy), color: proxyColor),
             TrafficSlice(name: "拦截", value: Double(reject), color: DS.Palette.error)
         ]
 
@@ -259,7 +261,7 @@ struct TrafficDistributionView: View, Equatable {
 
             VStack(spacing: DS.Spacing.l) {
                 legendRow("直连", fmtBytes(direct), DS.Palette.info)
-                legendRow("代理", fmtBytes(proxy), accent)
+                legendRow("代理", fmtBytes(proxy), proxyColor)
                 legendRow("拦截", fmtBytes(reject), DS.Palette.error)
             }
         }
