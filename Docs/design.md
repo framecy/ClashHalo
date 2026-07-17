@@ -47,8 +47,9 @@ ClashHalo 是**网络运维工具**，不是营销站点。
 
 - **不要**在 Card 内再嵌套同视觉权重的 Card。
 - 列表/表格直接坐在 L0 或 L2，不要额外包装饰壳。
-- Light：抬升靠**白卡片 + 细描边 + 极弱阴影**。
-- Dark：抬升靠**更浅的实色表面 + 细亮边**，阴影几乎无效，禁止靠大阴影假分层。
+- **Light：抬升靠「白卡片 + 弱描边 + 双层阴影」**——边界在，但不画成线框；阴影给呼吸与层次。
+- **Dark：抬升靠更浅的实色表面 + 细亮边**，阴影几乎无效，禁止靠大阴影假分层。
+- 页面网格上的兄弟卡一律 `dsCardChrome()`；禁止手写 `border + 单层弱阴影` 分叉。
 
 ---
 
@@ -96,10 +97,23 @@ ClashHalo 是**网络运维工具**，不是营销站点。
 | `fillFaint` | 极浅 hover / 行底 |
 | `fill` | 选中段、分段底 |
 | `hairline` | chip 底、弱分割 |
-| `border` | 控件描边、卡片边 |
-| `separator` | Divider 语义色 |
+| `border` | 控件描边、卡片边（Light ~6% 黑；Dark ~10% 白） |
+| `separator` | Divider 语义色（比 border 更弱） |
+| `cardShadow` | 卡片环境阴影（Light only，外扩软影） |
+| `cardShadowContact` | 卡片接触阴影（Light only，紧贴 y=1） |
 
-Light 的 border 略深一点保证轮廓；Dark 的 border 用低透明亮边，避免“泥灰块”。
+Light 的 border **刻意偏软**，轮廓主要靠 surface 落差 + 双层阴影；Dark 的 border 用低透明亮边，避免“泥灰块”。
+
+### 3.5 卡片 chrome（`dsCardChrome`）
+
+```
+background: cardBg
+stroke:     border 1pt（弱）
+shadow 1:   cardShadowContact  radius 2 / y 1   ← 贴地
+shadow 2:   cardShadow         radius 16 / y 6  ← 环境抬升
+```
+
+Dark 下两层 shadow alpha=0，仅 stroke 生效。卡内子表面用 `dsControlChrome`（无阴影）。
 
 ### 3.5 对比要求
 
@@ -147,12 +161,30 @@ Card 内边距：`l`。
 | Token | Value | 用途 |
 |---|---|---|
 | `chip` | 6 | 小标签 |
-| `control` | 6 | 所有按钮 / tab / 输入控件 |
+| `control` | 6 | 所有按钮 / tab / 输入控件；**卡内子表面** |
 | `bar` | 3 | 图表柱条 |
-| `card` | 10 | 主 Card（≤10，贴合系统设置风格） |
-| `panel` | 12 | 侧栏浮层/大面板 |
+| `card` | 10 | **顶层**主 Card / 统计卡 / 配置卡（`dsCardChrome` 默认） |
+| `panel` | 12 | 侧栏浮层/大面板（连接详情等） |
 
 不要超过 12。不要椭圆大卡片。
+
+#### 嵌套圆角递减（强制）
+
+同层级表面**必须同圆角**；内嵌于更大卡片的抬升面**必须更小一档**，禁止内层 ≥ 外层。
+
+| 层级 | Token | 典型 |
+|---|---|---|
+| 浮层 / 大面板 | `panel` 12 | 连接详情浮层 |
+| 顶层卡片（页面网格上的独立卡） | `card` 10 | `Card`、仪表盘统计条/内存卡、配置 profile 卡 |
+| 卡内子表面 / 列表瓦片 / 选中块 | `control` 6 | SD-WAN 接口瓦片、代理节点 chip、分段选中胶囊 |
+| 图内柱条 | `bar` 3 | 仪表盘柱图 |
+
+规则：
+
+1. **页面网格上的兄弟卡一律 `card`（10）**——含紧凑统计卡（`BarStat` / `MiniStat`）。禁止用 `dsControlChrome` 冒充卡片（那是控件壳，圆角 6，会与下方大卡视觉不一致）。
+2. **仅当表面真正嵌在另一张卡内部**时用 `control`（6）。
+3. 实现：顶层走 `dsCardChrome()` / `DS.Radius.card`；卡内子表面走 `DS.Radius.control` 或 `dsControlChrome()`。
+4. 禁止 raw `cornerRadius(数字)`；禁止内层 `card` 套在外层 `card` 上却同半径（同权嵌套）。
 
 ### Icon
 
@@ -172,6 +204,7 @@ Card 内边距：`l`。
 - 侧栏头：App icon(32) + 名称 + 版本；底部分割线与内容 chrome 底线对齐
 - 侧栏分组：监控 / 代理 / 配置；首组额外 `sidebarSectionTop`，后续组 header 顶距 `l`；行 inset `sidebarRowVInset`
 - **侧栏图标一律 outline**（禁止混用 `.fill` / half-filled）：`md` 字号 + `medium` 字重 + `.monochrome`；固定 `lg×lg` 槽位对齐；footer 状态图标同规
+- **侧栏选中态与分段 Tab 同源**：选中 = `accent` 胶囊底 + 白字/白 outline 图标；未选 = 透明底 + `primary`；圆角 `Radius.control`。禁止系统 List 选中蓝
 - 侧栏底：通栏顶分割线 + 系统代理/TUN/核心状态**平铺**。导航与 footer **共用** `pageContentInset` + 行内 `s` 水平 padding + 同宽图标槽，图标列像素级同左缘
 - 详情区背景：`windowBg`
 - Toast：底部居中 capsule + ultraThinMaterial
@@ -227,6 +260,45 @@ Card 内边距：`l`。
 - 状态点：6–8pt circle，`ok` / `error` / `warn` / `secondary`
 - 延迟：`delayColor()` 已映射到 ok/warn/error
 - 开关是状态控件，不与标准按钮/tab/input 共用尺寸要求；保持系统 switch 语义。
+
+### 6.8 Segmented Tab（胶囊滑块）
+
+唯一实现：`DSSegmentedControl`。禁止 AppKit `.segmented` / 页面自绘第二套。
+
+```
+┌─ track (controlBg + border, r=6, h=32) ─────────────┐
+│ 2pt inset                                           │
+│  ┌────────┐ ┌────────┐ ┌────────┐                   │
+│  │ 选中   │ │ 未选   │ │ 未选   │  ← 等分 maxWidth  │
+│  │ accent │ │ clear  │ │ clear  │                   │
+│  │ white  │ │primary │ │primary │                   │
+│  └────────┘ └────────┘ └────────┘                   │
+└─────────────────────────────────────────────────────┘
+```
+
+| 项 | 规范 |
+|---|---|
+| 高度 | `DS.Layout.controlHeight` = 32 |
+| 圆角 | track 与选中胶囊均为 `Radius.control` = 6（continuous） |
+| Track | fill `controlBg`；stroke `border` 1pt；clip continuous |
+| 选中胶囊 | fill `accent`；文字/图标 **white**；与 track **内缩 2pt**（上下左右），禁止贴边直角块 |
+| 未选中 | 透明底；文字/图标 `.primary` |
+| 图标 | 可选；`md` + `medium` + `.monochrome`；与文案间距 `xs`；禁止 `.fill` 与 outline 混用 |
+| 字体 | `.dsBodyMedium`，`lineLimit(1)` |
+| 宽度 | **等分**：每段 `maxWidth: .infinity`。页面级控件拉满 chrome 内容宽；工具栏内由外层 `.frame(width:)` 钉宽 |
+| 动效 | 系统默认；禁止自定义弹簧/位移动画 |
+
+**角色与放置**
+
+| 角色 | 示例 | 放置 |
+|---|---|---|
+| 页面级 | 设置 4 段、网络 5 段 | 顶栏独占；高 `chromeHeight`；背景 **`chromeBg`**；底通栏 `Divider.separator`；水平 `pageContentInset`；控件本身全宽等分 |
+| 工具栏滤镜 | 连接中/已关闭、日志级别、代理 list/grid | 与搜索/按钮同高 32，外层钉固定宽 |
+| 表单/卡片内 | 规则动作、内核通道、代理模式、今日/本月 | 随容器宽等分，或 `fieldTrailing` 右对齐 |
+
+**与侧栏**
+
+选中语言同源（`accent` 胶囊 + 白字/白 outline 图标）。侧栏是导航行，不是 `DSSegmentedControl`；禁止把侧栏改成 segmented。
 
 ---
 
@@ -330,5 +402,8 @@ padding(.vertical, 5)                    // 用 DS.Spacing.*
 | 2026-07-16 | 全页面 design.md 收尾：raw `Color.secondary.opacity`→令牌、`.headline`→`dsSection`、浮层 `regularMaterial`→`overlayBg`+弱阴影、`cornerRadius:3`→新增 `Radius.bar`、非 grid 间距→`DS.Spacing`；补 `chromeBg`/`cardBgAlt`/`bar`/`cardRow` 契约 |
 | 2026-07-16 | v1.1.0 Shell 对齐：`chromeHeight` 跨栏统一、侧栏分组与 footer 抬升卡、配置卡 `profileCardMinHeight`、`ContentUnavailable` 居中契约、关于页工具型 Card 堆叠 |
 | 2026-07-17 | v1.1.1：品牌 accent → PANTONE Medium Purple U `#65428A`；`download`/`upload` 与 brand 解耦；侧栏弃用 `List(.sidebar)` 改为自绘导航；图标一律 outline + monochrome + `lg` 槽；footer 平铺并对齐导航图标列 |
+| 2026-07-17 | 胶囊滑块 Tab：`DSSegmentedControl` track 内缩 2pt + accent 选中胶囊；页面级顶栏统一 `chromeBg`；侧栏选中与分段选中语言同源（§6.1 / §6.8） |
+| 2026-07-17 | 圆角嵌套递减：顶层卡 `card` 10、卡内子表面 `control` 6、浮层 `panel` 12；仪表盘 `BarStat`/`MiniStat` 改 `dsCardChrome` 与兄弟 `Card` 同半径 |
+| 2026-07-17 | Light 精致化：`windowBg`/`controlBg` 重标定；`border` 软化 0.10→0.06；`dsCardChrome` 双层阴影（contact+ambient）；卡片边界靠抬升+弱边，而非硬线框 |
 
 实现以代码为准；规范与代码冲突时，先修代码再回写本文。

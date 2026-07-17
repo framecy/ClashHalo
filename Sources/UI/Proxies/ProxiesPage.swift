@@ -161,7 +161,7 @@ struct ProxiesPage: View {
                         Image(systemName: groupIcon(g.type)).font(.dsBody).foregroundColor(DS.Palette.accent).frame(width: DS.Icon.lg)
                         VStack(alignment: .leading, spacing: DS.Spacing.xs / 2) {
                             HStack(spacing: DS.Spacing.s) {
-                                Text(g.name).font(.dsBody).fontWeight(.semibold)
+                                Text(g.name).font(.dsBodySemibold)
                                 Text(g.type).font(.dsBody).foregroundColor(.secondary)
                                     .padding(.horizontal, DS.Spacing.xs)
                                     .padding(.vertical, 1)
@@ -205,7 +205,7 @@ struct ProxiesPage: View {
         } label: {
             VStack(alignment: .leading, spacing: DS.Spacing.xs) {
                 HStack(spacing: DS.Spacing.s) {
-                    Text(name).font(.dsBody).fontWeight(on ? .semibold : .regular)
+                    Text(name).font(on ? .dsBodySemibold : .dsBody)
                         .foregroundColor(on ? DS.Palette.accent : .primary).lineLimit(1)
                     Spacer(minLength: DS.Spacing.xs / 2)
                     if on { Image(systemName: "checkmark.circle.fill").font(.dsBody).foregroundColor(DS.Palette.accent) }

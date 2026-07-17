@@ -184,6 +184,48 @@ public class XPCManager {
         }
     }
 
+    /// Inject SD-WAN exclude static routes via a *fresh* helper connection.
+    public func callSetupExcludeRoutes(_ routes: [String: String], timeout: TimeInterval = 5.0) async -> Bool? {
+        guard checkStatus() == .enabled else { return nil }
+        let conn = NSXPCConnection(machServiceName: "com.clashhalo.helper", options: .privileged)
+        conn.remoteObjectInterface = NSXPCInterface(with: HelperProtocol.self)
+        conn.resume()
+        return await withCheckedContinuation { (cont: CheckedContinuation<Bool?, Never>) in
+            let lock = NSLock(); var done = false
+            let finish: (Bool?) -> Void = { v in
+                lock.lock(); defer { lock.unlock() }
+                if !done { done = true; cont.resume(returning: v); conn.invalidate() }
+            }
+            guard let proxy = conn.remoteObjectProxyWithErrorHandler({ [weak self] error in
+                self?.onLog?("setupExcludeRoutes XPC 错误: \(error.localizedDescription)")
+                finish(nil)
+            }) as? HelperProtocol else { finish(nil); return }
+            proxy.setupExcludeRoutes(routes) { ok in finish(ok) }
+            DispatchQueue.global().asyncAfter(deadline: .now() + timeout) { finish(nil) }
+        }
+    }
+
+    /// Clear injected exclude static routes via a *fresh* helper connection.
+    public func callCleanupAllExcludeRoutes(timeout: TimeInterval = 5.0) async -> Bool? {
+        guard checkStatus() == .enabled else { return nil }
+        let conn = NSXPCConnection(machServiceName: "com.clashhalo.helper", options: .privileged)
+        conn.remoteObjectInterface = NSXPCInterface(with: HelperProtocol.self)
+        conn.resume()
+        return await withCheckedContinuation { (cont: CheckedContinuation<Bool?, Never>) in
+            let lock = NSLock(); var done = false
+            let finish: (Bool?) -> Void = { v in
+                lock.lock(); defer { lock.unlock() }
+                if !done { done = true; cont.resume(returning: v); conn.invalidate() }
+            }
+            guard let proxy = conn.remoteObjectProxyWithErrorHandler({ [weak self] error in
+                self?.onLog?("cleanupAllExcludeRoutes XPC 错误: \(error.localizedDescription)")
+                finish(nil)
+            }) as? HelperProtocol else { finish(nil); return }
+            proxy.cleanupAllExcludeRoutes { ok in finish(ok) }
+            DispatchQueue.global().asyncAfter(deadline: .now() + timeout) { finish(nil) }
+        }
+    }
+
     public func installDaemon() async -> Bool {
         let bundlePath = Bundle.main.bundlePath
         let helperSrc = "\(bundlePath)/Contents/MacOS/com.clashhalo.helper"

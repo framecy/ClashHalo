@@ -46,6 +46,7 @@ extension AppModel {
             pendingApplyID = nil
             if ok {
                 store.markApplied(id, hash: Sha1.hex(content))
+                noteConfigContentChanged()
                 showToast("已切换配置「\(name)」")
                 await reconnect()
                 await reapplyTUN(wasOn: wasTunOn)
@@ -239,34 +240,21 @@ extension AppModel {
         }
 
         // Align static routes for excluded prefixes in sync with the real TUN state.
+        // Fresh XPC (not cached helper()) — same silent-drop issue as start/sysproxy.
         if tunOn && !staticRoutesInjected {
             let excludeRoutes = await NetScanner.sdwanExcludeRoutes()
             if !excludeRoutes.isEmpty {
-                if let helper = XPCManager.shared.helper() {
-                    helper.setupExcludeRoutes(excludeRoutes) { ok in
-                        self.logKernel("XPC Helper 注入静态路由: \(ok ? "成功" : "失败")")
-                        if ok {
-                            Task { @MainActor in
-                                self.staticRoutesInjected = true
-                            }
-                        }
-                    }
-                }
+                let ok = await XPCManager.shared.callSetupExcludeRoutes(excludeRoutes)
+                logKernel("XPC Helper 注入静态路由: \(ok == true ? "成功" : "失败")")
+                if ok == true { staticRoutesInjected = true }
             } else {
                 // If there are no routes to exclude, mark it as injected to prevent repeated checks
                 staticRoutesInjected = true
             }
         } else if !tunOn && staticRoutesInjected {
-            if let helper = XPCManager.shared.helper() {
-                helper.cleanupAllExcludeRoutes { ok in
-                    self.logKernel("XPC Helper 清理静态路由: \(ok ? "成功" : "失败")")
-                    if ok {
-                        Task { @MainActor in
-                            self.staticRoutesInjected = false
-                        }
-                    }
-                }
-            }
+            let ok = await XPCManager.shared.callCleanupAllExcludeRoutes()
+            logKernel("XPC Helper 清理静态路由: \(ok == true ? "成功" : "失败")")
+            if ok == true { staticRoutesInjected = false }
         }
     }
 
@@ -288,34 +276,47 @@ extension AppModel {
     }
 
     func toggleSystemProxy() {
-        guard !engine.isBusy else { showToast("内核操作进行中，请稍候…"); return }
         let on = !systemProxyOn
         let port = proxyPort
-        Task {
-            if on && !reachable {
-                showToast("正在启动核心以开启系统代理…")
-                await engine.ensureRunningAsync()
-                guard await waitForKernelReady(maxAttempts: 8) else {
-                    showToast("内核启动超时，无法开启系统代理")
+        // Hold isBusy for the full path (start kernel + set proxy) so TUN /
+        // engine / rule reload cannot interleave mid-flight.
+        withEngineBusy {
+            if on && !self.reachable {
+                self.showToast("正在启动核心以开启系统代理…")
+                await self.engine.ensureRunningAsync()
+                guard await self.waitForKernelReady(maxAttempts: 8) else {
+                    self.showToast("内核启动超时，无法开启系统代理")
                     return
                 }
-                await reconnect()
+                // reconnect() re-syncs proxy from SCDynamicStore (still off here).
+                await self.reconnect()
             }
 
-            let ok = await engine.setSystemProxy(enabled: on, port: port)
+            let ok = await self.engine.setSystemProxy(enabled: on, port: port)
             if ok {
-                systemProxyOn = on
-                showToast(on ? "系统代理已开启" : "系统代理已关闭")
-                
-                // Auto-stop kernel cascade: if both system proxy and TUN are now off, stop the kernel
-                if !on && !tunOn && reachable {
-                    showToast("已无代理服务运行，正在停止内核…")
-                    await stopEngine()
+                // Prefer SCDynamicStore reality. Store can lag a beat after
+                // networksetup — if it still disagrees with the write we just
+                // did, trust the write so the switch doesn't stick off while
+                // toast says "已开启".
+                self.syncSystemProxyState()
+                if self.systemProxyOn != on {
+                    self.systemProxyOn = on
+                }
+                self.logKernel(on ? "系统代理已开启 (port \(port))" : "系统代理已关闭")
+                if on {
+                    self.showToast("系统代理已开启")
+                } else if !self.tunOn && self.reachable {
+                    self.showToast("系统代理已关闭（内核仍在运行，可在侧栏停止）")
+                } else {
+                    self.showToast("系统代理已关闭")
                 }
             } else {
-                systemProxyOn = !on // Revert the switch if operation fails
-                await api.probe()
-                if api.reachable { showToast("系统代理设置失败") }
+                self.syncSystemProxyState()
+                self.logKernel("系统代理设置失败 (want=\(on), port=\(port))")
+                await self.api.probe()
+                if self.api.reachable {
+                    self.showToast("系统代理设置失败")
+                }
             }
         }
     }
@@ -426,6 +427,7 @@ extension AppModel {
             let ok = await engine.setGatewayMode(enabled: true)
             if ok {
                 gatewayModeOn = true
+                noteConfigContentChanged()
                 showToast("网关中枢（旁路由）已成功开启")
             } else {
                 gatewayModeOn = false
@@ -451,8 +453,10 @@ extension AppModel {
                 do {
                     try await api.reloadConfig(path: engine.configFilePath)
                     await refreshConfigs()
+                    noteConfigContentChanged()
                     showToast("网关中枢已关闭")
                 } catch {
+                    noteConfigContentChanged()
                     showToast("网关中枢已关闭，配置重载失败")
                 }
             } else {
@@ -497,10 +501,13 @@ extension AppModel {
             }
             engine.isRoot = true
             await engine.ensureRunningAsync()
-            guard await waitForKernelReady(maxAttempts: 8) else {
+            guard await waitForKernelReady(maxAttempts: 10) else {
                 showToast("内核启动超时，TUN 无法启用")
                 return
             }
+            // refreshConfigs gates tunOn on `reachable`. Without reconnect here
+            // reachable stays false → false "开启失败" even when root+utun are OK.
+            await reconnect()
         }
 
         var tunOverrideMap: [String: Any] = [
@@ -577,26 +584,48 @@ extension AppModel {
 
             showToast("正在以 Root 权限重启核心…")
             await engine.restart()
-            // Wait for root kernel with smart backoff
-            guard await waitForKernelReady(maxAttempts: 8) else {
+            // restart = stop + start; cold root spawn often needs a longer window.
+            guard await waitForKernelReady(maxAttempts: 12) else {
                 showToast("Root 内核启动超时，TUN 未启用")
                 return
             }
             await self.reconnect()
+            if !engine.runningAsRoot {
+                await engine.syncRunningAsRootIfNeeded()
+            }
+            if !engine.runningAsRoot {
+                showToast("Root 内核未就绪，TUN 未启用")
+                logKernel("TUN 中止：restart 后 runningAsRoot 仍为 false")
+                return
+            }
         }
 
         let ok = await engine.patchConfig(overrides)
         if ok {
             // refreshConfigs sets tunOn from the *actual* kernel state
-            // (enable && runningAsRoot, per B9) — do not blindly set tunOn=want.
-            // A user-mode kernel accepts the PATCH (HTTP 200) but cannot create
-            // the utun device and silently reverts enable to false; reporting
-            // success there is the "succeeds but actually fails" bug.
-            // refreshConfigs reconciles system DNS with the real TUN state
-            // (redirect into tunnel when up, restore when down).
+            // (enable && runningAsRoot && hasInterface, per B9) — do not blindly
+            // set tunOn=want. A user-mode kernel accepts the PATCH (HTTP 200) but
+            // cannot create the utun device and silently reverts enable to false.
+            //
+            // Important: PATCH returns before utun is fully up. Refreshing too
+            // early yields hasInterface=false → a false "开启失败" toast, then a
+            // later poll/refresh looks like a second "success". Wait for the
+            // interface (or a short deadline) before the single final toast.
+            if want {
+                let up = await waitForTUNInterface()
+                if !up {
+                    logKernel("TUN PATCH 已接受，等待 utun 出现超时，仍按实际状态核对…")
+                }
+            }
             await refreshConfigs()
             if want && !tunOn {
+                // One more delayed reconcile in case route/flags lag past the wait.
+                try? await Task.sleep(nanoseconds: 400_000_000)
+                await refreshConfigs()
+            }
+            if want && !tunOn {
                 showToast("TUN 开启失败：可能无管理员权限或路由被其他 VPN 占用冲突")
+                logKernel("TUN 开启失败：runningAsRoot=\(engine.runningAsRoot) reachable=\(reachable)")
             } else {
                 // TUN disable cascades: Gateway mode requires TUN, so if we
                 // just turned TUN off, also tear down Gateway (sysctl + UI +
@@ -616,13 +645,16 @@ extension AppModel {
                     ]
                     preGatewayAllowLan = nil; preGatewayDNSListen = nil
                     engine.setTopLevelScalars(restores)
+                    noteConfigContentChanged()
                 }
-                showToast(want ? "TUN 模式已开启" : "TUN 模式已关闭")
-
-                // Auto-stop kernel cascade: if both system proxy and TUN are now off, stop the kernel
-                if !want && !systemProxyOn && reachable {
-                    showToast("已无代理服务运行，正在停止内核…")
-                    await stopEngine()
+                // No auto-stopEngine when both proxy faces are off — keep the core
+                // warm so re-enabling TUN is a PATCH, not a full root restart.
+                if want {
+                    showToast("TUN 模式已开启")
+                } else if !systemProxyOn && reachable {
+                    showToast("TUN 模式已关闭（内核仍在运行，可在侧栏停止）")
+                } else {
+                    showToast("TUN 模式已关闭")
                 }
             }
         } else {
@@ -719,14 +751,15 @@ extension AppModel {
         engine.setTunEnabled(tunOn)
         do {
             try await api.reloadConfig(path: engine.configFilePath)
-            
+
             if overrides.keys.contains("external-controller") || overrides.keys.contains("secret") {
                 // Wait briefly for the kernel to bind the new port before probing
                 try? await Task.sleep(nanoseconds: 500_000_000)
                 await reconnect()
             }
-            
+
             await refreshConfigs()
+            noteConfigContentChanged()
             showToast("配置已更新")
         } catch {
             showToast("更新失败：\(error.localizedDescription)")
@@ -752,6 +785,7 @@ extension AppModel {
             try await api.reloadConfig(path: path)
             await refreshConfigs()
             await refreshProxies()
+            noteConfigContentChanged()
             showToast("订阅已保存")
             return true
         } catch {
@@ -786,18 +820,13 @@ extension AppModel {
         }
         // Clear SD-WAN static routes that were injected while TUN was live.
         // stopKernel does not touch Helper route state; without this, excluded
-        // prefixes stay pinned after the core is gone.
+        // prefixes stay pinned after the core is gone. Fresh XPC only.
         if hadStaticRoutes {
-            if let helper = XPCManager.shared.helper() {
-                helper.cleanupAllExcludeRoutes { ok in
-                    self.logKernel("XPC Helper 清理静态路由: \(ok ? "成功" : "失败")")
-                    if ok {
-                        Task { @MainActor in
-                            self.staticRoutesInjected = false
-                        }
-                    }
-                }
-            } else {
+            let ok = await XPCManager.shared.callCleanupAllExcludeRoutes()
+            logKernel("XPC Helper 清理静态路由: \(ok == true ? "成功" : "失败")")
+            if ok == true || ok == nil {
+                // nil = helper unreachable: drop the local flag so we retry inject
+                // on next TUN up rather than believing routes still managed.
                 staticRoutesInjected = false
             }
         }

@@ -72,9 +72,9 @@ import SwiftUI
     /// Check via pgrep whether mihomo is owned by root and set the flag accordingly.
     /// Uses exact name match (-x) to avoid false positives from similarly named binaries.
     /// Blocks the calling thread briefly — only call from Tasks, not the main run loop.
-    private func syncRunningAsRootIfNeeded() async {
+    func syncRunningAsRootIfNeeded() async {
         guard !runningAsRoot else { return }
-        let isRoot = await withCheckedContinuation { (cont: CheckedContinuation<Bool, Never>) in
+        let isRootOwned = await withCheckedContinuation { (cont: CheckedContinuation<Bool, Never>) in
             DispatchQueue.global().async {
                 let p = Process()
                 p.executableURL = URL(fileURLWithPath: "/usr/bin/pgrep")
@@ -84,7 +84,7 @@ import SwiftUI
                 cont.resume(returning: p.terminationStatus == 0)
             }
         }
-        if isRoot { runningAsRoot = true }
+        if isRootOwned { runningAsRoot = true }
     }
 
     /// Ensure the mihomo binary and configuration directory are set up.

@@ -111,6 +111,13 @@ import ServiceManagement
     var preGatewayAllowLan: Bool?
     var preGatewayDNSListen: String?
 
+    /// Bumps whenever on-disk `config.yaml` content changes (rules save, profile
+    /// apply, gateway overrides, successful reload). UI that caches a YAML
+    /// snapshot (e.g. RulesPage / RuleEditorModel) should reload on change —
+    /// `configFilePath` alone is stable across content rewrites.
+    @Published private(set) var configContentEpoch: UInt64 = 0
+    func noteConfigContentChanged() { configContentEpoch &+= 1 }
+
     /// The proxy port from the running config. Centralises the repeated
     /// `(configs["mixed-port"] ?? configs["port"] ?? 7890)` lookup.
     var proxyPort: Int {
@@ -185,6 +192,23 @@ import ServiceManagement
             if api.reachable {
                 return true
             }
+        }
+        return false
+    }
+
+    /// Wait until mihomo's TUN interface (198.18.x proxyTun) is visible.
+    /// PATCH `/configs` returns before utun is fully up; refreshing too early
+    /// reports tunOn=false and flashes a false "开启失败" toast.
+    func waitForTUNInterface(maxAttempts: Int = 10) async -> Bool {
+        if await NetScanner.mihomoTunInterface() != nil { return true }
+        let delays: [UInt64] = [
+            50_000_000, 100_000_000, 150_000_000, 200_000_000,
+            300_000_000, 400_000_000, 500_000_000, 700_000_000,
+            1_000_000_000, 1_000_000_000
+        ]
+        for i in 0..<min(maxAttempts, delays.count) {
+            try? await Task.sleep(nanoseconds: delays[i])
+            if await NetScanner.mihomoTunInterface() != nil { return true }
         }
         return false
     }
@@ -634,7 +658,7 @@ import ServiceManagement
     /// Read the current macOS system proxy state and sync the toggle. Uses
     /// SCDynamicStoreCopyProxies which works without root — reads the effective
     /// merged proxy settings for the primary interface.
-    private func syncSystemProxyState() {
+    func syncSystemProxyState() {
         // Read the effective macOS proxy state (no root) so the toggle matches
         // reality on launch / reconnect. GUI-side inline of the helper's
         // readCurrentState — ProxyManager is only in the Helper target.
@@ -856,29 +880,94 @@ import ServiceManagement
 
     /// Hot-reload the config the kernel is actually running (config.yaml on disk),
     /// via `/configs?force=true` — works whether or not a profile is managed.
+    /// Holds `isBusy` so it does not race TUN/profile/rule writes.
     func reloadActiveConfig() {
-        guard reachable else { showToast("内核未连接，无法重载"); return }
+        withEngineBusy {
+            _ = await self.performReloadActiveConfig()
+        }
+    }
+
+    /// Awaitable reload body. Caller owns `isBusy` when used from another busy op.
+    @discardableResult
+    func performReloadActiveConfig() async -> Bool {
+        guard reachable else {
+            showToast("内核未连接，无法重载")
+            return false
+        }
         showToast("正在重载配置…")
-        Task {
-            engine.setTunEnabled(tunOn)   // preserve running TUN across the reload
-            do {
+        engine.setTunEnabled(tunOn)   // preserve running TUN across the reload
+        do {
+            try await api.reloadConfig(path: engine.configFilePath)
+            await refreshConfigs()
+            await refreshProxies()
+            await refreshRules()
+
+            // Gateway cascade: reload re-reads config.yaml from disk, which
+            // has the original profile values. If Gateway was on, re-inject
+            // the overrides (allow-lan + dns.listen=0.0.0.0:53) so it keeps working.
+            if gatewayModeOn {
+                engine.setTopLevelScalars(AppModel.gatewayOverrides)
                 try await api.reloadConfig(path: engine.configFilePath)
                 await refreshConfigs()
-                await refreshProxies()
-
-                // Gateway cascade: reload re-reads config.yaml from disk, which
-                // has the original profile values. If Gateway was on, re-inject
-                // the overrides (allow-lan + dns.listen=0.0.0.0:53) so it keeps working.
-                if gatewayModeOn {
-                    engine.setTopLevelScalars(AppModel.gatewayOverrides)
-                    try await api.reloadConfig(path: engine.configFilePath)
-                    await refreshConfigs()
-                }
-
-                showToast("配置已重载")
-            } catch {
-                showToast("重载失败：\(error.localizedDescription)")
             }
+
+            noteConfigContentChanged()
+            showToast("配置已重载")
+            return true
+        } catch {
+            showToast("重载失败：\(error.localizedDescription)")
+            return false
+        }
+    }
+
+    /// Transactional disk write + optional kernel reload for rule-editor saves.
+    /// - Takes a pre-write backup; on reload failure restores it.
+    /// - Kernel down: disk write still allowed (explicit toast); starts clean later.
+    /// - Holds `isBusy` via `withEngineBusy`.
+    /// - `onFinished(true)` after a successful disk write (even if only disk);
+    ///   `false` if the write itself failed or reload rolled the disk back.
+    func applyRuleEditorSave(save: @escaping () -> Bool, onFinished: ((Bool) -> Void)? = nil) {
+        withEngineBusy {
+            let ok = await self.applyRuleEditorSaveAsync(save: save)
+            onFinished?(ok)
+        }
+    }
+
+    @discardableResult
+    func applyRuleEditorSaveAsync(save: () -> Bool) async -> Bool {
+        let path = engine.configFilePath
+        let backup = (try? String(contentsOfFile: path, encoding: .utf8)) ?? ""
+        guard save() else {
+            showToast("规则保存失败")
+            return false
+        }
+        noteConfigContentChanged()
+
+        guard reachable else {
+            showToast("规则已保存到磁盘（内核未运行，启动后生效）")
+            return true
+        }
+
+        engine.setTunEnabled(tunOn)
+        do {
+            try await api.reloadConfig(path: path)
+            await refreshConfigs()
+            await refreshProxies()
+            await refreshRules()
+            if gatewayModeOn {
+                engine.setTopLevelScalars(AppModel.gatewayOverrides)
+                try await api.reloadConfig(path: path)
+                await refreshConfigs()
+            }
+            showToast("规则已保存并重载")
+            return true
+        } catch {
+            if !backup.isEmpty {
+                try? backup.write(toFile: path, atomically: true, encoding: .utf8)
+                noteConfigContentChanged()
+            }
+            showToast("规则重载失败，已回滚磁盘：\(error.localizedDescription)")
+            return false
         }
     }
 
