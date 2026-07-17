@@ -23,6 +23,8 @@ struct GeneralPage: View {
             .padding(.horizontal, DS.Layout.pageContentInset)
             .padding(.vertical, DS.Spacing.m)
             .frame(height: DS.Layout.chromeHeight, alignment: .center)
+            .frame(maxWidth: .infinity)
+            .background(DS.Palette.chromeBg)
 
             Divider().overlay(DS.Palette.separator)
 
@@ -482,11 +484,26 @@ struct MenuBarPanel: View {
             // Switches card
             card {
                 switchRow("系统代理", icon: "globe",
-                          isOn: Binding(get: { M.systemProxyOn }, set: { _ in M.toggleSystemProxy() }))
-                switchRow("TUN 模式", icon: "shield.lefthalf.filled", accent: true,
-                          isOn: Binding(get: { M.tunOn }, set: { _ in M.toggleTUN() }))
-                switchRow("核心运行", icon: "bolt.fill",
-                          isOn: Binding(get: { M.reachable }, set: { _ in M.toggleEngine() }))
+                          isOn: Binding(
+                            get: { M.systemProxyOn },
+                            set: { newValue in
+                                guard newValue != M.systemProxyOn else { return }
+                                M.toggleSystemProxy()
+                            }))
+                switchRow("TUN 模式", icon: "shield", accent: true,
+                          isOn: Binding(
+                            get: { M.tunOn },
+                            set: { newValue in
+                                guard newValue != M.tunOn else { return }
+                                M.toggleTUN()
+                            }))
+                switchRow("核心运行", icon: "bolt",
+                          isOn: Binding(
+                            get: { M.reachable },
+                            set: { newValue in
+                                guard newValue != M.reachable else { return }
+                                M.toggleEngine()
+                            }))
             }
 
             // Proxy card: mode · per-group node selectors · live rate · test

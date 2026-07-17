@@ -191,12 +191,13 @@ private func kvRow(_ l: String, _ v: String) -> some View {
 struct NetworkHubPage: View {
     @EnvironmentObject var M: AppModel
     @State private var tab = "network"
-    private let tabs: [(String, String, String, String)] = [
-        ("入站", "network", "arrow.down.right.circle", "arrow.down.right.circle.fill"),
-        ("TUN", "tun", "shield.lefthalf.filled", "shield.lefthalf.filled"),
-        ("DNS", "dns", "network", "network"),
-        ("嗅探", "sniffer", "scope", "scope"),
-        ("内核", "kernel", "cpu", "cpu.fill")
+    // outline only (design.md §6.8) — no .fill variants
+    private let tabs: [(String, String, String)] = [
+        ("入站", "network", "arrow.down.right.circle"),
+        ("TUN", "tun", "shield"),
+        ("DNS", "dns", "network"),
+        ("嗅探", "sniffer", "scope"),
+        ("内核", "kernel", "cpu")
     ]
 
     var body: some View {
@@ -208,6 +209,8 @@ struct NetworkHubPage: View {
             .padding(.horizontal, DS.Layout.pageContentInset)
             .padding(.vertical, DS.Spacing.m)
             .frame(height: DS.Layout.chromeHeight, alignment: .center)
+            .frame(maxWidth: .infinity)
+            .background(DS.Palette.chromeBg)
 
             Divider().overlay(DS.Palette.separator)
 

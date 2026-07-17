@@ -1,23 +1,23 @@
 # ClashHalo
 
-> macOS 14+ 原生 SwiftUI 代理客户端，直接编排官方 `mihomo` (Clash.Meta) 内核。当前版本 **v1.1.1**。
+> macOS 14+ 原生 SwiftUI 代理客户端，直接编排官方 `mihomo` (Clash.Meta) 内核。当前版本 **v1.1.2**。
 
 ClashHalo 采用纯 Swift 的原生编排器架构：应用层负责界面与状态管理，独立签名的 Helper 处理特权操作，内核层直接驱动 `mihomo`。目标很明确，少一层中间件，少一层不稳定性。
 
-## 新特性 (v1.1.1)
+## 新特性 (v1.1.2)
 
-- **品牌主题色 Medium Purple U**：`#65428A` 统一 `DS.Palette.accent` 与系统 `AccentColor`；Dark 端提亮以保证对比。
-- **侧栏自绘导航对齐**：弃用系统 `List(.sidebar)`，导航与 footer 共用 inset / 图标槽，图标列像素级同左缘。
-- **侧栏图标统一 outline**：导航与系统代理/TUN 状态图标同规（outline + monochrome + 固定槽位）。
-- **数据色与品牌色解耦**：仪表盘下载/代理分布使用独立 `download` 数据色，主题切换不影响图表可读性。
+- **TUN / 系统代理状态机加固**：Root 启核新鲜 XPC；关代理面不再误停核；TUN 开启等待 utun 再判定，消除「先失败后成功」。
+- **规则写盘事务化**：保存占 isBusy、失败回滚磁盘；核 down 可只写盘；`configContentEpoch` 驱动规则页刷新。
+- **胶囊滑块 Tab + 浅色层次**：选中胶囊内缩、页面级 chromeBg；卡片弱边+双层阴影，边界与呼吸兼顾。
+- **Helper 1.0.16**：启用系统代理补 `set*proxystate on`（升级后自动替换旧 Helper）。
 
-## 设计系统 (v1.1.0)
+## 设计系统 (v1.1.1 / v1.1.0)
 
-- **统一设计系统**：全页面 32pt 控件高度、自绘 tab/菜单/按钮，Light/Dark 完整跟随系统。
+- **品牌主题色 Medium Purple U**：`#65428A` 统一 `DS.Palette.accent` 与系统 `AccentColor`。
+- **侧栏自绘导航对齐**：导航与 footer 共用 inset / 图标槽；图标 outline + monochrome。
+- **统一设计系统**：全页面 32pt 控件、跨栏 chrome 56pt、空状态居中、关于页工具型 Card。
 - **Shell 跨栏对齐**：侧栏顶栏与内容区工具栏同高（56pt），分割线通栏对齐；侧栏「监控 / 代理 / 配置」分组。
 - **配置卡片统一尺寸**：顶距离开工具栏，有/无 CTA 等高。
-- **空状态统一居中**：连接 / 代理 / 日志 / 订阅 / 规则 / 配置空态图标位置一致。
-- **关于页重做**：工具型 Card 堆叠（版本明细、更新、链接、说明），去掉营销式居中 hero。
 
 ## 稳定性 (v1.0.15)
 

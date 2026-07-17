@@ -155,7 +155,7 @@ struct DashboardPage: View {
 
 
             }
-            .padding(.horizontal, DS.Spacing.l).padding(.bottom, DS.Spacing.l)
+            .padding(.horizontal, DS.Spacing.l).padding(.bottom, DS.Spacing.xl)
         }
     }
 
@@ -359,9 +359,11 @@ struct StatBox: View {
         }
         .padding(DS.Spacing.l)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background(RoundedRectangle(cornerRadius: DS.Radius.card, style: .continuous).fill(DS.Palette.cardBg))
-        .overlay(RoundedRectangle(cornerRadius: DS.Radius.card, style: .continuous).stroke(accent ? DS.Palette.accent.opacity(0.3) : DS.Palette.border))
-        .shadow(color: DS.Palette.cardShadow, radius: 8, x: 0, y: 2)
+        .dsCardChrome()
+        .overlay(
+            RoundedRectangle(cornerRadius: DS.Radius.card, style: .continuous)
+                .stroke(accent ? DS.Palette.accent.opacity(0.28) : Color.clear, lineWidth: 1)
+        )
     }
 }
 
@@ -380,7 +382,9 @@ struct BarStat: View {
         .padding(.horizontal, DS.Spacing.l)
         .frame(height: DS.Layout.statHeight)
         .frame(maxWidth: .infinity)
-        .dsControlChrome()
+        // Sibling top-level card on the dashboard grid — must use card radius (10),
+        // not control chrome (6). See design.md nested-radius cascade.
+        .dsCardChrome()
     }
 }
 
@@ -406,7 +410,8 @@ struct MiniStat: View {
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         .padding(.horizontal, DS.Spacing.l).padding(.vertical, DS.Spacing.m)
-        .dsControlChrome()
+        // Same tier as neighboring Card / BarStat — Radius.card via dsCardChrome.
+        .dsCardChrome()
     }
 }
 

@@ -273,11 +273,12 @@ struct ConnDetailCard: View {
         .frame(width: 340)
         .background(DS.Palette.overlayBg)
         .clipShape(RoundedRectangle(cornerRadius: DS.Radius.panel, style: .continuous))
-        .shadow(color: DS.Palette.cardShadow, radius: 8, x: 0, y: 2)
         .overlay(
             RoundedRectangle(cornerRadius: DS.Radius.panel, style: .continuous)
                 .stroke(DS.Palette.border, lineWidth: 1)
         )
+        .shadow(color: DS.Palette.cardShadowContact, radius: 2, x: 0, y: 1)
+        .shadow(color: DS.Palette.cardShadow, radius: 20, x: 0, y: 8)
     }
 
     private func formatStartTime(_ isoString: String) -> String {

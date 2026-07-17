@@ -104,6 +104,10 @@ struct RulesPage: View {
         .onChange(of: M.engine.configFilePath) { _ in
             reloadModel()
         }
+        // Path is stable across profile/gateway/rule rewrites; epoch tracks content.
+        .onChange(of: M.configContentEpoch) { _ in
+            reloadModel()
+        }
         .sheet(isPresented: $showingForm) {
             RuleFormView(existingNode: editingNode, proxyGroups: M.groups.map { $0.name }) { newNode in
                 if editingNode != nil {
@@ -173,9 +177,12 @@ struct RulesPage: View {
         }
     }
 
+    /// Transactional save: isBusy + disk backup + reload (or disk-only when
+    /// kernel is down) + refreshRules. On reload failure the disk is rolled back
+    /// and the in-memory model is reloaded from the restored file.
     private func saveAndReloadKernel() {
-        if model.save() {
-            M.reloadActiveConfig()
+        M.applyRuleEditorSave(save: { self.model.save() }) { ok in
+            if !ok { self.reloadModel() }
         }
     }
 }

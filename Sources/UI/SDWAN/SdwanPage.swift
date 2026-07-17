@@ -116,7 +116,7 @@ struct SdwanTopologyView: View {
                             .font(.dsLabel)
                             .frame(width: 16)
                         VStack(alignment: .leading, spacing: 2) {
-                            Text(iface.name).font(.dsMono).fontWeight(.bold).lineLimit(1)
+                            Text(iface.name).font(.dsMonoBold).lineLimit(1)
                             Text(iface.primaryIP).font(.dsMono).foregroundColor(.secondary).lineLimit(1)
                         }
                         Spacer(minLength: 0)
@@ -352,7 +352,7 @@ struct SdwanPage: View {
             Image(systemName: icon(i.kind)).foregroundColor(color(i.kind)).frame(width: 22)
             VStack(alignment: .leading, spacing: 1) {
                 HStack(spacing: 6) {
-                    Text(i.name).font(.dsMono).fontWeight(.medium)
+                    Text(i.name).font(.dsMonoBold)
                     Text(i.kind.rawValue).font(.dsBody)
                         .padding(.horizontal, DS.Spacing.s - 2).padding(.vertical, 1)
                         .background(Capsule().fill(color(i.kind).opacity(0.15))).foregroundColor(color(i.kind))

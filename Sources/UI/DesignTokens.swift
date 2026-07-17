@@ -40,17 +40,19 @@ enum DS {
         // MARK: Surfaces (L0–L3 + overlay)
 
         /// L0 — main content window background.
+        /// Light sits a half-step cooler/deeper than pure system gray so white
+        /// cards lift with air rather than looking pasted on a flat sheet.
         static let windowBg = Color(nsColor: .init(name: "DS.windowBg", dynamicProvider: { appearance in
             appearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua
                 ? NSColor(srgbRed: 0x1C / 255.0, green: 0x1C / 255.0, blue: 0x1E / 255.0, alpha: 1)
-                : NSColor(srgbRed: 0xF2 / 255.0, green: 0xF2 / 255.0, blue: 0xF7 / 255.0, alpha: 1)
+                : NSColor(srgbRed: 0xEE / 255.0, green: 0xEE / 255.0, blue: 0xF3 / 255.0, alpha: 1)
         }))
 
         /// L1 — sidebar background (may sit under vibrancy).
         static let sidebarBg = Color(nsColor: .init(name: "DS.sidebarBg", dynamicProvider: { appearance in
             appearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua
                 ? NSColor(srgbRed: 0x24 / 255.0, green: 0x24 / 255.0, blue: 0x26 / 255.0, alpha: 1)
-                : NSColor(srgbRed: 0xEB / 255.0, green: 0xEB / 255.0, blue: 0xF0 / 255.0, alpha: 1)
+                : NSColor(srgbRed: 0xE8 / 255.0, green: 0xE8 / 255.0, blue: 0xED / 255.0, alpha: 1)
         }))
 
         /// L2 — elevated card / panel surface.
@@ -68,17 +70,19 @@ enum DS {
         }))
 
         /// L3 — control / chip / selected strip fill.
+        /// Light stays close to window gray (not muddy mid-gray) so controls
+        /// inside white cards remain quiet.
         static let controlBg = Color(nsColor: .init(name: "DS.controlBg", dynamicProvider: { appearance in
             appearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua
                 ? NSColor(srgbRed: 0x3A / 255.0, green: 0x3A / 255.0, blue: 0x3C / 255.0, alpha: 1)
-                : NSColor(srgbRed: 0xE8 / 255.0, green: 0xE8 / 255.0, blue: 0xED / 255.0, alpha: 1)
+                : NSColor(srgbRed: 0xF2 / 255.0, green: 0xF2 / 255.0, blue: 0xF7 / 255.0, alpha: 1)
         }))
 
         /// Toolbar strip / chrome band behind filters.
         static let chromeBg = Color(nsColor: .init(name: "DS.chromeBg", dynamicProvider: { appearance in
             appearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua
                 ? NSColor(srgbRed: 0x22 / 255.0, green: 0x22 / 255.0, blue: 0x24 / 255.0, alpha: 0.92)
-                : NSColor(srgbRed: 0xF7 / 255.0, green: 0xF7 / 255.0, blue: 0xFA / 255.0, alpha: 0.92)
+                : NSColor(srgbRed: 0xFB / 255.0, green: 0xFB / 255.0, blue: 0xFD / 255.0, alpha: 0.94)
         }))
 
         /// Overlay / toast material base (usually paired with ultraThinMaterial).
@@ -168,22 +172,31 @@ enum DS {
         static let fillFaint = Color.primary.opacity(0.04)
         static let fill      = Color.primary.opacity(0.07)
         static let hairline  = Color.primary.opacity(0.08)
+        /// Card / control outline. Light keeps a soft edge (not a hard wireframe);
+        /// structure comes from shadow + surface lift as much as stroke.
         static let border = Color(nsColor: .init(name: "DS.border", dynamicProvider: { appearance in
             appearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua
                 ? NSColor(srgbRed: 1, green: 1, blue: 1, alpha: 0.10)
-                : NSColor(srgbRed: 0, green: 0, blue: 0, alpha: 0.10)
+                : NSColor(srgbRed: 0, green: 0, blue: 0, alpha: 0.06)
         }))
         static let separator = Color(nsColor: .init(name: "DS.separator", dynamicProvider: { appearance in
             appearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua
                 ? NSColor(srgbRed: 1, green: 1, blue: 1, alpha: 0.08)
-                : NSColor(srgbRed: 0, green: 0, blue: 0, alpha: 0.08)
+                : NSColor(srgbRed: 0, green: 0, blue: 0, alpha: 0.05)
         }))
 
-        /// Soft card shadow — light only; dark relies on surface lift.
+        /// Ambient card shadow (outer soft lift) — light only; dark relies on surface lift.
         static let cardShadow = Color(nsColor: .init(name: "DS.cardShadow", dynamicProvider: { appearance in
             appearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua
                 ? NSColor(srgbRed: 0, green: 0, blue: 0, alpha: 0)
-                : NSColor(srgbRed: 0, green: 0, blue: 0, alpha: 0.06)
+                : NSColor(srgbRed: 0x1A / 255.0, green: 0x1A / 255.0, blue: 0x2E / 255.0, alpha: 0.10)
+        }))
+
+        /// Tight contact shadow under cards — light only; pairs with `cardShadow`.
+        static let cardShadowContact = Color(nsColor: .init(name: "DS.cardShadowContact", dynamicProvider: { appearance in
+            appearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua
+                ? NSColor(srgbRed: 0, green: 0, blue: 0, alpha: 0)
+                : NSColor(srgbRed: 0, green: 0, blue: 0, alpha: 0.04)
         }))
     }
 
@@ -304,35 +317,48 @@ struct DSChoice<Value: Hashable>: Identifiable {
     var id: Value { value }
 }
 
-/// Fixed 32pt segmented control. We deliberately do not use AppKit's segmented
-/// picker: its visual bezel varies between 24, 28 and 33pt across control sizes.
+/// Capsule-slider segmented control (Docs/design.md §6.8).
+/// Track + inset selected capsule; equal-width segments; 32pt / radius 6.
+/// We deliberately do not use AppKit's segmented picker: its visual bezel
+/// varies between 24, 28 and 33pt across control sizes.
 struct DSSegmentedControl<Value: Hashable>: View {
     @Binding var selection: Value
     let choices: [DSChoice<Value>]
+
+    /// Inset between track edge and selected capsule (all sides).
+    private let capsuleInset: CGFloat = 2
 
     var body: some View {
         HStack(spacing: 0) {
             ForEach(choices) { choice in
                 let selected = selection == choice.value
                 Button { selection = choice.value } label: {
-                    Group {
+                    HStack(spacing: DS.Spacing.xs) {
                         if let image = choice.systemImage {
-                            Label(choice.title, systemImage: image)
-                        } else {
+                            Image(systemName: image)
+                                .font(DS.Icon.font(DS.Icon.md, weight: .medium))
+                                .symbolRenderingMode(.monochrome)
+                        }
+                        if !choice.title.isEmpty {
                             Text(choice.title)
+                                .font(.dsBodyMedium)
+                                .lineLimit(1)
                         }
                     }
-                    .font(.dsBodyMedium)
-                    .lineLimit(1)
                     .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .center)
-                    .foregroundColor(selected ? .white : .primary)
-                    .background(DS.Shape.control().fill(selected ? DS.Palette.accent : .clear))
+                    .foregroundStyle(selected ? Color.white : Color.primary)
+                    .background(
+                        DS.Shape.control()
+                            .fill(selected ? DS.Palette.accent : Color.clear)
+                    )
                     .contentShape(DS.Shape.control())
                 }
                 .buttonStyle(.plain)
                 .accessibilityAddTraits(selected ? .isSelected : [])
+                .accessibilityLabel(choice.title.isEmpty ? (choice.systemImage ?? "") : choice.title)
             }
         }
+        .padding(capsuleInset)
         .frame(height: DS.Layout.controlHeight)
         .background(DS.Shape.control().fill(DS.Palette.controlBg))
         .overlay(DS.Shape.control().stroke(DS.Palette.border, lineWidth: 1))
@@ -417,6 +443,20 @@ enum DSButtonVariant {
     case plain
 }
 
+/// Forces icon+title into a single centered HStack. Default `Label` layout on
+/// macOS can leave the title optically off-center inside a fixed 32pt chrome
+/// (especially with SF Symbols of uneven advance).
+private struct DSButtonLabelStyle: LabelStyle {
+    func makeBody(configuration: Configuration) -> some View {
+        HStack(spacing: DS.Spacing.xs) {
+            configuration.icon
+                .symbolRenderingMode(.monochrome)
+            configuration.title
+                .lineLimit(1)
+        }
+    }
+}
+
 /// The actual button chrome, not just an outer layout frame.
 struct DSButtonStyle: ButtonStyle {
     let variant: DSButtonVariant
@@ -450,14 +490,19 @@ struct DSButtonStyle: ButtonStyle {
 
     func makeBody(configuration: Configuration) -> some View {
         configuration.label
+            .labelStyle(DSButtonLabelStyle())
             .font(.dsBodyMedium)
             .lineLimit(1)
-            .foregroundColor(foreground)
+            .foregroundStyle(foreground)
             .padding(.horizontal, DS.Spacing.m)
+            // Center the label group in both axes inside the 32pt chrome; hug
+            // content width so toolbar buttons don't stretch after Spacer.
             .frame(height: DS.Layout.controlHeight, alignment: .center)
+            .fixedSize(horizontal: true, vertical: false)
             .background(DS.Shape.control().fill(fill))
             .overlay(DS.Shape.control().stroke(stroke, lineWidth: 1))
             .clipShape(DS.Shape.control())
+            .contentShape(DS.Shape.control())
             .opacity(isEnabled ? 1 : 0.45)
             .scaleEffect(configuration.isPressed ? 0.98 : 1)
             .animation(.easeOut(duration: 0.12), value: configuration.isPressed)
@@ -516,16 +561,26 @@ extension View {
         self.dsActionControl()
     }
 
-    /// Continuous card chrome: fill + border + light-only soft shadow.
+    /// Top-level card chrome (design.md §5): fill + soft edge + dual light-only shadow.
+    /// Default radius is `DS.Radius.card` (10). Use for page-grid sibling cards
+    /// (`Card`, dashboard BarStat/MiniStat, profile cards). Nested surfaces
+    /// inside a card must step down to `control` (6) — see nested-radius cascade.
+    ///
+    /// Light: weak stroke + ambient/contact shadows → boundary without wireframe.
+    /// Dark: stroke only (shadows are transparent).
     func dsCardChrome(radius: CGFloat = DS.Radius.card) -> some View {
         let shape = RoundedRectangle(cornerRadius: radius, style: .continuous)
         return self
             .background(shape.fill(DS.Palette.cardBg))
             .overlay(shape.stroke(DS.Palette.border, lineWidth: 1))
-            .shadow(color: DS.Palette.cardShadow, radius: 8, x: 0, y: 2)
+            .shadow(color: DS.Palette.cardShadowContact, radius: 2, x: 0, y: 1)
+            .shadow(color: DS.Palette.cardShadow, radius: 16, x: 0, y: 6)
     }
 
-    /// Continuous control chrome.
+    /// Nested / control-surface chrome at `Radius.control` (6).
+    /// For surfaces **inside** a top-level card, chips, or compact control shells.
+    /// Do **not** use for page-grid sibling cards (those must use `dsCardChrome`).
+    /// No ambient shadow — nested surfaces stay flat so the parent card breathes.
     func dsControlChrome(radius: CGFloat = DS.Radius.control) -> some View {
         let shape = RoundedRectangle(cornerRadius: radius, style: .continuous)
         return self
