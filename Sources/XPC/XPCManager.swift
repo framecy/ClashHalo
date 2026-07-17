@@ -158,6 +158,32 @@ public class XPCManager {
         }
     }
 
+    /// Start mihomo as root via the helper over a *fresh* connection.
+    /// Returns true/false on a real helper reply, or nil if unreachable /
+    /// errored / timed out. Must not use the cached `helper()` proxy — that
+    /// connection silently drops start/stop calls after long-lived use, which
+    /// left `ensureRunning` with `isRoot=true` as a complete no-op and made
+    /// TUN re-enable look like "权限不足 / 启动超时".
+    public func callStartMihomo(binPath: String, homeDir: String, timeout: TimeInterval = 8.0) async -> Bool? {
+        guard checkStatus() == .enabled else { return nil }
+        let conn = NSXPCConnection(machServiceName: "com.clashhalo.helper", options: .privileged)
+        conn.remoteObjectInterface = NSXPCInterface(with: HelperProtocol.self)
+        conn.resume()
+        return await withCheckedContinuation { (cont: CheckedContinuation<Bool?, Never>) in
+            let lock = NSLock(); var done = false
+            let finish: (Bool?) -> Void = { v in
+                lock.lock(); defer { lock.unlock() }
+                if !done { done = true; cont.resume(returning: v); conn.invalidate() }
+            }
+            guard let proxy = conn.remoteObjectProxyWithErrorHandler({ [weak self] error in
+                self?.onLog?("startMihomo XPC 错误: \(error.localizedDescription)")
+                finish(nil)
+            }) as? HelperProtocol else { finish(nil); return }
+            proxy.startMihomo(binPath: binPath, homeDir: homeDir) { ok in finish(ok) }
+            DispatchQueue.global().asyncAfter(deadline: .now() + timeout) { finish(nil) }
+        }
+    }
+
     public func installDaemon() async -> Bool {
         let bundlePath = Bundle.main.bundlePath
         let helperSrc = "\(bundlePath)/Contents/MacOS/com.clashhalo.helper"
