@@ -2,6 +2,28 @@
 
 本项目所有重要变更记录于此。格式参考 [Keep a Changelog](https://keepachangelog.com/),版本遵循语义化版本。
 
+## [1.1.2] - 2026-07-17
+
+稳定性与设计精修：TUN/系统代理状态机加固、规则写盘事务化、胶囊滑块 Tab、浅色卡片层次。Helper **1.0.15 → 1.0.16**（启用系统代理补 `set*proxystate on`，触发旧 Helper 强制升级）。
+
+### Changed
+- **胶囊滑块 Tab**：`DSSegmentedControl` track 内缩 2pt + accent 选中胶囊；设置/网络页面级顶栏统一 `chromeBg`；侧栏选中与分段选中语言同源（`Docs/design.md` §6.8）。
+- **浅色精致化**：`windowBg`/`controlBg` 重标定；`border` 软化；`dsCardChrome` 双层阴影（contact + ambient）；边界靠抬升+弱边，而非硬线框。
+- **圆角嵌套递减**：顶层卡 `card` 10、卡内子表面 `control` 6、浮层 `panel` 12；仪表盘 `BarStat`/`MiniStat` 与兄弟 `Card` 同半径。
+- **关代理面不再自动停核**：关 TUN / 关系统代理后内核保持运行，避免再开 TUN 走完整 root 重启。
+- **`Scripts/build-debug.sh`**：编译并嵌入 Helper，Debug 可走与 Release 相同的 Helper 升级路径。
+- **Helper 1.0.16**：`setSystemProxy(enabled:true)` 补 `setweb/secure/socksproxystate on`（与 GUI fallback 对齐）。
+
+### Fixed
+- **TUN 自动停核后重开误报权限不足**：Root 启核改走新鲜 XPC `callStartMihomo`；`ensureRunningAsync` 可 await。
+- **TUN 开启先失败后成功的双 toast**：PATCH 后等待 utun 再 `refreshConfigs`；冷启核后 `reconnect` 刷新 `reachable`；Root 重启窗口加长。
+- **系统代理 toast 已开启但开关不亮**：成功后 `syncSystemProxyState`，与 SCDynamicStore 不一致时信任本次写入；Toggle binding 仅边沿触发。
+- **规则保存与 reload 非原子 / 不占 isBusy**：`applyRuleEditorSave` 备份→写盘→reload，失败回滚；核 down 允许只写盘并明示。
+- **配置内容变更后规则页不刷新**：`configContentEpoch`；规则页订阅并 `reloadModel`。
+- **静态路由清理走缓存 XPC 静默丢调用**：`callSetupExcludeRoutes` / `callCleanupAllExcludeRoutes`。
+- **按钮 Label 文字在 32pt chrome 内不居中**：`DSButtonLabelStyle` 强制 icon+title 水平居中。
+- **字重叠加重绕过 token**：订阅/代理/SD-WAN 等改走 `dsBodySemibold` / `dsMonoBold`。
+
 ## [1.1.1] - 2026-07-17
 
 品牌色与侧栏对齐热修：主题色切到 PANTONE Medium Purple U，侧栏改为自绘导航并对齐 footer 图标列。Helper 协议未变，仍为 `1.0.15`（无需强制升级旧 Helper）。

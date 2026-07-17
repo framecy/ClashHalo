@@ -9,7 +9,10 @@ public class ProxyManager {
     /// Set/clear the macOS system proxy via `networksetup`.
     public static func setSystemProxy(enabled: Bool, port: Int) -> Bool {
         let services = activeNetworkServices()
-        guard !services.isEmpty else { return false }
+        guard !services.isEmpty else {
+            log("setSystemProxy: no network services")
+            return false
+        }
         var anyOK = false
         for svc in services {
             let ok: Bool
@@ -18,17 +21,29 @@ public class ProxyManager {
                 // private ranges + link-local + CGNAT (kProxyBypassDomains). LAN/
                 // intranet/SD-WAN hosts bypass the proxy so they never hit mihomo
                 // (which can't route to them, surfacing as 502).
+                //
+                // `-setwebproxy` writes host/port but on some macOS builds does NOT
+                // flip the enable bit by itself — always follow with `-*proxystate on`
+                // (same as the GUI fallback path in EngineControl).
                 ok = run(["-setwebproxy", svc, "127.0.0.1", "\(port)"])
                     && run(["-setsecurewebproxy", svc, "127.0.0.1", "\(port)"])
                     && run(["-setsocksfirewallproxy", svc, "127.0.0.1", "\(port)"])
                     && run(["-setproxybypassdomains", svc] + kProxyBypassDomains)
+                    && run(["-setwebproxystate", svc, "on"])
+                    && run(["-setsecurewebproxystate", svc, "on"])
+                    && run(["-setsocksfirewallproxystate", svc, "on"])
             } else {
                 ok = run(["-setwebproxystate", svc, "off"])
                     && run(["-setsecurewebproxystate", svc, "off"])
                     && run(["-setsocksfirewallproxystate", svc, "off"])
             }
-            if ok { anyOK = true }
+            if ok {
+                anyOK = true
+            } else {
+                log("setSystemProxy(\(enabled)) failed for service: \(svc)")
+            }
         }
+        log("setSystemProxy(enabled: \(enabled), port: \(port)) services=\(services.count) anyOK=\(anyOK)")
         return anyOK
     }
 

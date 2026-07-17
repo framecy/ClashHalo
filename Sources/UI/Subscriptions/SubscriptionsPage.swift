@@ -71,7 +71,7 @@ struct SubscriptionsPage: View {
             VStack(alignment: .leading, spacing: DS.Spacing.s) {
                 HStack(spacing: DS.Spacing.s) {
                     Image(systemName: "icloud.fill").foregroundColor(DS.Palette.accent)
-                    Text(p.name).font(.dsBody).fontWeight(.semibold)
+                    Text(p.name).font(.dsBodySemibold)
                     Text("\(p.proxies?.count ?? 0) 节点").font(.dsBody)
                         .padding(.horizontal, DS.Spacing.xs)
                         .padding(.vertical, 1)
