@@ -6,7 +6,7 @@ import AppKit
 // Single source of truth for the ClashHalo design system.
 // Spec: Docs/design.md
 // Theme: system Light / Dark via dynamic NSColor providers. No page-level scheme lock.
-// Brand: single Halo Green accent.
+// Brand: single PANTONE Medium Purple U accent (#65428A digital approx).
 
 enum DS {
 
@@ -15,25 +15,26 @@ enum DS {
     enum Palette {
         // MARK: Brand
 
-        /// Brand accent — Halo Green. Primary actions, selection, TUN-on.
+        /// Brand accent — PANTONE Medium Purple U (#65428A). Primary actions, selection, TUN-on.
+        /// Light uses the uncoated digital approx; Dark lifts value for contrast on dark surfaces.
         static let accent = Color(nsColor: .init(name: "DS.accent", dynamicProvider: { appearance in
             appearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua
-                ? NSColor(srgbRed: 0x2A / 255.0, green: 0xD0 / 255.0, blue: 0x8A / 255.0, alpha: 1)
-                : NSColor(srgbRed: 0x16 / 255.0, green: 0xB3 / 255.0, blue: 0x72 / 255.0, alpha: 1)
+                ? NSColor(srgbRed: 0xB3 / 255.0, green: 0x96 / 255.0, blue: 0xE0 / 255.0, alpha: 1)
+                : NSColor(srgbRed: 0x65 / 255.0, green: 0x42 / 255.0, blue: 0x8A / 255.0, alpha: 1)
         }))
 
         /// Selected list / chip fill over accent.
         static let accentSoft = Color(nsColor: .init(name: "DS.accentSoft", dynamicProvider: { appearance in
             appearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua
-                ? NSColor(srgbRed: 0x2A / 255.0, green: 0xD0 / 255.0, blue: 0x8A / 255.0, alpha: 0.18)
-                : NSColor(srgbRed: 0x16 / 255.0, green: 0xB3 / 255.0, blue: 0x72 / 255.0, alpha: 0.14)
+                ? NSColor(srgbRed: 0xB3 / 255.0, green: 0x96 / 255.0, blue: 0xE0 / 255.0, alpha: 0.20)
+                : NSColor(srgbRed: 0x65 / 255.0, green: 0x42 / 255.0, blue: 0x8A / 255.0, alpha: 0.14)
         }))
 
         /// Strong accent for emphasis strokes / text on light fills.
         static let accentStrong = Color(nsColor: .init(name: "DS.accentStrong", dynamicProvider: { appearance in
             appearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua
-                ? NSColor(srgbRed: 0x5A / 255.0, green: 0xE0 / 255.0, blue: 0xA8 / 255.0, alpha: 1)
-                : NSColor(srgbRed: 0x0E / 255.0, green: 0x8F / 255.0, blue: 0x5B / 255.0, alpha: 1)
+                ? NSColor(srgbRed: 0xC9 / 255.0, green: 0xB4 / 255.0, blue: 0xEE / 255.0, alpha: 1)
+                : NSColor(srgbRed: 0x4A / 255.0, green: 0x2F / 255.0, blue: 0x6B / 255.0, alpha: 1)
         }))
 
         // MARK: Surfaces (L0–L3 + overlay)
@@ -121,6 +122,8 @@ enum DS {
         }))
 
         /// Download traffic series / labels.
+        /// Data-viz color — independent of brand accent so charts stay readable
+        /// when the product theme changes (e.g. Medium Purple U).
         static let download = Color(nsColor: .init(name: "DS.download", dynamicProvider: { appearance in
             appearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua
                 ? NSColor(srgbRed: 0x30 / 255.0, green: 0xD1 / 255.0, blue: 0x98 / 255.0, alpha: 1)
