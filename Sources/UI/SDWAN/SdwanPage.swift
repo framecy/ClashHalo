@@ -205,16 +205,16 @@ struct SdwanPage: View {
                                let conflictIface = routes.first(where: {
                                    $0.dest == "default" || $0.dest.contains("0.0.0.0/0")
                                })?.iface {
-                                Text("接口 \(conflictIface) 接管了全局默认路由，与虚拟专网原生路由冲突。建议关闭自动路由。")
+                                Text("接口 \(conflictIface) 接管了全局默认路由，与网络拓扑原生路由冲突。建议关闭自动路由。")
                                     .font(.dsBody).foregroundColor(.secondary)
                             } else if !conflicts.isEmpty {
                                 let desc = conflicts.prefix(2)
                                     .map { "\($0.sdwanIface) \($0.sdwanRoute) 被 \($0.tunRoute) 遮蔽" }
                                     .joined(separator: "；")
-                                Text("TUN 路由遮蔽虚拟专网网段：\(desc)。")
+                                Text("TUN 路由遮蔽网络拓扑网段：\(desc)。")
                                     .font(.dsBody).foregroundColor(.secondary)
                             } else {
-                                Text("代理仅注入精确网段，未抢占虚拟专网路由；\(sdwanCount) 个接口路由完整。")
+                                Text("代理仅注入精确网段，未抢占网络拓扑路由；\(sdwanCount) 个接口路由完整。")
                                     .font(.dsBody).foregroundColor(.secondary)
                             }
                         }
@@ -274,7 +274,7 @@ struct SdwanPage: View {
                                     .padding(.vertical, DS.Spacing.xs)
                                     if idx < conflicts.count - 1 { Divider() }
                                 }
-                                Text("建议：点击\u{201C}一键修复\u{201D}将上述虚拟专网前缀注入 tun.route-exclude-address，防止 TUN 抢占。")
+                                Text("建议：点击\u{201C}一键修复\u{201D}将上述网络拓扑前缀注入 tun.route-exclude-address，防止 TUN 抢占。")
                                     .font(.dsBody).foregroundColor(.secondary).padding(.top, 4)
                             }
                         }
