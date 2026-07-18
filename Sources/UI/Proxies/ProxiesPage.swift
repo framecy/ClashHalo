@@ -135,7 +135,7 @@ struct ProxiesPage: View {
                         Text("\(curDelay)ms").font(.dsMono).foregroundColor(delayColor(curDelay))
                     }
                     if busy {
-                        ProgressView().controlSize(.mini).scaleEffect(0.5)
+                        ProgressView().controlSize(.mini).scaleEffect(DS.Progress.miniScale)
                     }
                     Spacer(minLength: 0)
                     Text("\(g.all.count) 节点").font(.dsBody).foregroundColor(.secondary)
@@ -214,7 +214,7 @@ struct ProxiesPage: View {
                     Text(isGroup ? "组" : (node?.type ?? "—")).font(.dsBody).foregroundColor(.secondary)
                     Spacer(minLength: DS.Spacing.xs / 2)
                     if busy {
-                        ProgressView().controlSize(.mini).scaleEffect(0.55)
+                        ProgressView().controlSize(.mini).scaleEffect(DS.Progress.miniScale)
                     } else if !isGroup {
                         Circle().fill(delayColor(delay)).frame(width: 6, height: 6)
                         Text(fmtDelay(delay)).font(.dsMono).foregroundColor(delayColor(delay))
