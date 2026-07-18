@@ -21,10 +21,22 @@ struct ConnectionsPage: View {
     @StateObject private var ruleModel = RuleEditorModel(targetFilePath: "")
     @State private var activeRuleEdit: RuleEditContext? = nil
 
-    // Computed filtered & sorted rows (cached per body evaluation)
-    private var filteredRows: [Conn] {
+    // Cached filter/sort — recompute only when inputs change (not every body pass).
+    @State private var filteredRows: [Conn] = []
+    @State private var filterFingerprint: String = ""
+
+    private func recomputeFilteredRowsIfNeeded() {
         let source = selectedTab == 0 ? VM.conns : VM.closedConnections
-        return source.filter { matches($0) }.sorted(using: sortOrder)
+        // Fingerprint source identity + query + tab + sort keys. Conn is Equatable;
+        // using count + first/last id + rate sum is a cheap churn detector.
+        let rateSum = source.reduce(into: Int64(0)) { $0 += $1.downRate &+ $1.upRate }
+        let head = source.first?.id ?? "-"
+        let tail = source.last?.id ?? "-"
+        let sortKey = sortOrder.map { "\($0.keyPath):\($0.order == .forward ? "f" : "r")" }.joined(separator: ",")
+        let fp = "\(selectedTab)|\(q)|\(source.count)|\(head)|\(tail)|\(rateSum)|\(sortKey)"
+        guard fp != filterFingerprint else { return }
+        filterFingerprint = fp
+        filteredRows = source.filter { matches($0) }.sorted(using: sortOrder)
     }
 
     var body: some View {
@@ -126,6 +138,7 @@ struct ConnectionsPage: View {
         }
         .onAppear {
             VM.start()
+            recomputeFilteredRowsIfNeeded()
             if !M.engine.configFilePath.isEmpty {
                 ruleModel.setTargetPath(M.engine.configFilePath)
                 ruleModel.load()
@@ -133,6 +146,8 @@ struct ConnectionsPage: View {
         }
         .onDisappear {
             VM.stop()
+            filteredRows = []
+            filterFingerprint = ""
         }
         .onChange(of: M.engine.configFilePath) { _, path in
             if !path.isEmpty {
@@ -140,6 +155,11 @@ struct ConnectionsPage: View {
                 ruleModel.load()
             }
         }
+        .onChange(of: selectedTab) { _, _ in recomputeFilteredRowsIfNeeded() }
+        .onChange(of: q) { _, _ in recomputeFilteredRowsIfNeeded() }
+        .onChange(of: sortOrder) { _, _ in recomputeFilteredRowsIfNeeded() }
+        .onChange(of: VM.conns) { _, _ in recomputeFilteredRowsIfNeeded() }
+        .onChange(of: VM.closedConnections) { _, _ in recomputeFilteredRowsIfNeeded() }
         .overlay(alignment: .bottomTrailing) {
             if let id = selection, let c = (VM.conns + VM.closedConnections).first(where: { $0.id == id }) {
                 ConnDetailCard(conn: c) { selection = nil }
@@ -407,7 +427,10 @@ struct ConnDetailCard: View {
         M.prevConnBytes = bytes
 
         // Compute dashboard stats from raw items before conversion
-        M.dash = AppModel.computeDashRaw(items)
+        if M.route == "dashboard" || M.route == "connections" {
+            let next = AppModel.computeDashRaw(items)
+            if next != M.dash { M.dash = next }
+        }
 
         // Detect closed connections
         var newClosed = [Conn]()

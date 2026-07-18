@@ -160,8 +160,8 @@ extension AppModel {
         if !(c as NSDictionary).isEqual(configs) {
             configs = c
         }
-        
-        if let m = c["mode"] as? String { mode = m }
+
+        if let m = c["mode"] as? String, m != mode { mode = m }
         // B9: a user-mode kernel cannot create the utun device (operation not
         // permitted), so even if the config declares tun.enable=true it is not
         // actually active. Reflect the real state instead of the declared one.
@@ -215,7 +215,7 @@ extension AppModel {
                     }
                 }
             }
-            tunOn = shouldBeOn
+            if tunOn != shouldBeOn { tunOn = shouldBeOn }
         }
         // Gateway is user intent only (persisted via UserDefaults mirror). Never
         // infer it from config.yaml: residual `allow-lan + dns.listen=0.0.0.0:53`
@@ -288,7 +288,7 @@ extension AppModel {
     /// Returns `false` and shows a toast if the engine is already busy.
     @discardableResult
     func withEngineBusy(_ label: String = "操作", _ body: @escaping () async -> Void) -> Bool {
-        guard !engine.isBusy else { showToast("内核操作进行中，请稍候…"); return false }
+        guard !engine.isBusy else { showToast("内核操作进行中，请稍候…", kind: .warn); return false }
         engine.isBusy = true
         Task {
             defer { engine.isBusy = false }
@@ -326,18 +326,18 @@ extension AppModel {
                 }
                 self.logKernel(on ? "系统代理已开启 (port \(port))" : "系统代理已关闭")
                 if on {
-                    self.showToast("系统代理已开启")
+                    self.showToast("系统代理已开启", kind: .ok)
                 } else if !self.tunOn && self.reachable {
-                    self.showToast("系统代理已关闭（内核仍在运行，可在侧栏停止）")
+                    self.showToast("系统代理已关闭（内核仍在运行，可在侧栏停止）", kind: .ok)
                 } else {
-                    self.showToast("系统代理已关闭")
+                    self.showToast("系统代理已关闭", kind: .ok)
                 }
             } else {
                 self.syncSystemProxyState()
                 self.logKernel("系统代理设置失败 (want=\(on), port=\(port))")
                 await self.api.probe()
                 if self.api.reachable {
-                    self.showToast("系统代理设置失败")
+                    self.showToast("系统代理设置失败", kind: .error)
                 }
             }
         }
@@ -373,7 +373,7 @@ extension AppModel {
             if !engine.isRoot {
                 showToast("开启网关中枢需要管理员授权…")
                 let ok = await engine.installPrivileged()
-                guard ok else { showToast("授权失败，未开启网关"); return }
+                guard ok else { showToast("授权失败，未开启网关", kind: .error); return }
             }
             // Verify XPC connectivity even when a helper plist already exists;
             // a stale or unloaded LaunchDaemon cannot enable forwarding.
@@ -450,12 +450,12 @@ extension AppModel {
             if ok {
                 gatewayModeOn = true
                 noteConfigContentChanged()
-                showToast("网关中枢（旁路由）已成功开启")
+                showToast("网关中枢（旁路由）已成功开启", kind: .ok)
             } else {
                 gatewayModeOn = false
                 gatewayDevices.removeAll(keepingCapacity: false)
                 preGatewayAllowLan = nil; preGatewayDNSListen = nil
-                showToast("底层 IP 转发开启失败")
+                showToast("底层 IP 转发开启失败", kind: .error)
             }
         } else {
             // Restore config.yaml overrides that Gateway mode applied.
