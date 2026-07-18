@@ -59,7 +59,7 @@ struct ContentView: View {
     // 侧栏与内容区共用同一 chrome 节奏：
     //   top chrome 高度 = m + controlHeight + m（与 PageToolbar / 连接·日志·规则顶栏一致）
     //   分割线 = 通栏 1pt separator（禁止 inset hairline，否则跨栏无法对齐）
-    // 列表分组「监控 / 代理 / 配置」；底 = 系统代理 / TUN + 核心状态。
+    // 列表分组「监控 / 代理 / 配置」；底 = Proxy / TUN + 内核版本。
     //
     // 水平对齐：不用系统 List(.sidebar)（其 contentMargins/listRowInsets 仍会叠 2–4pt
     // 系统内边距，footer 在 List 外永远算不准）。导航与 footer 共用
@@ -176,7 +176,7 @@ struct ContentView: View {
         // 与导航 ScrollView 共用 pageContentInset；行内再 +s，与选中胶囊内图标同起点
         VStack(alignment: .leading, spacing: DS.Spacing.s) {
             statusToggle(
-                "系统代理",
+                "Proxy",
                 icon: "globe",
                 isOn: Binding(
                     get: { M.systemProxyOn },
@@ -189,7 +189,7 @@ struct ContentView: View {
                 onColor: DS.Palette.ok
             )
             statusToggle(
-                "TUN 模式",
+                "TUN",
                 icon: "shield",
                 isOn: Binding(
                     get: { M.tunOn },
@@ -201,22 +201,22 @@ struct ContentView: View {
                 onColor: DS.Palette.accent
             )
 
+            // Kernel status: color dot + full version (no "核心已就绪" prose).
             HStack(spacing: DS.Spacing.s) {
                 Circle()
                     .fill(M.reachable ? DS.Palette.ok : DS.Palette.error)
                     .frame(width: 6, height: 6)
                     .frame(width: DS.Icon.lg, height: DS.Icon.lg, alignment: .center)
-                Text(M.reachable ? "核心已就绪" : "核心已停止")
-                    .font(.dsBody)
+                Text("内核")
+                    .font(.dsBodyMedium)
                     .foregroundStyle(.secondary)
                     .lineLimit(1)
                 Spacer(minLength: 0)
-                if M.reachable {
-                    Text(M.version)
-                        .font(.dsMono)
-                        .foregroundStyle(.secondary)
-                        .lineLimit(1)
-                }
+                Text(M.reachable ? (M.version.isEmpty || M.version == "?" ? "—" : M.version) : "—")
+                    .font(.dsMono)
+                    .foregroundStyle(M.reachable ? .primary : .secondary)
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.7)
             }
             .padding(.vertical, DS.Spacing.xs / 2)
             .padding(.horizontal, DS.Spacing.s)
