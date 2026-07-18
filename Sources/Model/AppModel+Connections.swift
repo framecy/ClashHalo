@@ -241,8 +241,8 @@ extension AppModel {
 
     func closeAllConnections() {
         Task {
-            do { try await api.closeAllConnections(); showToast("已断开所有连接") }
-            catch { showToast("断开连接失败") }
+            do { try await api.closeAllConnections(); showToast("已断开所有连接", kind: .ok) }
+            catch { showToast("断开连接失败", kind: .error) }
         }
     }
 
@@ -254,8 +254,8 @@ extension AppModel {
 
     func flushDnsCache() {
         Task {
-            do { try await api.flushDnsCache(); showToast("DNS 缓存已刷新") }
-            catch { showToast("刷新 DNS 缓存失败") }
+            do { try await api.flushDnsCache(); showToast("DNS 缓存已刷新", kind: .ok) }
+            catch { showToast("刷新 DNS 缓存失败", kind: .error) }
         }
     }
 
@@ -264,9 +264,9 @@ extension AppModel {
             do {
                 try await api.flushDnsCache()
                 try await api.flushFakeIpCache()
-                showToast("DNS 及 Fake‑IP 缓存已清空")
+                showToast("DNS 及 Fake‑IP 缓存已清空", kind: .ok)
             } catch {
-                showToast("清空缓存失败")
+                showToast("清空缓存失败", kind: .error)
             }
         }
     }

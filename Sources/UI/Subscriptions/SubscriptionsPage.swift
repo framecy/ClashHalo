@@ -149,7 +149,7 @@ struct SubscriptionsPage: View {
         try? await M.api.updateProvider(name)
         try? await Task.sleep(nanoseconds: 800_000_000)
         await reload(); busy.remove(name)
-        M.showToast("已更新订阅「\(name)」")
+        M.showToast("已更新订阅「\(name)」", kind: .ok)
     }
     private func updateAll() async { for p in providers { await update(p.name) } }
     private func dateStr(_ unix: Int64) -> String {

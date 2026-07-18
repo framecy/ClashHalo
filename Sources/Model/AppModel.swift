@@ -310,7 +310,7 @@ import ServiceManagement
                     _ = await engine.setSystemProxy(enabled: true, port: proxyPort)
                     systemProxyOn = true
                     proxyAutoDisabled = false
-                    showToast("网络恢复，已自动恢复系统代理")
+                    showToast("网络恢复，已自动恢复系统代理", kind: .ok)
                 }
             }
         }
@@ -653,7 +653,7 @@ import ServiceManagement
                         let ok = await engine.setSystemProxy(enabled: true, port: proxyPort)
                         if ok {
                             systemProxyOn = true
-                            showToast("网络恢复，已自动恢复系统代理")
+                            showToast("网络恢复，已自动恢复系统代理", kind: .ok)
                         }
                     }
                     // If TUN is supposed to be on, ensure it's healthy and interface is pinned
@@ -687,7 +687,7 @@ import ServiceManagement
                 Task {
                     _ = await engine.setSystemProxy(enabled: false, port: proxyPort)
                     systemProxyOn = false
-                    showToast("网络断开，已自动关闭系统代理")
+                    showToast("网络断开，已自动关闭系统代理", kind: .warn)
                 }
             }
             // Only restore DNS if the kernel is also gone — if TUN is still
@@ -939,7 +939,7 @@ import ServiceManagement
         let cmd = "export https_proxy=http://127.0.0.1:\(port) http_proxy=http://127.0.0.1:\(port) all_proxy=socks5://127.0.0.1:\(port)"
         NSPasteboard.general.clearContents()
         NSPasteboard.general.setString(cmd, forType: .string)
-        showToast("已复制终端代理命令")
+        showToast("已复制终端代理命令", kind: .ok)
     }
 
     /// Hot-reload the config the kernel is actually running (config.yaml on disk),
@@ -955,7 +955,7 @@ import ServiceManagement
     @discardableResult
     func performReloadActiveConfig() async -> Bool {
         guard reachable else {
-            showToast("内核未连接，无法重载")
+            showToast("内核未连接，无法重载", kind: .error)
             return false
         }
         showToast("正在重载配置…")
@@ -976,10 +976,10 @@ import ServiceManagement
             }
 
             noteConfigContentChanged()
-            showToast("配置已重载")
+            showToast("配置已重载", kind: .ok)
             return true
         } catch {
-            showToast("重载失败：\(error.localizedDescription)")
+            showToast("重载失败：\(error.localizedDescription)", kind: .error)
             return false
         }
     }
@@ -1002,13 +1002,13 @@ import ServiceManagement
         let path = engine.configFilePath
         let backup = (try? String(contentsOfFile: path, encoding: .utf8)) ?? ""
         guard save() else {
-            showToast("规则保存失败")
+            showToast("规则保存失败", kind: .error)
             return false
         }
         noteConfigContentChanged()
 
         guard reachable else {
-            showToast("规则已保存到磁盘（内核未运行，启动后生效）")
+            showToast("规则已保存到磁盘（内核未运行，启动后生效）", kind: .warn)
             return true
         }
 
@@ -1023,14 +1023,14 @@ import ServiceManagement
                 try await api.reloadConfig(path: path)
                 await refreshConfigs()
             }
-            showToast("规则已保存并重载")
+            showToast("规则已保存并重载", kind: .ok)
             return true
         } catch {
             if !backup.isEmpty {
                 try? backup.write(toFile: path, atomically: true, encoding: .utf8)
                 noteConfigContentChanged()
             }
-            showToast("规则重载失败，已回滚磁盘：\(error.localizedDescription)")
+            showToast("规则重载失败，已回滚磁盘：\(error.localizedDescription)", kind: .error)
             return false
         }
     }
@@ -1038,7 +1038,7 @@ import ServiceManagement
     /// Update every remote (HTTP) subscription, then re-apply the active one.
     func updateAllSubscriptions() {
         let remotes = store.profiles.filter { $0.source == "remote" }
-        guard !remotes.isEmpty else { showToast("无远程订阅"); return }
+        guard !remotes.isEmpty else { showToast("无远程订阅", kind: .warn); return }
         showToast("正在更新订阅…")
         Task {
             var successCount = 0
@@ -1053,10 +1053,10 @@ import ServiceManagement
             }
             if !store.activeID.isEmpty { selectForApply(store.activeID) }
             if failNames.isEmpty {
-                showToast("订阅已全部更新成功")
+                showToast("订阅已全部更新成功", kind: .ok)
             } else {
                 let failedList = failNames.joined(separator: ", ")
-                showToast("更新完成: 成功 \(successCount) 个, 失败 \(failNames.count) 个 (\(failedList))")
+                showToast("更新完成: 成功 \(successCount) 个, 失败 \(failNames.count) 个 (\(failedList))", kind: .warn)
             }
         }
     }
@@ -1073,7 +1073,7 @@ import ServiceManagement
             if on { try SMAppService.mainApp.register() }
             else { try SMAppService.mainApp.unregister() }
         } catch {
-            showToast("开机自启动设置失败：\(error.localizedDescription)")
+            showToast("开机自启动设置失败：\(error.localizedDescription)", kind: .error)
         }
         refreshLaunchAtLogin()
     }

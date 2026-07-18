@@ -100,7 +100,7 @@ struct LogsPage: View {
         panel.allowedContentTypes = [.plainText]
         if panel.runModal() == .OK, let url = panel.url {
             try? text.write(to: url, atomically: true, encoding: .utf8)
-            M.showToast("已导出 \(rows.count) 行日志")
+            M.showToast("已导出 \(rows.count) 行日志", kind: .ok)
         }
     }
     private func logColor(_ l: String) -> Color {

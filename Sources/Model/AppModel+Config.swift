@@ -21,11 +21,11 @@ extension AppModel {
     /// "设为活动" tap). Reload coalesces via `appliedHash`: a re-apply of
     /// unchanged content short-circuits before touching the kernel.
     func selectForApply(_ id: String) {
-        guard !engine.isBusy else { showToast("内核操作进行中，请稍候…"); return }
+        guard !engine.isBusy else { showToast("内核操作进行中，请稍候…", kind: .warn); return }
         let oldActiveID = store.activeID
         let backupContent = (try? String(contentsOfFile: engine.configFilePath, encoding: .utf8)) ?? ""
         
-        guard let content = store.commit(id) else { showToast("配置为空"); return }
+        guard let content = store.commit(id) else { showToast("配置为空", kind: .error); return }
         let name = store.profiles.first { $0.id == id }?.name ?? ""
         let wasTunOn = tunOn
         // Skip reload if the on-disk content matches the last applied hash.
@@ -34,7 +34,7 @@ extension AppModel {
         if let last = store.profiles.first(where: { $0.id == id })?.appliedHash,
            last == Sha1.hex(content) {
             store.markApplied(id, hash: last)
-            showToast("已切换配置「\(name)」")
+            showToast("已切换配置「\(name)」", kind: .ok)
             return
         }
         let oldPort = proxyPort
@@ -47,7 +47,7 @@ extension AppModel {
             if ok {
                 store.markApplied(id, hash: Sha1.hex(content))
                 noteConfigContentChanged()
-                showToast("已切换配置「\(name)」")
+                showToast("已切换配置「\(name)」", kind: .ok)
                 await reconnect()
                 await reapplyTUN(wasOn: wasTunOn)
 
@@ -57,7 +57,7 @@ extension AppModel {
                 let newPort = proxyPort
                 if systemProxyOn && newPort != oldPort {
                     let ok = await engine.setSystemProxy(enabled: true, port: newPort)
-                    if ok { showToast("系统代理已更新至端口 \(newPort)") }
+                    if ok { showToast("系统代理已更新至端口 \(newPort)", kind: .ok) }
                 }
 
                 // Gateway cascade: the new profile may have overwritten
@@ -69,14 +69,14 @@ extension AppModel {
                         try await api.reloadConfig(path: engine.configFilePath)
                         await refreshConfigs()
                     } catch {
-                        showToast("网关配置重载失败")
+                        showToast("网关配置重载失败", kind: .error)
                     }
                 }
 
                 // Refresh proxies after profile switch (event-driven)
                 await refreshProxies()
             } else {
-                showToast("配置错误：\(err ?? "")，已回滚")
+                showToast("配置错误：\(err ?? "")，已回滚", kind: .error)
                 if !oldActiveID.isEmpty {
                     store.activeID = oldActiveID
                     if oldActiveID == id {
@@ -307,7 +307,7 @@ extension AppModel {
                 self.showToast("正在启动核心以开启系统代理…")
                 await self.engine.ensureRunningAsync()
                 guard await self.waitForKernelReady(maxAttempts: 8) else {
-                    self.showToast("内核启动超时，无法开启系统代理")
+                    self.showToast("内核启动超时，无法开启系统代理", kind: .error)
                     return
                 }
                 // reconnect() re-syncs proxy from SCDynamicStore (still off here).
@@ -358,7 +358,7 @@ extension AppModel {
                 if self.tunOn {
                     await self.applyGatewayMode(true)
                 } else {
-                    self.showToast("TUN 启动失败，无法开启网关中枢")
+                    self.showToast("TUN 启动失败，无法开启网关中枢", kind: .error)
                 }
             }
             return
@@ -378,7 +378,7 @@ extension AppModel {
             // Verify XPC connectivity even when a helper plist already exists;
             // a stale or unloaded LaunchDaemon cannot enable forwarding.
             guard await XPCManager.shared.verifyConnectivity() else {
-                showToast("特权服务无法连接，未开启网关")
+                showToast("特权服务无法连接，未开启网关", kind: .error)
                 engine.isRoot = false
                 return
             }
@@ -390,7 +390,7 @@ extension AppModel {
                 showToast("正在以 Root 权限重启核心…")
                 await engine.restart()
                 guard await waitForKernelReady(maxAttempts: 8) else {
-                    showToast("Root 内核启动超时，未开启网关")
+                    showToast("Root 内核启动超时，未开启网关", kind: .error)
                     return
                 }
                 await reconnect()
@@ -420,12 +420,12 @@ extension AppModel {
             } catch {
                 if let b = backup {
                     try? b.write(toFile: cfgPath, atomically: true, encoding: .utf8)
-                    showToast("端口冲突，正在回滚配置…")
+                    showToast("端口冲突，正在回滚配置…", kind: .warn)
                     try? await api.reloadConfig(path: cfgPath)
                     await refreshConfigs()
                 }
                 preGatewayAllowLan = nil; preGatewayDNSListen = nil
-                showToast("网关配置应用失败，请检查 53 端口是否被占用")
+                showToast("网关配置应用失败，请检查 53 端口是否被占用", kind: .error)
                 return
             }
 
@@ -441,7 +441,7 @@ extension AppModel {
                         await refreshConfigs()
                     }
                     preGatewayAllowLan = nil; preGatewayDNSListen = nil
-                    showToast("TUN 恢复失败，未开启网关中枢")
+                    showToast("TUN 恢复失败，未开启网关中枢", kind: .error)
                     return
                 }
             }
@@ -478,13 +478,13 @@ extension AppModel {
                     try await api.reloadConfig(path: engine.configFilePath)
                     await refreshConfigs()
                     noteConfigContentChanged()
-                    showToast("网关中枢已关闭")
+                    showToast("网关中枢已关闭", kind: .ok)
                 } catch {
                     noteConfigContentChanged()
-                    showToast("网关中枢已关闭，配置重载失败")
+                    showToast("网关中枢已关闭，配置重载失败", kind: .warn)
                 }
             } else {
-                showToast("网关中枢关闭失败")
+                showToast("网关中枢关闭失败", kind: .error)
             }
         }
     }
@@ -515,10 +515,10 @@ extension AppModel {
             if !helperOK {
                 showToast("启用 TUN 需要管理员授权以安装特权服务…")
                 let installed = await engine.installPrivileged()
-                guard installed else { showToast("授权失败，TUN 未启用"); return }
+                guard installed else { showToast("授权失败，TUN 未启用", kind: .error); return }
                 helperOK = await XPCManager.shared.verifyConnectivity()
                 guard helperOK else {
-                    showToast("特权服务安装后无法连接，请重启应用或检查 system 日志")
+                    showToast("特权服务安装后无法连接，请重启应用或检查 system 日志", kind: .error)
                     engine.isRoot = false
                     return
                 }
@@ -526,7 +526,7 @@ extension AppModel {
             engine.isRoot = true
             await engine.ensureRunningAsync()
             guard await waitForKernelReady(maxAttempts: 10) else {
-                showToast("内核启动超时，TUN 无法启用")
+                showToast("内核启动超时，TUN 无法启用", kind: .error)
                 return
             }
             // refreshConfigs gates tunOn on `reachable`. Without reconnect here
@@ -575,11 +575,11 @@ extension AppModel {
             if !engine.isRoot {
                 showToast("启用 TUN 需要管理员授权以安装特权服务…")
                 let ok = await engine.installPrivileged()
-                guard ok else { showToast("授权失败，TUN 未启用"); return }
+                guard ok else { showToast("授权失败，TUN 未启用", kind: .error); return }
                 // Verify XPC connectivity after installation to catch launchd bootstrap failures
                 let connected = await XPCManager.shared.verifyConnectivity()
                 guard connected else {
-                    showToast("特权服务安装后无法连接，请重启应用或检查 system 日志")
+                    showToast("特权服务安装后无法连接，请重启应用或检查 system 日志", kind: .error)
                     engine.isRoot = false  // Reset to prevent permanent lock
                     return
                 }
@@ -588,7 +588,7 @@ extension AppModel {
                 // flag can lag a dead LaunchDaemon, and restart would then no-op.
                 let connected = await XPCManager.shared.verifyConnectivity()
                 if !connected {
-                    showToast("特权服务无法连接，TUN 未启用")
+                    showToast("特权服务无法连接，TUN 未启用", kind: .error)
                     engine.isRoot = false
                     return
                 }
@@ -600,7 +600,7 @@ extension AppModel {
                     showToast("特权服务需要更新，正在自动升级…")
                     let upgraded = await engine.checkAndUpgradeHelperIfNeeded()
                     guard upgraded else {
-                        showToast("Helper 升级失败，TUN 未启用")
+                        showToast("Helper 升级失败，TUN 未启用", kind: .error)
                         return
                     }
                 }
@@ -610,7 +610,7 @@ extension AppModel {
             await engine.restart()
             // restart = stop + start; cold root spawn often needs a longer window.
             guard await waitForKernelReady(maxAttempts: 12) else {
-                showToast("Root 内核启动超时，TUN 未启用")
+                showToast("Root 内核启动超时，TUN 未启用", kind: .error)
                 return
             }
             await self.reconnect()
@@ -618,7 +618,7 @@ extension AppModel {
                 await engine.syncRunningAsRootIfNeeded()
             }
             if !engine.runningAsRoot {
-                showToast("Root 内核未就绪，TUN 未启用")
+                showToast("Root 内核未就绪，TUN 未启用", kind: .error)
                 logKernel("TUN 中止：restart 后 runningAsRoot 仍为 false")
                 return
             }
@@ -648,7 +648,7 @@ extension AppModel {
                 await refreshConfigs()
             }
             if want && !tunOn {
-                showToast("TUN 开启失败：可能无管理员权限或路由被其他 VPN 占用冲突")
+                showToast("TUN 开启失败：可能无管理员权限或路由被其他 VPN 占用冲突", kind: .error)
                 logKernel("TUN 开启失败：runningAsRoot=\(engine.runningAsRoot) reachable=\(reachable)")
             } else {
                 // TUN disable cascades: Gateway mode requires TUN, so if we
@@ -675,16 +675,16 @@ extension AppModel {
                 // No auto-stopEngine when both proxy faces are off — keep the core
                 // warm so re-enabling TUN is a PATCH, not a full root restart.
                 if want {
-                    showToast("TUN 模式已开启")
+                    showToast("TUN 模式已开启", kind: .ok)
                 } else if !systemProxyOn && reachable {
-                    showToast("TUN 模式已关闭（内核仍在运行，可在侧栏停止）")
+                    showToast("TUN 模式已关闭（内核仍在运行，可在侧栏停止）", kind: .ok)
                 } else {
-                    showToast("TUN 模式已关闭")
+                    showToast("TUN 模式已关闭", kind: .ok)
                 }
             }
         } else {
             await api.probe()
-            if api.reachable { showToast(want ? "TUN 模式开启失败" : "TUN 模式关闭失败") }
+            if api.reachable { showToast(want ? "TUN 模式开启失败" : "TUN 模式关闭失败", kind: .error) }
         }
     }
 
@@ -746,22 +746,22 @@ extension AppModel {
     /// (validate + rollback). The primitive behind all settings forms.
     func patch(_ overrides: [String: Any]) async {
         guard reachable else {
-            showToast("内核未连接，无法修改配置")
+            showToast("内核未连接，无法修改配置", kind: .error)
             return
         }
 
         let ok = await engine.patchConfig(overrides)
         if ok {
             await refreshConfigs()
-            showToast("配置已更新")
+            showToast("配置已更新", kind: .ok)
         } else {
             // Check if it just died
             await api.probe(timeout: 0.5)
             if api.reachable {
-                showToast("内核拒绝了该配置修改")
+                showToast("内核拒绝了该配置修改", kind: .error)
             } else {
                 reachable = false
-                showToast("内核已断开，配置写入失败")
+                showToast("内核已断开，配置写入失败", kind: .error)
             }
         }
     }
@@ -771,7 +771,7 @@ extension AppModel {
     /// reload. The current runtime TUN state is written back first so the reload
     /// (which re-reads the file) doesn't drop a running root TUN.
     func patchPersistent(_ overrides: [String: Any]) async {
-        guard reachable else { showToast("内核未连接，无法修改配置"); return }
+        guard reachable else { showToast("内核未连接，无法修改配置", kind: .error); return }
         engine.setTopLevelScalars(overrides)
         engine.setTunEnabled(tunOn)
         do {
@@ -785,9 +785,9 @@ extension AppModel {
 
             await refreshConfigs()
             noteConfigContentChanged()
-            showToast("配置已更新")
+            showToast("配置已更新", kind: .ok)
         } catch {
-            showToast("更新失败：\(error.localizedDescription)")
+            showToast("更新失败：\(error.localizedDescription)", kind: .error)
         }
     }
 
@@ -803,7 +803,7 @@ extension AppModel {
         engine.setTunEnabled(tunOn)   // preserve running TUN across reload
         if let err = await engine.validateConfig() {
             if let b = backup { try? b.write(toFile: path, atomically: true, encoding: .utf8) }
-            showToast("配置无效，已回滚：\(err)")
+            showToast("配置无效，已回滚：\(err)", kind: .error)
             return false
         }
         do {
@@ -811,11 +811,11 @@ extension AppModel {
             await refreshConfigs()
             await refreshProxies()
             noteConfigContentChanged()
-            showToast("订阅已保存")
+            showToast("订阅已保存", kind: .ok)
             return true
         } catch {
             if let b = backup { try? b.write(toFile: path, atomically: true, encoding: .utf8) }
-            showToast("保存失败，已回滚：\(error.localizedDescription)")
+            showToast("保存失败，已回滚：\(error.localizedDescription)", kind: .error)
             return false
         }
     }
@@ -873,7 +873,7 @@ extension AppModel {
             }
         }
         logKernel("核心已停止")
-        showToast("核心已停止")
+        showToast("核心已停止", kind: .ok)
     }
 
     func toggleEngine() {
@@ -894,10 +894,10 @@ extension AppModel {
                 // Not reachable after retries — surface the REAL reason.
                 if let cfgErr = await self.engine.validateConfig() {
                     self.logKernel("配置错误，核心无法启动：\(cfgErr)")
-                    self.showToast("配置错误：\(cfgErr)")
+                    self.showToast("配置错误：\(cfgErr)", kind: .error)
                 } else {
                     self.logKernel("错误：核心未响应（启动超时或权限不足）")
-                    self.showToast("核心启动失败，请检查内核与权限")
+                    self.showToast("核心启动失败，请检查内核与权限", kind: .error)
                 }
             } else {
                 await self.stopEngine()
@@ -916,7 +916,7 @@ extension AppModel {
             }
             // Refresh proxies after mode change (event-driven instead of polling)
             await refreshProxies()
-            showToast("已切换至\(modeLabel(m))模式")
+            showToast("已切换至\(modeLabel(m))模式", kind: .ok)
         }
     }
 
