@@ -83,6 +83,16 @@ bash make.sh
 - 配置编辑大量使用轻量行扫描，不是完整 YAML parser。改动时保持 `EngineControl.readConfigFile`、`proxyProviders`、`ConfigStore.preview`、`YamlRuleASTEngine` 行为一致
 - `ConfigStore` 把订阅 URL 存 Keychain，manifest 会清空 URL。禁止把真实订阅/节点/token 写进仓库
 
+## 性能 / 动效 / 反馈约定
+
+- 动效常量走 `DS.Motion`（`press` / `toast` / `micro` / `toastHold`）；禁止页面内魔法数 duration；禁止装饰性 `repeatForever`
+- 路由与 `DSSegmentedControl` 不加自定义大动画 / 弹簧滑块（见 `Docs/design.md` §10 / §6.8）
+- Toast 唯一通道：`showToast(_:kind:)`；单条替换 + dismiss Task 取消，防止连弹被旧 timer 清掉
+- `engine.isBusy` 必须可感知：主开关 Toggle busy 时 disabled；不要只靠 toast 解释
+- 前台轮询分层：`refreshConfigs` 约 12s；网关设备 `/connections` 3s；连接页 1.5s；后台 30s；**禁止** DnsPage 等再起独立连接轮询
+- 高频 `@Published` 写入前做等值短路（`mode` / `tunOn` / totals / `gatewayDevices` / `dash`）
+- 流量 sparkline series 仅在 `route == dashboard` 或菜单栏可见时追加；默认 `trafficRefreshInterval = 2s`
+
 ## Helper / TUN 高风险边界
 
 涉及这些文件时做小步、可解释改动：

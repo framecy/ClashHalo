@@ -29,7 +29,7 @@ struct Node: Identifiable, Equatable {
     var delay: Int        // ms, 0 = untested/timeout
 }
 
-struct Conn: Identifiable {
+struct Conn: Identifiable, Equatable {
     let id: String
     let host: String
     let dstIP: String
@@ -78,6 +78,18 @@ struct GatewayDevice: Identifiable, Equatable {
         if secs < 3600 { return "\(secs/60)m \(secs%60)s" }
         return "\(secs/3600)h \((secs%3600)/60)m"
     }
+}
+
+/// Semantic kind for the global toast channel (`AppModel.showToast`).
+enum ToastKind: Equatable {
+    case info, ok, warn, error
+}
+
+/// Single-slot toast payload. Identity is generation-free; replacement is
+/// wholesale via `showToast` (old dismiss Task is cancelled).
+struct ToastPayload: Equatable {
+    let text: String
+    let kind: ToastKind
 }
 
 // MARK: - AppModel
@@ -415,6 +427,20 @@ enum NetScanner {
     /// the first candidate rather than return nil — prefer a missed teardown
     /// this tick to wrongly declaring the interface gone.
     static func mihomoTunInterface() async -> String? {
+        // Short TTL cache: refreshConfigs used to call this every 3s; even after
+        // poll layering, verify paths can still stack. 1.5s is well under the
+        // health-check period and avoids repeated getifaddrs/route forks.
+        if let cached = tunCache, Date().timeIntervalSince(cached.at) < 1.5 {
+            return cached.name
+        }
+        let name = await mihomoTunInterfaceUncached()
+        tunCache = (name, Date())
+        return name
+    }
+
+    private static var tunCache: (name: String?, at: Date)?
+
+    private static func mihomoTunInterfaceUncached() async -> String? {
         let ifaces = interfaces()
         let candidates = ifaces.filter { $0.kind == .proxyTun }
         if candidates.isEmpty { return nil }
