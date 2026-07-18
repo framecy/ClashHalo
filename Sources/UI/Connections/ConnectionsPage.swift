@@ -399,6 +399,11 @@ struct ConnDetailCard: View {
             )
             next.append(conn)
         }
+        // Gateway aggregation must run before prevConnBytes is overwritten.
+        if M.gatewayModeOn {
+            M.updateGatewayDevices(from: items)
+        }
+
         M.prevConnBytes = bytes
 
         // Compute dashboard stats from raw items before conversion

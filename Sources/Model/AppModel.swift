@@ -20,6 +20,10 @@ import ServiceManagement
     let history = TrafficHistory()
     let updater = AppUpdater.shared
 
+    // Throttle for verifyGatewayConfig's "helper unreachable" log so a dead
+    // LaunchDaemon doesn't flood KernelLog every 30s poll cycle.
+    private var lastGatewayHelperFailLog: Date = .distantPast
+
     // Navigation + theme
     @Published var route = "dashboard" {
         didSet {
@@ -105,7 +109,16 @@ import ServiceManagement
     /// happens once that teardown lands and refreshConfigs reconciles `tunOn`.
     /// Internal (not `private`) so the `AppModel+Config` extension can access it.
     var tunAutoTeardownInFlight = false
-    @Published var gatewayModeOn = false
+    /// User intent for 网关中枢. Persisted so a restart restores a deliberate ON,
+    /// but never auto-flips from residual config (see refreshConfigs).
+    /// Kept as `@Published` (not `@AppStorage`) so EnvironmentObject views
+    /// re-render; UserDefaults is mirrored in didSet.
+    @Published var gatewayModeOn: Bool = UserDefaults.standard.bool(forKey: "net.gatewayModeOn") {
+        didSet {
+            guard oldValue != gatewayModeOn else { return }
+            UserDefaults.standard.set(gatewayModeOn, forKey: "net.gatewayModeOn")
+        }
+    }
     /// Snapshot of allow-lan / dns.listen before Gateway mode overrode them,
     /// used to restore config.yaml when Gateway is disabled.
     var preGatewayAllowLan: Bool?
@@ -240,6 +253,12 @@ import ServiceManagement
         history.load()
 
         Task {
+            // Helper first: install/upgrade must complete (or be cancelled) before
+            // we rely on root TUN / system proxy / gateway. The pre-auth dialog +
+            // password sheet also needs to land early so the user isn't mid-flow
+            // when the prompt appears.
+            await engine.checkAndUpgradeHelperIfNeeded()
+
             // 探测内核是否存活，而非无条件杀死
             await api.probe()
 
@@ -262,10 +281,6 @@ import ServiceManagement
             startNetworkMonitor()
             installSignalHandlers()
             observeSleepWake()
-
-            // 稍后检查 Helper 版本是否过旧，自动进行升级（延迟减少为2秒）
-            try? await Task.sleep(nanoseconds: 2_000_000_000)
-            await engine.checkAndUpgradeHelperIfNeeded()
 
             // 后台检查应用更新（延迟10秒，避免影响启动速度）
             try? await Task.sleep(nanoseconds: 10_000_000_000)
@@ -305,7 +320,8 @@ import ServiceManagement
             // toggles stuck "on").
             tunOn = false
             gatewayModeOn = false
-            
+            gatewayDevices.removeAll(keepingCapacity: false)
+
             // Only auto-disable proxy/DNS if the kernel WAS reachable and just crashed,
             // NOT when it's just intentionally turned off by the user.
             if wasReachable && !engine.isBusy {
@@ -428,6 +444,20 @@ import ServiceManagement
                 // (mode/profile switch, manual test-all) to avoid triggering @Published
                 // groups diff every 3s when nothing changes.
                 await self.refreshConfigs()
+
+                // Gateway device list is driven by /connections snapshots. The
+                // Connections page owns a 1.5s poller of its own; everywhere
+                // else (Network page, dashboard, menu bar) we pull a lightweight
+                // snapshot here so 已接入设备 stays live without the heavy
+                // Conn-row conversion.
+                if self.gatewayModeOn && !self.isConnectionsPageActive {
+                    do {
+                        let snapshot = try await self.api.fetchConnectionsSnapshot()
+                        self.recordHistoryOnly(from: snapshot)
+                    } catch {
+                        // Transient API blip — skip this tick.
+                    }
+                }
 
                 // Health check every 30 seconds (every 10th poll at 3s interval)
                 checkCounter += 1
@@ -581,6 +611,7 @@ import ServiceManagement
                 if !restored {
                     logKernel("网关中枢恢复失败，已放弃重试")
                     gatewayModeOn = false
+                    gatewayDevices.removeAll(keepingCapacity: false)
                 }
             }
 
@@ -781,10 +812,26 @@ import ServiceManagement
             }
         }
 
-        // ALWAYS verify and enforce sysctl IP forwarding when Gateway Mode is on
+        // Don't hammer XPC every 30s when the helper is clearly down (missing
+        // binary / EX_CONFIG LaunchDaemon). Probe first; throttle failure logs.
+        let helperUp = await XPCManager.shared.verifyConnectivity()
+        if !helperUp {
+            engine.isRoot = false
+            let now = Date()
+            if now.timeIntervalSince(lastGatewayHelperFailLog) > 60 {
+                lastGatewayHelperFailLog = now
+                logKernel("网关 sysctl 校验跳过：特权服务不可达（请重新安装 Helper）")
+            }
+            return
+        }
+
         let sysctlOK = await engine.setGatewayMode(enabled: true)
         if !sysctlOK {
-            logKernel("网关 sysctl 启用失败，请检查特权服务状态")
+            let now = Date()
+            if now.timeIntervalSince(lastGatewayHelperFailLog) > 60 {
+                lastGatewayHelperFailLog = now
+                logKernel("网关 sysctl 启用失败，请检查特权服务状态")
+            }
         }
     }
 

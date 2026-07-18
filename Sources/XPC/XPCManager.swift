@@ -53,11 +53,16 @@ public class XPCManager {
         connection = nil
     }
     
-    /// Whether the helper *plist* is installed on disk. NOTE: this is NOT proof
-    /// the helper is loaded/running — use `verifyConnectivity()` for that.
+    /// Whether the helper *plist* **and binary** are installed on disk. NOTE: this
+    /// is still NOT proof the helper is loaded/running — use
+    /// `verifyConnectivity()` for that. Requiring both avoids the false-positive
+    /// where a leftover LaunchDaemon plist points at a missing binary (launchd
+    /// EX_CONFIG) and every XPC call logs "Couldn't communicate with a helper".
     public func checkStatus() -> SMAppService.Status {
         let fm = FileManager.default
-        if fm.fileExists(atPath: "/Library/LaunchDaemons/com.clashhalo.helper.plist") {
+        let plistOK = fm.fileExists(atPath: "/Library/LaunchDaemons/com.clashhalo.helper.plist")
+        let binaryOK = fm.fileExists(atPath: "/Library/PrivilegedHelperTools/com.clashhalo.helper")
+        if plistOK && binaryOK {
             return .enabled
         }
         return .notFound
@@ -226,14 +231,26 @@ public class XPCManager {
         }
     }
 
-    public func installDaemon() async -> Bool {
+    /// Install / replace the privileged helper LaunchDaemon.
+    /// - Parameter prompt: Optional explanation shown before the admin password sheet.
+    public func installDaemon(prompt: String? = nil) async -> Bool {
         let bundlePath = Bundle.main.bundlePath
         let helperSrc = "\(bundlePath)/Contents/MacOS/com.clashhalo.helper"
         let helperDst = "/Library/PrivilegedHelperTools/com.clashhalo.helper"
         let plistDst = "/Library/LaunchDaemons/com.clashhalo.helper.plist"
         let legacyHelperDst = "/Library/PrivilegedHelperTools/com.clashpow.helper"
         let legacyPlistDst = "/Library/LaunchDaemons/com.clashpow.helper.plist"
-        
+
+        // Preflight: never tear down a working LaunchDaemon if the source helper
+        // binary is missing from this app bundle. A plain `xcodebuild` Debug run
+        // does not embed com.clashhalo.helper (only make.sh / Scripts/build-debug.sh
+        // do). Without this guard, `cp` fails then `bootout` still runs and leaves
+        // the system with a plist pointing at a deleted binary (EX_CONFIG loop).
+        guard FileManager.default.fileExists(atPath: helperSrc) else {
+            onLog?("安装特权服务失败：App 内未找到 Helper 二进制（\(helperSrc)）。请用 Scripts/build-debug.sh 或 make.sh 构建后再安装。")
+            return false
+        }
+
         let plistContent = """
         <?xml version="1.0" encoding="UTF-8"?>
         <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -250,53 +267,94 @@ public class XPCManager {
         </dict>
         </plist>
         """
-        
+
         let tempPlist = NSTemporaryDirectory() + "com.clashhalo.helper.plist"
         try? plistContent.write(toFile: tempPlist, atomically: true, encoding: .utf8)
-        
+
+        // Stage the new binary/plist first; only bootout the old service after
+        // the destination files are in place. `set -e` aborts on any hard error
+        // so a failed cp never reaches bootout.
+        // This path also covers upgrades: replace-in-place needs no separate uninstall.
         let script = """
+        set -e; \
+        test -f "\(helperSrc)"; \
         mkdir -p /Library/PrivilegedHelperTools; \
         mkdir -p /Library/Logs/ClashHalo; \
         chmod 755 /Library/Logs/ClashHalo; \
-        cp "\(helperSrc)" "\(helperDst)"; \
-        xattr -rd com.apple.quarantine "\(helperDst)" 2>/dev/null || true; \
-        xattr -cr "\(helperDst)" 2>/dev/null || true; \
-        chown root:wheel "\(helperDst)"; \
-        chmod 755 "\(helperDst)"; \
-        cp "\(tempPlist)" "\(plistDst)"; \
-        chown root:wheel "\(plistDst)"; \
-        chmod 644 "\(plistDst)"; \
+        cp "\(helperSrc)" "\(helperDst).new"; \
+        xattr -rd com.apple.quarantine "\(helperDst).new" 2>/dev/null || true; \
+        xattr -cr "\(helperDst).new" 2>/dev/null || true; \
+        chown root:wheel "\(helperDst).new"; \
+        chmod 755 "\(helperDst).new"; \
+        cp "\(tempPlist)" "\(plistDst).new"; \
+        chown root:wheel "\(plistDst).new"; \
+        chmod 644 "\(plistDst).new"; \
         launchctl bootout system "\(legacyPlistDst)" 2>/dev/null || true; \
         rm -f "\(legacyPlistDst)" "\(legacyHelperDst)"; \
         launchctl bootout system "\(plistDst)" 2>/dev/null || true; \
+        mv -f "\(helperDst).new" "\(helperDst)"; \
+        mv -f "\(plistDst).new" "\(plistDst)"; \
         launchctl enable system/com.clashhalo.helper; \
         launchctl bootstrap system "\(plistDst)"; \
         launchctl kickstart -k system/com.clashhalo.helper
         """
-        
-        let ok = await EngineControl.runAdmin(script)
+
+        let ok = await EngineControl.runAdmin(script, prompt: prompt ?? Self.defaultInstallPrompt)
         if ok {
             connection = nil // Force reconnect
         }
         return ok
     }
-    
-    /// Full upgrade: uninstall old binary + install new one.
-    /// Used when the running helper version is older than kExpectedHelperVersion.
-    public func upgradeDaemon() async -> Bool {
-        _ = await uninstallDaemon()
-        // Give launchd a moment to fully remove the service before reinstalling
-        try? await Task.sleep(nanoseconds: 800_000_000)
-        connection = nil
-        return await installDaemon()
+
+    /// Default explanation for a first-time Helper install.
+    public static let defaultInstallPrompt = """
+    ClashHalo 需要安装特权辅助服务（Helper v\(kSharedHelperVersion)）。
+
+    用途：
+    · 系统代理开关
+    · TUN 虚拟网卡（Root 模式）
+    · 网关中枢 IP 转发
+    · 网络拓扑静态路由与僵尸 TUN 清理
+
+    点击「继续」后将请求管理员密码完成安装。
+    """
+
+    /// Build the pre-auth explanation for a forced Helper upgrade.
+    public static func upgradePrompt(from current: String, to target: String) -> String {
+        """
+        ClashHalo 需要更新特权辅助服务（Helper）。
+
+        当前版本：v\(current)
+        目标版本：v\(target)
+
+        更新说明：
+        · 保持 Helper 与客户端协议一致，避免 XPC 通信失败
+        · 修复安装/升级过程中可能出现的服务残留与连通问题
+        · 保障 TUN、系统代理、网关中枢、网络拓扑等特权能力可用
+
+        点击「继续」后将请求管理员密码，一次授权完成更新。
+        """
     }
 
-    public func uninstallDaemon() async -> Bool {
+    /// Full upgrade: replace the installed helper with the bundled one.
+    /// Uses a single admin authorization (installDaemon already replaces in place);
+    /// no separate uninstall pass — that used to force two password prompts.
+    public func upgradeDaemon(prompt: String? = nil) async -> Bool {
+        let helperSrc = Bundle.main.bundlePath + "/Contents/MacOS/com.clashhalo.helper"
+        guard FileManager.default.fileExists(atPath: helperSrc) else {
+            onLog?("升级特权服务失败：App 内未找到 Helper 二进制。请用 Scripts/build-debug.sh 或 make.sh 构建后再升级。")
+            return false
+        }
+        connection = nil
+        return await installDaemon(prompt: prompt)
+    }
+
+    public func uninstallDaemon(prompt: String? = nil) async -> Bool {
         let plistDst = "/Library/LaunchDaemons/com.clashhalo.helper.plist"
         let helperDst = "/Library/PrivilegedHelperTools/com.clashhalo.helper"
         let legacyPlistDst = "/Library/LaunchDaemons/com.clashpow.helper.plist"
         let legacyHelperDst = "/Library/PrivilegedHelperTools/com.clashpow.helper"
-        
+
         // Use bootout (NOT `unload -w`): the -w flag persistently writes the
         // service into launchd's disabled database, after which a later
         // bootstrap loads the plist but launchd refuses to start it. bootout
@@ -309,8 +367,16 @@ public class XPCManager {
         rm -f "\(legacyPlistDst)"; \
         rm -f "\(legacyHelperDst)"
         """
-        
-        let ok = await EngineControl.runAdmin(script)
+
+        let uninstallPrompt = prompt ?? """
+        ClashHalo 将卸载特权辅助服务（Helper）。
+
+        卸载后 TUN、网关中枢与部分系统代理能力将不可用，可随时在设置中重新安装。
+
+        点击「继续」后将请求管理员密码。
+        """
+
+        let ok = await EngineControl.runAdmin(script, prompt: uninstallPrompt)
         if ok {
             connection = nil
         }

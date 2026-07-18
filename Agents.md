@@ -2,7 +2,7 @@
 
 本文件给后续 AI 编码代理使用。进入本仓库后，先读本文件，再按需读 `README.md`、`CHANGELOG.md` 和相关源码。
 
-当前主干：`main`，产品版本 **v1.1.2**（`MARKETING_VERSION`），Helper **1.0.16**（`kSharedHelperVersion`，启用系统代理补 state-on，需强制升级旧 Helper）。打包时 `make.sh` 自增 `CURRENT_PROJECT_VERSION`。
+当前主干：`main`，产品版本 **v1.1.3**（`MARKETING_VERSION`），Helper **1.0.16**（`kSharedHelperVersion`，启用系统代理补 state-on；相对 1.0.15 及更早需强制升级）。打包时 `make.sh` 自增 `CURRENT_PROJECT_VERSION`。
 
 ## 项目概览
 
@@ -21,22 +21,23 @@
 
 - `Sources/App/`：App 入口、窗口、菜单栏、主路由
 - `Sources/Model/`：核心状态、配置/订阅、连接和代理业务
-  - `AppModel.swift`：共享状态、生命周期、网络/睡眠监听、bypass 自愈、TUN 健康巡检、自动更新
-  - `AppModel+Config.swift`：配置切换、`refreshConfigs`、系统代理/TUN/网关切换、`withEngineBusy`
-  - `AppModel+Proxies.swift` / `AppModel+Connections.swift`：代理与连接
+  - `AppModel.swift`：共享状态、生命周期（**启动时优先** `checkAndUpgradeHelperIfNeeded`）、网络/睡眠监听、bypass 自愈、TUN/网关健康巡检、自动更新
+  - `AppModel+Config.swift`：配置切换、`refreshConfigs`、系统代理/TUN/网关切换、`withEngineBusy`；**网关开关不从 config 推断**
+  - `AppModel+Proxies.swift` / `AppModel+Connections.swift`：代理与连接；`updateGatewayDevices` 聚合 LAN 客户端
   - `Models.swift`：`NetScanner`（含 `mihomoTunInterface` / `hasDownedMihomoTun`）
   - `ConfigStore.swift`：订阅 manifest；URL 存 Keychain
 - `Sources/XPC/`：
   - `HelperProtocol.swift`：XPC 协议 + 共享常量 `kSharedHelperVersion` / `kProxyBypassDomains`
-  - `EngineControl.swift`：内核与配置热补丁、Helper 升级、系统代理/DNS
+  - `EngineControl.swift`：内核与配置热补丁、Helper 升级（`runAdmin(prompt:)` 预授权说明）、系统代理/DNS
   - `ProxyManager.swift`：系统代理、exclude routes、`cleanupTUNResidual`
-  - `XPCManager.swift`：连接、超时包装、`callCleanupTUNResidual`
+  - `XPCManager.swift`：连接、超时包装、`installDaemon`/`upgradeDaemon` 预检与 stage 安装、`callCleanupTUNResidual`
   - `MihomoClient.swift` / `KernelManager.swift`
 - `Sources/Helper/main.swift`：特权 Helper 入口、客户端鉴权、`routesLock` 保护的路由状态
-- `Sources/UI/`：SwiftUI 页面；`DesignTokens.swift` 是设计系统真相源
+- `Sources/UI/`：SwiftUI 页面；`DesignTokens.swift` 是设计系统真相源；侧栏「网络拓扑」对应 `UI/SDWAN/SdwanPage.swift`
 - `Sources/Core/RuleValidator/`、`Sources/Core/YamlEditor/`：规则编辑与行扫描 YAML
 - `Resources/Panels/zashboard/dist/`：内置 Zashboard
 - `Docs/GatewayGuide.md`：局域网网关文档
+- `Scripts/build-debug.sh`：Debug 构建并**嵌入 Helper**（纯 `xcodebuild` Debug 不会带 Helper）
 - `make.sh`：本地 Release 打包主脚本（会自增 build、构建 Helper/App、内置资源、ad-hoc 签名、生成 DMG）
 - `.githooks/pre-commit`：secret 扫描 + UI 设计系统漂移警告
 
@@ -99,8 +100,13 @@ bash make.sh
 - Helper 只接受 ClashHalo `.app` 客户端；旧 ClashPow 路径仅迁移兼容
 - root 启动 mihomo 只允许 canonical kernel path
 - `installDaemon()` 生成 LaunchDaemon plist；不要再维护第二份打包时 plist 真相源
+- **安装/升级前必须校验 App 内 Helper 源二进制**；`set -e` + stage→bootout→mv，禁止 `cp` 失败后仍 `bootout` 旧服务
+- `checkStatus()` 同时要求 plist **与** `/Library/PrivilegedHelperTools/com.clashhalo.helper` 存在；仅 plist 不算已安装
+- 升级走原地替换（单次管理员授权），不要再「先卸载再安装」两次密码
+- `runAdmin(_:prompt:)` 在系统密码框前展示中文说明；取消说明框不得提权
 - `mihomo` 签名不要随意 hardened runtime；会影响 TUN/utun
 - TUN 是运行时能力：启动时强制 `tun.enable: false`，只应通过 UI/Helper 流程开启
+- **网关开关是用户意图**（`UserDefaults` 镜像 `net.gatewayModeOn`），禁止从 config 残留签名推断开启；开关关时清理残留 `dns.listen: 0.0.0.0:53`
 - Helper 版本唯一来源是 `kSharedHelperVersion`（`HelperProtocol.swift`），并同步 `Helper-Info.plist` 的 `CFBundleVersion`。需要强制升级旧 Helper 时才 bump
 - 系统代理 bypass 唯一来源是 `kProxyBypassDomains`（约 86 条：localhost/mDNS/RFC1918/link-local/CGNAT）。Helper、本地 fallback、`reconcileProxyBypassIfNeeded`、网络拓扑视图都只引用它
 - bypass 自愈在 GUI 进程本地写 `networksetup`，不要再经可能过时的 Helper 覆盖
