@@ -305,13 +305,22 @@ extension AppModel {
         withEngineBusy {
             if on && !self.reachable {
                 self.showToast("正在启动核心以开启系统代理…")
-                await self.engine.ensureRunningAsync()
+                // System proxy only needs a listening mixed-port — do NOT force a
+                // root upgrade restart (that path was multi-second and raced helper XPC).
+                await self.engine.ensureRunningAsync(preferRoot: false)
                 guard await self.waitForKernelReady(maxAttempts: 8) else {
                     self.showToast("内核启动超时，无法开启系统代理", kind: .error)
                     return
                 }
                 // reconnect() re-syncs proxy from SCDynamicStore (still off here).
                 await self.reconnect()
+            }
+
+            // LAN clients that point HTTP/SOCKS at this Mac need allow-lan.
+            // Gateway mode also sets it; system-proxy-only users previously had
+            // to flip "允许局域网" by hand or open full Gateway.
+            if on {
+                await self.ensureAllowLanForSharing()
             }
 
             let ok = await self.engine.setSystemProxy(enabled: on, port: port)
@@ -340,6 +349,36 @@ extension AppModel {
                     self.showToast("系统代理设置失败", kind: .error)
                 }
             }
+        }
+    }
+
+    /// Ensure mihomo accepts LAN inbound connections (HTTP/SOCKS on mixed-port).
+    /// Used when system proxy is on so other devices can point gateway/DNS or
+    /// explicit proxy at this Mac without enabling full Gateway (IP forward).
+    private func ensureAllowLanForSharing() async {
+        guard reachable else { return }
+        let allow = (configs["allow-lan"] as? Bool) == true
+        // bind-address "*" or empty/"0.0.0.0" means all interfaces; some profiles
+        // pin 127.0.0.1 which blocks LAN clients even with allow-lan.
+        let bind = (configs["bind-address"] as? String)?
+            .trimmingCharacters(in: .whitespacesAndNewlines) ?? "*"
+        let bindOK = bind.isEmpty || bind == "*" || bind == "0.0.0.0" || bind == "::"
+        if allow && bindOK { return }
+
+        var patch: [String: Any] = [:]
+        if !allow { patch["allow-lan"] = true }
+        if !bindOK { patch["bind-address"] = "*" }
+        guard !patch.isEmpty else { return }
+
+        // Persist so a profile reload / restart keeps LAN share available while
+        // system proxy remains the user's chosen mode.
+        engine.setTopLevelScalars(patch)
+        do {
+            try await api.patchConfig(patch)
+            await refreshConfigs()
+            logKernel("已开启 allow-lan，供局域网设备经 mixed-port 使用代理")
+        } catch {
+            logKernel("开启 allow-lan 失败：\(error.localizedDescription)")
         }
     }
 
