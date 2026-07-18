@@ -387,9 +387,47 @@ padding(.vertical, 5)                    // 用 DS.Spacing.*
 
 ## 10. 动效
 
-- Toast：`spring` 短时出现/消失
-- 路由切换：系统默认，不加自定义大动画
-- 进度/流量：数据驱动，不装饰性 looping 动画抢注意力
+实现真相源：`DS.Motion`（`Sources/UI/DesignTokens.swift`）。
+
+| Token | 语义 | 默认 |
+|---|---|---|
+| `DS.Motion.press` | 按钮按压缩放 settle | `easeOut 0.12s` |
+| `DS.Motion.toast` | Toast 进出 | `spring 0.3s` |
+| `DS.Motion.micro` | 小组件展开/折叠等微交互 | `easeInOut 0.18s` |
+| `DS.Motion.toastHold` | Toast 停留时长 | `2.4s` |
+
+### 允许
+
+- Toast 短 spring 进出（`DS.Motion.toast`）
+- 标准按钮 press scale `0.98`（`DS.Motion.press`）
+- 代理组折叠等微交互（`DS.Motion.micro`）
+- 数据驱动的图表/流量刷新（无装饰动画）
+
+### 禁止
+
+- 路由 / 侧栏切换自定义大动画、`matchedGeometryEffect` 跨页
+- `DSSegmentedControl` 自定义弹簧 / 位移动画（保持系统默认瞬间切换，见 §6.8）
+- 装饰性 `repeatForever` / looping 抢注意力（拓扑连线用静态虚线）
+- 页面内魔法数 duration（一律走 `DS.Motion`）
+
+### Accessibility
+
+尊重 `accessibilityReduceMotion`：Toast 可降为 opacity 或瞬间出现；press 可取消 scale。
+
+---
+
+## 10.1 反馈
+
+| 通道 | 用途 | 约定 |
+|---|---|---|
+| `showToast(_:kind:)` | 全局瞬时结果 | 唯一 toast 通道；`ToastKind` = info/ok/warn/error；单条替换 + generation 防连弹被旧 timer 清掉 |
+| `engine.isBusy` | 内核长操作互斥 | **必须可感知**：主开关 Toggle 在 busy 时 disabled；可选 footer 文案；禁止只靠 toast 解释 |
+| 局部 `ProgressView` | Helper 安装 / 下载 / 测速 / DNS 解析 | 按钮内 Progress + disabled，沿用设置页范式 |
+| `ContentUnavailable` | 列表空态 | loading ≠ empty：加载用 Progress，空列表用 empty |
+
+- 主开关（系统代理 / TUN / 网关）：以引擎真实状态为准，非乐观 UI
+- 配置热路径 `NToggle`：允许乐观写 `configs` 再 patch（防 3s 轮询回弹）
+- 主窗口不可见时 toast 可能看不到；关键错误可考虑菜单栏 status（后续）
 
 ---
 
@@ -405,5 +443,6 @@ padding(.vertical, 5)                    // 用 DS.Spacing.*
 | 2026-07-17 | 胶囊滑块 Tab：`DSSegmentedControl` track 内缩 2pt + accent 选中胶囊；页面级顶栏统一 `chromeBg`；侧栏选中与分段选中语言同源（§6.1 / §6.8） |
 | 2026-07-17 | 圆角嵌套递减：顶层卡 `card` 10、卡内子表面 `control` 6、浮层 `panel` 12；仪表盘 `BarStat`/`MiniStat` 改 `dsCardChrome` 与兄弟 `Card` 同半径 |
 | 2026-07-17 | Light 精致化：`windowBg`/`controlBg` 重标定；`border` 软化 0.10→0.06；`dsCardChrome` 双层阴影（contact+ambient）；卡片边界靠抬升+弱边，而非硬线框 |
+| 2026-07-18 | `DS.Motion` + §10/§10.1 反馈契约：press/toast/micro/toastHold；Toast generation + kind；主开关 busy 可感知；禁止装饰性 looping |
 
 实现以代码为准；规范与代码冲突时，先修代码再回写本文。
