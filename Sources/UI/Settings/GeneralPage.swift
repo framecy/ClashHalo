@@ -494,21 +494,21 @@ struct MenuBarPanel: View {
 
             // Switches card
             card {
-                switchRow("系统代理", icon: "globe",
+                switchRow("Proxy", icon: "globe",
                           isOn: Binding(
                             get: { M.systemProxyOn },
                             set: { newValue in
                                 guard newValue != M.systemProxyOn else { return }
                                 M.toggleSystemProxy()
                             }))
-                switchRow("TUN 模式", icon: "shield", accent: true,
+                switchRow("TUN", icon: "shield", accent: true,
                           isOn: Binding(
                             get: { M.tunOn },
                             set: { newValue in
                                 guard newValue != M.tunOn else { return }
                                 M.toggleTUN()
                             }))
-                switchRow("核心运行", icon: "bolt",
+                switchRow("内核", icon: "bolt",
                           isOn: Binding(
                             get: { M.reachable },
                             set: { newValue in
