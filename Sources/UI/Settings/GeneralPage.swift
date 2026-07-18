@@ -428,20 +428,20 @@ struct GeneralPage: View {
         helperBusy = true
         defer { helperBusy = false }
         if engine.isRoot && helperNeedsUpdate {
-            M.showToast("正在升级特权服务（v\(engine.helperVersion) → v\(EngineControl.kExpectedHelperVersion)）…")
+            M.showToast("正在更新特权服务（v\(engine.helperVersion) → v\(EngineControl.kExpectedHelperVersion)）…")
             let upgraded = await engine.checkAndUpgradeHelperIfNeeded()
-            guard upgraded else { M.showToast("升级失败或已取消授权"); return }
+            guard upgraded else { M.showToast("更新失败或已取消"); return }
             await M.reconnect()
-            M.showToast("特权服务已升级 ✓")
+            M.showToast("特权服务已更新 ✓")
         } else if engine.isRoot {
             M.showToast("正在请求授权卸载特权服务…")
             let ok = await engine.uninstallPrivileged()
             await M.reconnect()
-            M.showToast(ok ? "特权辅助程序已卸载" : "卸载失败或已取消授权")
+            M.showToast(ok ? "特权辅助程序已卸载" : "卸载失败或已取消")
         } else {
             M.showToast("正在请求授权安装特权服务…")
             let ok = await engine.installPrivileged()
-            guard ok else { M.showToast("安装失败或已取消授权"); return }
+            guard ok else { M.showToast("安装失败或已取消"); return }
             // installPrivileged osascript 成功即视为安装完成；连通状态由 pollStatus 异步更新
             engine.isRoot = true
             await waitForHelper()

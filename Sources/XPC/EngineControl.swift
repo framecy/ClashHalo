@@ -849,47 +849,75 @@ import SwiftUI
 
     /// Check whether the installed helper is outdated and upgrade it automatically.
     /// Returns true if helper is at the expected version (already up to date or just upgraded).
+    ///
+    /// Shows a Chinese pre-auth explanation dialog before the system password
+    /// sheet so the user understands *why* elevation is needed. Upgrade is a
+    /// single in-place replace (one password prompt), not uninstall+install.
     @discardableResult
     func checkAndUpgradeHelperIfNeeded() async -> Bool {
         if !isRoot {
             isRoot = await XPCManager.shared.verifyConnectivity()
         }
         if !isRoot {
+            // Missing binary in the app bundle is a build packaging issue, not a
+            // permission denial — surface that before prompting for admin.
+            let helperSrc = Bundle.main.bundlePath + "/Contents/MacOS/com.clashhalo.helper"
+            if !FileManager.default.fileExists(atPath: helperSrc) {
+                onLog?("App 内未嵌入 Helper 二进制，无法安装特权服务。请用 Scripts/build-debug.sh 或 make.sh 构建后再试。")
+                return false
+            }
             onLog?("未检测到特权服务，开始自动安装…")
-            let ok = await installPrivileged()
+            let ok = await installPrivileged(prompt: XPCManager.defaultInstallPrompt)
             if ok {
-                isRoot = await XPCManager.shared.verifyConnectivity()
+                isRoot = await waitForHelperConnectivity()
                 if isRoot {
                     onLog?("特权服务安装成功 ✓")
+                    refreshHelperVersion()
+                } else {
+                    onLog?("特权服务已安装但尚未连通，稍后重试")
                 }
             } else {
-                onLog?("特权服务授权被拒绝")
+                // installDaemon returns false for auth cancel, missing source
+                // (already guarded above), or launchctl bootstrap failure.
+                onLog?("特权服务安装失败（授权取消、bootstrap 失败，或 Helper 二进制不可用）")
             }
+            return isRoot
         }
-        guard isRoot else { return false }
         // The version may not be fetched yet (pollStatus runs every 5s; this check
-        // fires at 4s). Actively fetch it first so a needed upgrade isn't skipped
-        // by the "?" guard and silently deferred forever.
+        // fires at startup). Actively fetch it first so a needed upgrade isn't
+        // skipped by the "?" guard and silently deferred forever.
         if helperVersion == "?" || helperVersion.isEmpty {
             if let v = await fetchHelperVersion() { helperVersion = v }
         }
         guard helperVersion != "?", !helperVersion.isEmpty else { return true }
         guard helperVersion != Self.kExpectedHelperVersion else { return true }
-        onLog?("特权服务 v\(helperVersion) 低于预期 v\(Self.kExpectedHelperVersion)，开始自动升级（卸载→安装）…")
-        let ok = await XPCManager.shared.upgradeDaemon()
+
+        let from = helperVersion
+        let to = Self.kExpectedHelperVersion
+        onLog?("特权服务 v\(from) 低于预期 v\(to)，开始自动更新…")
+        let prompt = XPCManager.upgradePrompt(from: from, to: to)
+        let ok = await XPCManager.shared.upgradeDaemon(prompt: prompt)
         if ok {
-            isRoot = true
-            // Wait for new helper to come up and fetch fresh version
-            for _ in 0..<8 {
-                try? await Task.sleep(nanoseconds: 500_000_000)
-                if await XPCManager.shared.verifyConnectivity() { break }
+            isRoot = await waitForHelperConnectivity()
+            if isRoot {
+                refreshHelperVersion()
+                onLog?("特权服务已更新至 v\(to)")
+            } else {
+                onLog?("特权服务已替换但尚未连通，稍后重试")
             }
-            refreshHelperVersion()
-            onLog?("特权服务已升级至 v\(Self.kExpectedHelperVersion)")
         } else {
-            onLog?("特权服务自动升级失败，请前往「设置→权限」手动更新")
+            onLog?("特权服务自动更新失败或已取消，请前往「设置→权限」手动更新")
         }
-        return ok
+        return ok && isRoot
+    }
+
+    /// Wait up to ~4s for the freshly installed helper to accept XPC.
+    private func waitForHelperConnectivity(attempts: Int = 8) async -> Bool {
+        for _ in 0..<attempts {
+            if await XPCManager.shared.verifyConnectivity() { return true }
+            try? await Task.sleep(nanoseconds: 500_000_000)
+        }
+        return false
     }
 
     /// Refresh status via REST API
@@ -907,18 +935,19 @@ import SwiftUI
         return nil
     }
 
-    /// Install mihomo as a root LaunchDaemon.
+    /// Install the privileged helper LaunchDaemon.
+    /// - Parameter prompt: Optional pre-auth explanation. Defaults to the
+    ///   shared install prompt when nil.
     @discardableResult
-    func installPrivileged() async -> Bool {
-        // We use XPCManager to install the daemon which points to the official mihomo binary
-        let ok = await XPCManager.shared.installDaemon()
+    func installPrivileged(prompt: String? = nil) async -> Bool {
+        let ok = await XPCManager.shared.installDaemon(prompt: prompt)
         if ok { isRoot = true }
         return ok
     }
 
     @discardableResult
-    func uninstallPrivileged() async -> Bool {
-        let ok = await XPCManager.shared.uninstallDaemon()
+    func uninstallPrivileged(prompt: String? = nil) async -> Bool {
+        let ok = await XPCManager.shared.uninstallDaemon(prompt: prompt)
         if ok { isRoot = false }
         return ok
     }
@@ -1059,9 +1088,37 @@ import SwiftUI
     }
 
     /// Run a shell snippet with administrator privileges via one osascript prompt.
-    static func runAdmin(_ shell: String) async -> Bool {
-        let escaped = shell.replacingOccurrences(of: "\\", with: "\\\\").replacingOccurrences(of: "\"", with: "\\\"")
-        let script = "do shell script \"\(escaped)\" with administrator privileges"
+    ///
+    /// - Parameter prompt: Optional Chinese explanation shown in a pre-auth
+    ///   dialog *before* the system password sheet. The OS password dialog
+    ///   itself cannot carry a custom body, so we surface the upgrade/install
+    ///   reason here and only then request admin. Cancel on the pre-dialog
+    ///   aborts without elevating.
+    static func runAdmin(_ shell: String, prompt: String? = nil) async -> Bool {
+        let escapedShell = shell
+            .replacingOccurrences(of: "\\", with: "\\\\")
+            .replacingOccurrences(of: "\"", with: "\\\"")
+
+        let script: String
+        if let prompt, !prompt.isEmpty {
+            // Build an AppleScript string that concatenates lines with `return`
+            // so multi-line explanations render correctly in display dialog.
+            let asPrompt = prompt
+                .components(separatedBy: "\n")
+                .map { line in
+                    line
+                        .replacingOccurrences(of: "\\", with: "\\\\")
+                        .replacingOccurrences(of: "\"", with: "\\\"")
+                }
+                .joined(separator: "\" & return & \"")
+            script = """
+            display dialog "\(asPrompt)" buttons {"取消", "继续"} default button "继续" cancel button "取消" with icon caution with title "ClashHalo 特权服务"
+            do shell script "\(escapedShell)" with administrator privileges
+            """
+        } else {
+            script = "do shell script \"\(escapedShell)\" with administrator privileges"
+        }
+
         return await withCheckedContinuation { cont in
             DispatchQueue.global().async {
                 let p = Process()

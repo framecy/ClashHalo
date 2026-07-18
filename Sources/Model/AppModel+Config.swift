@@ -217,15 +217,37 @@ extension AppModel {
             }
             tunOn = shouldBeOn
         }
-        // Gateway state inference (cautious): if UI thinks Gateway is off but
-        // config has the signature (allow-lan=true AND dns.listen=0.0.0.0:53),
-        // sync UI to true. Never sync false → avoids overwriting user's manual
-        // LAN-sharing configs. The write path (applyGatewayMode) remains authoritative.
+        // Gateway is user intent only (persisted via UserDefaults mirror). Never
+        // infer it from config.yaml: residual `allow-lan + dns.listen=0.0.0.0:53`
+        // left by a previous session / incomplete disable used to flip the switch
+        // on at startup, then verifyGatewayConfig re-enforced sysctl IP forwarding
+        // and could cascade into a black-hole network. The write path
+        // (applyGatewayMode) remains the only place that turns Gateway on.
         if !gatewayModeOn {
-            let allowLan = (c["allow-lan"] as? Bool) == true
             let dnsListen = (c["dns"] as? [String: Any])?["listen"] as? String
-            if allowLan && dnsListen == "0.0.0.0:53" {
-                gatewayModeOn = true
+            if dnsListen == "0.0.0.0:53" {
+                // Soft-clean residual Gateway DNS bind so a cold start with the
+                // switch off does not keep hijacking LAN DNS / port 53.
+                logKernel("检测到残留网关 DNS 监听（0.0.0.0:53），正在清理…")
+                engine.setTopLevelScalars([
+                    "dns": [
+                        "enable": true,
+                        "listen": "127.0.0.1:1053",
+                        "enhanced-mode": "fake-ip"
+                    ]
+                ])
+                noteConfigContentChanged()
+                // Best-effort live reload; ignore failures (kernel may be down).
+                try? await api.reloadConfig(path: engine.configFilePath)
+                if var dns = configs["dns"] as? [String: Any] {
+                    dns["listen"] = "127.0.0.1:1053"
+                    configs["dns"] = dns
+                }
+                // Residual Gateway signature usually means a previous session left
+                // IP forwarding on too — clear it once when we clean the config.
+                if engine.isRoot {
+                    _ = await engine.setGatewayMode(enabled: false)
+                }
             }
         }
         // Keep system DNS in sync with the real TUN state. This is the single
@@ -431,6 +453,7 @@ extension AppModel {
                 showToast("网关中枢（旁路由）已成功开启")
             } else {
                 gatewayModeOn = false
+                gatewayDevices.removeAll(keepingCapacity: false)
                 preGatewayAllowLan = nil; preGatewayDNSListen = nil
                 showToast("底层 IP 转发开启失败")
             }
@@ -450,6 +473,7 @@ extension AppModel {
             let ok = await engine.setGatewayMode(enabled: false)
             if ok {
                 gatewayModeOn = false
+                gatewayDevices.removeAll(keepingCapacity: false)
                 do {
                     try await api.reloadConfig(path: engine.configFilePath)
                     await refreshConfigs()
@@ -527,7 +551,7 @@ extension AppModel {
                 let existing = (configs["tun"] as? [String: Any])?["route-exclude-address"] as? [String] ?? []
                 let merged = Array(Set(existing + sdwanPrefixes)).sorted()
                 tunOverrideMap["route-exclude-address"] = merged
-                logKernel("TUN 路由排除：自动注入虚拟专网前缀 \(sdwanPrefixes.joined(separator: ", "))")
+                logKernel("TUN 路由排除：自动注入网络拓扑前缀 \(sdwanPrefixes.joined(separator: ", "))")
             }
         }
 
@@ -633,6 +657,7 @@ extension AppModel {
                 if !want && gatewayModeOn {
                     _ = await engine.setGatewayMode(enabled: false)
                     gatewayModeOn = false
+                    gatewayDevices.removeAll(keepingCapacity: false)
                     // Restore config.yaml overrides so a later config switch /
                     // Gateway re-enable doesn't read stale snapshot values.
                     let restores: [String: Any] = [
@@ -812,6 +837,7 @@ extension AppModel {
             _ = await engine.setGatewayMode(enabled: false)
         }
         gatewayModeOn = false
+        gatewayDevices.removeAll(keepingCapacity: false)
         await restoreTunnelDNS()
         if systemProxyOn {
             let port = proxyPort

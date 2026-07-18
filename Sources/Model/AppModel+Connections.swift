@@ -54,15 +54,7 @@ extension AppModel {
         if needDetailedStats {
             var bytes: [String: (up: Int64, down: Int64)] = [:]
             var activeIDs = Set<String>()
-            var newGatewayDevices = gatewayDevices
-            for ip in newGatewayDevices.keys {
-                newGatewayDevices[ip]?.activeConnections = 0
-                newGatewayDevices[ip]?.uploadRate = 0
-                newGatewayDevices[ip]?.downloadRate = 0
-            }
-            
-            let localIPs = Set(NetScanner.interfaces().flatMap { $0.ipv4 })
-            let nowTime = Date()
+
             for c in items {
                 activeIDs.insert(c.id)
                 if !activeConnsSet.contains(c.id) { totalConnsCount += 1 }
@@ -70,26 +62,18 @@ extension AppModel {
                 let upRate = prev.map { max(0, c.upload - $0.up) } ?? 0
                 let downRate = prev.map { max(0, c.download - $0.down) } ?? 0
                 bytes[c.id] = (c.upload, c.download)
-                
+
                 // attribute this connection's byte delta to its category → history
                 let cat = (c.chains.first == "DIRECT" || c.chains.contains("DIRECT")) ? "direct"
                         : (c.chains.first == "REJECT" || c.chains.contains("REJECT")) ? "reject" : "proxy"
                 history.record(category: cat, down: Int64(downRate), up: Int64(upRate), hour: hour)
-                
-                // Track LAN Gateway devices
-                let srcIP = c.metadata.sourceIP ?? ""
-                let isLocal = srcIP.isEmpty || srcIP == "127.0.0.1" || srcIP == "::1" || localIPs.contains(srcIP)
-                if !isLocal {
-                    var dev = newGatewayDevices[srcIP] ?? GatewayDevice(ip: srcIP, activeConnections: 0, uploadRate: 0, downloadRate: 0, totalUpload: 0, totalDownload: 0, firstSeen: nowTime, lastSeen: nowTime)
-                    dev.activeConnections += 1
-                    dev.uploadRate += Int64(upRate)
-                    dev.downloadRate += Int64(downRate)
-                    dev.totalUpload += Int64(upRate)
-                    dev.totalDownload += Int64(downRate)
-                    dev.lastSeen = nowTime
-                    newGatewayDevices[srcIP] = dev
-                }
             }
+
+            // Must run before prevConnBytes is overwritten so per-tick rates stay correct.
+            if gatewayModeOn {
+                updateGatewayDevices(from: items)
+            }
+
             prevConnBytes = bytes
 
             // Limit prevConnBytes growth: cap at 2000 entries by keeping only the
@@ -101,22 +85,28 @@ extension AppModel {
                 logKernel("连接追踪字典过大，已裁剪至 2000 条")
             }
 
-            // Clean up old inactive devices (>10 mins)
-            newGatewayDevices = newGatewayDevices.filter { $0.value.activeConnections > 0 || nowTime.timeIntervalSince($0.value.lastSeen) < 600 }
-            gatewayDevices = newGatewayDevices
-            
-            
             activeConnsSet = activeIDs
             activeConnectionsCount = activeIDs.count
-            
+
             if route == "dashboard" || route == "connections" {
                 dash = Self.computeDashRaw(items)
             }
         } else {
-            // Background idle: Only sync basic count
+            // Background idle: only sync basic count + gateway devices (cheap).
+            // Gateway aggregation stays on so the Network page isn't empty after
+            // the window was backgrounded and reopened.
             activeConnectionsCount = items.count
-            // Clear maps to free up heap space immediately when going background
-            if !prevConnBytes.isEmpty { prevConnBytes.removeAll(keepingCapacity: false) }
+            if gatewayModeOn {
+                updateGatewayDevices(from: items)
+                // Keep prevConnBytes for the next rate delta; only drop the
+                // heavy active-set bookkeeping while UI is hidden.
+                var bytes: [String: (up: Int64, down: Int64)] = [:]
+                bytes.reserveCapacity(items.count)
+                for c in items { bytes[c.id] = (c.upload, c.download) }
+                prevConnBytes = bytes
+            } else {
+                if !prevConnBytes.isEmpty { prevConnBytes.removeAll(keepingCapacity: false) }
+            }
             if !activeConnsSet.isEmpty { activeConnsSet.removeAll(keepingCapacity: false) }
         }
         
@@ -127,6 +117,66 @@ extension AppModel {
         if needDetailedStats {
             appMemoryMB = Double(Self.residentMemoryBytes()) / 1_000_000
         }
+    }
+
+    /// Aggregate LAN gateway clients from a connections snapshot.
+    /// Filters out loopback / this host's own IPs, and also the TUN fake-ip
+    /// address range (198.18.0.0/15) which mihomo reports as sourceIP for
+    /// local processes under fake-ip mode. Relies on `prevConnBytes` still
+    /// holding the previous tick so per-device rates stay accurate.
+    func updateGatewayDevices(from items: [ConnectionItem]) {
+        var newGatewayDevices = gatewayDevices
+        for ip in newGatewayDevices.keys {
+            newGatewayDevices[ip]?.activeConnections = 0
+            newGatewayDevices[ip]?.uploadRate = 0
+            newGatewayDevices[ip]?.downloadRate = 0
+        }
+
+        let localIPs = Set(NetScanner.interfaces().flatMap { $0.ipv4 })
+        let nowTime = Date()
+        for c in items {
+            let srcIP = c.metadata.sourceIP ?? ""
+            guard !srcIP.isEmpty,
+                  srcIP != "127.0.0.1",
+                  srcIP != "::1",
+                  !localIPs.contains(srcIP),
+                  !Self.isFakeIP(srcIP) else { continue }
+
+            let prev = prevConnBytes[c.id]
+            let upRate = prev.map { max(0, c.upload - $0.up) } ?? 0
+            let downRate = prev.map { max(0, c.download - $0.down) } ?? 0
+
+            var dev = newGatewayDevices[srcIP] ?? GatewayDevice(
+                ip: srcIP,
+                activeConnections: 0,
+                uploadRate: 0,
+                downloadRate: 0,
+                totalUpload: 0,
+                totalDownload: 0,
+                firstSeen: nowTime,
+                lastSeen: nowTime
+            )
+            dev.activeConnections += 1
+            dev.uploadRate += Int64(upRate)
+            dev.downloadRate += Int64(downRate)
+            dev.totalUpload += Int64(upRate)
+            dev.totalDownload += Int64(downRate)
+            dev.lastSeen = nowTime
+            newGatewayDevices[srcIP] = dev
+        }
+
+        // Drop devices that have been idle for >10 minutes.
+        newGatewayDevices = newGatewayDevices.filter {
+            $0.value.activeConnections > 0 || nowTime.timeIntervalSince($0.value.lastSeen) < 600
+        }
+        gatewayDevices = newGatewayDevices
+    }
+
+    /// mihomo fake-ip pool is 198.18.0.0/15 by default.
+    private static func isFakeIP(_ ip: String) -> Bool {
+        let parts = ip.split(separator: ".")
+        guard parts.count == 4, let a = Int(parts[0]), let b = Int(parts[1]) else { return false }
+        return a == 198 && (b == 18 || b == 19)
     }
 
     /// Single-pass dashboard aggregation (runs once per connections snapshot,
