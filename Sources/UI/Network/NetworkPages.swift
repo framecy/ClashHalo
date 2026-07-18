@@ -46,7 +46,7 @@ struct NetworkPage: View {
                             HStack {
                                 Text("作为网关中枢").font(.dsBody); Spacer()
                                 if M.engine.isBusy {
-                                    ProgressView().controlSize(.mini).scaleEffect(0.7)
+                                    ProgressView().controlSize(.mini).scaleEffect(DS.Progress.miniScale)
                                 }
                                 Toggle("", isOn: Binding(get: { M.gatewayModeOn }, set: { _ in M.toggleGatewayMode() }))
                                     .toggleStyle(.switch).labelsHidden()
@@ -142,7 +142,7 @@ struct TunPage: View {
                         HStack {
                             Text("启用 TUN").font(.dsBody); Spacer()
                             if M.engine.isBusy {
-                                ProgressView().controlSize(.mini).scaleEffect(0.7)
+                                ProgressView().controlSize(.mini).scaleEffect(DS.Progress.miniScale)
                             }
                             Toggle("", isOn: Binding(get: { M.tunOn }, set: { _ in M.toggleTUN() }))
                                 .toggleStyle(.switch).labelsHidden()
@@ -680,7 +680,7 @@ struct KernelCard: View {
                                 let wasTUN = M.tunOn
                                 await M.engine.restart(); try? await Task.sleep(nanoseconds: 3_000_000_000); await M.reconnect()
                                 await M.reapplyTUN(wasOn: wasTUN)
-                                M.showToast("内核已重启")
+                                M.showToast("内核已重启", kind: .ok)
                             }
                         }.dsButton(.warning)
                     }

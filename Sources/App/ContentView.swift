@@ -244,7 +244,7 @@ struct ContentView: View {
             if busy {
                 ProgressView()
                     .controlSize(.mini)
-                    .scaleEffect(0.7)
+                    .scaleEffect(DS.Progress.miniScale)
             }
             // 开关是状态控件，不与标准 32pt 按钮/tab 共用尺寸（design.md §6.7）
             // busy 时禁用，避免连点只靠 toast 解释（design.md §10.1）

@@ -237,6 +237,14 @@ enum DS {
         static let toastHold: TimeInterval = 2.4
     }
 
+    // MARK: Progress
+    // Keep ProgressView sizes consistent across chrome (sidebar/menu) and forms.
+
+    enum Progress {
+        /// Scale applied on top of `.controlSize(.mini)` for dense chrome rows.
+        static let miniScale: CGFloat = 0.7
+    }
+
     // MARK: Icon sizes
 
     enum Icon {
@@ -543,6 +551,15 @@ extension View {
     /// Apply standard input field styling (fixed height, matches menu pickers).
     func inputStyle() -> some View {
         self.textFieldStyle(DSTextFieldStyle())
+    }
+
+    /// Dense chrome spinner (sidebar / menu-bar busy rows). Prefer this over
+    /// ad-hoc `scaleEffect(0.7)` so all busy indicators match.
+    @ViewBuilder
+    func dsMiniProgress() -> some View {
+        ProgressView()
+            .controlSize(.mini)
+            .scaleEffect(DS.Progress.miniScale)
     }
 
     /// Toolbar / filter search field chrome (plain field + control surface).

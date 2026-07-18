@@ -146,9 +146,9 @@ struct ConfigPage: View {
                         let ok = await M.store.updateRemote(p.id)
                         if ok {
                             if active { M.selectForApply(p.id) }
-                            M.showToast("订阅「\(p.name)」已更新成功")
+                            M.showToast("订阅「\(p.name)」已更新成功", kind: .ok)
                         } else {
-                            M.showToast("订阅「\(p.name)」更新失败，已保留原配置")
+                            M.showToast("订阅「\(p.name)」更新失败，已保留原配置", kind: .error)
                         }
                     }
                 } label: {

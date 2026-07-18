@@ -414,6 +414,16 @@ padding(.vertical, 5)                    // 用 DS.Spacing.*
 
 尊重 `accessibilityReduceMotion`：Toast 可降为 opacity 或瞬间出现；press 可取消 scale。
 
+### Progress
+
+- 表单/工具栏：`ProgressView().controlSize(.small)`
+- 密集 chrome（侧栏/菜单栏 busy）：`ProgressView().controlSize(.mini).scaleEffect(DS.Progress.miniScale)`
+- 禁止各页自造 `0.5 / 0.55 / 0.7` 缩放魔法数
+
+### 菜单栏反馈
+
+主窗口不可见时，`MenuBarPanel` 顶栏副标题行显示当前 toast（带 kind 色点），与主窗口 capsule toast 共用 `AppModel.toast` 状态。
+
 ---
 
 ## 10.1 反馈
@@ -444,5 +454,6 @@ padding(.vertical, 5)                    // 用 DS.Spacing.*
 | 2026-07-17 | 圆角嵌套递减：顶层卡 `card` 10、卡内子表面 `control` 6、浮层 `panel` 12；仪表盘 `BarStat`/`MiniStat` 改 `dsCardChrome` 与兄弟 `Card` 同半径 |
 | 2026-07-17 | Light 精致化：`windowBg`/`controlBg` 重标定；`border` 软化 0.10→0.06；`dsCardChrome` 双层阴影（contact+ambient）；卡片边界靠抬升+弱边，而非硬线框 |
 | 2026-07-18 | `DS.Motion` + §10/§10.1 反馈契约：press/toast/micro/toastHold；Toast generation + kind；主开关 busy 可感知；禁止装饰性 looping |
+| 2026-07-18 | 菜单栏 toast 副标题行；`DS.Progress.miniScale`；主路径 toast kind 补齐 |
 
 实现以代码为准；规范与代码冲突时，先修代码再回写本文。

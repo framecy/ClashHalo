@@ -148,7 +148,7 @@ struct GeneralPage: View {
                                     }
                                     Button("检查") {
                                         engine.refreshHelperVersion()
-                                        M.showToast(engine.isRoot ? "Helper 连通正常 · v\(engine.helperVersion)" : "Helper 未连通")
+                                        M.showToast(engine.isRoot ? "Helper 连通正常 · v\(engine.helperVersion)" : "Helper 未连通", kind: engine.isRoot ? .ok : .error)
                                     }
                                     .dsButton()
 
@@ -249,7 +249,7 @@ struct GeneralPage: View {
                                 Task {
                                     M.showToast("开始下载更新...")
                                     let ok = await M.updater.performUpdate()
-                                    M.showToast(ok ? "更新包已打开，请按提示安装" : "更新下载失败")
+                                    M.showToast(ok ? "更新包已打开，请按提示安装" : "更新下载失败", kind: ok ? .ok : .error)
                                 }
                             }
                             .dsButton(.warning)
@@ -430,23 +430,23 @@ struct GeneralPage: View {
         if engine.isRoot && helperNeedsUpdate {
             M.showToast("正在更新特权服务（v\(engine.helperVersion) → v\(EngineControl.kExpectedHelperVersion)）…")
             let upgraded = await engine.checkAndUpgradeHelperIfNeeded()
-            guard upgraded else { M.showToast("更新失败或已取消"); return }
+            guard upgraded else { M.showToast("更新失败或已取消", kind: .error); return }
             await M.reconnect()
-            M.showToast("特权服务已更新 ✓")
+            M.showToast("特权服务已更新 ✓", kind: .ok)
         } else if engine.isRoot {
             M.showToast("正在请求授权卸载特权服务…")
             let ok = await engine.uninstallPrivileged()
             await M.reconnect()
-            M.showToast(ok ? "特权辅助程序已卸载" : "卸载失败或已取消")
+            M.showToast(ok ? "特权辅助程序已卸载" : "卸载失败或已取消", kind: ok ? .ok : .error)
         } else {
             M.showToast("正在请求授权安装特权服务…")
             let ok = await engine.installPrivileged()
-            guard ok else { M.showToast("安装失败或已取消"); return }
+            guard ok else { M.showToast("安装失败或已取消", kind: .error); return }
             // installPrivileged osascript 成功即视为安装完成；连通状态由 pollStatus 异步更新
             engine.isRoot = true
             await waitForHelper()
             await M.reconnect()
-            M.showToast("特权辅助程序已安装 ✓")
+            M.showToast("特权辅助程序已安装 ✓", kind: .ok)
         }
     }
 
@@ -467,19 +467,30 @@ struct MenuBarPanel: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: DS.Spacing.s) {
-            // Header
+            // Header + inline status (serves as toast surface when the main window is hidden)
             HStack(spacing: DS.Spacing.s) {
                 Image(systemName: "bolt.fill").font(DS.Icon.font(DS.Icon.md)).foregroundColor(DS.Palette.accent)
                 VStack(alignment: .leading, spacing: 1) {
                     Text("ClashHalo").font(.dsCardLabel)
-                    HStack(spacing: DS.Spacing.xs) {
-                        Circle().fill(M.reachable ? DS.Palette.ok : DS.Palette.error).frame(width: 5, height: 5)
-                        Text(M.reachable ? "mihomo \(M.version)" : "未连接").font(.dsBody).foregroundColor(.secondary)
+                    if let toast = M.toast {
+                        HStack(spacing: DS.Spacing.xs) {
+                            Circle().fill(menuBarToastColor(toast.kind)).frame(width: 5, height: 5)
+                            Text(toast.text)
+                                .font(.dsBody)
+                                .foregroundColor(.secondary)
+                                .lineLimit(2)
+                        }
+                    } else {
+                        HStack(spacing: DS.Spacing.xs) {
+                            Circle().fill(M.reachable ? DS.Palette.ok : DS.Palette.error).frame(width: 5, height: 5)
+                            Text(M.reachable ? "mihomo \(M.version)" : "未连接").font(.dsBody).foregroundColor(.secondary)
+                        }
                     }
                 }
                 Spacer()
             }
             .padding(.horizontal, DS.Spacing.xs).padding(.top, DS.Spacing.xs)
+            .animation(DS.Motion.toast, value: M.toast)
 
             // Switches card
             card {
@@ -652,6 +663,15 @@ struct MenuBarPanel: View {
         openWindow(id: "main")
     }
 
+    private func menuBarToastColor(_ kind: ToastKind) -> Color {
+        switch kind {
+        case .info: return DS.Palette.info
+        case .ok: return DS.Palette.ok
+        case .warn: return DS.Palette.warn
+        case .error: return DS.Palette.error
+        }
+    }
+
     /// Rounded card container (Burrow-style elevated surface).
     @ViewBuilder
     private func card<C: View>(@ViewBuilder _ content: () -> C) -> some View {
@@ -694,22 +714,33 @@ struct MenuBarPanel: View {
     }
 
     /// Compact toggle row: status dot + icon + label + mini switch (DS-styled).
+    /// When the engine is busy, the switch is disabled and a mini Progress is shown
+    /// so menu-bar toggles match the sidebar's busy affordance.
     private func switchRow(_ label: String, icon: String, accent: Bool = false,
                            isOn: Binding<Bool>) -> some View {
-        HStack(spacing: DS.Spacing.s) {
+        let busy = M.engine.isBusy
+        return HStack(spacing: DS.Spacing.s) {
             Circle()
                 .fill(isOn.wrappedValue ? (accent ? DS.Palette.accent : DS.Palette.ok) : Color.secondary.opacity(0.3))
                 .frame(width: 6, height: 6)
             Image(systemName: icon).font(.dsBody)
                 .foregroundColor(isOn.wrappedValue ? .primary : .secondary)
                 .frame(width: 16)
-            Text(label).font(.dsBodyMedium).foregroundColor(isOn.wrappedValue ? .primary : .secondary)
+            Text(label).font(.dsBodyMedium)
+                .foregroundColor(busy ? .secondary : (isOn.wrappedValue ? .primary : .secondary))
             Spacer()
+            if busy {
+                ProgressView()
+                    .controlSize(.mini)
+                    .scaleEffect(DS.Progress.miniScale)
+            }
             Toggle("", isOn: isOn)
                 .toggleStyle(.switch)
                 .controlSize(.mini)
                 .labelsHidden()
                 .tint(accent ? DS.Palette.accent : DS.Palette.ok)
+                .disabled(busy)
+                .opacity(busy ? 0.55 : 1)
         }
     }
 
