@@ -2,6 +2,23 @@
 
 本项目所有重要变更记录于此。格式参考 [Keep a Changelog](https://keepachangelog.com/),版本遵循语义化版本。
 
+## [1.1.3] - 2026-07-18
+
+启动稳定性与网关体验：修复冷启动误开网关中枢导致断网；网关设备列表复活；Helper 安装/升级体验加固（预检、单次授权、更新说明弹窗）。Helper 仍为 **1.0.16**（无需强制升级）。
+
+### Fixed
+- **冷启动误开网关中枢 / 全局断网**：`refreshConfigs` 不再根据残留 `allow-lan + dns.listen=0.0.0.0:53` 推断 `gatewayModeOn`。网关开关只认用户意图（UserDefaults 镜像）；开关关闭时若发现残留 `0.0.0.0:53` 会自动清回 `127.0.0.1:1053` 并顺带关闭 IP 转发。
+- **网关「已接入设备」始终为空**：设备聚合原先只写在 `recordHistoryOnly`，前台 `startPolling` 不拉 `/connections`，连接页也不写 `gatewayDevices`，后台又因 `needDetailedStats=false` 跳过。抽出 `updateGatewayDevices`，连接页与网关开启时的前台轮询共同驱动；过滤 loopback / 本机 IP / fake-ip `198.18.0.0/15`。
+- **Helper 安装自毁**：Debug App 未嵌入 Helper 时，`installDaemon` 仍 `bootout` 旧服务，留下 plist 无二进制（launchd `EX_CONFIG`）并刷屏 XPC 错误。安装前校验源二进制；`set -e` + stage→bootout→mv；`checkStatus` 同时要求 plist **与** 二进制存在。
+- **Helper 升级双密码弹窗**：升级改为原地替换（单次授权），不再卸载+安装。
+- **`verifyGatewayConfig` 刷屏**：Helper 不可达时先探测并 60s 节流失败日志，避免每 30s 打 XPC 错误。
+
+### Changed
+- **Helper 强制更新前置**：`AppModel.start()` 在探测内核之前执行 `checkAndUpgradeHelperIfNeeded()`。
+- **管理员授权前说明弹窗**：`runAdmin` 支持 `prompt`；安装 / 更新 / 卸载前先展示中文说明，再出系统密码框。
+- **文案统一**：用户可见「SD-WAN」统一为「网络拓扑」（侧栏、拓扑页提示、Helper 安装说明）。
+- **升级失败日志更准确**：区分「App 未嵌入 Helper」「授权取消 / bootstrap 失败」，不再一律报「授权被拒绝」。
+
 ## [1.1.2] - 2026-07-17
 
 稳定性与设计精修：TUN/系统代理状态机加固、规则写盘事务化、胶囊滑块 Tab、浅色卡片层次。Helper **1.0.15 → 1.0.16**（启用系统代理补 `set*proxystate on`，触发旧 Helper 强制升级）。
