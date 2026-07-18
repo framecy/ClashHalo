@@ -762,21 +762,29 @@ import SwiftUI
 
     /// Fire-and-forget wrapper. Prefer `ensureRunningAsync()` when the caller
     /// needs to wait for the start attempt (TUN re-enable, toggle engine, etc.).
-    func ensureRunning() {
-        Task { await ensureRunningAsync() }
+    /// Pass `preferRoot: false` for system-proxy-only starts that must not pay
+    /// the root-upgrade restart cost.
+    func ensureRunning(preferRoot: Bool = true) {
+        Task { await ensureRunningAsync(preferRoot: preferRoot) }
     }
 
-    /// Start the kernel if it's not responding. Root start goes through a fresh
-    /// XPC connection (`callStartMihomo`); the cached `helper()` proxy is known
-    /// to silently drop start calls after long-lived use. Awaitable so TUN /
-    /// restart paths can wait for the helper reply instead of racing a detached
-    /// Task and timing out with a false "权限不足".
-    func ensureRunningAsync() async {
+    /// Start the kernel if it's not responding.
+    /// - Parameter preferRoot: When false, skip "reachable user-mode → restart as
+    ///   root" and root-first spawn. System proxy only needs mixed-port/API;
+    ///   forcing a root restart made the toggle feel multi-second dead and raced
+    ///   helper XPC under load.
+    ///
+    /// Root start goes through a fresh XPC connection (`callStartMihomo`); the
+    /// cached `helper()` proxy is known to silently drop start calls after
+    /// long-lived use. Awaitable so TUN / restart paths can wait for the helper
+    /// reply instead of racing a detached Task and timing out with a false
+    /// "权限不足".
+    func ensureRunningAsync(preferRoot: Bool = true) async {
         await api.probe()
 
-        // If reachable, check if we need to upgrade to root
+        // If reachable, optionally upgrade to root (TUN/gateway paths only).
         if api.reachable {
-            if isRoot && !runningAsRoot {
+            if preferRoot && isRoot && !runningAsRoot {
                 // Before killing a working kernel, check the real process owner.
                 // If it's already root (e.g. app restarted after a root session),
                 // just set the flag instead of doing a needless restart.
@@ -795,10 +803,10 @@ import SwiftUI
             return
         }
 
-        // Prefer root only when the helper is actually reachable. A stale
-        // isRoot=true after stop/cascade (or a dead LaunchDaemon) used to make
-        // the start path a silent no-op when the cached XPC proxy dropped the call.
-        if isRoot {
+        // Prefer root only when the caller wants it AND the helper is reachable.
+        // A stale isRoot=true after stop/cascade used to make the start path a
+        // silent no-op when the cached XPC proxy dropped the call.
+        if preferRoot && isRoot {
             let connected = await XPCManager.shared.verifyConnectivity()
             if !connected {
                 onLog?("特权服务不可达，回退到用户模式启动")
@@ -826,10 +834,15 @@ import SwiftUI
             }
         }
 
-        // User-mode start (primary path when helper is absent, or fallback).
+        // User-mode start (primary for system proxy, or fallback).
         if userProcess?.isRunning == true {
             return
         }
+        // Another session may already own mihomo; re-probe before spawning so we
+        // don't fail on a busy mixed-port.
+        await api.probe(timeout: 0.3)
+        if api.reachable { return }
+
         let process = Process()
         process.executableURL = URL(fileURLWithPath: kernelPath)
         process.arguments = ["-d", appSupport]

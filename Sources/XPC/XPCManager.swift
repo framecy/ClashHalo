@@ -97,7 +97,11 @@ public class XPCManager {
     /// 5 s getVersion handshakes from verifyConnectivity's fresh connections, but
     /// never the setSystemProxy sent over the cached one), so a fresh connection
     /// — the same pattern verifyConnectivity proves reliable — is used here too.
-    public func callSystemProxy(enabled: Bool, port: Int, timeout: TimeInterval = 5.0) async -> Bool? {
+    ///
+    /// Timeout is 15s (was 5s): ProxyManager may still walk a couple of services
+    /// with several networksetup forks; 5s produced false "Couldn't communicate
+    /// with a helper application" while the helper was still busy applying.
+    public func callSystemProxy(enabled: Bool, port: Int, timeout: TimeInterval = 15.0) async -> Bool? {
         guard checkStatus() == .enabled else { return nil }
         let conn = NSXPCConnection(machServiceName: "com.clashhalo.helper", options: .privileged)
         conn.remoteObjectInterface = NSXPCInterface(with: HelperProtocol.self)

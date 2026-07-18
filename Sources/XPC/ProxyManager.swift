@@ -7,8 +7,18 @@ public class ProxyManager {
     }
 
     /// Set/clear the macOS system proxy via `networksetup`.
+    ///
+    /// Performance notes (XPC budget): the GUI's `callSystemProxy` used to time
+    /// out at 5s while this method walked *every* enabled service (Wi-Fi +
+    /// Ethernet + USB LAN + Thunderbolt + VPN clients like Shadowrocket) with
+    /// 7 serial `networksetup` forks each — 40–50 spawns easily exceeded the
+    /// client timeout and surfaced as "Couldn't communicate with a helper
+    /// application" even though the helper was healthy. We now:
+    /// 1. Prefer only real active physical-ish services (skip VPN/virtual names)
+    /// 2. Cap at a small number of services (primary uplink is enough)
+    /// 3. Use a shorter per-command timeout
     public static func setSystemProxy(enabled: Bool, port: Int) -> Bool {
-        let services = activeNetworkServices()
+        let services = preferredProxyServices()
         guard !services.isEmpty else {
             log("setSystemProxy: no network services")
             return false
@@ -43,8 +53,37 @@ public class ProxyManager {
                 log("setSystemProxy(\(enabled)) failed for service: \(svc)")
             }
         }
-        log("setSystemProxy(enabled: \(enabled), port: \(port)) services=\(services.count) anyOK=\(anyOK)")
+        log("setSystemProxy(enabled: \(enabled), port: \(port)) services=\(services) anyOK=\(anyOK)")
         return anyOK
+    }
+
+    /// Services we should actually configure for system proxy.
+    /// Prefer active physical links; never touch VPN/virtual client services
+    /// (Shadowrocket, WireGuard UIs, etc.) which inflate the networksetup loop
+    /// and often fail or hang.
+    private static func preferredProxyServices() -> [String] {
+        let skipSubstrings = [
+            "shadowrocket", "wireguard", "tailscale", "zerotier", "oray",
+            "utun", "vpn", "ipsec", "l2tp", "pptp", "cisco", "openvpn",
+            "clash", "surge", "quantumult", "v2ray"
+        ]
+        func isSkippable(_ name: String) -> Bool {
+            let lower = name.lowercased()
+            return skipSubstrings.contains { lower.contains($0) }
+        }
+
+        var services = activeNetworkServices().filter { !isSkippable($0) }
+        if services.isEmpty {
+            services = enabledNetworkServices().filter { !isSkippable($0) }
+        }
+        // Prefer Wi-Fi / Ethernet first — that's what users mean by "system proxy".
+        let preferred = services.filter {
+            let l = $0.lowercased()
+            return l.contains("wi-fi") || l.contains("wifi") || l.contains("ethernet") || l.contains("以太网")
+        }
+        let ordered = preferred.isEmpty ? services : preferred + services.filter { !preferred.contains($0) }
+        // Cap: configuring more than 2 services is almost never useful and blows the XPC budget.
+        return Array(ordered.prefix(2))
     }
 
     /// Filter services to only target the actually active network interfaces
@@ -96,21 +135,24 @@ public class ProxyManager {
         }
     }
 
+    /// Per-command timeout. Keep well under the GUI XPC budget (15s for proxy).
+    private static let cmdTimeout: TimeInterval = 1.2
+
     @discardableResult
     private static func run(_ args: [String]) -> Bool {
         let p = Process()
         p.executableURL = URL(fileURLWithPath: "/usr/sbin/networksetup")
         p.arguments = args
         p.standardOutput = Pipe(); p.standardError = Pipe()
-        
+
         let timer = DispatchSource.makeTimerSource(queue: DispatchQueue.global())
-        timer.schedule(deadline: .now() + 3.0)
+        timer.schedule(deadline: .now() + cmdTimeout)
         timer.setEventHandler {
             if p.isRunning {
                 p.terminate()
             }
         }
-        
+
         do {
             try p.run()
             timer.resume()
@@ -132,15 +174,15 @@ public class ProxyManager {
         p.executableURL = URL(fileURLWithPath: binPath)
         p.arguments = args
         let pipe = Pipe(); p.standardOutput = pipe; p.standardError = Pipe()
-        
+
         let timer = DispatchSource.makeTimerSource(queue: DispatchQueue.global())
-        timer.schedule(deadline: .now() + 3.0)
+        timer.schedule(deadline: .now() + cmdTimeout)
         timer.setEventHandler {
             if p.isRunning {
                 p.terminate()
             }
         }
-        
+
         do {
             try p.run()
             timer.resume()
