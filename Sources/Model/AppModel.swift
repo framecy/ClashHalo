@@ -77,7 +77,7 @@ import ServiceManagement
     @Published var curUp: Int64 = 0
     @Published var downSeries: [Double] = Array(repeating: 0, count: 120)
     @Published var upSeries: [Double] = Array(repeating: 0, count: 120)
-    @AppStorage("trafficRefreshInterval") public var trafficRefreshInterval: Double = 1.0
+    @AppStorage("trafficRefreshInterval") public var trafficRefreshInterval: Double = 2.0
     @Published var dash = DashStats()
     var lastUIUpdate = Date.distantPast
 
@@ -159,8 +159,10 @@ import ServiceManagement
     var lastCacheFlush = Date.distantPast
     var lastInterface: String? = nil
 
-    // Toast
-    @Published var toast: String?
+    // Toast — single-slot, generation-guarded (see showToast).
+    @Published var toast: ToastPayload?
+    /// Cancels the previous auto-dismiss so rapid showToast calls don't wipe a newer message.
+    private var toastDismissTask: Task<Void, Never>?
 
     // External Panels
     @AppStorage("ui.zashboardURL") var zashboardURL = "https://board.zash.run.place/"
@@ -330,7 +332,7 @@ import ServiceManagement
                     proxyAutoDisabled = true
                     _ = await engine.setSystemProxy(enabled: false, port: proxyPort)
                     systemProxyOn = false
-                    showToast("内核已断开，自动关闭系统代理以防断网")
+                    showToast("内核已断开，自动关闭系统代理以防断网", kind: .warn)
                 }
             }
             
@@ -439,17 +441,25 @@ import ServiceManagement
         pollTask?.cancel()
         pollTask = Task { [weak self] in
             var checkCounter = 0
+            // Fire a full config refresh immediately, then every ~12s.
+            var configCounter = 4
             while let self, !Task.isCancelled, self.reachable, self.isMainWindowVisible || self.isMenuBarVisible {
-                // Only refresh configs periodically; proxies are refreshed on-demand
-                // (mode/profile switch, manual test-all) to avoid triggering @Published
-                // groups diff every 3s when nothing changes.
-                await self.refreshConfigs()
+                // Layered tick (perf plan C):
+                // - every 3s: optional /connections for gateway devices
+                // - every ~12s (4 ticks): refreshConfigs (was every tick — heavy
+                //   HTTP + yaml merge + TUN interface probe)
+                // - every ~30s (10 ticks): gateway/TUN health checks
+                configCounter += 1
+                if configCounter >= 4 {
+                    await self.refreshConfigs()
+                    configCounter = 0
+                }
 
                 // Gateway device list is driven by /connections snapshots. The
                 // Connections page owns a 1.5s poller of its own; everywhere
                 // else (Network page, dashboard, menu bar) we pull a lightweight
                 // snapshot here so 已接入设备 stays live without the heavy
-                // Conn-row conversion.
+                // Conn-row conversion. DnsPage reuses cachedConns — no third poller.
                 if self.gatewayModeOn && !self.isConnectionsPageActive {
                     do {
                         let snapshot = try await self.api.fetchConnectionsSnapshot()
@@ -459,7 +469,6 @@ import ServiceManagement
                     }
                 }
 
-                // Health check every 30 seconds (every 10th poll at 3s interval)
                 checkCounter += 1
                 if checkCounter >= 10 {
                     if self.gatewayModeOn {
@@ -480,9 +489,17 @@ import ServiceManagement
 
     // MARK: Toast
 
-    func showToast(_ s: String) {
-        toast = s
-        Task { try? await Task.sleep(nanoseconds: 2_400_000_000); toast = nil }
+    /// Show a single global toast. Replaces any existing toast and cancels its
+    /// dismiss timer so rapid successive calls don't clear the newest message.
+    func showToast(_ s: String, kind: ToastKind = .info, duration: TimeInterval = DS.Motion.toastHold) {
+        toastDismissTask?.cancel()
+        toast = ToastPayload(text: s, kind: kind)
+        let hold = UInt64(max(0.5, duration) * 1_000_000_000)
+        toastDismissTask = Task { @MainActor [weak self] in
+            try? await Task.sleep(nanoseconds: hold)
+            guard !Task.isCancelled else { return }
+            self?.toast = nil
+        }
     }
 
     private func startNetworkMonitor() {
@@ -861,7 +878,7 @@ import ServiceManagement
                 tunAutoTeardownInFlight = false
             }
             logKernel("检测到 TUN 接口丢失（可能与其他 utun 服务并存导致冲突），正在自动关闭...")
-            showToast("TUN 接口异常，已自动关闭")
+            showToast("TUN 接口异常，已自动关闭", kind: .warn)
             await applyTUNState(false)
             // Fallback (shared with refreshConfigs B10): physically neutralize a
             // lingering downed mihomo utun via the privilege Helper so its DNS

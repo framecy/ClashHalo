@@ -228,7 +228,8 @@ struct ContentView: View {
     }
 
     private func statusToggle(_ label: String, icon: String, isOn: Binding<Bool>, onColor: Color) -> some View {
-        HStack(spacing: DS.Spacing.s) {
+        let busy = M.engine.isBusy
+        return HStack(spacing: DS.Spacing.s) {
             // 与导航行共用 md 字号 + monochrome + lg 槽
             Image(systemName: icon)
                 .font(DS.Icon.font(DS.Icon.md, weight: .medium))
@@ -237,15 +238,23 @@ struct ContentView: View {
                 .frame(width: DS.Icon.lg, height: DS.Icon.lg, alignment: .center)
             Text(label)
                 .font(.dsBodyMedium)
-                .foregroundStyle(isOn.wrappedValue ? .primary : .secondary)
+                .foregroundStyle(busy ? .secondary : (isOn.wrappedValue ? .primary : .secondary))
                 .lineLimit(1)
             Spacer(minLength: 0)
+            if busy {
+                ProgressView()
+                    .controlSize(.mini)
+                    .scaleEffect(0.7)
+            }
             // 开关是状态控件，不与标准 32pt 按钮/tab 共用尺寸（design.md §6.7）
+            // busy 时禁用，避免连点只靠 toast 解释（design.md §10.1）
             Toggle("", isOn: isOn)
                 .toggleStyle(.switch)
                 .controlSize(.mini)
                 .labelsHidden()
                 .tint(onColor)
+                .disabled(busy)
+                .opacity(busy ? 0.55 : 1)
         }
         .padding(.vertical, DS.Spacing.xs / 2)
         .padding(.horizontal, DS.Spacing.s)
@@ -275,17 +284,44 @@ struct ContentView: View {
         .background(DS.Palette.windowBg)
         .overlay(alignment: .bottom) {
             if let t = M.toast {
-                Text(t)
-                    .font(.dsBody)
-                    .padding(.horizontal, DS.Spacing.l)
-                    .padding(.vertical, DS.Spacing.s)
-                    .background(.ultraThinMaterial, in: Capsule())
-                    .overlay(Capsule().stroke(DS.Palette.border))
+                toastBanner(t)
                     .padding(.bottom, DS.Spacing.xxl)
                     .transition(.move(edge: .bottom).combined(with: .opacity))
             }
         }
-        .animation(.spring(duration: 0.3), value: M.toast)
+        .animation(DS.Motion.toast, value: M.toast)
+    }
+
+    private func toastBanner(_ t: ToastPayload) -> some View {
+        let accent: Color = {
+            switch t.kind {
+            case .info: return DS.Palette.info
+            case .ok: return DS.Palette.ok
+            case .warn: return DS.Palette.warn
+            case .error: return DS.Palette.error
+            }
+        }()
+        let icon: String = {
+            switch t.kind {
+            case .info: return "info.circle.fill"
+            case .ok: return "checkmark.circle.fill"
+            case .warn: return "exclamationmark.triangle.fill"
+            case .error: return "xmark.octagon.fill"
+            }
+        }()
+        return HStack(spacing: DS.Spacing.s) {
+            Image(systemName: icon)
+                .font(DS.Icon.font(DS.Icon.sm, weight: .semibold))
+                .foregroundStyle(accent)
+            Text(t.text)
+                .font(.dsBody)
+                .foregroundStyle(.primary)
+                .lineLimit(2)
+        }
+        .padding(.horizontal, DS.Spacing.l)
+        .padding(.vertical, DS.Spacing.s)
+        .background(.ultraThinMaterial, in: Capsule())
+        .overlay(Capsule().stroke(DS.Palette.border))
     }
 }
 

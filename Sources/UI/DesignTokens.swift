@@ -222,6 +222,21 @@ enum DS {
         static let panel:   CGFloat = 12
     }
 
+    // MARK: Motion
+    // Spec: Docs/design.md §10. Deliberately no route / segmented tokens —
+    // those stay system-default with no custom spring or large transitions.
+
+    enum Motion {
+        /// Button press scale settle.
+        static let press = Animation.easeOut(duration: 0.12)
+        /// Toast enter / leave.
+        static let toast = Animation.spring(duration: 0.3)
+        /// Small UI micro-interactions (e.g. proxy group collapse).
+        static let micro = Animation.easeInOut(duration: 0.18)
+        /// How long a toast stays visible before auto-dismiss.
+        static let toastHold: TimeInterval = 2.4
+    }
+
     // MARK: Icon sizes
 
     enum Icon {
@@ -505,7 +520,7 @@ struct DSButtonStyle: ButtonStyle {
             .contentShape(DS.Shape.control())
             .opacity(isEnabled ? 1 : 0.45)
             .scaleEffect(configuration.isPressed ? 0.98 : 1)
-            .animation(.easeOut(duration: 0.12), value: configuration.isPressed)
+            .animation(DS.Motion.press, value: configuration.isPressed)
     }
 }
 

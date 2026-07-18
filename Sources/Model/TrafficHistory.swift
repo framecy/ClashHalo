@@ -14,8 +14,17 @@ import SwiftUI
     private var dirty = false
     private var lastSave = Date.distantPast
 
+    /// Shared formatter — constructing DateFormatter per call is expensive on the
+    /// per-connection hot path (record is invoked once per active conn per tick).
+    private static let dayDF: DateFormatter = {
+        let f = DateFormatter()
+        f.dateFormat = "yyyy-MM-dd"
+        f.locale = Locale(identifier: "en_US_POSIX")
+        return f
+    }()
+
     private var todayKey: String {
-        let f = DateFormatter(); f.dateFormat = "yyyy-MM-dd"; return f.string(from: Date())
+        Self.dayDF.string(from: Date())
     }
 
     func load() {
@@ -23,8 +32,7 @@ import SwiftUI
            let d = try? JSONDecoder().decode([String: Day].self, from: data) {
             // keep only last 60 days
             let cutoff = Calendar.current.date(byAdding: .day, value: -60, to: Date())!
-            let f = DateFormatter(); f.dateFormat = "yyyy-MM-dd"
-            days = d.filter { (f.date(from: $0.key) ?? .distantPast) >= cutoff }
+            days = d.filter { (Self.dayDF.date(from: $0.key) ?? .distantPast) >= cutoff }
         }
     }
 
@@ -50,8 +58,7 @@ import SwiftUI
         dirty = false; lastSave = Date()
         // prune older than 60 days before saving
         let cutoff = Calendar.current.date(byAdding: .day, value: -60, to: Date())!
-        let f = DateFormatter(); f.dateFormat = "yyyy-MM-dd"
-        days = days.filter { (f.date(from: $0.key) ?? .distantPast) >= cutoff }
+        days = days.filter { (Self.dayDF.date(from: $0.key) ?? .distantPast) >= cutoff }
         if let data = try? JSONEncoder().encode(days) { try? data.write(to: URL(fileURLWithPath: path)) }
     }
 
@@ -64,8 +71,7 @@ import SwiftUI
         var result = Day()
         for i in 0..<7 {
             if let date = cal.date(byAdding: .day, value: -i, to: now) {
-                let f = DateFormatter(); f.dateFormat = "yyyy-MM-dd"
-                let key = f.string(from: date)
+                let key = Self.dayDF.string(from: date)
                 if let d = days[key] {
                     result.direct += d.direct
                     result.proxy += d.proxy
@@ -83,8 +89,7 @@ import SwiftUI
         var result = Day()
         for i in 0..<30 {
             if let date = cal.date(byAdding: .day, value: -i, to: now) {
-                let f = DateFormatter(); f.dateFormat = "yyyy-MM-dd"
-                let key = f.string(from: date)
+                let key = Self.dayDF.string(from: date)
                 if let d = days[key] {
                     result.direct += d.direct
                     result.proxy += d.proxy
@@ -115,10 +120,9 @@ import SwiftUI
     var last7DaysTotals: [Double] {
         let cal = Calendar.current
         let now = Date()
-        let f = DateFormatter(); f.dateFormat = "yyyy-MM-dd"
         return (0..<7).reversed().compactMap { i in
             guard let date = cal.date(byAdding: .day, value: -i, to: now) else { return 0 }
-            return days[f.string(from: date)]?.total ?? 0
+            return days[Self.dayDF.string(from: date)]?.total ?? 0
         }
     }
 
@@ -126,10 +130,9 @@ import SwiftUI
     var last30DaysTotals: [Double] {
         let cal = Calendar.current
         let now = Date()
-        let f = DateFormatter(); f.dateFormat = "yyyy-MM-dd"
         return (0..<30).reversed().compactMap { i in
             guard let date = cal.date(byAdding: .day, value: -i, to: now) else { return 0 }
-            return days[f.string(from: date)]?.total ?? 0
+            return days[Self.dayDF.string(from: date)]?.total ?? 0
         }
     }
 }

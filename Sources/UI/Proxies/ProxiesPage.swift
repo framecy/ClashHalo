@@ -151,7 +151,7 @@ struct ProxiesPage: View {
         return Card {
             VStack(spacing: 0) {
                 Button {
-                    withAnimation(.easeInOut(duration: 0.18)) {
+                    withAnimation(DS.Motion.micro) {
                         if isOpen { collapsed.insert(g.id) } else { collapsed.remove(g.id) }
                     }
                 } label: {

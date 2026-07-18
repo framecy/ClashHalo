@@ -4,7 +4,6 @@ import SwiftUI
 
 struct DnsPage: View {
     @EnvironmentObject var M: AppModel
-    @StateObject private var connVM = ConnectionsViewModel()
     @State private var query = ""
     @State private var result = ""
     @State private var resolving = false
@@ -48,11 +47,14 @@ struct DnsPage: View {
                         }
                     }
 
-                    // Fake-IP mappings observed in live connections
-                    let fakeip = connVM.conns.filter { $0.dstIP.hasPrefix("198.18.") || $0.dstIP.hasPrefix("198.19.") }
+                    // Fake-IP mappings observed in live connections — reuse the
+                    // shared AppModel cache populated by the connections / gateway
+                    // pollers. Do NOT start a second ConnectionsViewModel here
+                    // (that used to double /connections traffic every 1.5s).
+                    let fakeip = M.cachedConns.filter { $0.dstIP.hasPrefix("198.18.") || $0.dstIP.hasPrefix("198.19.") }
                     Card(title: "Fake-IP 映射 · \(fakeip.count)（来自活跃连接）") {
                         if fakeip.isEmpty {
-                            Text("当前无 Fake-IP 连接（需内核启用 dns.enhanced-mode: fake-ip 且有代理流量）")
+                            Text("当前无 Fake-IP 连接（需内核启用 dns.enhanced-mode: fake-ip 且有代理流量；打开「连接」页可刷新映射）")
                                 .font(.dsBody).foregroundColor(.secondary)
                         } else {
                             VStack(spacing: DS.Spacing.xs) {
@@ -71,8 +73,6 @@ struct DnsPage: View {
                 .padding(.horizontal, DS.Spacing.xl).padding(.bottom, DS.Spacing.xxl)
             }
         }
-        .onAppear { connVM.start() }
-        .onDisappear { connVM.stop() }
     }
     private func resolve() async {
         resolving = true; defer { resolving = false }

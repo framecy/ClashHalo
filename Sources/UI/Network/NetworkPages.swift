@@ -45,8 +45,13 @@ struct NetworkPage: View {
                         VStack(spacing: 2) {
                             HStack {
                                 Text("作为网关中枢").font(.dsBody); Spacer()
+                                if M.engine.isBusy {
+                                    ProgressView().controlSize(.mini).scaleEffect(0.7)
+                                }
                                 Toggle("", isOn: Binding(get: { M.gatewayModeOn }, set: { _ in M.toggleGatewayMode() }))
                                     .toggleStyle(.switch).labelsHidden()
+                                    .disabled(M.engine.isBusy)
+                                    .opacity(M.engine.isBusy ? 0.55 : 1)
                             }.padding(.vertical, DS.Spacing.s)
                         }
                         Text("开启后将自动配置 IP 转发并接管局域网内其他所有设备的流量（需配合 TUN）。其他设备需将网关和 DNS 指向本机的局域网 IP。")
@@ -136,8 +141,13 @@ struct TunPage: View {
                     VStack(spacing: 2) {
                         HStack {
                             Text("启用 TUN").font(.dsBody); Spacer()
+                            if M.engine.isBusy {
+                                ProgressView().controlSize(.mini).scaleEffect(0.7)
+                            }
                             Toggle("", isOn: Binding(get: { M.tunOn }, set: { _ in M.toggleTUN() }))
                                 .toggleStyle(.switch).labelsHidden()
+                                .disabled(M.engine.isBusy)
+                                .opacity(M.engine.isBusy ? 0.55 : 1)
                         }.padding(.vertical, DS.Spacing.s)
                         NPicker("协议栈", "tun", "stack", [("gvisor","gVisor"),("system","System"),("mixed","Mixed")])
                         NToggle("自动路由", "tun", "auto-route")
@@ -678,6 +688,8 @@ struct KernelCard: View {
                         .toggleStyle(.switch)
                         .controlSize(.small)
                         .labelsHidden()
+                        .disabled(M.engine.isBusy)
+                        .opacity(M.engine.isBusy ? 0.55 : 1)
                 }
                 Divider()
                 HStack {

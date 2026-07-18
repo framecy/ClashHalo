@@ -6,9 +6,10 @@ struct LinkLine: View {
     let start: CGPoint
     let end: CGPoint
     let color: Color
-    @State private var phase: CGFloat = 0
 
     var body: some View {
+        // Static dashed stroke only — decorative `repeatForever` loops are banned
+        // by Docs/design.md §10 (progress/traffic stay data-driven, no attention theft).
         Path { path in
             path.move(to: start)
             let control1 = CGPoint(x: start.x + (end.x - start.x) * 0.5, y: start.y)
@@ -23,13 +24,8 @@ struct LinkLine: View {
                 let control2 = CGPoint(x: start.x + (end.x - start.x) * 0.5, y: end.y)
                 path.addCurve(to: end, control1: control1, control2: control2)
             }
-            .stroke(color, style: StrokeStyle(lineWidth: 1.8, lineCap: .round, lineJoin: .round, miterLimit: 0, dash: [6, 6], dashPhase: phase))
+            .stroke(color, style: StrokeStyle(lineWidth: 1.8, lineCap: .round, lineJoin: .round, dash: [6, 6]))
         )
-        .onAppear {
-            withAnimation(.linear(duration: 2.0).repeatForever(autoreverses: false)) {
-                phase = -24
-            }
-        }
     }
 }
 

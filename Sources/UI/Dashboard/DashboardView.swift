@@ -81,6 +81,7 @@ struct DashboardPage: View {
                             Card(title: "流量趋势", icon: "chart.xyaxis.line", actions: {
                                 DSMenuPicker(selection: $M.trafficRefreshInterval, choices: [
                                     DSChoice("1s", 1.0),
+                                    DSChoice("2s", 2.0),
                                     DSChoice("3s", 3.0),
                                     DSChoice("5s", 5.0),
                                     DSChoice("10s", 10.0)
@@ -294,7 +295,7 @@ struct Rank: Identifiable, Equatable {
     }
 }
 
-struct DashStats {
+struct DashStats: Equatable {
     var policyGroups: [Rank] = []
     var hosts: [Rank] = []
     var nodes: [Rank] = []

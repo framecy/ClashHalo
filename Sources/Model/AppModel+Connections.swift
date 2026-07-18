@@ -8,7 +8,12 @@ extension AppModel {
     func onTraffic(_ t: TrafficTick) {
         if t.up != curUp { curUp = t.up }
         if t.down != curDown { curDown = t.down }
-        
+
+        // Sparkline series only matters on the dashboard (or menu bar mini view).
+        // Appending on every other route still publishes @Published arrays and
+        // forces the whole EnvironmentObject tree to re-evaluate.
+        guard isMenuBarVisible || (isMainWindowVisible && route == "dashboard") else { return }
+
         let now = Date()
         if now.timeIntervalSince(lastUIUpdate) >= trafficRefreshInterval {
             lastUIUpdate = now
@@ -20,8 +25,9 @@ extension AppModel {
     }
 
     func recordHistoryOnly(from s: ConnectionsSnapshot) {
-        uploadTotal = s.uploadTotal; downloadTotal = s.downloadTotal
-        if let m = s.memory, m > 0 {
+        if uploadTotal != s.uploadTotal { uploadTotal = s.uploadTotal }
+        if downloadTotal != s.downloadTotal { downloadTotal = s.downloadTotal }
+        if let m = s.memory, m > 0, memory != m {
             memory = m
             // Core Memory Guard: If core usage > 512MB, flush caches (max once per 30 mins)
             if m > 512 * 1024 * 1024 && Date().timeIntervalSince(lastCacheFlush) > 1800 {
@@ -89,7 +95,8 @@ extension AppModel {
             activeConnectionsCount = activeIDs.count
 
             if route == "dashboard" || route == "connections" {
-                dash = Self.computeDashRaw(items)
+                let next = Self.computeDashRaw(items)
+                if next != dash { dash = next }
             }
         } else {
             // Background idle: only sync basic count + gateway devices (cheap).
@@ -169,7 +176,9 @@ extension AppModel {
         newGatewayDevices = newGatewayDevices.filter {
             $0.value.activeConnections > 0 || nowTime.timeIntervalSince($0.value.lastSeen) < 600
         }
-        gatewayDevices = newGatewayDevices
+        if newGatewayDevices != gatewayDevices {
+            gatewayDevices = newGatewayDevices
+        }
     }
 
     /// mihomo fake-ip pool is 198.18.0.0/15 by default.
