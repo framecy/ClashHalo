@@ -1024,29 +1024,30 @@ import SwiftUI
     /// Stop the running kernel: graceful REST shutdown, then helper/killall fallback.
     /// Exposed so callers (e.g. KernelManager.activate) can release bin/mihomo
     /// before overwriting it, avoiding "file busy" when a kernel is running.
+    ///
+    /// All privilege/process work is bounded: REST shutdown uses a short
+    /// URLSession timeout, Helper stop uses `callStopMihomo` (hard XPC timeout),
+    /// and killall runs detached. Never block MainActor on an unbounded XPC reply
+    /// — that was the kernel-switch hang that left system proxy pointing at a
+    /// dead 127.0.0.1 and black-holed the whole Mac.
     func stopKernel() async {
         if let proc = userProcess, proc.isRunning {
             proc.terminate()
         }
         userProcess = nil
 
-        // Attempt graceful shutdown via REST API if reachable
+        // Attempt graceful shutdown via REST API if reachable (hard 1.5s budget).
         if api.reachable, let url = URL(string: "http://\(api.host):\(api.port)/shutdown") {
             var req = URLRequest(url: url)
             req.httpMethod = "POST"
+            req.timeoutInterval = 1.5
             if !api.secret.isEmpty { req.setValue("Bearer \(api.secret)", forHTTPHeaderField: "Authorization") }
             _ = try? await URLSession.shared.data(for: req)
         }
 
-        // Perform stopping on a background thread to avoid blocking the Main Actor
+        // Helper stop with hard timeout, then killall safety net — both off MainActor.
         await Task.detached(priority: .userInitiated) {
-            if await XPCManager.shared.verifyConnectivity() {
-                if let helper = XPCManager.shared.helper() {
-                    _ = await withCheckedContinuation { (cont: CheckedContinuation<Bool, Never>) in
-                        helper.stopMihomo { ok in cont.resume(returning: ok) }
-                    }
-                }
-            }
+            _ = await XPCManager.shared.callStopMihomo(timeout: 4.0)
             let t = Process(); t.executableURL = URL(fileURLWithPath: "/usr/bin/killall")
             t.arguments = ["-9", "mihomo"]
             t.standardOutput = Pipe(); t.standardError = Pipe()
@@ -1057,6 +1058,7 @@ import SwiftUI
         // after stop makes refreshConfigs re-arm tunOn from a stale in-flight
         // /configs response (enable && runningAsRoot && hasInterface).
         runningAsRoot = false
+        api.reachable = false
 
         // Give it a moment to release ports / the binary
         try? await Task.sleep(nanoseconds: 100_000_000)

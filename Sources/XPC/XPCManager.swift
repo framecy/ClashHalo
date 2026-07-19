@@ -193,6 +193,32 @@ public class XPCManager {
         }
     }
 
+    /// Stop root-owned mihomo via a *fresh* helper connection with a hard timeout.
+    /// The previous path used the cached `helper()` proxy with an unbounded
+    /// continuation — if Helper's stopMihomo blocked (Thread.sleep up to 1.5s
+    /// plus killall), the MainActor kernel-switch flow could hang with system
+    /// proxy still pointing at a dead 127.0.0.1 and black-hole the whole Mac.
+    /// Returns true/false on a real reply, nil on unreachable / error / timeout.
+    public func callStopMihomo(timeout: TimeInterval = 4.0) async -> Bool? {
+        guard checkStatus() == .enabled else { return nil }
+        let conn = NSXPCConnection(machServiceName: "com.clashhalo.helper", options: .privileged)
+        conn.remoteObjectInterface = NSXPCInterface(with: HelperProtocol.self)
+        conn.resume()
+        return await withCheckedContinuation { (cont: CheckedContinuation<Bool?, Never>) in
+            let lock = NSLock(); var done = false
+            let finish: (Bool?) -> Void = { v in
+                lock.lock(); defer { lock.unlock() }
+                if !done { done = true; cont.resume(returning: v); conn.invalidate() }
+            }
+            guard let proxy = conn.remoteObjectProxyWithErrorHandler({ [weak self] error in
+                self?.onLog?("stopMihomo XPC 错误: \(error.localizedDescription)")
+                finish(nil)
+            }) as? HelperProtocol else { finish(nil); return }
+            proxy.stopMihomo { ok in finish(ok) }
+            DispatchQueue.global().asyncAfter(deadline: .now() + timeout) { finish(nil) }
+        }
+    }
+
     /// Inject SD-WAN exclude static routes via a *fresh* helper connection.
     public func callSetupExcludeRoutes(_ routes: [String: String], timeout: TimeInterval = 5.0) async -> Bool? {
         guard checkStatus() == .enabled else { return nil }
