@@ -32,11 +32,20 @@ final class KernelManager: ObservableObject {
     }()
 
     /// Whether a kernel is bundled inside the app.
-    var hasBuiltin: Bool { Bundle.main.url(forResource: "mihomo", withExtension: nil) != nil }
+    var hasBuiltin: Bool {
+        Bundle.main.url(forResource: "mihomo", withExtension: nil) != nil
+            || FileManager.default.fileExists(atPath: Bundle.main.bundlePath + "/Contents/MacOS/mihomo")
+    }
+
+    private var bundledMihomoURL: URL? {
+        if let u = Bundle.main.url(forResource: "mihomo", withExtension: nil) { return u }
+        let macOS = Bundle.main.bundleURL.appendingPathComponent("Contents/MacOS/mihomo")
+        return FileManager.default.fileExists(atPath: macOS.path) ? macOS : nil
+    }
 
     /// Read the bundled kernel version (mihomo -v) for display, off the main thread.
     func detectBuiltin() {
-        guard let bundled = Bundle.main.url(forResource: "mihomo", withExtension: nil) else {
+        guard let bundled = bundledMihomoURL else {
             DispatchQueue.main.async { self.builtinVersion = "" }; return
         }
         DispatchQueue.global().async {
@@ -53,62 +62,176 @@ final class KernelManager: ObservableObject {
     }
 
     /// Switch the active kernel to the bundled one (copy from app → bin) + restart.
-    func activateBuiltin() async {
+    /// Returns true if the new kernel is reachable after the swap.
+    @discardableResult
+    func activateBuiltin() async -> Bool {
         let fm = FileManager.default
-        guard let bundled = Bundle.main.url(forResource: "mihomo", withExtension: nil) else {
-            await MainActor.run { self.note = "内置内核缺失（打包未含 mihomo）" }; return
+        guard let bundled = bundledMihomoURL else {
+            await MainActor.run { self.note = "内置内核缺失（打包未含 mihomo）" }
+            return false
         }
-        
-        await EngineControl.shared.stopKernel()   // release bin/mihomo before overwrite
-        
-        let ok = await Task.detached(priority: .userInitiated) {
+
+        await MainActor.run { self.note = "正在准备内置内核…" }
+
+        // Stage the binary first so a failed copy never leaves us without a kernel.
+        let staged = await Task.detached(priority: .userInitiated) { () -> String? in
+            let tmp = NSTemporaryDirectory() + "mihomo.builtin.\(UUID().uuidString)"
             do {
-                if fm.fileExists(atPath: self.binPath) { try fm.removeItem(atPath: self.binPath) }
-                try fm.copyItem(at: bundled, to: URL(fileURLWithPath: self.binPath))
-                try fm.setAttributes([.posixPermissions: 0o755], ofItemAtPath: self.binPath)
-                return true
+                if fm.fileExists(atPath: tmp) { try fm.removeItem(atPath: tmp) }
+                try fm.copyItem(at: bundled, to: URL(fileURLWithPath: tmp))
+                try fm.setAttributes([.posixPermissions: 0o755], ofItemAtPath: tmp)
+                return tmp
             } catch {
-                return false
+                return nil
             }
         }.value
 
-        if ok {
-            activeTag = "内置"
-            await MainActor.run { self.note = "已切换至内置内核，正在启动…" }
-        } else {
-            await MainActor.run { self.note = "切换失败：文件操作错误" }
+        guard let staged else {
+            await MainActor.run { self.note = "切换失败：无法复制内置内核" }
+            return false
         }
-        await EngineControl.shared.launch()
+
+        await MainActor.run { self.note = "正在切换至内置内核…" }
+        let ok = await swapAndLaunch(stagedPath: staged, displayTag: "内置")
+        if !ok {
+            await MainActor.run { self.note = "内置内核切换失败，请重试" }
+        }
+        return ok
     }
 
     /// Switch to a downloaded kernel: copy binary to unified bin path + restart.
-    func activate(_ tag: String) async {
-        if tag == "内置" { await activateBuiltin(); return }
+    /// Returns true if the new kernel is reachable after the swap.
+    @discardableResult
+    func activate(_ tag: String) async -> Bool {
+        if tag == "内置" { return await activateBuiltin() }
         let slotName = tag == "正式版" ? "stable" : "alpha"
         let src = dir + "/\(slotName)/mihomo"
         let fm = FileManager.default
-        guard fm.fileExists(atPath: src) else { await MainActor.run { self.note = "内核文件缺失" }; return }
+        guard fm.fileExists(atPath: src) else {
+            await MainActor.run { self.note = "内核文件缺失" }
+            return false
+        }
 
-        await EngineControl.shared.stopKernel()   // release bin/mihomo before overwrite
-        
-        let ok = await Task.detached(priority: .userInitiated) {
+        await MainActor.run { self.note = "正在准备 \(tag) 内核…" }
+
+        let staged = await Task.detached(priority: .userInitiated) { () -> String? in
+            let tmp = NSTemporaryDirectory() + "mihomo.\(slotName).\(UUID().uuidString)"
             do {
-                if fm.fileExists(atPath: self.binPath) { try fm.removeItem(atPath: self.binPath) }
-                try fm.copyItem(atPath: src, toPath: self.binPath)
+                if fm.fileExists(atPath: tmp) { try fm.removeItem(atPath: tmp) }
+                try fm.copyItem(atPath: src, toPath: tmp)
+                try fm.setAttributes([.posixPermissions: 0o755], ofItemAtPath: tmp)
+                return tmp
+            } catch {
+                return nil
+            }
+        }.value
+
+        guard let staged else {
+            await MainActor.run { self.note = "启用失败：无法复制内核文件" }
+            return false
+        }
+
+        await MainActor.run { self.note = "正在切换至 \(tag) 内核…" }
+        let ok = await swapAndLaunch(stagedPath: staged, displayTag: tag)
+        if !ok {
+            await MainActor.run { self.note = "启用 \(tag) 失败，请重试" }
+        }
+        return ok
+    }
+
+    /// Atomic-ish kernel swap:
+    /// 1. Stage already prepared at `stagedPath` (download/copy done BEFORE stop)
+    /// 2. Temporarily clear system proxy so a dead 127.0.0.1 proxy can't black-hole the Mac
+    /// 3. Stop kernel (bounded XPC + killall)
+    /// 4. Replace bin/mihomo
+    /// 5. Launch + wait for readiness
+    /// 6. Restore system proxy if it was on
+    ///
+    /// This ordering is the fix for "更新内核版本时卡住 / 全局断网": the old path
+    /// stopped the kernel first, then did long work, while system proxy still
+    /// pointed at 127.0.0.1:7890.
+    private func swapAndLaunch(stagedPath: String, displayTag: String) async -> Bool {
+        let fm = FileManager.default
+        let port = await MainActor.run { AppModel.shared.proxyPort }
+        let wasProxyOn = await MainActor.run { AppModel.shared.systemProxyOn }
+
+        // Drop system proxy BEFORE killing the kernel so traffic can fall back
+        // to direct while the swap is in flight.
+        if wasProxyOn {
+            await MainActor.run { AppModel.shared.logKernel("内核切换：临时关闭系统代理以防断网") }
+            _ = await EngineControl.shared.setSystemProxy(enabled: false, port: port)
+            await MainActor.run { AppModel.shared.systemProxyOn = false }
+        }
+
+        await EngineControl.shared.stopKernel()
+
+        let installed = await Task.detached(priority: .userInitiated) { () -> Bool in
+            do {
+                if fm.fileExists(atPath: self.binPath) {
+                    try fm.removeItem(atPath: self.binPath)
+                }
+                // Ensure bin dir exists
+                try fm.createDirectory(
+                    atPath: (self.binPath as NSString).deletingLastPathComponent,
+                    withIntermediateDirectories: true
+                )
+                try fm.moveItem(atPath: stagedPath, toPath: self.binPath)
                 try fm.setAttributes([.posixPermissions: 0o755], ofItemAtPath: self.binPath)
                 return true
             } catch {
+                // Clean staged temp on failure
+                try? fm.removeItem(atPath: stagedPath)
                 return false
             }
         }.value
 
-        if ok {
-            activeTag = tag
-            await MainActor.run { self.note = "已启用 \(tag) 内核，正在启动…" }
-        } else {
-            await MainActor.run { self.note = "启用失败：文件操作错误" }
+        guard installed else {
+            // Best-effort relaunch of whatever is still in bin/ (may be missing).
+            await EngineControl.shared.launch()
+            if wasProxyOn {
+                _ = await EngineControl.shared.setSystemProxy(enabled: true, port: port)
+                await MainActor.run { AppModel.shared.systemProxyOn = true }
+            }
+            return false
         }
+
+        await MainActor.run {
+            self.activeTag = displayTag
+            self.note = "已切换至 \(displayTag)，正在启动…"
+        }
+
         await EngineControl.shared.launch()
+
+        // Wait for the new kernel instead of a fixed multi-second sleep.
+        let ready = await AppModel.shared.waitForKernelReady(maxAttempts: 10)
+        if ready {
+            await MainActor.run {
+                self.note = "已启用 \(displayTag) 内核"
+                AppModel.shared.logKernel("内核已切换至 \(displayTag)")
+            }
+        } else {
+            await MainActor.run {
+                self.note = "\(displayTag) 已安装但启动超时"
+                AppModel.shared.logKernel("内核切换后启动超时（\(displayTag)）")
+            }
+        }
+
+        // Restore system proxy only if the kernel is actually listening again.
+        if wasProxyOn {
+            if ready {
+                _ = await EngineControl.shared.setSystemProxy(enabled: true, port: port)
+                await MainActor.run {
+                    AppModel.shared.systemProxyOn = true
+                    AppModel.shared.logKernel("内核切换：已恢复系统代理")
+                }
+            } else {
+                await MainActor.run {
+                    AppModel.shared.showToast("内核启动超时，系统代理未恢复（避免断网）", kind: .warn)
+                }
+            }
+        }
+
+        return ready
     }
 
     func scanInstalled() {
@@ -135,16 +258,16 @@ final class KernelManager: ObservableObject {
         req.setValue("ClashHalo", forHTTPHeaderField: "User-Agent")
         guard let (data, resp) = try? await session.data(for: req) else { note = "网络错误"; return }
         if let h = resp as? HTTPURLResponse, h.statusCode == 403 { note = "GitHub API 限流，请稍后再试"; return }
-        
+
         struct Asset: Decodable { let name: String; let browser_download_url: String }
-        struct Release: Decodable { 
+        struct Release: Decodable {
             let tag_name: String
             let published_at: String
             let assets: [Asset]
         }
         guard let r = try? JSONDecoder().decode(Release.self, from: data) else { note = "解析失败"; return }
         latestTag = r.tag_name
-        
+
         // Check if already latest version
         if channel == "stable" {
             let pureTag = r.tag_name.hasPrefix("v") ? String(r.tag_name.dropFirst()) : r.tag_name
@@ -160,29 +283,44 @@ final class KernelManager: ObservableObject {
                 return
             }
         }
-        
+
         // darwin-arm64, prefer non-"compatible"/non-go120 variant, .gz
         if let a = r.assets.first(where: { $0.name.contains("darwin-arm64") && $0.name.hasSuffix(".gz") && !$0.name.contains("compatible") && !$0.name.contains("go1") })
             ?? r.assets.first(where: { $0.name.contains("darwin-arm64") && $0.name.hasSuffix(".gz") }) {
             assetURL = a.browser_download_url
             tempPublishDate = r.published_at
             tempTagName = r.tag_name.hasPrefix("v") ? String(r.tag_name.dropFirst()) : r.tag_name
+            note = "发现新版本 \(r.tag_name)，可下载切换"
         } else { note = "未找到 darwin-arm64 资源" }
     }
 
+    /// Download + decompress into the channel slot, THEN swap the running kernel.
+    /// Download happens while the current kernel is still serving traffic — the
+    /// stop/swap window is only the final install step.
     func download() async {
         guard let url = URL(string: assetURL), !latestTag.isEmpty else { return }
-        downloading = true; progress = 0; note = ""; defer { downloading = false }
-        guard let (tmp, _) = try? await session.download(from: url) else { note = "下载失败"; return }
+        downloading = true
+        progress = 0.05
+        note = "正在下载 \(latestTag)…"
+        defer { downloading = false }
+
+        guard let (tmp, _) = try? await session.download(from: url) else {
+            note = "下载失败"
+            progress = 0
+            return
+        }
+        progress = 0.7
+        note = "正在解压…"
+
         let fm = FileManager.default
         let slotName = channel == "alpha" ? "alpha" : "stable"
         let tagDir = dir + "/\(slotName)"
         try? fm.createDirectory(atPath: tagDir, withIntermediateDirectories: true)
-        
-        // decompress .gz → mihomo on background thread
+
+        // decompress .gz → mihomo on background thread (current kernel still running)
         let out = tagDir + "/mihomo"
         try? fm.removeItem(atPath: out)
-        
+
         let ok = await Task.detached(priority: .userInitiated) {
             let p = Process(); p.executableURL = URL(fileURLWithPath: "/usr/bin/gunzip")
             p.arguments = ["-c", tmp.path]
@@ -199,20 +337,31 @@ final class KernelManager: ObservableObject {
             }
         }.value
 
-        if ok {
-            try? fm.setAttributes([.posixPermissions: 0o755], ofItemAtPath: out)
-            progress = 1
-            if channel == "stable" {
-                installedStableTag = tempTagName
-            } else {
-                installedAlphaDate = tempPublishDate
-            }
-            scanInstalled()
-            let tag = channel == "alpha" ? "Alpha" : "正式版"
-            note = "已成功下载并自动切换至 \(tag) 内核"
-            await activate(tag)
-        } else {
+        // Clean URLSession temp regardless
+        try? fm.removeItem(at: tmp)
+
+        guard ok else {
             note = "解压失败"
+            progress = 0
+            return
+        }
+
+        try? fm.setAttributes([.posixPermissions: 0o755], ofItemAtPath: out)
+        progress = 0.9
+        if channel == "stable" {
+            installedStableTag = tempTagName
+        } else {
+            installedAlphaDate = tempPublishDate
+        }
+        scanInstalled()
+        let tag = channel == "alpha" ? "Alpha" : "正式版"
+        note = "下载完成，正在切换至 \(tag)…"
+
+        // Only NOW stop the running kernel and swap — short outage window.
+        let switched = await activate(tag)
+        progress = 1
+        if !switched {
+            note = "已下载 \(tag)，但切换/启动失败（系统代理已保护）"
         }
     }
 }

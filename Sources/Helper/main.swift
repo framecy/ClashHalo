@@ -184,10 +184,12 @@ class Helper: NSObject, HelperProtocol {
         defer { processLock.unlock() }
         if let process = mihomoProcess, process.isRunning {
             process.terminate()
-            // Wait up to 1.5s for graceful exit, then SIGKILL
-            let deadline = Date().addingTimeInterval(1.5)
+            // Wait up to 0.6s for graceful exit, then SIGKILL.
+            // Keep this short: GUI callStopMihomo has a 4s hard timeout; long
+            // sleeps here used to make kernel-switch feel frozen.
+            let deadline = Date().addingTimeInterval(0.6)
             while process.isRunning && Date() < deadline {
-                Thread.sleep(forTimeInterval: 0.1)
+                Thread.sleep(forTimeInterval: 0.05)
             }
             if process.isRunning {
                 log("stopMihomoInternal: SIGTERM timeout, sending SIGKILL to pid \(process.processIdentifier)")
@@ -205,8 +207,12 @@ class Helper: NSObject, HelperProtocol {
 
     func stopMihomo(withReply reply: @escaping (Bool) -> Void) {
         log("stopMihomo called")
-        Self.stopMihomoInternal()
-        reply(true)
+        // Never block the XPC reply path longer than necessary — run stop work
+        // and reply as soon as killall returns. GUI side also has a hard timeout.
+        DispatchQueue.global(qos: .userInitiated).async {
+            Self.stopMihomoInternal()
+            reply(true)
+        }
     }
 
     func setGatewayMode(enabled: Bool, withReply reply: @escaping (Bool) -> Void) {

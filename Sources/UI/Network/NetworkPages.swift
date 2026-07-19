@@ -678,9 +678,27 @@ struct KernelCard: View {
                         Button("重启内核", systemImage: "arrow.triangle.2.circlepath") {
                             M.withEngineBusy {
                                 let wasTUN = M.tunOn
-                                await M.engine.restart(); try? await Task.sleep(nanoseconds: 3_000_000_000); await M.reconnect()
-                                await M.reapplyTUN(wasOn: wasTUN)
-                                M.showToast("内核已重启", kind: .ok)
+                                let wasProxy = M.systemProxyOn
+                                let port = M.proxyPort
+                                // Temporarily clear system proxy so a dead kernel
+                                // can't black-hole the Mac during restart.
+                                if wasProxy {
+                                    _ = await M.engine.setSystemProxy(enabled: false, port: port)
+                                    M.systemProxyOn = false
+                                }
+                                await M.engine.restart()
+                                let ready = await M.waitForKernelReady(maxAttempts: 10)
+                                await M.reconnect()
+                                if ready {
+                                    await M.reapplyTUN(wasOn: wasTUN)
+                                    if wasProxy {
+                                        _ = await M.engine.setSystemProxy(enabled: true, port: port)
+                                        M.systemProxyOn = true
+                                    }
+                                    M.showToast("内核已重启", kind: .ok)
+                                } else {
+                                    M.showToast("内核重启超时，系统代理未恢复", kind: .warn)
+                                }
                             }
                         }.dsButton(.warning)
                     }
@@ -718,16 +736,32 @@ struct KernelCard: View {
                                 Task {
                                     M.withEngineBusy {
                                         let wasTUN = M.tunOn
+                                        // download() stages the binary first, then
+                                        // swapAndLaunch temporarily clears system
+                                        // proxy and waits for kernel readiness.
                                         await km.download()
                                         await M.reconnect()
-                                        await M.reapplyTUN(wasOn: wasTUN)
+                                        if M.reachable {
+                                            await M.reapplyTUN(wasOn: wasTUN)
+                                            M.showToast(km.note.isEmpty ? "内核已更新" : km.note, kind: .ok)
+                                        } else {
+                                            M.showToast(km.note.isEmpty ? "内核更新后启动失败" : km.note, kind: .error)
+                                        }
                                     }
                                 }
                             } label: {
-                                if km.downloading { ProgressView().controlSize(.small) } else { Text("下载并切换") }
+                                if km.downloading {
+                                    HStack(spacing: 6) {
+                                        ProgressView().controlSize(.small)
+                                        Text(km.progress > 0 ? String(format: "%.0f%%", km.progress * 100) : "…")
+                                            .font(.dsMono)
+                                    }
+                                } else {
+                                    Text("下载并切换")
+                                }
                             }
                             .dsButton(.prominent)
-                            .disabled(km.downloading)
+                            .disabled(km.downloading || M.engine.isBusy)
                         }
                     }
                     .frame(width: DS.Layout.fieldTrailing, alignment: .trailing)
@@ -766,11 +800,19 @@ struct KernelCard: View {
                 Button("启用") {
                     M.withEngineBusy {
                         let wasTUN = M.tunOn
-                        await km.activate(tag); try? await Task.sleep(nanoseconds: 3_500_000_000); await M.reconnect()
-                        await M.reapplyTUN(wasOn: wasTUN)
+                        let ok = await km.activate(tag)
+                        await M.reconnect()
+                        if ok {
+                            await M.reapplyTUN(wasOn: wasTUN)
+                            M.showToast("已启用 \(tag)", kind: .ok)
+                        } else {
+                            M.showToast(km.note.isEmpty ? "启用 \(tag) 失败" : km.note, kind: .error)
+                        }
                     }
                 }
-                    .dsButton().frame(width: DS.Layout.fieldTrailing, alignment: .trailing)
+                    .dsButton()
+                    .disabled(M.engine.isBusy)
+                    .frame(width: DS.Layout.fieldTrailing, alignment: .trailing)
             }
         }
         .padding(.vertical, 2)
