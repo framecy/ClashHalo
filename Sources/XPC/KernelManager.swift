@@ -22,6 +22,9 @@ final class KernelManager: ObservableObject {
     private let dir = NSHomeDirectory() + "/Library/Application Support/ClashHalo/kernels"
     private var binPath: String { NSHomeDirectory() + "/Library/Application Support/ClashHalo/bin/mihomo" }
     @AppStorage("kernel.active") var activeTag = "内置"
+    /// Version string of the currently running `bin/mihomo` (e.g. "1.19.28"),
+    /// refreshed on scan / after activate. UI uses this to decide "使用中" vs "启用".
+    @Published var runningVersion = ""
 
     /// URLSession for GitHub check/download.
     /// CRITICAL: do NOT use `.default` (inherits system HTTP proxy). When ClashHalo
@@ -245,10 +248,11 @@ final class KernelManager: ObservableObject {
 
         // Wait for the new kernel instead of a fixed multi-second sleep.
         let ready = await AppModel.shared.waitForKernelReady(maxAttempts: 10)
+        await refreshRunningVersion()
         if ready {
             await MainActor.run {
-                self.note = "已启用 \(displayTag) 内核"
-                AppModel.shared.logKernel("内核已切换至 \(displayTag)")
+                self.note = "已启用 \(displayTag) 内核" + (self.runningVersion.isEmpty ? "" : " \(self.runningVersion)")
+                AppModel.shared.logKernel("内核已切换至 \(displayTag)" + (self.runningVersion.isEmpty ? "" : " (\(self.runningVersion))"))
             }
         } else {
             await MainActor.run {
@@ -286,6 +290,55 @@ final class KernelManager: ObservableObject {
             tags.append("Alpha")
         }
         installedTags = tags
+        // Keep runningVersion in sync so "使用中" reflects bin reality, not stale activeTag.
+        Task { await refreshRunningVersion() }
+    }
+
+    /// Refresh `runningVersion` from bin/mihomo -v (off main thread).
+    func refreshRunningVersion() async {
+        let v = await activeBinaryVersion() ?? ""
+        await MainActor.run {
+            if self.runningVersion != v { self.runningVersion = v }
+        }
+    }
+
+    /// Whether the given list row is the kernel actually in use.
+    /// `activeTag` alone is not enough: a failed activate can leave activeTag=正式版
+    /// while bin/mihomo is still an older build — UI then hides the 启用 button.
+    func isSlotInUse(_ tag: String) -> Bool {
+        // Must match the remembered slot first.
+        guard activeTag == tag else { return false }
+        if tag == "内置" {
+            // Builtin: running version should match bundled if we know it.
+            if builtinVersion.isEmpty || runningVersion.isEmpty { return true }
+            return Self.normalizeVersion(builtinVersion) == Self.normalizeVersion(runningVersion)
+        }
+        // Downloaded slot: compare bin version to the recorded download tag
+        // (stable) or accept activeTag when we can't read versions.
+        if tag == "正式版" {
+            let recorded = Self.normalizeVersion(installedStableTag)
+            let run = Self.normalizeVersion(runningVersion)
+            if !recorded.isEmpty && !run.isEmpty {
+                return recorded == run
+            }
+            // No recorded tag — trust activeTag only if slot binary version matches bin.
+            return true
+        }
+        if tag == "Alpha" {
+            // Alpha tracked by publish date, not semver — if activeTag says Alpha
+            // and bin exists, treat as in-use unless we later add alpha version stamps.
+            return !runningVersion.isEmpty
+        }
+        return activeTag == tag
+    }
+
+    /// True when the stable slot has a newer binary than the running bin.
+    var stableNeedsActivate: Bool {
+        guard installedTags.contains("正式版") else { return false }
+        let recorded = Self.normalizeVersion(installedStableTag)
+        let run = Self.normalizeVersion(runningVersion)
+        if !recorded.isEmpty && !run.isEmpty { return recorded != run }
+        return activeTag != "正式版"
     }
 
     func check() async {

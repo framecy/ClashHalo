@@ -786,21 +786,36 @@ struct KernelCard: View {
                     .font(.dsBody).foregroundColor(.secondary).frame(maxWidth: .infinity, alignment: .leading)
             }
         }
-        .onAppear { km.scanInstalled(); km.detectBuiltin() }
+        .onAppear {
+            km.scanInstalled()
+            km.detectBuiltin()
+            Task { await km.refreshRunningVersion() }
+        }
     }
 
     /// One kernel row (built-in or downloaded) with activate / in-use state.
     @ViewBuilder
     private func kernelRow(tag: String, label: String, icon: String, km: KernelManager) -> some View {
-        HStack {
+        // "使用中" only when activeTag matches AND bin version matches the slot
+        // (isSlotInUse). Otherwise show 启用 — covers "downloaded but not activated".
+        let inUse = km.isSlotInUse(tag)
+        let showReactivate = !inUse && tag == "正式版" && km.stableNeedsActivate
+        return HStack {
             Image(systemName: icon).font(.dsBody).foregroundColor(tag == "内置" ? DS.Palette.accent : .secondary)
-            Text(label).font(.dsMono)
+            VStack(alignment: .leading, spacing: 2) {
+                Text(label).font(.dsMono)
+                if showReactivate, !km.installedStableTag.isEmpty, !km.runningVersion.isEmpty {
+                    Text("已下载 \(km.installedStableTag) · 运行中 \(km.runningVersion)")
+                        .font(.dsBody)
+                        .foregroundColor(.secondary)
+                }
+            }
             Spacer()
-            if km.activeTag == tag {
+            if inUse {
                 Label("使用中", systemImage: "checkmark.circle.fill")
                     .font(.dsBody).foregroundColor(DS.Palette.accent).frame(width: DS.Layout.fieldTrailing, alignment: .trailing)
             } else {
-                Button("启用") {
+                Button(showReactivate ? "启用已下载" : "启用") {
                     M.withEngineBusy {
                         let wasTUN = M.tunOn
                         let ok = await km.activate(tag)
@@ -813,7 +828,7 @@ struct KernelCard: View {
                         }
                     }
                 }
-                    .dsButton()
+                    .dsButton(showReactivate ? .prominent : .secondary)
                     .disabled(M.engine.isBusy)
                     .frame(width: DS.Layout.fieldTrailing, alignment: .trailing)
             }
