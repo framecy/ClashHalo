@@ -2,7 +2,7 @@
 
 本文件给后续 AI 编码代理使用。进入本仓库后，先读本文件，再按需读 `README.md`、`CHANGELOG.md` 和相关源码。
 
-当前主干：`main`，产品版本 **v1.1.3**（`MARKETING_VERSION`），Helper **1.0.16**（`kSharedHelperVersion`，启用系统代理补 state-on；相对 1.0.15 及更早需强制升级）。打包时 `make.sh` 自增 `CURRENT_PROJECT_VERSION`。
+当前主干：`main`，产品版本 **v1.1.4**（`MARKETING_VERSION`），Helper **1.0.18**（`kSharedHelperVersion`：setSystemProxy 服务筛选、stopMihomo 异步超时；相对 1.0.17 及更早需强制升级）。打包时 `make.sh` 自增 `CURRENT_PROJECT_VERSION`。
 
 ## 项目概览
 
@@ -94,6 +94,9 @@ bash make.sh
 - 前台轮询分层：`refreshConfigs` 约 12s；网关设备 `/connections` 3s；连接页 1.5s；后台 30s；**禁止** DnsPage 等再起独立连接轮询
 - 高频 `@Published` 写入前做等值短路（`mode` / `tunOn` / totals / `gatewayDevices` / `dash`）
 - 流量 sparkline series 仅在 `route == dashboard` 或菜单栏可见时追加；默认 `trafficRefreshInterval = 2s`
+- **内核下载/检查必须直连**：`KernelManager` 使用 `connectionProxyDictionary = [:]` 的 ephemeral session，禁止经系统代理访问 GitHub
+- **内核切换顺序**：下载解压暂存 → 临时关系统代理 → `stopKernel`（`callStopMihomo` 硬超时）→ 换 bin → 启动 → `waitForKernelReady` → 成功才恢复代理；禁止先停核再下载
+- **系统代理启核**：`ensureRunningAsync(preferRoot: false)`，勿为 mixed-port 强制 root 重启
 
 ## Helper / TUN 高风险边界
 

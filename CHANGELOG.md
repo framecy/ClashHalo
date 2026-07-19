@@ -2,9 +2,26 @@
 
 本项目所有重要变更记录于此。格式参考 [Keep a Changelog](https://keepachangelog.com/),版本遵循语义化版本。
 
+## [1.1.4] - 2026-07-19
+
+系统代理与内核切换可靠性：修 XPC 超时/启核慢、内核更新卡死断网、开 Proxy 后无法检查/下载内核；侧栏状态精简；动效/Toast/轮询分层。Helper **1.0.16 → 1.0.18**（需强制升级）。
+
+### Fixed
+- **系统代理 XPC 超时 / 开关巨慢**：`setSystemProxy` 只配置活跃物理服务（跳过 VPN/Shadowrocket 等），最多 2 个服务；单条 `networksetup` 超时 1.2s；`callSystemProxy` 超时 5s→15s。
+- **开系统代理误走 root 重启**：`ensureRunningAsync(preferRoot:)`；系统代理路径 `preferRoot: false`，避免无故 root 升级拖死 UI。
+- **内核更新切换卡死导致全局断网**：先下载/解压/暂存，再临时关系统代理→停核→换 bin→启动→就绪后恢复代理；`callStopMihomo` 4s 硬超时；Helper stop 异步回复。
+- **开系统代理后无法检查/下载内核**：`KernelManager` 使用 ephemeral 直连 `URLSession`（`connectionProxyDictionary = [:]`），不再经 `127.0.0.1:mixed-port`；暴露真实错误；下载不再占满 `isBusy`。
+- **内核检查版本误判**：以运行中的 bin 版本为准；已下载未启用显示「启用已下载」。
+
+### Changed
+- **侧栏状态精简**：Proxy / TUN / 内核（红绿点 + 完整版本号），去掉「核心已就绪」长文案。
+- **开 Proxy 时 ensure allow-lan**：局域网设备可经 mixed-port 使用代理（无需开网关中枢做透明转发）。
+- **动效 / 反馈 / 性能**（1.1.3 后合入）：`DS.Motion`、Toast generation+kind、主开关 busy 可感知、菜单栏 toast 副标题、`refreshConfigs` 约 12s 分层、DnsPage 去双拉、series 仅 dashboard。
+- **Helper 1.0.17→1.0.18**：`setSystemProxy` 服务筛选；`stopMihomo` 异步 + 更短等待。
+
 ## [1.1.3] - 2026-07-18
 
-启动稳定性与网关体验：修复冷启动误开网关中枢导致断网；网关设备列表复活；Helper 安装/升级体验加固（预检、单次授权、更新说明弹窗）。Helper 仍为 **1.0.16**（无需强制升级）。
+启动稳定性与网关体验：修复冷启动误开网关中枢导致断网；网关设备列表复活；Helper 安装/升级体验加固（预检、单次授权、更新说明弹窗）。Helper 仍为 **1.0.16**（相对更早版本需升级；1.1.4 起请升到 1.0.18）。
 
 ### Fixed
 - **冷启动误开网关中枢 / 全局断网**：`refreshConfigs` 不再根据残留 `allow-lan + dns.listen=0.0.0.0:53` 推断 `gatewayModeOn`。网关开关只认用户意图（UserDefaults 镜像）；开关关闭时若发现残留 `0.0.0.0:53` 会自动清回 `127.0.0.1:1053` 并顺带关闭 IP 转发。
