@@ -728,25 +728,28 @@ struct KernelCard: View {
                     }
                     Spacer()
                     HStack(spacing: 8) {
-                        Button("检查更新") { Task { await km.check() } }
+                        Button("检查更新") {
+                            Task { await km.check() }
+                        }
                             .dsButton()
-                            .disabled(km.checking)
+                            .disabled(km.checking || km.downloading)
                         if !km.assetURL.isEmpty {
                             Button {
+                                // Download while kernel still serves traffic (no isBusy).
+                                // Only the final swap/restart holds the engine busy lock.
                                 Task {
-                                    M.withEngineBusy {
-                                        let wasTUN = M.tunOn
-                                        // download() stages the binary first, then
-                                        // swapAndLaunch temporarily clears system
-                                        // proxy and waits for kernel readiness.
-                                        await km.download()
+                                    let wasTUN = M.tunOn
+                                    let switched = await km.download()
+                                    if switched {
+                                        // activate already waited for readiness + restored proxy
                                         await M.reconnect()
                                         if M.reachable {
                                             await M.reapplyTUN(wasOn: wasTUN)
-                                            M.showToast(km.note.isEmpty ? "内核已更新" : km.note, kind: .ok)
-                                        } else {
-                                            M.showToast(km.note.isEmpty ? "内核更新后启动失败" : km.note, kind: .error)
                                         }
+                                        M.showToast(km.note.isEmpty ? "内核已更新" : km.note, kind: .ok)
+                                    } else {
+                                        await M.reconnect()
+                                        M.showToast(km.note.isEmpty ? "内核更新失败" : km.note, kind: .error)
                                     }
                                 }
                             } label: {
@@ -761,7 +764,7 @@ struct KernelCard: View {
                                 }
                             }
                             .dsButton(.prominent)
-                            .disabled(km.downloading || M.engine.isBusy)
+                            .disabled(km.downloading || km.checking || M.engine.isBusy)
                         }
                     }
                     .frame(width: DS.Layout.fieldTrailing, alignment: .trailing)

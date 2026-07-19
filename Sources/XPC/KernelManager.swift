@@ -23,11 +23,22 @@ final class KernelManager: ObservableObject {
     private var binPath: String { NSHomeDirectory() + "/Library/Application Support/ClashHalo/bin/mihomo" }
     @AppStorage("kernel.active") var activeTag = "内置"
 
-    /// URLSession with timeout for kernel downloads (2min resource timeout for large binaries)
+    /// URLSession for GitHub check/download.
+    /// CRITICAL: do NOT use `.default` (inherits system HTTP proxy). When ClashHalo
+    /// system proxy is ON, that would send GitHub traffic to 127.0.0.1:mixed-port
+    /// through the same mihomo we may be about to replace — hangs, "网络错误", or
+    /// multi‑minute stalls that look like the App froze. Force direct egress.
     private let session: URLSession = {
-        let config = URLSessionConfiguration.default
+        let config = URLSessionConfiguration.ephemeral
         config.timeoutIntervalForRequest = 30
-        config.timeoutIntervalForResource = 120
+        config.timeoutIntervalForResource = 180
+        config.waitsForConnectivity = true
+        config.httpAdditionalHeaders = [
+            "User-Agent": "ClashHalo",
+            "Accept": "application/vnd.github+json"
+        ]
+        // Empty proxy dictionary = ignore system proxy / PAC for this session.
+        config.connectionProxyDictionary = [:]
         return URLSession(configuration: config)
     }()
 
@@ -248,16 +259,39 @@ final class KernelManager: ObservableObject {
     }
 
     func check() async {
-        checking = true; note = ""; defer { checking = false }
+        await MainActor.run {
+            checking = true
+            note = "正在检查更新…"
+        }
+        defer { Task { @MainActor in self.checking = false } }
+
         let api = channel == "alpha"
             ? "https://api.github.com/repos/MetaCubeX/mihomo/releases/tags/Prerelease-Alpha"
             : "https://api.github.com/repos/MetaCubeX/mihomo/releases/latest"
         guard let url = URL(string: api) else { return }
         var req = URLRequest(url: url)
-        req.setValue("application/vnd.github+json", forHTTPHeaderField: "Accept")
-        req.setValue("ClashHalo", forHTTPHeaderField: "User-Agent")
-        guard let (data, resp) = try? await session.data(for: req) else { note = "网络错误"; return }
-        if let h = resp as? HTTPURLResponse, h.statusCode == 403 { note = "GitHub API 限流，请稍后再试"; return }
+        req.timeoutInterval = 30
+
+        let data: Data
+        let resp: URLResponse
+        do {
+            (data, resp) = try await session.data(for: req)
+        } catch {
+            await MainActor.run {
+                self.note = "检查失败：\(Self.shortError(error))（已直连，不经系统代理）"
+            }
+            return
+        }
+        if let h = resp as? HTTPURLResponse {
+            if h.statusCode == 403 {
+                await MainActor.run { self.note = "GitHub API 限流，请稍后再试" }
+                return
+            }
+            if h.statusCode != 200 {
+                await MainActor.run { self.note = "检查失败：HTTP \(h.statusCode)" }
+                return
+            }
+        }
 
         struct Asset: Decodable { let name: String; let browser_download_url: String }
         struct Release: Decodable {
@@ -265,21 +299,29 @@ final class KernelManager: ObservableObject {
             let published_at: String
             let assets: [Asset]
         }
-        guard let r = try? JSONDecoder().decode(Release.self, from: data) else { note = "解析失败"; return }
-        latestTag = r.tag_name
+        guard let r = try? JSONDecoder().decode(Release.self, from: data) else {
+            await MainActor.run { self.note = "解析失败" }
+            return
+        }
+
+        await MainActor.run { self.latestTag = r.tag_name }
 
         // Check if already latest version
         if channel == "stable" {
             let pureTag = r.tag_name.hasPrefix("v") ? String(r.tag_name.dropFirst()) : r.tag_name
             if installedStableTag == pureTag {
-                note = "当前内核已是最新版本，无需更新"
-                assetURL = ""
+                await MainActor.run {
+                    self.note = "当前内核已是最新版本，无需更新"
+                    self.assetURL = ""
+                }
                 return
             }
         } else if channel == "alpha" {
             if installedAlphaDate == r.published_at {
-                note = "当前内核已是最新版本，无需更新"
-                assetURL = ""
+                await MainActor.run {
+                    self.note = "当前内核已是最新版本，无需更新"
+                    self.assetURL = ""
+                }
                 return
             }
         }
@@ -287,30 +329,59 @@ final class KernelManager: ObservableObject {
         // darwin-arm64, prefer non-"compatible"/non-go120 variant, .gz
         if let a = r.assets.first(where: { $0.name.contains("darwin-arm64") && $0.name.hasSuffix(".gz") && !$0.name.contains("compatible") && !$0.name.contains("go1") })
             ?? r.assets.first(where: { $0.name.contains("darwin-arm64") && $0.name.hasSuffix(".gz") }) {
-            assetURL = a.browser_download_url
-            tempPublishDate = r.published_at
-            tempTagName = r.tag_name.hasPrefix("v") ? String(r.tag_name.dropFirst()) : r.tag_name
-            note = "发现新版本 \(r.tag_name)，可下载切换"
-        } else { note = "未找到 darwin-arm64 资源" }
+            await MainActor.run {
+                self.assetURL = a.browser_download_url
+                self.tempPublishDate = r.published_at
+                self.tempTagName = r.tag_name.hasPrefix("v") ? String(r.tag_name.dropFirst()) : r.tag_name
+                self.note = "发现新版本 \(r.tag_name)，可下载切换"
+            }
+        } else {
+            await MainActor.run { self.note = "未找到 darwin-arm64 资源" }
+        }
     }
 
     /// Download + decompress into the channel slot, THEN swap the running kernel.
     /// Download happens while the current kernel is still serving traffic — the
     /// stop/swap window is only the final install step.
-    func download() async {
-        guard let url = URL(string: assetURL), !latestTag.isEmpty else { return }
-        downloading = true
-        progress = 0.05
-        note = "正在下载 \(latestTag)…"
-        defer { downloading = false }
-
-        guard let (tmp, _) = try? await session.download(from: url) else {
-            note = "下载失败"
-            progress = 0
-            return
+    ///
+    /// Returns whether the new kernel is reachable after the full flow.
+    @discardableResult
+    func download() async -> Bool {
+        guard let url = URL(string: assetURL), !latestTag.isEmpty else {
+            await MainActor.run { self.note = "请先检查更新" }
+            return false
         }
-        progress = 0.7
-        note = "正在解压…"
+        await MainActor.run {
+            self.downloading = true
+            self.progress = 0.05
+            self.note = "正在下载 \(self.latestTag)…（直连，不经系统代理）"
+        }
+        defer { Task { @MainActor in self.downloading = false } }
+
+        let tmp: URL
+        do {
+            let (file, resp) = try await session.download(from: url)
+            if let h = resp as? HTTPURLResponse, !(200...399).contains(h.statusCode) {
+                await MainActor.run {
+                    self.note = "下载失败：HTTP \(h.statusCode)"
+                    self.progress = 0
+                }
+                try? FileManager.default.removeItem(at: file)
+                return false
+            }
+            tmp = file
+        } catch {
+            await MainActor.run {
+                self.note = "下载失败：\(Self.shortError(error))"
+                self.progress = 0
+            }
+            return false
+        }
+
+        await MainActor.run {
+            self.progress = 0.7
+            self.note = "正在解压…"
+        }
 
         let fm = FileManager.default
         let slotName = channel == "alpha" ? "alpha" : "stable"
@@ -320,10 +391,11 @@ final class KernelManager: ObservableObject {
         // decompress .gz → mihomo on background thread (current kernel still running)
         let out = tagDir + "/mihomo"
         try? fm.removeItem(atPath: out)
+        let tmpPath = tmp.path
 
         let ok = await Task.detached(priority: .userInitiated) {
             let p = Process(); p.executableURL = URL(fileURLWithPath: "/usr/bin/gunzip")
-            p.arguments = ["-c", tmp.path]
+            p.arguments = ["-c", tmpPath]
             guard FileManager.default.createFile(atPath: out, contents: nil),
                   let fh = FileHandle(forWritingAtPath: out) else { return false }
             p.standardOutput = fh
@@ -331,7 +403,10 @@ final class KernelManager: ObservableObject {
                 try p.run()
                 p.waitUntilExit()
                 try? fh.close()
-                return p.terminationStatus == 0
+                // Reject empty/corrupt outputs (e.g. HTML error page gunzipped badly).
+                let attrs = try? FileManager.default.attributesOfItem(atPath: out)
+                let size = (attrs?[.size] as? NSNumber)?.intValue ?? 0
+                return p.terminationStatus == 0 && size > 1_000_000
             } catch {
                 return false
             }
@@ -341,27 +416,52 @@ final class KernelManager: ObservableObject {
         try? fm.removeItem(at: tmp)
 
         guard ok else {
-            note = "解压失败"
-            progress = 0
-            return
+            await MainActor.run {
+                self.note = "解压失败（文件不完整或非 gzip）"
+                self.progress = 0
+            }
+            return false
         }
 
         try? fm.setAttributes([.posixPermissions: 0o755], ofItemAtPath: out)
-        progress = 0.9
-        if channel == "stable" {
-            installedStableTag = tempTagName
-        } else {
-            installedAlphaDate = tempPublishDate
+        await MainActor.run {
+            self.progress = 0.9
+            if self.channel == "stable" {
+                self.installedStableTag = self.tempTagName
+            } else {
+                self.installedAlphaDate = self.tempPublishDate
+            }
+            self.scanInstalled()
         }
-        scanInstalled()
         let tag = channel == "alpha" ? "Alpha" : "正式版"
-        note = "下载完成，正在切换至 \(tag)…"
+        await MainActor.run { self.note = "下载完成，正在切换至 \(tag)…" }
 
         // Only NOW stop the running kernel and swap — short outage window.
         let switched = await activate(tag)
-        progress = 1
-        if !switched {
-            note = "已下载 \(tag)，但切换/启动失败（系统代理已保护）"
+        await MainActor.run {
+            self.progress = 1
+            if !switched {
+                self.note = "已下载 \(tag)，但切换/启动失败（系统代理已保护）"
+            }
         }
+        return switched
+    }
+
+    /// Compact, user-facing error text (no huge URLSession dump).
+    private static func shortError(_ error: Error) -> String {
+        let ns = error as NSError
+        if ns.domain == NSURLErrorDomain {
+            switch ns.code {
+            case NSURLErrorTimedOut: return "连接超时"
+            case NSURLErrorNotConnectedToInternet: return "无网络"
+            case NSURLErrorNetworkConnectionLost: return "连接中断"
+            case NSURLErrorCannotFindHost, NSURLErrorDNSLookupFailed: return "无法解析主机"
+            case NSURLErrorCannotConnectToHost: return "无法连接主机"
+            case NSURLErrorSecureConnectionFailed: return "TLS 失败"
+            default: break
+            }
+        }
+        let s = error.localizedDescription
+        return s.count > 80 ? String(s.prefix(80)) + "…" : s
     }
 }
