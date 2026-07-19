@@ -60,16 +60,46 @@ final class KernelManager: ObservableObject {
             DispatchQueue.main.async { self.builtinVersion = "" }; return
         }
         DispatchQueue.global().async {
-            let p = Process(); p.executableURL = bundled; p.arguments = ["-v"]
-            let pipe = Pipe(); p.standardOutput = pipe; p.standardError = pipe
-            do { try p.run() } catch { return }
-            p.waitUntilExit()
-            let out = String(data: pipe.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? ""
-            if let r = out.range(of: "v[0-9]+\\.[0-9]+\\.[0-9]+", options: .regularExpression) {
-                let v = String(out[r])
-                DispatchQueue.main.async { self.builtinVersion = v }
-            }
+            let v = Self.readVersion(at: bundled.path) ?? ""
+            DispatchQueue.main.async { self.builtinVersion = v }
         }
+    }
+
+    /// Parse `mihomo -v` output → "1.19.28" (no leading v). nil if unreadable.
+    private static func readVersion(at path: String) -> String? {
+        guard FileManager.default.isExecutableFile(atPath: path) else { return nil }
+        let p = Process()
+        p.executableURL = URL(fileURLWithPath: path)
+        p.arguments = ["-v"]
+        let pipe = Pipe()
+        p.standardOutput = pipe
+        p.standardError = pipe
+        do { try p.run() } catch { return nil }
+        p.waitUntilExit()
+        let out = String(data: pipe.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? ""
+        guard let r = out.range(of: "v?[0-9]+\\.[0-9]+\\.[0-9]+", options: .regularExpression) else { return nil }
+        var v = String(out[r])
+        if v.hasPrefix("v") { v = String(v.dropFirst()) }
+        return v
+    }
+
+    /// Version of the kernel currently in `bin/mihomo` (what the app actually runs).
+    private func activeBinaryVersion() async -> String? {
+        let path = binPath
+        return await Task.detached(priority: .utility) {
+            Self.readVersion(at: path)
+        }.value
+    }
+
+    /// Normalize a release tag / version string to "1.19.29" form.
+    private static func normalizeVersion(_ raw: String) -> String {
+        var s = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        if s.hasPrefix("v") || s.hasPrefix("V") { s = String(s.dropFirst()) }
+        // Alpha tags like "alpha-..." are not semver — return as-is for inequality.
+        if let r = s.range(of: "^[0-9]+\\.[0-9]+\\.[0-9]+", options: .regularExpression) {
+            return String(s[r])
+        }
+        return s
     }
 
     /// Switch the active kernel to the bundled one (copy from app → bin) + restart.
@@ -306,22 +336,51 @@ final class KernelManager: ObservableObject {
 
         await MainActor.run { self.latestTag = r.tag_name }
 
-        // Check if already latest version
-        if channel == "stable" {
-            let pureTag = r.tag_name.hasPrefix("v") ? String(r.tag_name.dropFirst()) : r.tag_name
-            if installedStableTag == pureTag {
-                await MainActor.run {
-                    self.note = "当前内核已是最新版本，无需更新"
-                    self.assetURL = ""
-                }
-                return
+        let remoteVersion = Self.normalizeVersion(r.tag_name)
+        // Source of truth: bin/mihomo (what the app actually runs), NOT
+        // kernel.stable.tag (last successful download record). A download that
+        // never activated left stable.tag=1.19.29 while bin stayed 1.19.28 —
+        // check then falsely reported "已是最新".
+        let runningVersion = await activeBinaryVersion()
+        let slotPath = dir + "/\(channel == "alpha" ? "alpha" : "stable")/mihomo"
+        let slotHasBinary = FileManager.default.fileExists(atPath: slotPath)
+        let currentVersion = runningVersion
+            ?? (channel == "stable" && !installedStableTag.isEmpty
+                ? Self.normalizeVersion(installedStableTag) : nil)
+
+        if channel == "stable", let current = currentVersion, current == remoteVersion {
+            await MainActor.run {
+                // Slot may still differ; user can re-download, but default is done.
+                self.note = "当前运行内核 \(current) 已是最新，无需更新"
+                self.assetURL = ""
             }
-        } else if channel == "alpha" {
-            if installedAlphaDate == r.published_at {
+            return
+        }
+        if channel == "alpha",
+           activeTag == "Alpha",
+           installedAlphaDate == r.published_at,
+           runningVersion != nil {
+            await MainActor.run {
+                self.note = "当前运行 Alpha 内核已是最新，无需更新"
+                self.assetURL = ""
+            }
+            return
+        }
+
+        // If slot already has remoteVersion but bin is older, prefer activate over re-download.
+        if channel == "stable", slotHasBinary, let run = runningVersion, run != remoteVersion {
+            let slotVer = await Task.detached(priority: .utility) {
+                Self.readVersion(at: slotPath)
+            }.value
+            if slotVer == remoteVersion {
                 await MainActor.run {
-                    self.note = "当前内核已是最新版本，无需更新"
-                    self.assetURL = ""
+                    self.latestTag = r.tag_name
+                    self.assetURL = "" // no re-download needed
+                    self.tempTagName = remoteVersion
+                    self.note = "已下载 \(remoteVersion)，当前运行 \(run) — 请点「正式版」后的启用"
                 }
+                // Ensure 正式版 appears in installed list
+                await MainActor.run { self.scanInstalled() }
                 return
             }
         }
@@ -332,8 +391,12 @@ final class KernelManager: ObservableObject {
             await MainActor.run {
                 self.assetURL = a.browser_download_url
                 self.tempPublishDate = r.published_at
-                self.tempTagName = r.tag_name.hasPrefix("v") ? String(r.tag_name.dropFirst()) : r.tag_name
-                self.note = "发现新版本 \(r.tag_name)，可下载切换"
+                self.tempTagName = remoteVersion
+                if let current = currentVersion {
+                    self.note = "发现新版本 \(r.tag_name)（当前运行 \(current)），可下载切换"
+                } else {
+                    self.note = "发现新版本 \(r.tag_name)，可下载切换"
+                }
             }
         } else {
             await MainActor.run { self.note = "未找到 darwin-arm64 资源" }
