@@ -316,13 +316,6 @@ extension AppModel {
                 await self.reconnect()
             }
 
-            // LAN clients that point HTTP/SOCKS at this Mac need allow-lan.
-            // Gateway mode also sets it; system-proxy-only users previously had
-            // to flip "允许局域网" by hand or open full Gateway.
-            if on {
-                await self.ensureAllowLanForSharing()
-            }
-
             let ok = await self.engine.setSystemProxy(enabled: on, port: port)
             if ok {
                 // Prefer SCDynamicStore reality. Store can lag a beat after
@@ -341,12 +334,24 @@ extension AppModel {
                 } else {
                     self.showToast("系统代理已关闭", kind: .ok)
                 }
+
+                // LAN clients that point HTTP/SOCKS at this Mac need allow-lan.
+                // Gateway mode also sets it; system-proxy-only users previously
+                // had to flip "允许局域网" by hand or open full Gateway. Runs
+                // *after* the proxy is live + toast shown — it needs a config
+                // patch + refresh and shouldn't delay the visible toggle result.
+                if on {
+                    await self.ensureAllowLanForSharing()
+                }
             } else {
                 self.syncSystemProxyState()
                 self.logKernel("系统代理设置失败 (want=\(on), port=\(port))")
                 await self.api.probe()
                 if self.api.reachable {
                     self.showToast("系统代理设置失败", kind: .error)
+                } else {
+                    // Kernel is down too — say so instead of failing silently.
+                    self.showToast("系统代理设置失败（内核未运行）", kind: .error)
                 }
             }
         }
@@ -723,7 +728,12 @@ extension AppModel {
             }
         } else {
             await api.probe()
-            if api.reachable { showToast(want ? "TUN 模式开启失败" : "TUN 模式关闭失败", kind: .error) }
+            if api.reachable {
+                showToast(want ? "TUN 模式开启失败" : "TUN 模式关闭失败", kind: .error)
+            } else {
+                // Kernel died mid-flight — surface it instead of failing silently.
+                showToast(want ? "TUN 开启失败（内核未运行）" : "TUN 已随内核停止关闭", kind: want ? .error : .ok)
+            }
         }
     }
 
