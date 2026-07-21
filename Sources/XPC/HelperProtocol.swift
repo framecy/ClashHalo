@@ -4,7 +4,7 @@ import Foundation
 /// Shared by both the Helper binary (compiled via make.sh) and the main app
 /// (Xcode target) since both include this file — prevents the two-location
 /// version drift that caused infinite upgrade loops.
-public let kSharedHelperVersion = "1.0.19"
+public let kSharedHelperVersion = "1.0.20"
 
 /// System-proxy bypass domains — single source of truth shared by the Helper
 /// binary, the local shell fallback, and the GUI-side self-healing reconcile.

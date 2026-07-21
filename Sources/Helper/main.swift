@@ -112,6 +112,29 @@ class Helper: NSObject, HelperProtocol {
     /// Guards concurrent access to mihomoProcess from parallel XPC connections.
     private static let processLock = NSLock()
 
+    /// Which system-level mutations this helper performed for the current
+    /// client session. Client-death cleanup is gated on these so a session
+    /// that never enabled anything cannot clobber user DNS / proxy / kernels,
+    /// and so the cleanup fires the right subset (v1.0.20).
+    fileprivate static var stateMihomoStarted = false
+    fileprivate static var stateProxyOn = false
+    fileprivate static var stateGatewayOn = false
+    fileprivate static let stateLock = NSLock()
+
+    fileprivate static func setState(_ apply: (inout Bool, inout Bool, inout Bool) -> Void) {
+        stateLock.lock(); defer { stateLock.unlock() }
+        apply(&stateMihomoStarted, &stateProxyOn, &stateGatewayOn)
+    }
+
+    /// Arm the client-death watchdog for the connection currently being served.
+    /// Called from every state-mutating XPC method — the PID that turned
+    /// something on is the one whose death must trigger cleanup.
+    fileprivate static func armWatchForCurrentClient() {
+        if let pid = NSXPCConnection.current()?.processIdentifier, pid > 0 {
+            HelperDelegate.armClientWatch(pid: pid)
+        }
+    }
+
     func getVersion(withReply reply: @escaping (String) -> Void) {
         log("getVersion called")
         reply(kHelperVersion)
@@ -120,6 +143,10 @@ class Helper: NSObject, HelperProtocol {
     func setSystemProxy(enabled: Bool, port: Int, withReply reply: @escaping (Bool) -> Void) {
         log("setSystemProxy(enabled: \(enabled), port: \(port))")
         let ok = ProxyManager.setSystemProxy(enabled: enabled, port: port)
+        // Track intent even on partial failure: some services may have been
+        // configured before an error, so a later cleanup disable is the safe state.
+        Self.setState { _, proxyOn, _ in proxyOn = enabled }
+        if enabled { Self.armWatchForCurrentClient() }
         reply(ok)
     }
 
@@ -190,6 +217,8 @@ class Helper: NSObject, HelperProtocol {
         do {
             try process.run()
             Self.mihomoProcess = process
+            Self.setState { mihomo, _, _ in mihomo = true }
+            Self.armWatchForCurrentClient()
             log("startMihomo: started pid \(process.processIdentifier)")
             reply(true)
         } catch {
@@ -200,6 +229,7 @@ class Helper: NSObject, HelperProtocol {
 
     static func stopMihomoInternal() {
         log("stopMihomoInternal called")
+        setState { mihomo, _, _ in mihomo = false }
         processLock.lock()
         defer { processLock.unlock() }
         if let process = mihomoProcess, process.isRunning {
@@ -266,6 +296,8 @@ class Helper: NSObject, HelperProtocol {
         }
 
         log("setGatewayMode: \(enabled) -> \(ok ? "success" : "failed")")
+        Self.setState { _, _, gateway in gateway = enabled }
+        if enabled { Self.armWatchForCurrentClient() }
         reply(ok)
     }
 
@@ -330,6 +362,7 @@ class Helper: NSObject, HelperProtocol {
                 allOk = false
             }
         }
+        Self.armWatchForCurrentClient()
         reply(allOk)
     }
 
@@ -364,6 +397,57 @@ class HelperDelegate: NSObject, NSXPCListenerDelegate {
     private static var activeConnections: [Int32: Int] = [:]
     private static let connLock = NSLock()
 
+    // MARK: Client process watchdog (v1.0.20)
+    //
+    // The connection-invalidation cleanup below only fires when a connection
+    // happens to be open at client-death time. The GUI talks to this helper
+    // almost exclusively over throwaway connections that live ~50ms per call,
+    // so a force-quit usually happened with ZERO open connections — the helper
+    // never noticed, and root mihomo / system proxy / tunnel DNS leaked until
+    // the network broke. A kqueue NOTE_EXIT source on the client PID fires on
+    // ANY death (force quit included), independent of connection state. Armed
+    // by every state-mutating call; cleanup itself is state-gated.
+    private static var clientWatch: DispatchSourceProcess?
+    private static var watchedPid: Int32 = 0
+    /// Most recent accepted connection (any pid) — takeover signal: a fresh
+    /// live client after the watched pid died means a relaunched app now owns
+    /// the kernel/proxy state, so death-cleanup must stand down.
+    private static var lastSeenClient: (pid: Int32, at: Date) = (0, .distantPast)
+
+    static func armClientWatch(pid: Int32) {
+        connLock.lock(); defer { connLock.unlock() }
+        if watchedPid == pid, clientWatch != nil { return }
+        clientWatch?.cancel()
+        let src = DispatchSource.makeProcessSource(identifier: pid, eventMask: .exit,
+                                                   queue: DispatchQueue.global())
+        src.setEventHandler {
+            log("clientWatch: watched pid \(pid) exited")
+            // Same grace the invalidation path uses: give an immediate relaunch
+            // (app update / crash-restart) time to reconnect and take over.
+            DispatchQueue.global().asyncAfter(deadline: .now() + 2.0) {
+                Self.connLock.lock()
+                let hasActive = !Self.activeConnections.isEmpty
+                let recent = Self.lastSeenClient
+                Self.connLock.unlock()
+                if hasActive {
+                    log("clientWatch: active connection present — new session owns state, skip cleanup")
+                    return
+                }
+                if recent.pid != pid, recent.pid > 0,
+                   Date().timeIntervalSince(recent.at) < 15, kill(recent.pid, 0) == 0 {
+                    log("clientWatch: newer live client pid \(recent.pid) seen — skip cleanup")
+                    return
+                }
+                HelperDelegate.handleClientExit(pid: pid)
+            }
+        }
+        src.setCancelHandler { }
+        src.resume()
+        watchedPid = pid
+        clientWatch = src
+        log("armClientWatch: watching pid \(pid)")
+    }
+
     func listener(_ listener: NSXPCListener, shouldAcceptNewConnection newConnection: NSXPCConnection) -> Bool {
         log("New connection attempt from pid: \(newConnection.processIdentifier)")
         guard isAuthorizedClient(newConnection) else {
@@ -378,6 +462,7 @@ class HelperDelegate: NSObject, NSXPCListenerDelegate {
         // Increment active connection count for this client
         Self.connLock.lock()
         Self.activeConnections[clientPid, default: 0] += 1
+        Self.lastSeenClient = (clientPid, Date())
         Self.connLock.unlock()
 
         newConnection.invalidationHandler = {
@@ -426,34 +511,74 @@ class HelperDelegate: NSObject, NSXPCListenerDelegate {
         return true
     }
 
-    private static func handleClientExit(pid: Int32) {
-        log("handleClientExit for pid \(pid): restoring settings to prevent DNS/proxy leaks")
-        
+    fileprivate static func handleClientExit(pid: Int32) {
+        // Snapshot + clear session state atomically: cleanup runs at most once
+        // per session (both the watchdog and the invalidation path funnel here),
+        // and only reverts what this helper actually set — a session that never
+        // enabled anything must not clobber user DNS / proxy / foreign kernels.
+        Helper.stateLock.lock()
+        let hadMihomo = Helper.stateMihomoStarted
+        let hadProxy = Helper.stateProxyOn
+        let hadGateway = Helper.stateGatewayOn
+        Helper.stateMihomoStarted = false
+        Helper.stateProxyOn = false
+        Helper.stateGatewayOn = false
+        Helper.stateLock.unlock()
+
+        connLock.lock()
+        clientWatch?.cancel()
+        clientWatch = nil
+        watchedPid = 0
+        connLock.unlock()
+
+        guard hadMihomo || hadProxy || hadGateway else {
+            log("handleClientExit for pid \(pid): no helper-owned state — nothing to clean")
+            return
+        }
+        log("handleClientExit for pid \(pid): cleaning (mihomo=\(hadMihomo) proxy=\(hadProxy) gateway=\(hadGateway))")
+
         // 1. Stop mihomo process first (fast, reliable, and does not depend on system configuration locks)
-        Helper.stopMihomoInternal()
-        
-        // 1.5. Cleanup static routes
+        if hadMihomo {
+            Helper.stopMihomoInternal()
+        }
+
+        // 1.5. Cleanup static routes (internal no-op when none were injected)
         Helper.routesLock.lock()
         Helper.cleanupAllExcludeRoutesInternal()
         Helper.routesLock.unlock()
-        
-        // 2. Disable system proxy
-        let proxyReset = ProxyManager.setSystemProxy(enabled: false, port: 7890)
-        log("handleClientExit: system proxy disabled (\(proxyReset))")
-        
-        // 3. Restore DNS (networksetup layer only — mihomo's utun and its
-        //    Supplemental DNS resolver are auto-destroyed by the kernel when
-        //    the process exits; do NOT touch utun interfaces, as other VPN
-        //    apps like Shadowrocket share the same 198.18.x.x address space)
-        let dnsReset = ProxyManager.restoreDNS()
-        log("handleClientExit: DNS restored (\(dnsReset))")
 
-        // 4. Disable IP Forwarding
-        let t = Process()
-        t.executableURL = URL(fileURLWithPath: "/usr/sbin/sysctl")
-        t.arguments = ["-w", "net.inet.ip.forwarding=0"]
-        try? t.run()
-        log("handleClientExit: IP forwarding disabled")
+        // 2. Disable system proxy
+        if hadProxy {
+            let proxyReset = ProxyManager.setSystemProxy(enabled: false, port: 7890)
+            log("handleClientExit: system proxy disabled (\(proxyReset))")
+        }
+
+        if hadMihomo {
+            // 3. Zombie utun physical cleanup: a SIGKILLed mihomo can leave a
+            //    DOWNED 198.18 utun whose Supplemental DNS resolver keeps
+            //    pinning the fake-ip gateway — the exact post-force-quit DNS
+            //    blackout this cleanup exists for. downedOnly spares healthy
+            //    co-resident VPN tunnels (Shadowrocket etc.) sharing 198.18.x.
+            Thread.sleep(forTimeInterval: 0.3)   // let the kernel reap the utun first
+            Helper.routesLock.lock()
+            _ = ProxyManager.cleanupTUNResidual(downedOnly: true)
+            Helper.routesLock.unlock()
+
+            // 4. Restore DNS — only for services still pinned at the tunnel
+            //    gateway, so a custom user DNS (or the saved DNS the GUI already
+            //    restored during a normal quit) is never clobbered to "Empty".
+            let dnsReset = ProxyManager.restoreDNSIfTunnelPinned()
+            log("handleClientExit: tunnel-pinned DNS restored (\(dnsReset))")
+        }
+
+        // 5. Disable IP Forwarding
+        if hadGateway {
+            let t = Process()
+            t.executableURL = URL(fileURLWithPath: "/usr/sbin/sysctl")
+            t.arguments = ["-w", "net.inet.ip.forwarding=0"]
+            try? t.run()
+            log("handleClientExit: IP forwarding disabled")
+        }
     }
 }
 

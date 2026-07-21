@@ -4,9 +4,13 @@
 
 ## [1.1.6] - 2026-07-21
 
-修复 v1.1.5 首次开启 TUN 后开关闪跳自动关闭的问题（状态判定被 TUN 拉起瞬间的网络路径风暴误翻）。
+修复 v1.1.5 首次开启 TUN 后开关闪跳自动关闭的问题（状态判定被 TUN 拉起瞬间的网络路径风暴误翻）；修复 TUN/内核/系统代理开启时强退 App 导致断网。Helper **1.0.19 → 1.0.20**（需强制升级）。
 
 ### Fixed
+- **强退 App 断网（Helper 1.0.20）**：两处根因——
+  1. *客户端死亡感知不可靠*：Helper 的退出清理只在「强退瞬间恰好有 XPC 连接打开」时触发；App 与 Helper 几乎全部走 ~50ms 的一次性连接，强退大概率无连接在线 → 无人清理，root mihomo / 系统代理 / TUN DNS（198.18.x）全部残留，内核一退或重启电脑即断网。现改为 kqueue `NOTE_EXIT` 进程监视：任何 state 变更调用（startMihomo / 开代理 / 开网关 / 注路由）即布防对客户端 PID 的死亡监视，无论何种退出方式都会触发清理；2s 宽限 + 新客户端接管检测（活动连接或 15s 内新 PID 存活则让位，覆盖崩溃自启/覆盖安装场景）。
+  2. *清理自身留 DNS 黑洞*：`killall -9` 杀 mihomo 可能留下 DOWN 的僵尸 utun，其 Supplemental DNS resolver 仍把系统 DNS 钉在 198.18.x（GUI 侧 v1.0.15 已修过的同款黑洞，Helper 退出清理路径漏了）。现清理流程加入 `cleanupTUNResidual(downedOnly:)` 物理清理（仅处理已 DOWN 接口，不误伤共用 198.18 段的健康 VPN）。
+  - 顺带加固：清理按会话状态门控（没开过的不动，从不再把用户自定义 DNS 清成 Empty）；DNS 恢复仅针对仍钉在隧道网关的服务（`restoreDNSIfTunnelPinned`），不覆盖正常退出时 GUI 已恢复的用户 DNS；正常退出后残留的 root mihomo 同样被监视清理（此前用户态 `killall` 杀不动 root 进程）。
 - **TUN 开启后开关闪跳自关**：TUN 拉起瞬间（utun 创建、auto-route 注入、系统 DNS 切换）触发 `NWPathMonitor` 风暴，多个并发 `refreshConfigs` 中任一瞬时假信号即把 `tunOn` 翻 false 并执行关闭级联（重复清理静态路由、撤销隧道 DNS），数秒后信号恢复又翻回 true——用户看到开关自动关闭、DNS 重定向状态脱节（`overridden=1` 但系统 DNS 已被还原）。修复：
   - **开启稳定期**：TUN PATCH 成功后 10s 内 `refreshConfigs` 不得把 `tunOn` 由 true 翻 false（翻 true 不受限）；用户手动关闭、停核、内核确认失联等显式路径不受稳定期限制。`verifyTUNConfig` / 接口丢失自动 teardown 同样尊重稳定期。
   - **refreshConfigs 并发合并**：并发调用合并到单个 in-flight 执行（helper 日志曾出现 3 次重复静态路由清理即为此竞态）。
