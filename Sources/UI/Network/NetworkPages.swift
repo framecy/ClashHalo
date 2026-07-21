@@ -671,8 +671,13 @@ struct KernelCard: View {
         Card(title: "内核管理", icon: "cpu") {
             VStack(spacing: 10) {
                 HStack {
-                    Circle().fill(M.reachable ? DS.Palette.ok : DS.Palette.error).frame(width: 8, height: 8)
-                    Text(M.reachable ? "运行中 · mihomo \(M.version)" : "已停止").font(.dsBody).foregroundColor(.secondary)
+                    let connecting = M.engine.isBusy && !M.reachable
+                    Circle()
+                        .fill(M.reachable ? DS.Palette.ok : (connecting ? DS.Palette.warn : DS.Palette.error))
+                        .frame(width: 8, height: 8)
+                    Text(M.reachable ? "运行中 · mihomo \(M.version)"
+                                     : (connecting ? "启动中…" : "未运行 · 开启代理或 TUN 将自动启动"))
+                        .font(.dsBody).foregroundColor(.secondary)
                     Spacer()
                     if M.reachable {
                         Button("重启内核", systemImage: "arrow.triangle.2.circlepath") {
@@ -686,7 +691,9 @@ struct KernelCard: View {
                                     _ = await M.engine.setSystemProxy(enabled: false, port: port)
                                     M.systemProxyOn = false
                                 }
-                                await M.engine.restart()
+                                // Only take root back if the current mode actually
+                                // needs it — a proxy-only session stays user-mode.
+                                await M.engine.restart(preferRoot: wasTUN || M.gatewayModeOn)
                                 let ready = await M.waitForKernelReady(maxAttempts: 10)
                                 await M.reconnect()
                                 if ready {
@@ -702,12 +709,6 @@ struct KernelCard: View {
                             }
                         }.dsButton(.warning)
                     }
-                    Toggle("", isOn: Binding(get: { M.reachable }, set: { _ in M.toggleEngine() }))
-                        .toggleStyle(.switch)
-                        .controlSize(.small)
-                        .labelsHidden()
-                        .disabled(M.engine.isBusy)
-                        .opacity(M.engine.isBusy ? 0.55 : 1)
                 }
                 Divider()
                 HStack {

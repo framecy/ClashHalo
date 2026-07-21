@@ -30,6 +30,7 @@
 		AABBCCDD0000000000000001 /* HelperProtocol.swift in Sources */ = {isa = PBXBuildFile; fileRef = AABBCCDD0000000000000002 /* HelperProtocol.swift */; };
 		AABBCCDD0000000000000003 /* XPCManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = AABBCCDD0000000000000004 /* XPCManager.swift */; };
 		AE6635A9ACB74E5DB66892EA /* GeneralPage.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8CBAE68653724149A087BBEE /* GeneralPage.swift */; };
+		FD83734160422E089693C6FF /* PrivilegedPrompt.swift in Sources */ = {isa = PBXBuildFile; fileRef = A15DB0EB9DCC4DF76EE089D8 /* PrivilegedPrompt.swift */; };
 		AMC1 /* AppModel+Connections.swift in Sources */ = {isa = PBXBuildFile; fileRef = AMC2 /* AppModel+Connections.swift */; };
 		AMG1 /* AppModel+Config.swift in Sources */ = {isa = PBXBuildFile; fileRef = AMG2 /* AppModel+Config.swift */; };
 		AMP1 /* AppModel+Proxies.swift in Sources */ = {isa = PBXBuildFile; fileRef = AMP2 /* AppModel+Proxies.swift */; };
@@ -58,6 +59,7 @@
 		7DC2B59D23B0749A0B7CC125 /* RuleFormView.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = RuleFormView.swift; path = Sources/UI/Rules/RuleFormView.swift; sourceTree = "<group>"; };
 		87F1015549B149CD80A68FBC /* SubscriptionsPage.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Sources/UI/Subscriptions/SubscriptionsPage.swift; sourceTree = SOURCE_ROOT; };
 		8CBAE68653724149A087BBEE /* GeneralPage.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Sources/UI/Settings/GeneralPage.swift; sourceTree = SOURCE_ROOT; };
+		A15DB0EB9DCC4DF76EE089D8 /* PrivilegedPrompt.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Sources/UI/Privileged/PrivilegedPrompt.swift; sourceTree = SOURCE_ROOT; };
 		932DCE667C4747EEB24EB3B1 /* LogsPage.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Sources/UI/Logs/LogsPage.swift; sourceTree = SOURCE_ROOT; };
 		9641FF3F733D4D03A5FC9B70 /* ConfigStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Sources/Model/ConfigStore.swift; sourceTree = SOURCE_ROOT; };
 		A3BB008E2BF84DF5A2895FBC /* MihomoModels.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Sources/XPC/MihomoModels.swift; sourceTree = SOURCE_ROOT; };
@@ -193,6 +195,7 @@
 				5C1B022FFD034AE592948756 /* SdwanPage.swift */,
 				3D2C04980A2D415390C45937 /* ConfigPage.swift */,
 				8CBAE68653724149A087BBEE /* GeneralPage.swift */,
+				A15DB0EB9DCC4DF76EE089D8 /* PrivilegedPrompt.swift */,
 				A8B1C01AAFB044E986219D24 /* NetworkPages.swift */,
 			);
 			name = ConfigEditor;
@@ -297,6 +300,7 @@
 				4F219760BD14466DA838B50A /* SdwanPage.swift in Sources */,
 				61523827C4D44A56AB8FA9E9 /* ConfigPage.swift in Sources */,
 				AE6635A9ACB74E5DB66892EA /* GeneralPage.swift in Sources */,
+				FD83734160422E089693C6FF /* PrivilegedPrompt.swift in Sources */,
 				BA90C1F3406546599706585F /* NetworkPages.swift in Sources */,
 				A006 /* Models.swift in Sources */,
 				AMP1 /* AppModel+Proxies.swift in Sources */,
@@ -332,7 +336,7 @@
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
 				CODE_SIGN_ENTITLEMENTS = ClashHalo.entitlements;
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 50;
+				CURRENT_PROJECT_VERSION = 52;
 				ENABLE_HARDENED_RUNTIME = YES;
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_FILE = Sources/Info.plist;
@@ -340,7 +344,7 @@
 					"$(inherited)",
 					"@executable_path/../Frameworks",
 				);
-				MARKETING_VERSION = 1.1.5;
+				MARKETING_VERSION = 1.1.6;
 				PRODUCT_BUNDLE_IDENTIFIER = com.clashhalo.app;
 				PRODUCT_NAME = ClashHalo;
 			};
@@ -364,7 +368,7 @@
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
 				CODE_SIGN_ENTITLEMENTS = ClashHalo.entitlements;
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 50;
+				CURRENT_PROJECT_VERSION = 52;
 				ENABLE_HARDENED_RUNTIME = YES;
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_FILE = Sources/Info.plist;
@@ -372,7 +376,7 @@
 					"$(inherited)",
 					"@executable_path/../Frameworks",
 				);
-				MARKETING_VERSION = 1.1.5;
+				MARKETING_VERSION = 1.1.6;
 				PRODUCT_BUNDLE_IDENTIFIER = com.clashhalo.app;
 				PRODUCT_NAME = ClashHalo;
 			};
