@@ -413,12 +413,7 @@ struct GeneralPage: View {
 
 
     /// True when helper is installed but its version is below the expected version.
-    private var helperNeedsUpdate: Bool {
-        engine.isRoot &&
-        engine.helperVersion != "?" &&
-        !engine.helperVersion.isEmpty &&
-        engine.helperVersion != EngineControl.kExpectedHelperVersion
-    }
+    private var helperNeedsUpdate: Bool { engine.helperNeedsUpdate }
 
     /// Install / uninstall / upgrade the privileged helper with progress + clear feedback.
     /// - Installed + outdated → upgrade (uninstall then reinstall, full cycle)
@@ -464,6 +459,7 @@ struct GeneralPage: View {
 struct MenuBarPanel: View {
     @EnvironmentObject var M: AppModel
     @Environment(\.openWindow) private var openWindow
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     var body: some View {
         VStack(alignment: .leading, spacing: DS.Spacing.s) {
@@ -481,16 +477,20 @@ struct MenuBarPanel: View {
                                 .lineLimit(2)
                         }
                     } else {
+                        let connecting = M.engine.isBusy && !M.reachable
                         HStack(spacing: DS.Spacing.xs) {
-                            Circle().fill(M.reachable ? DS.Palette.ok : DS.Palette.error).frame(width: 5, height: 5)
-                            Text(M.reachable ? "mihomo \(M.version)" : "未连接").font(.dsBody).foregroundColor(.secondary)
+                            Circle()
+                                .fill(M.reachable ? DS.Palette.ok : (connecting ? DS.Palette.warn : DS.Palette.error))
+                                .frame(width: 5, height: 5)
+                            Text(menuBarStatusText(connecting: connecting))
+                                .font(.dsBody).foregroundColor(.secondary).lineLimit(1)
                         }
                     }
                 }
                 Spacer()
             }
             .padding(.horizontal, DS.Spacing.xs).padding(.top, DS.Spacing.xs)
-            .animation(DS.Motion.toast, value: M.toast)
+            .animation(DS.Motion.resolve(DS.Motion.toast, reduce: reduceMotion), value: M.toast)
 
             // Switches card
             card {
@@ -507,13 +507,6 @@ struct MenuBarPanel: View {
                             set: { newValue in
                                 guard newValue != M.tunOn else { return }
                                 M.toggleTUN()
-                            }))
-                switchRow("内核", icon: "bolt",
-                          isOn: Binding(
-                            get: { M.reachable },
-                            set: { newValue in
-                                guard newValue != M.reachable else { return }
-                                M.toggleEngine()
                             }))
             }
 
@@ -639,11 +632,18 @@ struct MenuBarPanel: View {
             }
 
             Divider().padding(.vertical, DS.Spacing.xs)
-            // Action row — open main window / quit (Burrow-style)
+            // Action row — open the external Zashboard panel / quit
             HStack {
-                Button { go(M.route) } label: {
-                    Text("打开 ClashHalo").font(.dsCardLabel)
-                }.buttonStyle(.plain)
+                Button { M.openZashboard() } label: {
+                    HStack(spacing: DS.Spacing.xs) {
+                        Image(systemName: "safari").font(DS.Icon.font(DS.Icon.sm))
+                        Text("打开 Zashboard").font(.dsCardLabel)
+                    }
+                    .foregroundColor(M.reachable ? DS.Palette.accent : .secondary)
+                }
+                .buttonStyle(.plain)
+                .disabled(!M.reachable)
+                .help(M.reachable ? "在浏览器打开 Zashboard 面板" : "内核未运行")
                 Spacer()
                 Button { NSApplication.shared.terminate(nil) } label: {
                     Image(systemName: "power").font(DS.Icon.font(DS.Icon.sm)).foregroundColor(.secondary)
@@ -670,6 +670,19 @@ struct MenuBarPanel: View {
         case .warn: return DS.Palette.warn
         case .error: return DS.Palette.error
         }
+    }
+
+    /// Idle status line for the menu-bar header: reflects connection plus which
+    /// forwarding modes are actually active, so the panel communicates state
+    /// even when the custom menu-bar glyph can't (it's a 2-state template).
+    private func menuBarStatusText(connecting: Bool) -> String {
+        if connecting { return "连接中…" }
+        guard M.reachable else { return "未连接" }
+        var modes: [String] = []
+        if M.tunOn { modes.append("TUN") }
+        if M.systemProxyOn { modes.append("代理") }
+        if M.gatewayModeOn { modes.append("网关") }
+        return modes.isEmpty ? "已连接 · 空闲" : "已连接 · " + modes.joined(separator: " / ")
     }
 
     /// Rounded card container (Burrow-style elevated surface).

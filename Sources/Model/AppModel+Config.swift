@@ -318,6 +318,10 @@ extension AppModel {
     func withEngineBusy(_ label: String = "操作", _ body: @escaping () async -> Void) -> Bool {
         guard !engine.isBusy else { showToast("内核操作进行中，请稍候…", kind: .warn); return false }
         engine.isBusy = true
+        // Seed the persistent step banner with the operation label; flow bodies
+        // refine it via `.info` toasts (see showToast). Setting isBusy=false in
+        // the defer auto-clears busyStep (EngineControl.isBusy didSet).
+        engine.busyStep = label
         Task {
             defer { engine.isBusy = false }
             await body()
@@ -330,7 +334,7 @@ extension AppModel {
         let port = proxyPort
         // Hold isBusy for the full path (start kernel + set proxy) so TUN /
         // engine / rule reload cannot interleave mid-flight.
-        withEngineBusy {
+        withEngineBusy(on ? "正在开启系统代理…" : "正在关闭系统代理…") {
             if on && !self.reachable {
                 self.showToast("正在启动核心以开启系统代理…")
                 // System proxy only needs a listening mixed-port — do NOT force a
@@ -370,6 +374,10 @@ extension AppModel {
                 // patch + refresh and shouldn't delay the visible toggle result.
                 if on {
                     await self.ensureAllowLanForSharing()
+                } else {
+                    // Nothing routes through the kernel any more — release the
+                    // connections still pinned to it so traffic re-dials direct.
+                    await self.dropAllConnectionsWhenIdle()
                 }
             } else {
                 self.syncSystemProxyState()
@@ -415,8 +423,32 @@ extension AppModel {
         }
     }
 
+    /// Drop every connection the kernel still holds once no forwarding face is
+    /// active. Turning TUN / the system proxy off only changes where *new*
+    /// traffic goes: sockets already established through mihomo stay alive and
+    /// keep carrying data through a kernel that is no longer supposed to be in
+    /// the path, so long-lived connections (streams, websockets, downloads)
+    /// silently keep using the old route after the user flipped everything off.
+    /// Closing them forces an immediate re-dial, which now goes direct.
+    ///
+    /// Deliberately gated on Gateway being off too: Gateway exists to serve LAN
+    /// clients through this kernel, so tearing their connections down while it
+    /// is on would be sabotage rather than cleanup.
+    func dropAllConnectionsWhenIdle() async {
+        guard reachable, !tunOn, !systemProxyOn, !gatewayModeOn else { return }
+        do {
+            try await api.closeAllConnections()
+            logKernel("TUN 与系统代理均已关闭，已断开全部既有连接以恢复直连")
+        } catch {
+            logKernel("断开既有连接失败：\(error.localizedDescription)")
+        }
+    }
+
     func toggleTUN() {
-        withEngineBusy { await self.applyTUNState(!self.tunOn) }
+        let want = !tunOn
+        withEngineBusy(want ? "正在开启 TUN 模式…" : "正在关闭 TUN 模式…") {
+            await self.applyTUNState(want)
+        }
     }
 
     func toggleGatewayMode() {
@@ -682,12 +714,31 @@ extension AppModel {
             }
 
             showToast("正在以 Root 权限重启核心…")
+            // Bring TUN up as part of the kernel's own initialization rather than
+            // PATCHing it in afterwards. mihomo answers `PATCH /configs` with 200
+            // before it decides whether it can apply the change, and an update
+            // that lands while a freshly started kernel is still settling (proxy
+            // providers fetching) is dropped silently: `tun.enable` stays false,
+            // no utun is ever created, and the user sees "第一次点击失败、第二次
+            // 才成功" (the second PATCH hits a settled kernel). Persisting the
+            // flag before the restart removes the race entirely.
+            // `forceTUNDisabled()` at the next launch keeps a stale `true` from
+            // auto-enabling TUN without privileges.
+            engine.setTunEnabled(true)
+            let tRestart = Date()
             await engine.restart()
-            // restart = stop + start; cold root spawn often needs a longer window.
-            guard await waitForKernelReady(maxAttempts: 12) else {
+            logKernel("TUN 阶段：root 重启完成 +\(String(format: "%.2f", Date().timeIntervalSince(tRestart)))s")
+            // restart = stop + start; a cold root spawn must parse the profile and
+            // load geodata before the controller answers. `maxAttempts` is now
+            // honoured literally (it used to be silently capped at 8 ≈ 3.2 s, too
+            // short for a real profile) — 18 attempts ≈ 13 s of headroom.
+            let tReady = Date()
+            guard await waitForKernelReady(maxAttempts: 18) else {
+                logKernel("TUN 阶段：内核就绪等待超时 +\(String(format: "%.2f", Date().timeIntervalSince(tReady)))s")
                 showToast("Root 内核启动超时，TUN 未启用", kind: .error)
                 return
             }
+            logKernel("TUN 阶段：内核就绪 +\(String(format: "%.2f", Date().timeIntervalSince(tReady)))s")
             await self.reconnect()
             if !engine.runningAsRoot {
                 await engine.syncRunningAsRootIfNeeded()
@@ -699,7 +750,14 @@ extension AppModel {
             }
         }
 
-        let ok = await engine.patchConfig(overrides)
+        let tPatch = Date()
+        var ok = await engine.patchConfig(overrides)
+        logKernel("TUN 阶段：PATCH(enable=\(want)) \(ok ? "接受" : "拒绝") +\(String(format: "%.2f", Date().timeIntervalSince(tPatch)))s")
+        // HTTP 200 is not proof of application (see the note on the pre-restart
+        // setTunEnabled): read the value back and re-PATCH while it disagrees.
+        if ok {
+            ok = await confirmTunFlagApplied(want: want, overrides: overrides)
+        }
         if ok {
             // Arm the settle window immediately — the path-update storm begins
             // the moment the kernel creates the utun, i.e. right at this PATCH.
@@ -714,20 +772,41 @@ extension AppModel {
             // later poll/refresh looks like a second "success". Wait for the
             // interface (or a short deadline) before the single final toast.
             if want {
+                // This wait can legitimately run for ~10 s on a cold root kernel,
+                // so give the busy banner an accurate step instead of leaving it
+                // on the previous one.
+                showToast("正在等待 TUN 虚拟网卡就绪…")
+                let tIface = Date()
                 let up = await waitForTUNInterface()
-                if !up {
-                    logKernel("TUN PATCH 已接受，等待 utun 出现超时，仍按实际状态核对…")
+                let elapsed = String(format: "%.2f", Date().timeIntervalSince(tIface))
+                if up {
+                    logKernel("TUN 阶段：utun 就绪 +\(elapsed)s")
+                } else {
+                    logKernel("TUN 阶段：等待 utun 超时 +\(elapsed)s，仍按实际状态核对…")
                 }
             }
+            // Decisive re-checks must never read a cached negative: the interface
+            // lookup caches `nil` like any other result, so a reconcile inside the
+            // TTL would re-read the very `nil` the wait above just stored and
+            // reach the same verdict — the retry was a guaranteed no-op, and a
+            // TUN that came up slightly late still surfaced as "开启失败".
+            if want { NetScanner.invalidateTunCache() }
             await refreshConfigs()
             if want && !tunOn {
-                // One more delayed reconcile in case route/flags lag past the wait.
-                try? await Task.sleep(nanoseconds: 400_000_000)
-                await refreshConfigs()
+                // Two more spaced reconciles in case route/flags lag past the wait.
+                for delay in [400_000_000, 1_200_000_000] as [UInt64] {
+                    try? await Task.sleep(nanoseconds: delay)
+                    NetScanner.invalidateTunCache()
+                    await refreshConfigs()
+                    if tunOn { break }
+                }
             }
             if want && !tunOn {
+                // The pre-restart persist above wrote `tun.enable: true`; undo it
+                // so a later plain start cannot bring TUN up outside this flow.
+                engine.setTunEnabled(false)
                 showToast("TUN 开启失败：可能无管理员权限或路由被其他 VPN 占用冲突", kind: .error)
-                logKernel("TUN 开启失败：runningAsRoot=\(engine.runningAsRoot) reachable=\(reachable)")
+                logKernel("TUN 开启失败：runningAsRoot=\(engine.runningAsRoot) reachable=\(reachable) hasIface=\(await NetScanner.mihomoTunInterface(maxAge: 0) != nil)")
             } else {
                 // TUN disable cascades: Gateway mode requires TUN, so if we
                 // just turned TUN off, also tear down Gateway (sysctl + UI +
@@ -759,6 +838,11 @@ extension AppModel {
                 } else {
                     showToast("TUN 模式已关闭", kind: .ok)
                 }
+                if !want {
+                    // Kernel stays warm, but nothing should be flowing through it
+                    // any more — release connections still pinned to the tunnel.
+                    await dropAllConnectionsWhenIdle()
+                }
             }
         } else {
             await api.probe()
@@ -769,6 +853,40 @@ extension AppModel {
                 showToast(want ? "TUN 开启失败（内核未运行）" : "TUN 已随内核停止关闭", kind: want ? .error : .ok)
             }
         }
+    }
+
+    /// Verify the kernel really adopted `tun.enable == want`, re-PATCHing while
+    /// it has not. Returns true once the kernel agrees (or false after the
+    /// budget is spent).
+    ///
+    /// Why this exists: `PATCH /configs` returns 200 as soon as the request is
+    /// parsed — *before* mihomo decides whether it can apply it. A tun update
+    /// delivered to a kernel that is still initializing (proxy providers being
+    /// fetched right after a root restart) is accepted and then silently
+    /// dropped. The old code trusted the 200, waited in vain for a utun that
+    /// would never appear, and reported "TUN 开启失败" while nothing was wrong
+    /// with permissions at all.
+    private func confirmTunFlagApplied(want: Bool, overrides: [String: Any]) async -> Bool {
+        let delays: [UInt64] = [150_000_000, 400_000_000, 800_000_000, 1_500_000_000]
+        for (i, delay) in delays.enumerated() {
+            if let c = try? await api.fetchConfigs(),
+               let tun = c["tun"] as? [String: Any],
+               (tun["enable"] as? Bool) == want {
+                if i > 0 { logKernel("TUN 阶段：tun.enable 在第 \(i + 1) 次尝试后生效") }
+                return true
+            }
+            logKernel("TUN 阶段：内核未采纳 tun.enable=\(want)（PATCH 返回 200 但被丢弃），重试…")
+            try? await Task.sleep(nanoseconds: delay)
+            _ = await engine.patchConfig(overrides)
+        }
+        // Final read-back after the last re-PATCH.
+        if let c = try? await api.fetchConfigs(),
+           let tun = c["tun"] as? [String: Any],
+           (tun["enable"] as? Bool) == want {
+            return true
+        }
+        logKernel("TUN 阶段：内核始终未采纳 tun.enable=\(want)")
+        return false
     }
 
     // MARK: TUN DNS redirection

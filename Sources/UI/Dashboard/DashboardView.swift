@@ -17,23 +17,10 @@ struct DashboardPage: View {
     }
 
     private var zashboardButton: some View {
-        Button {
-            let host = M.api.host
-            let port = String(M.api.port)
-            let secret = M.api.secret
-            let isDark = NSApp.effectiveAppearance.name == .darkAqua || NSApp.effectiveAppearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua
-            var baseString = M.zashboardURL.trimmingCharacters(in: .whitespacesAndNewlines)
-            if !baseString.hasSuffix("/") && !baseString.hasSuffix("index.html") { baseString += "/" }
-            var urlString = baseString + "#/?"
-            urlString += "hostname=\(host)&port=\(port)&secret=\(secret)&https=false&theme=\(isDark ? "dark" : "light")"
-            if let url = URL(string: urlString) {
-                NSWorkspace.shared.open(url)
-            }
-        } label: {
+        Button { M.openZashboard() } label: {
             Label("面板", systemImage: "safari")
         }
         .dsButton()
-
     }
 
     var body: some View {

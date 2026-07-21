@@ -444,6 +444,13 @@ enum NetScanner {
 
     private static var tunCache: (name: String?, at: Date)?
 
+    /// Drop the cached interface lookup so the next `mihomoTunInterface()` does
+    /// real work. Needed before a *decisive* re-check: a negative result is
+    /// cached like any other, so a reconcile that runs within the TTL after a
+    /// failed wait would just re-read that `nil` and reach the same verdict —
+    /// which made the post-PATCH retry in `applyTUNState` a guaranteed no-op.
+    static func invalidateTunCache() { tunCache = nil }
+
     private static func mihomoTunInterfaceUncached() async -> String? {
         let ifaces = interfaces()
         let candidates = ifaces.filter { $0.kind == .proxyTun }

@@ -97,7 +97,36 @@ import ServiceManagement
         kernelLogs.append(line)
         if kernelLogs.count > 100 { kernelLogs.removeFirst() }
         print("KernelLog: \(msg)")
+        Self.appendAppLog(line)
     }
+
+    /// Persistent GUI-side log at `~/Library/Logs/ClashHalo/app.log`.
+    ///
+    /// The in-memory ring is capped at 100 lines and `print` is block-buffered
+    /// when stdout is not a TTY, so neither survives long enough to diagnose a
+    /// timing bug after the fact. The Helper has had `helper.log` all along;
+    /// this is its GUI counterpart, and the two interleave by wall clock.
+    /// Truncated at ~2 MB — diagnostics, not an audit trail.
+    nonisolated static func appendAppLog(_ line: String) {
+        let dir = NSHomeDirectory() + "/Library/Logs/ClashHalo"
+        let path = dir + "/app.log"
+        let fm = FileManager.default
+        try? fm.createDirectory(atPath: dir, withIntermediateDirectories: true)
+        let stamped = "[\(appLogDF.string(from: Date()))] \(line)\n"
+        guard let data = stamped.data(using: .utf8) else { return }
+        if !fm.fileExists(atPath: path) { fm.createFile(atPath: path, contents: nil) }
+        guard let h = try? FileHandle(forWritingTo: URL(fileURLWithPath: path)) else { return }
+        defer { try? h.close() }
+        if let size = try? h.seekToEnd(), size > 2_000_000 {
+            try? h.truncate(atOffset: 0)
+        }
+        _ = try? h.seekToEnd()
+        h.write(data)
+    }
+
+    private static let appLogDF: DateFormatter = {
+        let f = DateFormatter(); f.dateFormat = "yyyy-MM-dd HH:mm:ss.SSS"; return f
+    }()
 
     // Master switches
     @Published var systemProxyOn = false
@@ -192,6 +221,8 @@ import ServiceManagement
     private var preSleepGatewayOn = false
     /// One-shot guard — `start()` must run exactly once per app lifetime.
     private var started = false
+    /// Combine subscriptions owned by this model (e.g. engine → UI forwarding).
+    private var cancellables = Set<AnyCancellable>()
     /// System proxy was auto-disabled by the network-offline handler; restore on reconnect.
     private var proxyAutoDisabled = false
 
@@ -205,6 +236,21 @@ import ServiceManagement
 
     private static let logDF: DateFormatter = { let f = DateFormatter(); f.dateFormat = "HH:mm:ss"; return f }()
 
+    /// Backoff schedule that actually honours `maxAttempts`: the ramp runs first,
+    /// then its final interval repeats for the remaining attempts.
+    ///
+    /// Both wait loops used to do `for i in 0..<min(maxAttempts, delays.count)`,
+    /// which silently capped every caller at the hardcoded array length —
+    /// `waitForKernelReady(maxAttempts: 12)` really waited 8 times (~3.2 s). A
+    /// cold root-kernel start that is still loading geodata was therefore
+    /// declared a timeout while it was on its way up.
+    private static func backoff(_ ramp: [UInt64], attempts: Int) -> [UInt64] {
+        guard attempts > ramp.count, let last = ramp.last else {
+            return Array(ramp.prefix(max(0, attempts)))
+        }
+        return ramp + Array(repeating: last, count: attempts - ramp.count)
+    }
+
     /// Smart wait for kernel to be ready using exponential backoff.
     /// Returns true if kernel is reachable, false if timeout.
     func waitForKernelReady(maxAttempts: Int = 8) async -> Bool {
@@ -212,11 +258,11 @@ import ServiceManagement
         if api.reachable {
             return true
         }
-        let delays: [UInt64] = [20_000_000, 50_000_000, 100_000_000, 200_000_000,
-                                300_000_000, 500_000_000, 1_000_000_000, 1_000_000_000]
-        for i in 0..<min(maxAttempts, delays.count) {
-            try? await Task.sleep(nanoseconds: delays[i])
-            await api.probe(timeout: 0.2)
+        let ramp: [UInt64] = [20_000_000, 50_000_000, 100_000_000, 200_000_000,
+                              300_000_000, 500_000_000, 1_000_000_000, 1_000_000_000]
+        for delay in Self.backoff(ramp, attempts: maxAttempts) {
+            try? await Task.sleep(nanoseconds: delay)
+            await api.probe(timeout: 0.3)
             if api.reachable {
                 return true
             }
@@ -227,17 +273,23 @@ import ServiceManagement
     /// Wait until mihomo's TUN interface (198.18.x proxyTun) is visible.
     /// PATCH `/configs` returns before utun is fully up; refreshing too early
     /// reports tunOn=false and flashes a false "开启失败" toast.
-    func waitForTUNInterface(maxAttempts: Int = 10) async -> Bool {
+    ///
+    /// Budget matters: a *cold* root kernel has to parse the profile and load
+    /// geodata before it creates the utun. Measured ~9 s on a real profile,
+    /// against the old ~4.4 s ceiling — which is exactly why enabling TUN failed
+    /// on the first attempt and "worked" on the second (by then the interface
+    /// from the first attempt already existed). 20 attempts ≈ 14 s of headroom.
+    func waitForTUNInterface(maxAttempts: Int = 20) async -> Bool {
         // maxAge 0: bypass the interface cache — a cached negative taken just
         // before the utun appeared would otherwise stall every poll ~1.5s.
         if await NetScanner.mihomoTunInterface(maxAge: 0) != nil { return true }
-        let delays: [UInt64] = [
+        let ramp: [UInt64] = [
             50_000_000, 100_000_000, 150_000_000, 200_000_000,
             300_000_000, 400_000_000, 500_000_000, 700_000_000,
             1_000_000_000, 1_000_000_000
         ]
-        for i in 0..<min(maxAttempts, delays.count) {
-            try? await Task.sleep(nanoseconds: delays[i])
+        for delay in Self.backoff(ramp, attempts: maxAttempts) {
+            try? await Task.sleep(nanoseconds: delay)
             if await NetScanner.mihomoTunInterface(maxAge: 0) != nil { return true }
         }
         return false
@@ -248,6 +300,21 @@ import ServiceManagement
     func start() {
         guard !started else { return }
         started = true
+        let t0 = Date()
+        func mark(_ what: String) {
+            logKernel("启动耗时：\(what) +\(String(format: "%.3f", Date().timeIntervalSince(t0)))s")
+        }
+
+        // Forward the engine's @Published changes (isBusy / isRoot / helperVersion
+        // / runningAsRoot) into this model's objectWillChange so EnvironmentObject
+        // consumers re-render on them. Previously the busy spinner / status dot
+        // updated only by piggybacking on a coincident AppModel publish (a toast);
+        // the sidebar tri-state, busy banner, and Helper-update badge now refresh
+        // deterministically. All these engine fields are low-frequency (uptimeSec
+        // is never ticked), so this is not a per-frame re-render source.
+        engine.objectWillChange
+            .sink { [weak self] in self?.objectWillChange.send() }
+            .store(in: &cancellables)
 
         // Migrate old dead Vercel URL to the new official one
         if zashboardURL.contains("zashboard.vercel.app") {
@@ -264,36 +331,80 @@ import ServiceManagement
         updater.onLog = { [weak self] msg in self?.logKernel(msg) }
         applyActivationPolicy()        // Dock icon visibility per saved preference
         refreshLaunchAtLogin()         // sync the launch-at-login mirror
+        mark("prelude")
         engine.ensureInstalled()
+        mark("ensureInstalled")
         api.applyController(fromConfigAt: engine.configFilePath)   // B1: discover endpoint before probing
         store.load()
         history.load()
+        mark("store/history")
 
-        Task {
-            // Helper first: install/upgrade must complete (or be cancelled) before
-            // we rely on root TUN / system proxy / gateway. The pre-auth dialog +
-            // password sheet also needs to land early so the user isn't mid-flow
-            // when the prompt appears.
-            await engine.checkAndUpgradeHelperIfNeeded()
+        // Kernel first, everything else in parallel.
+        //
+        // The kernel used to start only *after* a serial chain that has nothing
+        // to do with starting it: helper handshake (≤1.5 s) → helper version
+        // fetch (≤2 s) → a full-timeout probe of a kernel we already know is not
+        // running (1 s) → clearing a residual system proxy over XPC (which forks
+        // several `networksetup`) → restoring DNS (another fork). The kernel's
+        // own initialization is ~170 ms, so nearly all of the cold-start wait was
+        // queueing behind privileged housekeeping. None of that is a precondition
+        // for a *user-mode* start, so it now runs concurrently.
+        let kernelBoot = Task { @MainActor in
+            // Probe first and branch on the result. Both branches below depend on
+            // "is a kernel already alive?", so this must NOT be read concurrently:
+            // a residual-cleanup task racing ahead of the probe would see the
+            // still-default `reachable == false` on a *warm* start and disable a
+            // system proxy the running kernel legitimately owns.
+            // Short timeout: a live local controller answers in single-digit ms;
+            // the old 1 s default was pure dead time on the common cold start.
+            await api.probe(timeout: 0.25)
+            let alive = api.reachable
+            mark("probe(reachable=\(alive))")
 
-            // 探测内核是否存活，而非无条件杀死
-            await api.probe()
-
-            if api.reachable {
-                // 内核存活 → 同步状态，不杀不停
-                logKernel("启动探测：内核存活，同步状态…")
-                await reconnect()
-            } else {
-                // 内核不存活 → 仅清理残留状态（DNS/代理），不 killall
-                logKernel("启动探测：内核未响应，清理残留状态…")
-                tunOn = false
-                systemProxyOn = false
-                reachable = false
+            // Residual cleanup only applies when no kernel is running, and it is
+            // the slow part (networksetup forks behind an XPC round trip). Detach
+            // it so the kernel start does not queue behind it.
+            let residualCleanup = Task { @MainActor in
+                guard !alive else { return }
                 _ = await engine.setSystemProxy(enabled: false, port: proxyPort)
                 await restoreTunnelDNS()
                 syncSystemProxyState()
-                await reconnect()
+                mark("residual cleanup")
             }
+
+            if alive {
+                logKernel("启动探测：内核存活，同步状态…")
+            } else {
+                logKernel("启动探测：内核未响应，自动启动内核…")
+                tunOn = false
+                systemProxyOn = false
+                reachable = false
+                // 自动启动：仅监听 mixed-port / controller，不路由任何流量。
+                await engine.ensureRunningAsync(preferRoot: false)
+                mark("kernel spawned")
+                _ = await waitForKernelReady(maxAttempts: 8)
+                mark("kernel ready")
+            }
+            await reconnect()
+            mark("reconnect")
+            _ = await residualCleanup.value
+            // Adopting a kernel that outlived a previous session (warm start) can
+            // inherit connections established while a forwarding face was still
+            // on. With everything now off they would keep flowing through the
+            // kernel, so release them here too — same guard, same reasoning as
+            // the toggle paths.
+            await dropAllConnectionsWhenIdle()
+        }
+
+        Task {
+            // Helper install/upgrade still gates *privileged* features (root TUN,
+            // gateway), but no longer gates the kernel: it runs alongside the
+            // boot task above. The pre-auth dialog still lands early.
+            await engine.checkAndUpgradeHelperIfNeeded()
+            mark("helper check")
+
+            _ = await kernelBoot.value
+            mark("startup complete")
 
             startNetworkMonitor()
             installSignalHandlers()
@@ -523,6 +634,17 @@ import ServiceManagement
     /// Show a single global toast. Replaces any existing toast and cancels its
     /// dismiss timer so rapid successive calls don't clear the newest message.
     func showToast(_ s: String, kind: ToastKind = .info, duration: TimeInterval = DS.Motion.toastHold) {
+        // During a busy kernel operation, progress (.info) messages ARE the
+        // step indicator — route them to the persistent busyStep banner instead
+        // of the transient toast slot so they don't flash by. Terminal results
+        // (.ok/.warn/.error) still use the toast. busyStep's lifecycle is owned
+        // solely by withEngineBusy (seed at start, nil in defer) so a concurrent
+        // unrelated terminal toast can't wipe the in-progress banner; the banner
+        // is gated on `engine.isBusy` so a stale step never shows once idle.
+        if engine.isBusy && kind == .info {
+            engine.busyStep = s
+            return
+        }
         toastDismissTask?.cancel()
         toast = ToastPayload(text: s, kind: kind)
         let hold = UInt64(max(0.5, duration) * 1_000_000_000)
@@ -1097,6 +1219,23 @@ import ServiceManagement
     func openConfigDir() {
         let dir = NSHomeDirectory() + "/Library/Application Support/ClashHalo"
         NSWorkspace.shared.open(URL(fileURLWithPath: dir))
+    }
+
+    /// Open the external Zashboard panel in the default browser, pre-filled with
+    /// the running kernel's controller host/port/secret and the current system
+    /// appearance. Shared by the dashboard button and the menu-bar entry so the
+    /// URL-building logic has one home. No-op with a toast if the kernel isn't up
+    /// (the controller endpoint would be meaningless).
+    func openZashboard() {
+        guard reachable else { showToast("内核未运行，无法打开 Zashboard", kind: .warn); return }
+        let host = api.host
+        let port = String(api.port)
+        let secret = api.secret
+        let isDark = NSApp.effectiveAppearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua
+        var base = zashboardURL.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !base.hasSuffix("/") && !base.hasSuffix("index.html") { base += "/" }
+        let urlString = base + "#/?hostname=\(host)&port=\(port)&secret=\(secret)&https=false&theme=\(isDark ? "dark" : "light")"
+        if let url = URL(string: urlString) { NSWorkspace.shared.open(url) }
     }
 
     /// Register/unregister the app as a login item via `SMAppService`.
