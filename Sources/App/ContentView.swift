@@ -3,6 +3,7 @@ import SwiftUI
 
 struct ContentView: View {
     @EnvironmentObject var M: AppModel
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     struct Tab { let id, label, icon: String }
 
@@ -175,6 +176,31 @@ struct ContentView: View {
     private var statusFooter: some View {
         // 与导航 ScrollView 共用 pageContentInset；行内再 +s，与选中胶囊内图标同起点
         VStack(alignment: .leading, spacing: DS.Spacing.s) {
+            // Attention badge: helper installed but below the expected version.
+            // Tapping routes to 设置 → 权限 where the one-tap upgrade lives.
+            if M.engine.helperNeedsUpdate {
+                Button { M.route = "general" } label: {
+                    HStack(spacing: DS.Spacing.s) {
+                        Image(systemName: "exclamationmark.shield.fill")
+                            .font(DS.Icon.font(DS.Icon.md, weight: .medium))
+                            .foregroundStyle(DS.Palette.warn)
+                            .frame(width: DS.Icon.lg, height: DS.Icon.lg)
+                        Text("特权服务待更新")
+                            .font(.dsBodyMedium)
+                            .foregroundStyle(.primary)
+                            .lineLimit(1)
+                        Spacer(minLength: 0)
+                        Image(systemName: "chevron.right").font(.dsCaption).foregroundStyle(.secondary)
+                    }
+                    .padding(.vertical, DS.Spacing.xs)
+                    .padding(.horizontal, DS.Spacing.s)
+                    .background(RoundedRectangle(cornerRadius: DS.Radius.control, style: .continuous)
+                        .fill(DS.Palette.warn.opacity(0.12)))
+                    .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+            }
+
             statusToggle(
                 "Proxy",
                 icon: "globe",
@@ -201,10 +227,12 @@ struct ContentView: View {
                 onColor: DS.Palette.accent
             )
 
-            // Kernel status: color dot + full version (no "核心已就绪" prose).
+            // Kernel status: tri-state dot + full version. "连接中" (amber) during
+            // a busy start/restart is more honest than a bare red "disconnected".
             HStack(spacing: DS.Spacing.s) {
+                let connecting = M.engine.isBusy && !M.reachable
                 Circle()
-                    .fill(M.reachable ? DS.Palette.ok : DS.Palette.error)
+                    .fill(M.reachable ? DS.Palette.ok : (connecting ? DS.Palette.warn : DS.Palette.error))
                     .frame(width: 6, height: 6)
                     .frame(width: DS.Icon.lg, height: DS.Icon.lg, alignment: .center)
                 Text("内核")
@@ -212,8 +240,9 @@ struct ContentView: View {
                     .foregroundStyle(.secondary)
                     .lineLimit(1)
                 Spacer(minLength: 0)
-                Text(M.reachable ? (M.version.isEmpty || M.version == "?" ? "—" : M.version) : "—")
-                    .font(.dsMono)
+                Text(M.reachable ? (M.version.isEmpty || M.version == "?" ? "—" : M.version)
+                                 : (connecting ? "连接中…" : "未连接"))
+                    .font(M.reachable ? .dsMono : .dsBody)
                     .foregroundStyle(M.reachable ? .primary : .secondary)
                     .lineLimit(1)
                     .minimumScaleFactor(0.7)
@@ -283,13 +312,42 @@ struct ContentView: View {
         }
         .background(DS.Palette.windowBg)
         .overlay(alignment: .bottom) {
-            if let t = M.toast {
-                toastBanner(t)
-                    .padding(.bottom, DS.Spacing.xxl)
-                    .transition(.move(edge: .bottom).combined(with: .opacity))
+            VStack(spacing: DS.Spacing.s) {
+                // Persistent progress banner while a kernel operation runs — the
+                // step line survives across the multi-await flow instead of the
+                // intermediate toasts flashing past in the 2.4 s window.
+                if M.engine.isBusy, let step = M.engine.busyStep {
+                    busyBanner(step)
+                        .transition(.move(edge: .bottom).combined(with: .opacity))
+                }
+                if let t = M.toast {
+                    toastBanner(t)
+                        .transition(.move(edge: .bottom).combined(with: .opacity))
+                }
             }
+            .padding(.bottom, DS.Spacing.xxl)
         }
-        .animation(DS.Motion.toast, value: M.toast)
+        .animation(DS.Motion.resolve(DS.Motion.toast, reduce: reduceMotion), value: M.toast)
+        .animation(DS.Motion.resolve(DS.Motion.toast, reduce: reduceMotion), value: M.engine.busyStep)
+        .animation(DS.Motion.resolve(DS.Motion.toast, reduce: reduceMotion), value: M.engine.isBusy)
+    }
+
+    /// In-progress banner: a spinner + the current step text, styled as a quiet
+    /// sibling of the toast capsule (accent stroke instead of status color).
+    private func busyBanner(_ text: String) -> some View {
+        HStack(spacing: DS.Spacing.s) {
+            ProgressView()
+                .controlSize(.small)
+                .scaleEffect(DS.Progress.miniScale)
+            Text(text)
+                .font(.dsBody)
+                .foregroundStyle(.primary)
+                .lineLimit(1)
+        }
+        .padding(.horizontal, DS.Spacing.l)
+        .padding(.vertical, DS.Spacing.s)
+        .background(.ultraThinMaterial, in: Capsule())
+        .overlay(Capsule().stroke(DS.Palette.accent.opacity(0.35)))
     }
 
     private func toastBanner(_ t: ToastPayload) -> some View {

@@ -281,7 +281,7 @@ public class XPCManager {
 
     /// Install / replace the privileged helper LaunchDaemon.
     /// - Parameter prompt: Optional explanation shown before the admin password sheet.
-    public func installDaemon(prompt: String? = nil) async -> Bool {
+    public func installDaemon(prompt: PrivilegedPromptContent? = nil) async -> Bool {
         let bundlePath = Bundle.main.bundlePath
         let helperSrc = "\(bundlePath)/Contents/MacOS/com.clashhalo.helper"
         let helperDst = "/Library/PrivilegedHelperTools/com.clashhalo.helper"
@@ -356,39 +356,42 @@ public class XPCManager {
     }
 
     /// Default explanation for a first-time Helper install.
-    public static let defaultInstallPrompt = """
-    ClashHalo 需要安装特权辅助服务（Helper v\(kSharedHelperVersion)）。
-
-    用途：
-    · 系统代理开关
-    · TUN 虚拟网卡（Root 模式）
-    · 网关中枢 IP 转发
-    · 网络拓扑静态路由与僵尸 TUN 清理
-
-    点击「继续」后将请求管理员密码完成安装。
-    """
+    public static let defaultInstallPrompt = PrivilegedPromptContent(
+        kind: .install,
+        title: "安装特权辅助服务",
+        subtitle: "ClashHalo 需要一个独立的后台服务来执行系统级网络操作。仅安装一次，可随时在「设置 → 权限」卸载。",
+        versionFrom: nil,
+        versionTo: "v\(kSharedHelperVersion)",
+        bullets: [
+            "开关 macOS 系统代理",
+            "以 Root 模式启用 TUN 虚拟网卡",
+            "网关中枢的 IP 转发",
+            "网络拓扑静态路由与僵尸 TUN 清理"
+        ],
+        confirmTitle: "安装"
+    )
 
     /// Build the pre-auth explanation for a forced Helper upgrade.
-    public static func upgradePrompt(from current: String, to target: String) -> String {
-        """
-        ClashHalo 需要更新特权辅助服务（Helper）。
-
-        当前版本：v\(current)
-        目标版本：v\(target)
-
-        更新说明：
-        · 保持 Helper 与客户端协议一致，避免 XPC 通信失败
-        · 修复安装/升级过程中可能出现的服务残留与连通问题
-        · 保障 TUN、系统代理、网关中枢、网络拓扑等特权能力可用
-
-        点击「继续」后将请求管理员密码，一次授权完成更新。
-        """
+    public static func upgradePrompt(from current: String, to target: String) -> PrivilegedPromptContent {
+        PrivilegedPromptContent(
+            kind: .upgrade,
+            title: "更新特权辅助服务",
+            subtitle: "客户端已升级，需要将后台服务更新到匹配版本。一次授权即可完成，不会中断当前连接。",
+            versionFrom: "v\(current)",
+            versionTo: "v\(target)",
+            bullets: [
+                "保持 Helper 与客户端协议一致，避免 XPC 通信失败",
+                "修复服务残留与连通性问题",
+                "保障 TUN、系统代理、网关中枢等特权能力可用"
+            ],
+            confirmTitle: "更新"
+        )
     }
 
     /// Full upgrade: replace the installed helper with the bundled one.
     /// Uses a single admin authorization (installDaemon already replaces in place);
     /// no separate uninstall pass — that used to force two password prompts.
-    public func upgradeDaemon(prompt: String? = nil) async -> Bool {
+    public func upgradeDaemon(prompt: PrivilegedPromptContent? = nil) async -> Bool {
         let helperSrc = Bundle.main.bundlePath + "/Contents/MacOS/com.clashhalo.helper"
         guard FileManager.default.fileExists(atPath: helperSrc) else {
             onLog?("升级特权服务失败：App 内未找到 Helper 二进制。请用 Scripts/build-debug.sh 或 make.sh 构建后再升级。")
@@ -398,7 +401,7 @@ public class XPCManager {
         return await installDaemon(prompt: prompt)
     }
 
-    public func uninstallDaemon(prompt: String? = nil) async -> Bool {
+    public func uninstallDaemon(prompt: PrivilegedPromptContent? = nil) async -> Bool {
         let plistDst = "/Library/LaunchDaemons/com.clashhalo.helper.plist"
         let helperDst = "/Library/PrivilegedHelperTools/com.clashhalo.helper"
         let legacyPlistDst = "/Library/LaunchDaemons/com.clashpow.helper.plist"
@@ -417,13 +420,17 @@ public class XPCManager {
         rm -f "\(legacyHelperDst)"
         """
 
-        let uninstallPrompt = prompt ?? """
-        ClashHalo 将卸载特权辅助服务（Helper）。
-
-        卸载后 TUN、网关中枢与部分系统代理能力将不可用，可随时在设置中重新安装。
-
-        点击「继续」后将请求管理员密码。
-        """
+        let uninstallPrompt = prompt ?? PrivilegedPromptContent(
+            kind: .uninstall,
+            title: "卸载特权辅助服务",
+            subtitle: "将移除后台服务及其 LaunchDaemon。可随时在「设置 → 权限」重新安装。",
+            bullets: [
+                "TUN 虚拟网卡将不可用",
+                "网关中枢 IP 转发将不可用",
+                "系统代理开关能力受限"
+            ],
+            confirmTitle: "卸载"
+        )
 
         let ok = await EngineControl.runAdmin(script, prompt: uninstallPrompt)
         if ok {

@@ -2,6 +2,31 @@
 
 本项目所有重要变更记录于此。格式参考 [Keep a Changelog](https://keepachangelog.com/),版本遵循语义化版本。
 
+## [1.1.6] - 2026-07-21
+
+冷启动提速约 10 倍；修复「首次开启 TUN 必失败」；关闭全部转发面时断开既有连接；特权授权弹窗改为原生设计。Helper **1.0.20 → 1.0.22**（需强制升级）。
+
+### Fixed
+- **首次开启 TUN 必失败、第二次才成功**：根因不是等待不够，而是 **mihomo 对 `PATCH /configs` 先回 200、之后才决定能否应用**——当 PATCH 落在刚 root 重启、仍在拉取 proxy provider 的内核上时会被静默丢弃（实测 `tun.enable` 保持 false、utun 永不出现、等满 15s 报「权限不足」）。修复：
+  - 需要 root 重启时**先把 `tun.enable: true` 落盘**，让内核在自身初始化阶段建好 TUN，彻底绕开 PATCH 竞态（下次启动的 `forceTUNDisabled()` 仍兜底，不会无授权自动开 TUN）。
+  - 新增 `confirmTunFlagApplied()`：PATCH 后**读回 `/configs` 核对**而非采信 200，不一致按 150ms/400ms/800ms/1.5s 退避重发（覆盖内核已是 root、只走 PATCH 的路径）。
+  - 开启失败时把 `tun.enable` 写回 false，不留残留。
+- **等待逻辑三处缺陷**：`for i in 0..<min(maxAttempts, delays.count)` 使 `maxAttempts` 被静默截断（传 12 实际只等 8 次≈3.2s）；TUN 接口等待预算仅 4.4s；判失败前的「延迟重核对」读的是 1.5s TTL 内刚写入的 `nil` 缓存，**必然得出同样结论**（重试是空转）。已分别改为 backoff 阶梯用尽后重复末位、提高预算、并在决定性复核前 `NetScanner.invalidateTunCache()`。
+- **旧会话清理误伤新会话（Helper 1.0.22）**：清理有两个入口，只有 watchdog 做了「新会话接管」检查，连接失效那条没有；且每个连接失效各触发一次（实测同一 pid 跑 2–3 次）。退出后快速重开 App 并开代理时，旧会话的延迟清理会**把新会话刚开的代理关掉**。现 `handleClientExit` 内置两道闸：**每 pid 只执行一次** + **新会话存活则让位**。
+- **退出清理用了不可靠的缓存 XPC / 杀不掉 root 内核**：清代理走缓存 `helper()` 代理（本仓库多处记录其会静默丢调用），且 `killall -9` 以用户身份执行**杀不掉 root 拥有的 mihomo**（TUN 模式正是 root）。改为一次性全新连接、经 Helper 停 root 内核，并把顺序改为**先关代理 → 还原 DNS → 停内核**，消除「代理指向已被杀掉的内核」的断网窗口。
+- **热启动误关系统代理**：并行化后 `residualCleanup` 可能抢在 probe 前读到过期的 `reachable=false`。改为 probe 完成后按结果分支。
+
+### Changed
+- **冷启动提速约 10 倍**：内核原先排在「Helper 握手 → 取版本 → 1s 空 probe → 清残留代理（XPC + 多次 `networksetup` fork）→ 还原 DNS」之后才启动，实测 3s 以上。现内核第一时间拉起，Helper 检查与残留清理并行；probe 超时 1s→0.25s；`ensureInstalled` 的 4 次全量读+解析+写 config 合并为 1 次读判定（稳态直接跳过）。**实测：内核就绪 0.31s，冷启动完成 1.32s，热启动完成 0.17s。**
+- **关闭全部转发面时断开既有连接**：TUN 与系统代理都关闭后，已建立在 mihomo 上的 socket 仍会沿老路径继续传输（长连接尤其明显）。现在会主动断开全部连接以立即重新直连；**网关中枢开启时不触发**（那会破坏局域网客户端）。
+- **特权授权弹窗重做**：由 AppleScript `display dialog` 换成原生 SwiftUI 面板（DS 令牌），含场景化图标、`v旧 → v新` 版本胶囊、要点列表、「下一步需要管理员密码」预期管理，卸载场景为红色 destructive；系统密码框仍归 OS。同时消除了把用户文案拼进 AppleScript 字面量的转义面。「取消不提权」契约不变。
+- **新增 GUI 持久日志** `~/Library/Logs/ClashHalo/app.log`（2MB 滚动），与 Helper 的 `helper.log` 按时钟对齐；TUN 流程带分阶段耗时埋点。
+- **菜单栏面板重构**：去掉「打开 ClashHalo」与「内核」开关，保留仪表盘，新增「打开 Zashboard」；空闲状态行显示「已连接 · TUN / 代理 / 网关」。
+- **内核改为自动托管**：移除内核启停开关（菜单栏与网络页），启动即自动拉起（用户模式、不路由流量），开代理/TUN 按需自动处理。
+- **「重启内核」不再无谓提权**：`restart(preferRoot:)` 按当前模式决定，纯代理会话保持用户态。
+- **设计系统收敛**：新增 `DS.Palette.dyn(_:light:dark:)` 工厂收敛 25 处主题色样板（色值零改动）；删除无引用的 `cardBgAlt`；新增 `DS.Motion.resolve(_:reduce:)` 并让主窗口/菜单栏动画尊重系统「减弱动态效果」。
+- **交互反馈**：`engine.isBusy` 期间主内容区显示常驻进度条与当前步骤（多步流程的中间提示不再一闪而过）；侧栏内核状态升级为连接中/已连接/未连接三态；新增「特权服务待更新」侧栏徽标。
+
 ## [1.1.5] - 2026-07-21
 
 内核调用提速 + 两项修复（同版本号以 build 号重新发布）：TUN 开启后开关闪跳自动关闭；TUN/内核/系统代理开启时强退 App 导致断网。Helper **1.0.18 → 1.0.20**（需强制升级）。
