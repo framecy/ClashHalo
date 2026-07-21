@@ -13,158 +13,81 @@ enum DS {
     // MARK: Colors
 
     enum Palette {
+        /// Build a Light/Dark dynamic color from two `NSColor`s. Single factory
+        /// for every themed token below — collapses the repeated
+        /// `bestMatch(from:[.darkAqua,.aqua]) == .darkAqua ? … : …` boilerplate
+        /// into one place so the dark/light branch logic can never drift per color.
+        static func dyn(_ name: String, light: NSColor, dark: NSColor) -> Color {
+            Color(nsColor: NSColor(name: name, dynamicProvider: { appearance in
+                appearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua ? dark : light
+            }))
+        }
+
         // MARK: Brand
 
         /// Brand accent — PANTONE Medium Purple U (#65428A). Primary actions, selection, TUN-on.
         /// Light uses the uncoated digital approx; Dark lifts value for contrast on dark surfaces.
-        static let accent = Color(nsColor: .init(name: "DS.accent", dynamicProvider: { appearance in
-            appearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua
-                ? NSColor(srgbRed: 0xB3 / 255.0, green: 0x96 / 255.0, blue: 0xE0 / 255.0, alpha: 1)
-                : NSColor(srgbRed: 0x65 / 255.0, green: 0x42 / 255.0, blue: 0x8A / 255.0, alpha: 1)
-        }))
+        static let accent = dyn("DS.accent", light: NSColor(srgbRed: 0x65 / 255.0, green: 0x42 / 255.0, blue: 0x8A / 255.0, alpha: 1), dark: NSColor(srgbRed: 0xB3 / 255.0, green: 0x96 / 255.0, blue: 0xE0 / 255.0, alpha: 1))
 
         /// Selected list / chip fill over accent.
-        static let accentSoft = Color(nsColor: .init(name: "DS.accentSoft", dynamicProvider: { appearance in
-            appearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua
-                ? NSColor(srgbRed: 0xB3 / 255.0, green: 0x96 / 255.0, blue: 0xE0 / 255.0, alpha: 0.20)
-                : NSColor(srgbRed: 0x65 / 255.0, green: 0x42 / 255.0, blue: 0x8A / 255.0, alpha: 0.14)
-        }))
+        static let accentSoft = dyn("DS.accentSoft", light: NSColor(srgbRed: 0x65 / 255.0, green: 0x42 / 255.0, blue: 0x8A / 255.0, alpha: 0.14), dark: NSColor(srgbRed: 0xB3 / 255.0, green: 0x96 / 255.0, blue: 0xE0 / 255.0, alpha: 0.20))
 
         /// Strong accent for emphasis strokes / text on light fills.
-        static let accentStrong = Color(nsColor: .init(name: "DS.accentStrong", dynamicProvider: { appearance in
-            appearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua
-                ? NSColor(srgbRed: 0xC9 / 255.0, green: 0xB4 / 255.0, blue: 0xEE / 255.0, alpha: 1)
-                : NSColor(srgbRed: 0x4A / 255.0, green: 0x2F / 255.0, blue: 0x6B / 255.0, alpha: 1)
-        }))
+        static let accentStrong = dyn("DS.accentStrong", light: NSColor(srgbRed: 0x4A / 255.0, green: 0x2F / 255.0, blue: 0x6B / 255.0, alpha: 1), dark: NSColor(srgbRed: 0xC9 / 255.0, green: 0xB4 / 255.0, blue: 0xEE / 255.0, alpha: 1))
 
         // MARK: Surfaces (L0–L3 + overlay)
 
         /// L0 — main content window background.
         /// Light sits a half-step cooler/deeper than pure system gray so white
         /// cards lift with air rather than looking pasted on a flat sheet.
-        static let windowBg = Color(nsColor: .init(name: "DS.windowBg", dynamicProvider: { appearance in
-            appearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua
-                ? NSColor(srgbRed: 0x1C / 255.0, green: 0x1C / 255.0, blue: 0x1E / 255.0, alpha: 1)
-                : NSColor(srgbRed: 0xEE / 255.0, green: 0xEE / 255.0, blue: 0xF3 / 255.0, alpha: 1)
-        }))
+        static let windowBg = dyn("DS.windowBg", light: NSColor(srgbRed: 0xEE / 255.0, green: 0xEE / 255.0, blue: 0xF3 / 255.0, alpha: 1), dark: NSColor(srgbRed: 0x1C / 255.0, green: 0x1C / 255.0, blue: 0x1E / 255.0, alpha: 1))
 
         /// L1 — sidebar background (may sit under vibrancy).
-        static let sidebarBg = Color(nsColor: .init(name: "DS.sidebarBg", dynamicProvider: { appearance in
-            appearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua
-                ? NSColor(srgbRed: 0x24 / 255.0, green: 0x24 / 255.0, blue: 0x26 / 255.0, alpha: 1)
-                : NSColor(srgbRed: 0xE8 / 255.0, green: 0xE8 / 255.0, blue: 0xED / 255.0, alpha: 1)
-        }))
+        static let sidebarBg = dyn("DS.sidebarBg", light: NSColor(srgbRed: 0xE8 / 255.0, green: 0xE8 / 255.0, blue: 0xED / 255.0, alpha: 1), dark: NSColor(srgbRed: 0x24 / 255.0, green: 0x24 / 255.0, blue: 0x26 / 255.0, alpha: 1))
 
         /// L2 — elevated card / panel surface.
-        static let cardBg = Color(nsColor: .init(name: "DS.cardBg", dynamicProvider: { appearance in
-            appearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua
-                ? NSColor(srgbRed: 0x2C / 255.0, green: 0x2C / 255.0, blue: 0x2E / 255.0, alpha: 1)
-                : NSColor.white
-        }))
-
-        /// Slightly differentiated surface (legacy alias kept for gradual migration).
-        static let cardBgAlt = Color(nsColor: .init(name: "DS.cardBgAlt", dynamicProvider: { appearance in
-            appearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua
-                ? NSColor(srgbRed: 0x3A / 255.0, green: 0x3A / 255.0, blue: 0x3C / 255.0, alpha: 1)
-                : NSColor(srgbRed: 0xE5 / 255.0, green: 0xE5 / 255.0, blue: 0xEA / 255.0, alpha: 1)
-        }))
+        static let cardBg = dyn("DS.cardBg", light: NSColor.white, dark: NSColor(srgbRed: 0x2C / 255.0, green: 0x2C / 255.0, blue: 0x2E / 255.0, alpha: 1))
 
         /// L3 — control / chip / selected strip fill.
         /// Light stays close to window gray (not muddy mid-gray) so controls
         /// inside white cards remain quiet.
-        static let controlBg = Color(nsColor: .init(name: "DS.controlBg", dynamicProvider: { appearance in
-            appearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua
-                ? NSColor(srgbRed: 0x3A / 255.0, green: 0x3A / 255.0, blue: 0x3C / 255.0, alpha: 1)
-                : NSColor(srgbRed: 0xF2 / 255.0, green: 0xF2 / 255.0, blue: 0xF7 / 255.0, alpha: 1)
-        }))
+        static let controlBg = dyn("DS.controlBg", light: NSColor(srgbRed: 0xF2 / 255.0, green: 0xF2 / 255.0, blue: 0xF7 / 255.0, alpha: 1), dark: NSColor(srgbRed: 0x3A / 255.0, green: 0x3A / 255.0, blue: 0x3C / 255.0, alpha: 1))
 
         /// Toolbar strip / chrome band behind filters.
-        static let chromeBg = Color(nsColor: .init(name: "DS.chromeBg", dynamicProvider: { appearance in
-            appearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua
-                ? NSColor(srgbRed: 0x22 / 255.0, green: 0x22 / 255.0, blue: 0x24 / 255.0, alpha: 0.92)
-                : NSColor(srgbRed: 0xFB / 255.0, green: 0xFB / 255.0, blue: 0xFD / 255.0, alpha: 0.94)
-        }))
+        static let chromeBg = dyn("DS.chromeBg", light: NSColor(srgbRed: 0xFB / 255.0, green: 0xFB / 255.0, blue: 0xFD / 255.0, alpha: 0.94), dark: NSColor(srgbRed: 0x22 / 255.0, green: 0x22 / 255.0, blue: 0x24 / 255.0, alpha: 0.92))
 
         /// Overlay / toast material base (usually paired with ultraThinMaterial).
-        static let overlayBg = Color(nsColor: .init(name: "DS.overlayBg", dynamicProvider: { appearance in
-            appearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua
-                ? NSColor(srgbRed: 0x2C / 255.0, green: 0x2C / 255.0, blue: 0x2E / 255.0, alpha: 0.88)
-                : NSColor(srgbRed: 1, green: 1, blue: 1, alpha: 0.88)
-        }))
+        static let overlayBg = dyn("DS.overlayBg", light: NSColor(srgbRed: 1, green: 1, blue: 1, alpha: 0.88), dark: NSColor(srgbRed: 0x2C / 255.0, green: 0x2C / 255.0, blue: 0x2E / 255.0, alpha: 0.88))
 
         // MARK: Status
 
-        static let ok = Color(nsColor: .init(name: "DS.ok", dynamicProvider: { appearance in
-            appearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua
-                ? NSColor(srgbRed: 0x32 / 255.0, green: 0xD7 / 255.0, blue: 0x4B / 255.0, alpha: 1)
-                : NSColor(srgbRed: 0x28 / 255.0, green: 0xC8 / 255.0, blue: 0x40 / 255.0, alpha: 1)
-        }))
+        static let ok = dyn("DS.ok", light: NSColor(srgbRed: 0x28 / 255.0, green: 0xC8 / 255.0, blue: 0x40 / 255.0, alpha: 1), dark: NSColor(srgbRed: 0x32 / 255.0, green: 0xD7 / 255.0, blue: 0x4B / 255.0, alpha: 1))
 
-        static let warn = Color(nsColor: .init(name: "DS.warn", dynamicProvider: { appearance in
-            appearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua
-                ? NSColor(srgbRed: 0xFF / 255.0, green: 0xD6 / 255.0, blue: 0x0A / 255.0, alpha: 1)
-                : NSColor(srgbRed: 0xE6 / 255.0, green: 0xA0 / 255.0, blue: 0x00 / 255.0, alpha: 1)
-        }))
+        static let warn = dyn("DS.warn", light: NSColor(srgbRed: 0xE6 / 255.0, green: 0xA0 / 255.0, blue: 0x00 / 255.0, alpha: 1), dark: NSColor(srgbRed: 0xFF / 255.0, green: 0xD6 / 255.0, blue: 0x0A / 255.0, alpha: 1))
 
-        static let error = Color(nsColor: .init(name: "DS.error", dynamicProvider: { appearance in
-            appearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua
-                ? NSColor(srgbRed: 0xFF / 255.0, green: 0x45 / 255.0, blue: 0x3A / 255.0, alpha: 1)
-                : NSColor(srgbRed: 0xE0 / 255.0, green: 0x35 / 255.0, blue: 0x2B / 255.0, alpha: 1)
-        }))
+        static let error = dyn("DS.error", light: NSColor(srgbRed: 0xE0 / 255.0, green: 0x35 / 255.0, blue: 0x2B / 255.0, alpha: 1), dark: NSColor(srgbRed: 0xFF / 255.0, green: 0x45 / 255.0, blue: 0x3A / 255.0, alpha: 1))
 
-        static let info = Color(nsColor: .init(name: "DS.info", dynamicProvider: { appearance in
-            appearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua
-                ? NSColor(srgbRed: 0x64 / 255.0, green: 0xD2 / 255.0, blue: 0xFF / 255.0, alpha: 1)
-                : NSColor(srgbRed: 0x00 / 255.0, green: 0x7A / 255.0, blue: 0xFF / 255.0, alpha: 1)
-        }))
+        static let info = dyn("DS.info", light: NSColor(srgbRed: 0x00 / 255.0, green: 0x7A / 255.0, blue: 0xFF / 255.0, alpha: 1), dark: NSColor(srgbRed: 0x64 / 255.0, green: 0xD2 / 255.0, blue: 0xFF / 255.0, alpha: 1))
 
         /// Upload traffic series / labels.
-        static let upload = Color(nsColor: .init(name: "DS.upload", dynamicProvider: { appearance in
-            appearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua
-                ? NSColor(srgbRed: 0xFF / 255.0, green: 0x6B / 255.0, blue: 0x6B / 255.0, alpha: 1)
-                : NSColor(srgbRed: 0xE0 / 255.0, green: 0x45 / 255.0, blue: 0x45 / 255.0, alpha: 1)
-        }))
+        static let upload = dyn("DS.upload", light: NSColor(srgbRed: 0xE0 / 255.0, green: 0x45 / 255.0, blue: 0x45 / 255.0, alpha: 1), dark: NSColor(srgbRed: 0xFF / 255.0, green: 0x6B / 255.0, blue: 0x6B / 255.0, alpha: 1))
 
         /// Download traffic series / labels.
         /// Data-viz color — independent of brand accent so charts stay readable
         /// when the product theme changes (e.g. Medium Purple U).
-        static let download = Color(nsColor: .init(name: "DS.download", dynamicProvider: { appearance in
-            appearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua
-                ? NSColor(srgbRed: 0x30 / 255.0, green: 0xD1 / 255.0, blue: 0x98 / 255.0, alpha: 1)
-                : NSColor(srgbRed: 0x16 / 255.0, green: 0xB3 / 255.0, blue: 0x72 / 255.0, alpha: 1)
-        }))
+        static let download = dyn("DS.download", light: NSColor(srgbRed: 0x16 / 255.0, green: 0xB3 / 255.0, blue: 0x72 / 255.0, alpha: 1), dark: NSColor(srgbRed: 0x30 / 255.0, green: 0xD1 / 255.0, blue: 0x98 / 255.0, alpha: 1))
 
         // MARK: Network role colors (拓扑)
 
-        static let rolePhysical = Color(nsColor: .init(name: "DS.rolePhysical", dynamicProvider: { appearance in
-            appearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua
-                ? NSColor(srgbRed: 0x5A / 255.0, green: 0xC8 / 255.0, blue: 0xFA / 255.0, alpha: 1)
-                : NSColor(srgbRed: 0x00 / 255.0, green: 0x7A / 255.0, blue: 0xFF / 255.0, alpha: 1)
-        }))
+        static let rolePhysical = dyn("DS.rolePhysical", light: NSColor(srgbRed: 0x00 / 255.0, green: 0x7A / 255.0, blue: 0xFF / 255.0, alpha: 1), dark: NSColor(srgbRed: 0x5A / 255.0, green: 0xC8 / 255.0, blue: 0xFA / 255.0, alpha: 1))
 
-        static let roleTailscale = Color(nsColor: .init(name: "DS.roleTailscale", dynamicProvider: { appearance in
-            appearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua
-                ? NSColor(srgbRed: 0x64 / 255.0, green: 0xD2 / 255.0, blue: 0xFF / 255.0, alpha: 1)
-                : NSColor(srgbRed: 0x0A / 255.0, green: 0x84 / 255.0, blue: 0xFF / 255.0, alpha: 1)
-        }))
+        static let roleTailscale = dyn("DS.roleTailscale", light: NSColor(srgbRed: 0x0A / 255.0, green: 0x84 / 255.0, blue: 0xFF / 255.0, alpha: 1), dark: NSColor(srgbRed: 0x64 / 255.0, green: 0xD2 / 255.0, blue: 0xFF / 255.0, alpha: 1))
 
-        static let roleZerotier = Color(nsColor: .init(name: "DS.roleZerotier", dynamicProvider: { appearance in
-            appearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua
-                ? NSColor(srgbRed: 0xFF / 255.0, green: 0x9F / 255.0, blue: 0x0A / 255.0, alpha: 1)
-                : NSColor(srgbRed: 0xF5 / 255.0, green: 0x8B / 255.0, blue: 0x00 / 255.0, alpha: 1)
-        }))
+        static let roleZerotier = dyn("DS.roleZerotier", light: NSColor(srgbRed: 0xF5 / 255.0, green: 0x8B / 255.0, blue: 0x00 / 255.0, alpha: 1), dark: NSColor(srgbRed: 0xFF / 255.0, green: 0x9F / 255.0, blue: 0x0A / 255.0, alpha: 1))
 
-        static let roleOray = Color(nsColor: .init(name: "DS.roleOray", dynamicProvider: { appearance in
-            appearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua
-                ? NSColor(srgbRed: 0xBF / 255.0, green: 0x5A / 255.0, blue: 0xF2 / 255.0, alpha: 1)
-                : NSColor(srgbRed: 0xAF / 255.0, green: 0x52 / 255.0, blue: 0xDE / 255.0, alpha: 1)
-        }))
+        static let roleOray = dyn("DS.roleOray", light: NSColor(srgbRed: 0xAF / 255.0, green: 0x52 / 255.0, blue: 0xDE / 255.0, alpha: 1), dark: NSColor(srgbRed: 0xBF / 255.0, green: 0x5A / 255.0, blue: 0xF2 / 255.0, alpha: 1))
 
-        static let roleOther = Color(nsColor: .init(name: "DS.roleOther", dynamicProvider: { appearance in
-            appearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua
-                ? NSColor(srgbRed: 0x98 / 255.0, green: 0x98 / 255.0, blue: 0x9D / 255.0, alpha: 1)
-                : NSColor(srgbRed: 0x8E / 255.0, green: 0x8E / 255.0, blue: 0x93 / 255.0, alpha: 1)
-        }))
+        static let roleOther = dyn("DS.roleOther", light: NSColor(srgbRed: 0x8E / 255.0, green: 0x8E / 255.0, blue: 0x93 / 255.0, alpha: 1), dark: NSColor(srgbRed: 0x98 / 255.0, green: 0x98 / 255.0, blue: 0x9D / 255.0, alpha: 1))
 
         // MARK: Neutrals
 
@@ -174,30 +97,14 @@ enum DS {
         static let hairline  = Color.primary.opacity(0.08)
         /// Card / control outline. Light keeps a soft edge (not a hard wireframe);
         /// structure comes from shadow + surface lift as much as stroke.
-        static let border = Color(nsColor: .init(name: "DS.border", dynamicProvider: { appearance in
-            appearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua
-                ? NSColor(srgbRed: 1, green: 1, blue: 1, alpha: 0.10)
-                : NSColor(srgbRed: 0, green: 0, blue: 0, alpha: 0.06)
-        }))
-        static let separator = Color(nsColor: .init(name: "DS.separator", dynamicProvider: { appearance in
-            appearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua
-                ? NSColor(srgbRed: 1, green: 1, blue: 1, alpha: 0.08)
-                : NSColor(srgbRed: 0, green: 0, blue: 0, alpha: 0.05)
-        }))
+        static let border = dyn("DS.border", light: NSColor(srgbRed: 0, green: 0, blue: 0, alpha: 0.06), dark: NSColor(srgbRed: 1, green: 1, blue: 1, alpha: 0.10))
+        static let separator = dyn("DS.separator", light: NSColor(srgbRed: 0, green: 0, blue: 0, alpha: 0.05), dark: NSColor(srgbRed: 1, green: 1, blue: 1, alpha: 0.08))
 
         /// Ambient card shadow (outer soft lift) — light only; dark relies on surface lift.
-        static let cardShadow = Color(nsColor: .init(name: "DS.cardShadow", dynamicProvider: { appearance in
-            appearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua
-                ? NSColor(srgbRed: 0, green: 0, blue: 0, alpha: 0)
-                : NSColor(srgbRed: 0x1A / 255.0, green: 0x1A / 255.0, blue: 0x2E / 255.0, alpha: 0.10)
-        }))
+        static let cardShadow = dyn("DS.cardShadow", light: NSColor(srgbRed: 0x1A / 255.0, green: 0x1A / 255.0, blue: 0x2E / 255.0, alpha: 0.10), dark: NSColor(srgbRed: 0, green: 0, blue: 0, alpha: 0))
 
         /// Tight contact shadow under cards — light only; pairs with `cardShadow`.
-        static let cardShadowContact = Color(nsColor: .init(name: "DS.cardShadowContact", dynamicProvider: { appearance in
-            appearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua
-                ? NSColor(srgbRed: 0, green: 0, blue: 0, alpha: 0)
-                : NSColor(srgbRed: 0, green: 0, blue: 0, alpha: 0.04)
-        }))
+        static let cardShadowContact = dyn("DS.cardShadowContact", light: NSColor(srgbRed: 0, green: 0, blue: 0, alpha: 0.04), dark: NSColor(srgbRed: 0, green: 0, blue: 0, alpha: 0))
     }
 
     // MARK: Spacing — 8pt grid
@@ -235,6 +142,14 @@ enum DS {
         static let micro = Animation.easeInOut(duration: 0.18)
         /// How long a toast stays visible before auto-dismiss.
         static let toastHold: TimeInterval = 2.4
+
+        /// Honor the system "Reduce Motion" accessibility setting: returns `nil`
+        /// (no animation — SwiftUI applies the state change instantly) when the
+        /// user has asked for reduced motion, otherwise the given animation.
+        /// Use at call sites via `.animation(DS.Motion.resolve(.toast, reduce: x), …)`.
+        static func resolve(_ animation: Animation?, reduce: Bool) -> Animation? {
+            reduce ? nil : animation
+        }
     }
 
     // MARK: Progress

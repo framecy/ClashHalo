@@ -18,7 +18,25 @@ import SwiftUI
     /// A kernel-lifecycle operation (toggle TUN/engine, restart, activate) is in
     /// progress. UI entry points guard on this to prevent interleaving the long
     /// multi-await flows (e.g. TUN root-switch) with another start/stop/swap.
-    @Published var isBusy = false
+    /// Clearing it also clears `busyStep` so a stale progress line can never
+    /// survive into the next (possibly background self-heal) busy episode.
+    @Published var isBusy = false {
+        didSet { if !isBusy { busyStep = nil } }
+    }
+
+    /// Human-readable current step of the in-flight busy operation, surfaced as
+    /// a persistent banner in the main content. Seeded by `withEngineBusy` and
+    /// refined by progress (`.info`) toasts; auto-cleared when `isBusy` falls
+    /// (see the didSet above), so its lifecycle is inseparable from `isBusy`.
+    @Published var busyStep: String?
+
+    /// True when the helper is installed and reachable but reports a version
+    /// below the one this app expects — i.e. a forced upgrade is pending. Single
+    /// source for the settings action and the sidebar attention badge.
+    var helperNeedsUpdate: Bool {
+        isRoot && helperVersion != "?" && !helperVersion.isEmpty
+            && helperVersion != Self.kExpectedHelperVersion
+    }
     private var userProcess: Process?
 
     /// Injected log sink (set by AppModel) — avoids referencing AppModel here.
@@ -141,10 +159,55 @@ import SwiftUI
             }
         }
 
-        hardenControllerConfig()
-        normalizeGeoxURL()
-        forceTUNDisabled()   // TUN is runtime-only (root) — never auto-enable from disk
-        injectMemoryOptimization()
+        // These four each read, line-scan and rewrite the whole config — four full
+        // read/parse/write cycles of a multi-KB file on the main thread during
+        // launch. They are all idempotent and almost always no-ops after the
+        // first run, so skip the work entirely when the file is already
+        // normalized: one read decides it, instead of four read+write passes.
+        if configNeedsNormalizing() {
+            hardenControllerConfig()
+            normalizeGeoxURL()
+            forceTUNDisabled()   // TUN is runtime-only (root) — never auto-enable from disk
+            injectMemoryOptimization()
+        }
+    }
+
+    /// Cheap single-read precondition for the launch-time config normalizers.
+    /// Returns false only when every invariant they enforce already holds, which
+    /// is the steady state after the first launch.
+    private func configNeedsNormalizing() -> Bool {
+        guard let text = try? String(contentsOfFile: configFilePath, encoding: .utf8) else {
+            return true   // unreadable: let the normalizers deal with it
+        }
+        // Any of these means at least one normalizer has work to do.
+        if text.contains("geodata.kelee.one") { return true }
+        if !text.contains("geodata-mode") { return true }
+
+        var hasController = false, hasStrongSecret = false, tunDisabled = false
+        var inTun = false, dnsHasSize = false, dnsHasCacheAlg = false, inDns = false
+        let weak: Set<String> = ["", "clashhalo", "caseqc", "123456", "admin", "password"]
+        for raw in text.split(separator: "\n", omittingEmptySubsequences: false) {
+            let line = String(raw)
+            if !line.hasPrefix(" ") && !line.hasPrefix("\t") {
+                inTun = line.hasPrefix("tun:")
+                inDns = line.hasPrefix("dns:")
+                if line.hasPrefix("external-controller:") {
+                    hasController = line.contains("127.0.0.1:")
+                }
+                if line.hasPrefix("secret:") {
+                    let v = line.dropFirst("secret:".count)
+                        .trimmingCharacters(in: .whitespaces)
+                        .trimmingCharacters(in: CharacterSet(charactersIn: "\"'"))
+                    hasStrongSecret = !weak.contains(v)
+                }
+                continue
+            }
+            let t = line.trimmingCharacters(in: .whitespaces)
+            if inTun, t.hasPrefix("enable:") { tunDisabled = t.contains("false") }
+            if inDns, t.hasPrefix("size:") { dnsHasSize = true }
+            if inDns, t.hasPrefix("cache-algorithm:") { dnsHasCacheAlg = true }
+        }
+        return !(hasController && hasStrongSecret && tunDisabled && dnsHasSize && dnsHasCacheAlg)
     }
 
     private func migrateLegacyAppSupportIfNeeded() {
@@ -952,14 +1015,14 @@ import SwiftUI
     /// - Parameter prompt: Optional pre-auth explanation. Defaults to the
     ///   shared install prompt when nil.
     @discardableResult
-    func installPrivileged(prompt: String? = nil) async -> Bool {
+    func installPrivileged(prompt: PrivilegedPromptContent? = nil) async -> Bool {
         let ok = await XPCManager.shared.installDaemon(prompt: prompt)
         if ok { isRoot = true }
         return ok
     }
 
     @discardableResult
-    func uninstallPrivileged(prompt: String? = nil) async -> Bool {
+    func uninstallPrivileged(prompt: PrivilegedPromptContent? = nil) async -> Bool {
         let ok = await XPCManager.shared.uninstallDaemon(prompt: prompt)
         if ok { isRoot = false }
         return ok
@@ -1108,9 +1171,17 @@ import SwiftUI
 
     /// Stop and restart the kernel. Awaits the start attempt so callers that
     /// immediately `waitForKernelReady` do not race a fire-and-forget Task.
-    func restart() async {
+    ///
+    /// - Parameter preferRoot: defaults to true because the internal callers
+    ///   (TUN enable, the root-upgrade path in `ensureRunningAsync`) restart
+    ///   precisely *in order to* obtain a root kernel. A plain user-facing
+    ///   "restart kernel" with TUN/gateway off should pass false — otherwise the
+    ///   restart silently escalates a perfectly good user-mode kernel to root,
+    ///   paying the helper round-trip and running the proxy with privileges the
+    ///   current mode does not need.
+    func restart(preferRoot: Bool = true) async {
         await stopKernel()
-        await ensureRunningAsync()
+        await ensureRunningAsync(preferRoot: preferRoot)
     }
 
     /// Start the kernel without stopping first (caller already stopped + swapped
@@ -1144,37 +1215,29 @@ import SwiftUI
         }
     }
 
-    /// Run a shell snippet with administrator privileges via one osascript prompt.
+    /// Run a shell snippet with administrator privileges.
     ///
-    /// - Parameter prompt: Optional Chinese explanation shown in a pre-auth
-    ///   dialog *before* the system password sheet. The OS password dialog
-    ///   itself cannot carry a custom body, so we surface the upgrade/install
-    ///   reason here and only then request admin. Cancel on the pre-dialog
-    ///   aborts without elevating.
-    static func runAdmin(_ shell: String, prompt: String? = nil) async -> Bool {
+    /// - Parameter prompt: Optional explanation presented in a **native** pre-auth
+    ///   dialog (`PrivilegedPrompt`) *before* the system password sheet. The OS
+    ///   password dialog cannot carry a custom body, so the install/upgrade
+    ///   reason is surfaced here first. Declining aborts without elevating —
+    ///   osascript is only reached after an explicit confirm.
+    ///
+    ///   The dialog used to be an AppleScript `display dialog`, whose generic
+    ///   caution styling clashed with the rest of the app; the explanation is now
+    ///   SwiftUI built from design tokens, and the only remaining AppleScript is
+    ///   the privileged `do shell script` itself (no user text is interpolated
+    ///   into it any more, removing that escaping surface entirely).
+    static func runAdmin(_ shell: String, prompt: PrivilegedPromptContent? = nil) async -> Bool {
+        if let prompt {
+            let confirmed = await PrivilegedPrompt.confirm(prompt)
+            guard confirmed else { return false }
+        }
+
         let escapedShell = shell
             .replacingOccurrences(of: "\\", with: "\\\\")
             .replacingOccurrences(of: "\"", with: "\\\"")
-
-        let script: String
-        if let prompt, !prompt.isEmpty {
-            // Build an AppleScript string that concatenates lines with `return`
-            // so multi-line explanations render correctly in display dialog.
-            let asPrompt = prompt
-                .components(separatedBy: "\n")
-                .map { line in
-                    line
-                        .replacingOccurrences(of: "\\", with: "\\\\")
-                        .replacingOccurrences(of: "\"", with: "\\\"")
-                }
-                .joined(separator: "\" & return & \"")
-            script = """
-            display dialog "\(asPrompt)" buttons {"取消", "继续"} default button "继续" cancel button "取消" with icon caution with title "ClashHalo 特权服务"
-            do shell script "\(escapedShell)" with administrator privileges
-            """
-        } else {
-            script = "do shell script \"\(escapedShell)\" with administrator privileges"
-        }
+        let script = "do shell script \"\(escapedShell)\" with administrator privileges"
 
         return await withCheckedContinuation { cont in
             DispatchQueue.global().async {

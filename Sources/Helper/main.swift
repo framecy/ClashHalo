@@ -424,20 +424,9 @@ class HelperDelegate: NSObject, NSXPCListenerDelegate {
             log("clientWatch: watched pid \(pid) exited")
             // Same grace the invalidation path uses: give an immediate relaunch
             // (app update / crash-restart) time to reconnect and take over.
+            // Ownership/once-only checks live inside handleClientExit so both
+            // entry points are guarded identically.
             DispatchQueue.global().asyncAfter(deadline: .now() + 2.0) {
-                Self.connLock.lock()
-                let hasActive = !Self.activeConnections.isEmpty
-                let recent = Self.lastSeenClient
-                Self.connLock.unlock()
-                if hasActive {
-                    log("clientWatch: active connection present — new session owns state, skip cleanup")
-                    return
-                }
-                if recent.pid != pid, recent.pid > 0,
-                   Date().timeIntervalSince(recent.at) < 15, kill(recent.pid, 0) == 0 {
-                    log("clientWatch: newer live client pid \(recent.pid) seen — skip cleanup")
-                    return
-                }
                 HelperDelegate.handleClientExit(pid: pid)
             }
         }
@@ -464,6 +453,15 @@ class HelperDelegate: NSObject, NSXPCListenerDelegate {
         Self.activeConnections[clientPid, default: 0] += 1
         Self.lastSeenClient = (clientPid, Date())
         Self.connLock.unlock()
+
+        // Arm the death watchdog for ANY authenticated client, not just after a
+        // state-mutating call (v1.0.21). If the helper restarts mid-session (its
+        // own upgrade), the previously-armed watch is gone with the old process;
+        // without re-arming here, a later force-quit would go entirely unnoticed
+        // and leak proxy/DNS/root-kernel. Safe to arm broadly because
+        // handleClientExit is reality-gated and no-ops when nothing needs undoing.
+        // The GUI's 5 s connectivity poll guarantees prompt re-arming.
+        Self.armClientWatch(pid: clientPid)
 
         newConnection.invalidationHandler = {
             log("Connection invalidated from pid \(clientPid)")
@@ -511,7 +509,73 @@ class HelperDelegate: NSObject, NSXPCListenerDelegate {
         return true
     }
 
+    /// Pids whose cleanup already ran. Each of a client's connections invalidates
+    /// separately, so without this the teardown fired once *per connection* —
+    /// observed 2–3 times per exit, and with reality-based gating every repeat
+    /// re-detected the loopback proxy and disabled it again.
+    private static var cleanedPids: [Int32] = []
+
+    /// True when a newer session already owns the system state: some connection
+    /// is open, or a *different* client pid was seen recently and is still alive.
+    ///
+    /// Both cleanup paths must consult this. Previously only the watchdog did,
+    /// so the connection-invalidation path could run a dead session's teardown
+    /// after the replacement app had already connected — disabling the system
+    /// proxy the *live* session had just enabled (observed in helper.log:
+    /// `armClientWatch: watching pid 40860` at 15:12:27, then cleanup for the
+    /// dead pid 40101 disabling the proxy twice at 15:12:30/31).
+    private static func newerSessionOwnsState(deadPid: Int32) -> Bool {
+        connLock.lock()
+        let hasActive = !activeConnections.isEmpty
+        let recent = lastSeenClient
+        connLock.unlock()
+        if hasActive {
+            log("cleanup: active connection present — newer session owns state")
+            return true
+        }
+        if recent.pid != deadPid, recent.pid > 0,
+           Date().timeIntervalSince(recent.at) < 15, kill(recent.pid, 0) == 0 {
+            log("cleanup: newer live client pid \(recent.pid) seen — skip")
+            return true
+        }
+        return false
+    }
+
+    /// Whether a root-owned `mihomo` is running. Only this helper can spawn one
+    /// (root start goes exclusively through `startMihomo`), so a root-owned
+    /// kernel surviving its dead client is by definition our orphan — the
+    /// reality-based counterpart to the `stateMihomoStarted` session flag.
+    private static func isRootMihomoRunning() -> Bool {
+        let p = Process()
+        p.executableURL = URL(fileURLWithPath: "/usr/bin/pgrep")
+        p.arguments = ["-u", "root", "-x", "mihomo"]
+        p.standardOutput = Pipe(); p.standardError = Pipe()
+        guard (try? p.run()) != nil else { return false }
+        p.waitUntilExit()
+        return p.terminationStatus == 0
+    }
+
     fileprivate static func handleClientExit(pid: Int32) {
+        // Guard 1 — once per pid. Every connection of a dying client invalidates
+        // independently, so this is otherwise entered several times per exit.
+        connLock.lock()
+        let alreadyCleaned = cleanedPids.contains(pid)
+        if !alreadyCleaned {
+            cleanedPids.append(pid)
+            if cleanedPids.count > 32 { cleanedPids.removeFirst(cleanedPids.count - 32) }
+        }
+        connLock.unlock()
+        guard !alreadyCleaned else {
+            log("handleClientExit for pid \(pid): already cleaned — skip")
+            return
+        }
+
+        // Guard 2 — never tear down state a newer, live session owns.
+        guard !newerSessionOwnsState(deadPid: pid) else {
+            log("handleClientExit for pid \(pid): newer session active — skip")
+            return
+        }
+
         // Snapshot + clear session state atomically: cleanup runs at most once
         // per session (both the watchdog and the invalidation path funnel here),
         // and only reverts what this helper actually set — a session that never
@@ -531,14 +595,27 @@ class HelperDelegate: NSObject, NSXPCListenerDelegate {
         watchedPid = 0
         connLock.unlock()
 
-        guard hadMihomo || hadProxy || hadGateway else {
+        // Reality checks (v1.0.21). The in-memory session flags above are per
+        // helper *process* — they are lost whenever the helper restarts, most
+        // notably right after its own upgrade, mid-user-session. Relying on them
+        // alone meant a force-quit after such a restart left a stale loopback
+        // system proxy pointing at a dead kernel (total blackout) and an orphan
+        // root mihomo. So each destructive step is additionally gated on an
+        // observable fact that can only be true if we (or a dead local proxy)
+        // caused it — never on user-owned configuration.
+        let loopbackProxyLive = ProxyManager.anyServiceProxiesToLoopback()
+        let orphanRootKernel = isRootMihomoRunning()
+        let cleanProxy = hadProxy || loopbackProxyLive
+        let cleanKernel = hadMihomo || orphanRootKernel
+
+        guard cleanKernel || cleanProxy || hadGateway else {
             log("handleClientExit for pid \(pid): no helper-owned state — nothing to clean")
             return
         }
-        log("handleClientExit for pid \(pid): cleaning (mihomo=\(hadMihomo) proxy=\(hadProxy) gateway=\(hadGateway))")
+        log("handleClientExit for pid \(pid): cleaning (mihomo=\(hadMihomo)/orphanRoot=\(orphanRootKernel) proxy=\(hadProxy)/loopbackLive=\(loopbackProxyLive) gateway=\(hadGateway))")
 
         // 1. Stop mihomo process first (fast, reliable, and does not depend on system configuration locks)
-        if hadMihomo {
+        if cleanKernel {
             Helper.stopMihomoInternal()
         }
 
@@ -547,29 +624,26 @@ class HelperDelegate: NSObject, NSXPCListenerDelegate {
         Helper.cleanupAllExcludeRoutesInternal()
         Helper.routesLock.unlock()
 
-        // 2. Disable system proxy
-        if hadProxy {
+        // 2. Disable system proxy. A loopback proxy with no kernel behind it is
+        //    the blackout condition — clear it regardless of session memory.
+        if cleanProxy {
             let proxyReset = ProxyManager.setSystemProxy(enabled: false, port: 7890)
             log("handleClientExit: system proxy disabled (\(proxyReset))")
         }
 
-        if hadMihomo {
-            // 3. Zombie utun physical cleanup: a SIGKILLed mihomo can leave a
-            //    DOWNED 198.18 utun whose Supplemental DNS resolver keeps
-            //    pinning the fake-ip gateway — the exact post-force-quit DNS
-            //    blackout this cleanup exists for. downedOnly spares healthy
-            //    co-resident VPN tunnels (Shadowrocket etc.) sharing 198.18.x.
-            Thread.sleep(forTimeInterval: 0.3)   // let the kernel reap the utun first
-            Helper.routesLock.lock()
-            _ = ProxyManager.cleanupTUNResidual(downedOnly: true)
-            Helper.routesLock.unlock()
-
-            // 4. Restore DNS — only for services still pinned at the tunnel
-            //    gateway, so a custom user DNS (or the saved DNS the GUI already
-            //    restored during a normal quit) is never clobbered to "Empty".
-            let dnsReset = ProxyManager.restoreDNSIfTunnelPinned()
-            log("handleClientExit: tunnel-pinned DNS restored (\(dnsReset))")
-        }
+        // 3./4. Both of these are self-gating no-ops when there is nothing to
+        //       undo (cleanupTUNResidual finds no DOWNED 198.18 utun;
+        //       restoreDNSIfTunnelPinned finds no tunnel-pinned resolver), so
+        //       run them unconditionally rather than behind session memory —
+        //       that is exactly the state a restarted helper cannot remember.
+        //       downedOnly spares healthy co-resident VPN tunnels (Shadowrocket
+        //       etc.) that share the 198.18.x range.
+        Thread.sleep(forTimeInterval: 0.3)   // let the kernel reap the utun first
+        Helper.routesLock.lock()
+        _ = ProxyManager.cleanupTUNResidual(downedOnly: true)
+        Helper.routesLock.unlock()
+        let dnsReset = ProxyManager.restoreDNSIfTunnelPinned()
+        log("handleClientExit: tunnel-pinned DNS restored (\(dnsReset))")
 
         // 5. Disable IP Forwarding
         if hadGateway {

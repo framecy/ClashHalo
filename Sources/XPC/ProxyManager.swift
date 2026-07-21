@@ -246,6 +246,36 @@ public class ProxyManager {
         return httpOn && httpHost == "127.0.0.1"
     }
 
+    /// Whether any enabled network service currently routes HTTP/HTTPS/SOCKS
+    /// through a loopback proxy — i.e. a proxy that can only be ours (or another
+    /// local proxy app), and which black-holes traffic once the kernel is gone.
+    ///
+    /// Queried via `networksetup` rather than `SCDynamicStoreCopyProxies` because
+    /// this runs inside a root LaunchDaemon with no user session, where the
+    /// dynamic-store proxy snapshot is not a reliable view of per-service state.
+    /// Used as the reality-based fallback for client-death cleanup: the helper's
+    /// in-memory session flags are lost whenever the helper itself restarts
+    /// (e.g. right after its own upgrade), and without this a force-quit then
+    /// left a stale 127.0.0.1 proxy pointing at a dead kernel — total blackout.
+    public static func anyServiceProxiesToLoopback() -> Bool {
+        for svc in enabledNetworkServices() {
+            for cmd in ["-getwebproxy", "-getsecurewebproxy", "-getsocksfirewallproxy"] {
+                guard let out = runOutput([cmd, svc]) else { continue }
+                var enabled = false, loopback = false
+                for line in out.split(separator: "\n") {
+                    let t = line.trimmingCharacters(in: .whitespaces)
+                    if t.hasPrefix("Enabled:") { enabled = t.hasSuffix("Yes") }
+                    if t.hasPrefix("Server:") {
+                        let host = t.dropFirst("Server:".count).trimmingCharacters(in: .whitespaces)
+                        loopback = (host == "127.0.0.1" || host == "::1" || host == "localhost")
+                    }
+                }
+                if enabled && loopback { return true }
+            }
+        }
+        return false
+    }
+
     /// Clean up TUN residual after mihomo exits: delete default routes pointing
     /// to utun interfaces bearing mihomo's 198.18.x.x addresses, bring those
     /// interfaces down, and remove their IP addresses. macOS utun interfaces
