@@ -1,15 +1,17 @@
 # ClashHalo
 
-> macOS 14+ 原生 SwiftUI 代理客户端，直接编排官方 `mihomo` (Clash.Meta) 内核。当前版本 **v1.1.6**。
+> macOS 14+ 原生 SwiftUI 代理客户端，直接编排官方 `mihomo` (Clash.Meta) 内核。当前版本 **v1.1.5**。
 
 ClashHalo 采用纯 Swift 的原生编排器架构：应用层负责界面与状态管理，独立签名的 Helper 处理特权操作，内核层直接驱动 `mihomo`。目标很明确，少一层中间件，少一层不稳定性。
 
 ## 新特性 (v1.1.5)
 
 - **内核启停提速**：停核/重启/内核切换走 `pgrep` 确认快路径，跳过多余的 Helper XPC 与 `killall` 兜底。
-- **Root 启动去固定等待**：Helper `startMihomo` 由固定 0.8s sleep 改为条件化轮询，TUN / 网关 root 重启显著加快（Helper 1.0.19）。
+- **Root 启动去固定等待**：Helper `startMihomo` 由固定 0.8s sleep 改为条件化轮询，TUN / 网关 root 重启显著加快。
 - **特权握手缓存**：`verifyConnectivity` 成功结果缓存 2s，一次 TUN 开启少打 1–2 次 XPC 握手。
 - **开关反馈更快更明确**：系统代理先设置先反馈，`allow-lan` 后置；失败且内核未运行时不再静默。
+- **修复 TUN 开关闪跳**：TUN 拉起瞬间的路径风暴不再误翻开关（开启稳定期 + refreshConfigs 并发合并 + DNS 状态机原子化）。
+- **修复强退断网**：Helper 1.0.20 引入客户端死亡 kqueue 监视与僵尸 utun 物理清理，强退 App 后代理/DNS/root 内核可靠回收。
 
 ## 新特性 (v1.1.4)
 
