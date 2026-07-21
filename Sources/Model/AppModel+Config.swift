@@ -116,7 +116,23 @@ extension AppModel {
         selectForApply(id)
     }
 
+    /// Public entry: coalesce concurrent callers onto a single in-flight run.
+    /// The TUN bring-up path storm (utun creation + route + DNS change events)
+    /// used to stack several parallel runs that raced each other's side effects
+    /// (three duplicate static-route cleanups observed in helper logs). A caller
+    /// arriving mid-run awaits the in-flight refresh instead of starting another.
     func refreshConfigs() async {
+        if let inflight = refreshConfigsTask {
+            await inflight.value
+            return
+        }
+        let task = Task { await refreshConfigsBody() }
+        refreshConfigsTask = task
+        await task.value
+        refreshConfigsTask = nil
+    }
+
+    private func refreshConfigsBody() async {
         guard var c = try? await api.fetchConfigs() else { return }
 
         // Strictly enforce CDN GEO defaults if missing or empty
@@ -189,7 +205,8 @@ extension AppModel {
             // the teardown finishes. Manual isBusy + defer guarantees the guard
             // clears only after `applyTUNState(false)` truly completes.
             if reachable && configEnabled && engine.runningAsRoot && !hasInterface && tunOn,
-               !engine.isBusy, !tunAutoTeardownInFlight {
+               !engine.isBusy, !tunAutoTeardownInFlight,
+               Date() >= tunStateSettleUntil {
                 tunAutoTeardownInFlight = true
                 engine.isBusy = true
                 logKernel("检测到 TUN 接口丢失（可能与其他 utun 服务冲突），正在自动关闭...")
@@ -215,7 +232,18 @@ extension AppModel {
                     }
                 }
             }
-            if tunOn != shouldBeOn { tunOn = shouldBeOn }
+            if tunOn != shouldBeOn {
+                if tunOn && !shouldBeOn && Date() < tunStateSettleUntil {
+                    // Bring-up settle window: a transiently-false signal from the
+                    // path-update storm must not flip the switch off and run the
+                    // OFF cascade (route cleanup + DNS restore). Explicit teardowns
+                    // (user toggle, stopEngine, unreachable reconnect) bypass this
+                    // by writing tunOn directly / clearing the window first.
+                    logKernel("TUN 稳定期内忽略瞬时状态抖动（reachable=\(reachable) enable=\(configEnabled) root=\(engine.runningAsRoot) iface=\(hasInterface)）")
+                } else {
+                    tunOn = shouldBeOn
+                }
+            }
         }
         // Gateway is user intent only (persisted via UserDefaults mirror). Never
         // infer it from config.yaml: residual `allow-lan + dns.listen=0.0.0.0:53`
@@ -550,6 +578,9 @@ extension AppModel {
     /// reconcile `tunOn` from the kernel's *actual* state. The shared body behind
     /// `toggleTUN` and `reapplyTUN`. Caller owns `engine.isBusy`.
     func applyTUNState(_ want: Bool) async {
+        // Explicit disable is user/system intent — lift the bring-up settle
+        // window so the OFF derivation is never blocked.
+        if !want { tunStateSettleUntil = .distantPast }
         if want && !reachable {
             showToast("正在启动核心以启用 TUN…")
             // TUN needs root. Verify helper before forcing isRoot — a stale
@@ -670,6 +701,9 @@ extension AppModel {
 
         let ok = await engine.patchConfig(overrides)
         if ok {
+            // Arm the settle window immediately — the path-update storm begins
+            // the moment the kernel creates the utun, i.e. right at this PATCH.
+            if want { tunStateSettleUntil = Date().addingTimeInterval(10) }
             // refreshConfigs sets tunOn from the *actual* kernel state
             // (enable && runningAsRoot && hasInterface, per B9) — do not blindly
             // set tunOn=want. A user-mode kernel accepts the PATCH (HTTP 200) but
@@ -765,28 +799,48 @@ extension AppModel {
 
     /// Redirect system DNS into the tunnel (idempotent). Saves the pre-existing
     /// DNS once so a manual user setting is restored later, not clobbered.
+    ///
+    /// Ordering matters: the `overridden` flag is only set AFTER the
+    /// networksetup write succeeds. Flag-first used to desync the state machine
+    /// when the write failed mid path-storm — overridden=1 with system DNS still
+    /// at the original value, so later teardowns "restored" a redirect that
+    /// never happened and health checks believed the redirect was live.
     func enableTunnelDNS() async {
         let gateway = tunnelDNSAddress()
         let d = UserDefaults.standard
-        if !d.bool(forKey: Self.kDNSOverriddenKey) {
+        let wasOverridden = d.bool(forKey: Self.kDNSOverriddenKey)
+        var snapshot: String? = nil
+        if !wasOverridden {
             let original = await EngineControl.currentSystemDNS()
             // Use sentinel value "Empty" if system DNS is unconfigured (common on fresh macOS)
-            let snapshot = original.isEmpty ? "Empty" : original.joined(separator: ",")
+            snapshot = original.isEmpty ? "Empty" : original.joined(separator: ",")
+        }
+        let ok = await EngineControl.applySystemDNS([gateway])
+        guard ok else {
+            logKernel("TUN DNS 重定向写入失败，保持原状态待下次巡检重试")
+            return
+        }
+        if !wasOverridden, let snapshot {
             d.set(snapshot, forKey: Self.kDNSSavedKey)
             d.set(true, forKey: Self.kDNSOverriddenKey)
         }
-        await EngineControl.applySystemDNS([gateway])
     }
 
     /// Restore the system DNS saved before TUN took over (no-op if we never
     /// overrode it). Idempotent — safe to call from every teardown path.
+    /// The flag is only cleared after the restore write succeeds, so a failed
+    /// networksetup keeps the state machine armed for the next teardown pass.
     func restoreTunnelDNS() async {
         let d = UserDefaults.standard
         guard d.bool(forKey: Self.kDNSOverriddenKey) else { return }
         let savedString = d.string(forKey: Self.kDNSSavedKey) ?? ""
         // Handle sentinel "Empty" by clearing DNS (networksetup needs "Empty" literal)
         let saved = savedString == "Empty" ? ["Empty"] : savedString.split(separator: ",").map(String.init)
-        await EngineControl.applySystemDNS(saved)
+        let ok = await EngineControl.applySystemDNS(saved)
+        guard ok else {
+            logKernel("TUN DNS 恢复写入失败，保留重定向标记待重试")
+            return
+        }
         d.set(false, forKey: Self.kDNSOverriddenKey)
         d.removeObject(forKey: Self.kDNSSavedKey)
     }
