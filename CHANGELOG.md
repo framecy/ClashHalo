@@ -2,6 +2,19 @@
 
 本项目所有重要变更记录于此。格式参考 [Keep a Changelog](https://keepachangelog.com/),版本遵循语义化版本。
 
+## [1.1.6] - 2026-07-21
+
+修复 v1.1.5 首次开启 TUN 后开关闪跳自动关闭的问题（状态判定被 TUN 拉起瞬间的网络路径风暴误翻）。
+
+### Fixed
+- **TUN 开启后开关闪跳自关**：TUN 拉起瞬间（utun 创建、auto-route 注入、系统 DNS 切换）触发 `NWPathMonitor` 风暴，多个并发 `refreshConfigs` 中任一瞬时假信号即把 `tunOn` 翻 false 并执行关闭级联（重复清理静态路由、撤销隧道 DNS），数秒后信号恢复又翻回 true——用户看到开关自动关闭、DNS 重定向状态脱节（`overridden=1` 但系统 DNS 已被还原）。修复：
+  - **开启稳定期**：TUN PATCH 成功后 10s 内 `refreshConfigs` 不得把 `tunOn` 由 true 翻 false（翻 true 不受限）；用户手动关闭、停核、内核确认失联等显式路径不受稳定期限制。`verifyTUNConfig` / 接口丢失自动 teardown 同样尊重稳定期。
+  - **refreshConfigs 并发合并**：并发调用合并到单个 in-flight 执行（helper 日志曾出现 3 次重复静态路由清理即为此竞态）。
+  - **DNS 重定向状态机原子化**：`enableTunnelDNS` / `restoreTunnelDNS` 仅在 `networksetup` 写入成功后才置位/清位标记，失败保留状态待巡检重试，不再出现「标记已重定向但系统 DNS 未写入」的脱节。
+  - **reconnect 瞬断二次确认**：内核上一刻可达时，单次 probe 失败先延迟 300ms 复测再判定失联，避免路径切换瞬间误触发「断连级联」（关 TUN 开关 + 还原 DNS + 关系统代理）。
+  - **挂起重连任务清理**：重连成功时取消仍在休眠的旧重试任务，防止它数秒后突袭执行 `stopStreams + probe`。
+- **TUN 等待去负缓存**：`waitForTUNInterface` 绕过接口探测的 1.5s 负缓存（utun 出现前一刻的 nil 会被缓存），开启等待不再固定多耗约 1.7s。
+
 ## [1.1.5] - 2026-07-21
 
 内核调用提速：停核/重启/内核切换快路径、Helper 启动去固定等待、特权连通性握手缓存；系统代理开关反馈更快、失败不再静默。Helper **1.0.18 → 1.0.19**（需强制升级以获得启动提速）。

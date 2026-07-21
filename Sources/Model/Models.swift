@@ -426,11 +426,15 @@ enum NetScanner {
     /// but no route evidence either way (e.g. netstat failed), we fall back to
     /// the first candidate rather than return nil — prefer a missed teardown
     /// this tick to wrongly declaring the interface gone.
-    static func mihomoTunInterface() async -> String? {
+    /// - Parameter maxAge: Cache tolerance. The default suits the periodic
+    ///   health polls; the TUN bring-up wait loop passes a near-zero value so a
+    ///   cached negative from just before the utun appeared doesn't stall the
+    ///   enable flow ~1.5s (nil results are cached like any other).
+    static func mihomoTunInterface(maxAge: TimeInterval = 1.5) async -> String? {
         // Short TTL cache: refreshConfigs used to call this every 3s; even after
         // poll layering, verify paths can still stack. 1.5s is well under the
         // health-check period and avoids repeated getifaddrs/route forks.
-        if let cached = tunCache, Date().timeIntervalSince(cached.at) < 1.5 {
+        if let cached = tunCache, Date().timeIntervalSince(cached.at) < maxAge {
             return cached.name
         }
         let name = await mihomoTunInterfaceUncached()
