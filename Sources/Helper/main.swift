@@ -133,22 +133,42 @@ class Helper: NSObject, HelperProtocol {
         Self.processLock.lock()
         defer { Self.processLock.unlock() }
 
-        // Terminate any tracked process first
+        // Terminate any tracked process first. Poll instead of a fixed sleep —
+        // the common restart case (process already exited via REST shutdown)
+        // must not pay a latency penalty.
         if let existing = Self.mihomoProcess, existing.isRunning {
             existing.terminate()
-            Thread.sleep(forTimeInterval: 0.5)
+            let deadline = Date().addingTimeInterval(0.5)
+            while existing.isRunning && Date() < deadline {
+                Thread.sleep(forTimeInterval: 0.05)
+            }
             if existing.isRunning { kill(existing.processIdentifier, SIGKILL) }
         }
         Self.mihomoProcess = nil
 
         // Kill ALL mihomo processes (handles untracked processes from previous
-        // helper instances or session remnants that would block the port)
+        // helper instances or session remnants that would block the port).
+        // killall exits 0 only when it actually signalled something — only then
+        // wait (briefly, polled) for the process table to clear so ports/utun
+        // are released. A clean start pays no fixed delay.
         let killAll = Process()
         killAll.executableURL = URL(fileURLWithPath: "/usr/bin/killall")
         killAll.arguments = ["-9", "mihomo"]
         killAll.standardOutput = Pipe(); killAll.standardError = Pipe()
         try? killAll.run(); killAll.waitUntilExit()
-        Thread.sleep(forTimeInterval: 0.3)
+        if killAll.terminationStatus == 0 {
+            let deadline = Date().addingTimeInterval(0.3)
+            while Date() < deadline {
+                let check = Process()
+                check.executableURL = URL(fileURLWithPath: "/usr/bin/pgrep")
+                check.arguments = ["-x", "mihomo"]
+                check.standardOutput = Pipe(); check.standardError = Pipe()
+                guard (try? check.run()) != nil else { break }
+                check.waitUntilExit()
+                if check.terminationStatus == 1 { break }   // no match — table clear
+                Thread.sleep(forTimeInterval: 0.05)
+            }
+        }
 
         let process = Process()
         process.executableURL = URL(fileURLWithPath: binPath)

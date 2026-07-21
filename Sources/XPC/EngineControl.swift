@@ -1030,9 +1030,16 @@ import SwiftUI
     /// and killall runs detached. Never block MainActor on an unbounded XPC reply
     /// — that was the kernel-switch hang that left system proxy pointing at a
     /// dead 127.0.0.1 and black-holed the whole Mac.
+    ///
+    /// Fast path: REST shutdown / SIGTERM usually kills the process within a few
+    /// hundred ms. Confirm the exit via pgrep and skip the helper XPC round-trip
+    /// + killall entirely — this also covers "kernel already dead" callers
+    /// (restart after crash, kernel switch) that used to pay the full stop cost.
     func stopKernel() async {
+        var gracefulAttempted = false
         if let proc = userProcess, proc.isRunning {
             proc.terminate()
+            gracefulAttempted = true
         }
         userProcess = nil
 
@@ -1043,16 +1050,24 @@ import SwiftUI
             req.timeoutInterval = 1.5
             if !api.secret.isEmpty { req.setValue("Bearer \(api.secret)", forHTTPHeaderField: "Authorization") }
             _ = try? await URLSession.shared.data(for: req)
+            gracefulAttempted = true
         }
 
-        // Helper stop with hard timeout, then killall safety net — both off MainActor.
-        await Task.detached(priority: .userInitiated) {
-            _ = await XPCManager.shared.callStopMihomo(timeout: 4.0)
-            let t = Process(); t.executableURL = URL(fileURLWithPath: "/usr/bin/killall")
-            t.arguments = ["-9", "mihomo"]
-            t.standardOutput = Pipe(); t.standardError = Pipe()
-            try? t.run(); t.waitUntilExit()
-        }.value
+        // With a graceful channel (SIGTERM / REST shutdown) the exit lands within
+        // a few hundred ms — worth polling for. Without one, either nothing is
+        // running (single quick pgrep confirms) or the process needs the helper
+        // force-stop anyway — don't stall in front of it.
+        let gone = await Self.waitForMihomoExit(deadline: gracefulAttempted ? 1.2 : 0.15)
+        if !gone {
+            // Helper stop with hard timeout, then killall safety net — both off MainActor.
+            await Task.detached(priority: .userInitiated) {
+                _ = await XPCManager.shared.callStopMihomo(timeout: 4.0)
+                let t = Process(); t.executableURL = URL(fileURLWithPath: "/usr/bin/killall")
+                t.arguments = ["-9", "mihomo"]
+                t.standardOutput = Pipe(); t.standardError = Pipe()
+                try? t.run(); t.waitUntilExit()
+            }.value
+        }
 
         // Kernel is gone — clear the root-mode ownership flag. Leaving it true
         // after stop makes refreshConfigs re-arm tunOn from a stale in-flight
@@ -1060,8 +1075,35 @@ import SwiftUI
         runningAsRoot = false
         api.reachable = false
 
-        // Give it a moment to release ports / the binary
-        try? await Task.sleep(nanoseconds: 100_000_000)
+        // Give it a moment to release ports / the binary. On the fast path the
+        // confirmed process exit already released them — no extra wait needed.
+        if !gone {
+            try? await Task.sleep(nanoseconds: 100_000_000)
+        }
+    }
+
+    /// Poll (100ms steps) until no `mihomo` process remains, any owner.
+    /// Returns true once pgrep confirms the process table is clear; false when
+    /// the deadline passes with the kernel still alive (caller falls back to
+    /// the helper-stop + killall path). Only pgrep status 1 ("no match") counts
+    /// as gone — exec/usage errors keep polling so we never skip the safety net
+    /// on a false negative.
+    nonisolated static func waitForMihomoExit(deadline: TimeInterval) async -> Bool {
+        await Task.detached(priority: .userInitiated) {
+            let end = Date().addingTimeInterval(deadline)
+            while true {
+                let p = Process()
+                p.executableURL = URL(fileURLWithPath: "/usr/bin/pgrep")
+                p.arguments = ["-x", "mihomo"]
+                p.standardOutput = Pipe(); p.standardError = Pipe()
+                if (try? p.run()) != nil {
+                    p.waitUntilExit()
+                    if p.terminationStatus == 1 { return true }
+                }
+                if Date() >= end { return false }
+                try? await Task.sleep(nanoseconds: 100_000_000)
+            }
+        }.value
     }
 
     /// Stop and restart the kernel. Awaits the start attempt so callers that
