@@ -2,6 +2,25 @@
 
 本项目所有重要变更记录于此。格式参考 [Keep a Changelog](https://keepachangelog.com/),版本遵循语义化版本。
 
+## [1.1.7] - 2026-07-22
+
+单一身份内核：消除 root/用户态混跑导致的数据目录属主撕裂（订阅、节点选择、geo 更新静默失效的根因）。Helper 仍为 **1.0.22**，升级本版**不需要再次输入管理员密码**。
+
+### Fixed
+- **数据目录属主撕裂导致订阅/设置静默失效**：内核此前时而以 root（TUN）、时而以用户（其余场景）运行。一次 root 会话会把 `cache.db`、`providers/`、`ruleset/`、`ui/` 与 geo 数据库留成 root 属主 + 0755，之后用户态内核**能读不能写**，于是：
+  - `profile.store-selected` / `store-fake-ip` 不再持久化（实测日志 `[CacheFile] can't open cache file: permission denied`）
+  - `geo-auto-update` 无法替换 root 属主的 `.dat`
+  - 订阅 / 规则集刷新写不进缓存，provider 卡在 `not updated for a long time, force refresh` 死循环，表现为**订阅节点在 App 里消失**
+  
+  修复：Helper 可用时内核**一律以 root 启动**，全程单一身份，属主自洽（Helper 不可用才退回用户态）。
+- **控制面弱密钥判定过窄**：`hardenControllerConfig` 原本只比对 6 个固定字符串，放过了 `1234qwer` 一类键盘走位密钥。控制面虽绑回环，但**本机任意进程**凭密钥即可完全操控内核。改为形态启发式 `isWeakSecret()`：长度 <16、含常见键盘/产品词、或字符类别少于 3 类即判弱并自动换成随机密钥。
+  > ⚠️ 升级后若你的 `secret` 被判弱会被自动替换。App 与内置 Zashboard 入口会自动使用新密钥，但**其它保存了旧密钥的客户端需手动更新**。
+
+### Changed
+- **启动身份与升级重启解耦**：新增 `ensureRunningAsync(preferRoot:allowRootUpgradeRestart:)`。冷启动直接以 root 起（廉价）；把**运行中**的用户态内核重启成 root 很贵，故仅 TUN/网关允许，系统代理明确禁止——保住 v1.1.4 修过的「开关卡死」。
+- **附带收益**：内核本就是 root 时，开启 TUN 不再需要重启内核，退化为一次配置变更。
+- 清理 `hardenControllerConfig` 中只写不读的 `hasExtUI` / `hasExtUIName` 死变量。
+
 ## [1.1.6] - 2026-07-21
 
 冷启动提速约 10 倍；修复「首次开启 TUN 必失败」；关闭全部转发面时断开既有连接；特权授权弹窗改为原生设计。Helper **1.0.20 → 1.0.22**（需强制升级）。

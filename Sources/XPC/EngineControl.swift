@@ -185,7 +185,6 @@ import SwiftUI
 
         var hasController = false, hasStrongSecret = false, tunDisabled = false
         var inTun = false, dnsHasSize = false, dnsHasCacheAlg = false, inDns = false
-        let weak: Set<String> = ["", "clashhalo", "caseqc", "123456", "admin", "password"]
         for raw in text.split(separator: "\n", omittingEmptySubsequences: false) {
             let line = String(raw)
             if !line.hasPrefix(" ") && !line.hasPrefix("\t") {
@@ -198,7 +197,7 @@ import SwiftUI
                     let v = line.dropFirst("secret:".count)
                         .trimmingCharacters(in: .whitespaces)
                         .trimmingCharacters(in: CharacterSet(charactersIn: "\"'"))
-                    hasStrongSecret = !weak.contains(v)
+                    hasStrongSecret = !Self.isWeakSecret(v)
                 }
                 continue
             }
@@ -696,8 +695,7 @@ import SwiftUI
         let path = configFilePath
         guard let text = try? String(contentsOfFile: path, encoding: .utf8) else { return }
         var lines = text.components(separatedBy: "\n")
-        let weak: Set<String> = ["", "clashhalo", "caseqc", "123456", "admin", "password"]
-        var hasController = false, hasSecret = false, hasExtUI = false, hasExtUIName = false, changed = false
+        var hasController = false, hasSecret = false, changed = false
 
         func scalar(_ line: String, _ key: String) -> String? {
             guard !line.hasPrefix(" "), !line.hasPrefix("\t"), line.hasPrefix(key) else { return nil }
@@ -716,11 +714,7 @@ import SwiftUI
                 if ec != want { lines[i] = "external-controller: \(want)"; changed = true }
             } else if let sec = scalar(lines[i], "secret") {
                 hasSecret = true
-                if weak.contains(sec) { lines[i] = "secret: \(Self.randomSecret())"; changed = true }
-            } else if scalar(lines[i], "external-ui") != nil {
-                hasExtUI = true
-            } else if scalar(lines[i], "external-ui-name") != nil {
-                hasExtUIName = true
+                if Self.isWeakSecret(sec) { lines[i] = "secret: \(Self.randomSecret())"; changed = true }
             }
         }
         
@@ -794,6 +788,33 @@ import SwiftUI
         }
     }
 
+    /// Whether a control-plane secret is too weak to keep.
+    ///
+    /// The controller binds loopback, so the threat model is *any local process*
+    /// — a weak secret lets anything on the machine drive the kernel (switch
+    /// nodes, rewrite config, read every connection). This used to be a fixed
+    /// blocklist of six strings, which let obvious keyboard-walk secrets such as
+    /// `1234qwer` through. Judge the shape instead: too short, single character
+    /// class, or a known keyboard/common pattern.
+    static func isWeakSecret(_ s: String) -> Bool {
+        let v = s.trimmingCharacters(in: .whitespaces)
+        if v.count < 16 { return true }
+
+        let lower = v.lowercased()
+        let known = ["clashhalo", "clash", "meta", "mihomo", "admin", "password",
+                     "secret", "qwer", "asdf", "zxcv", "1234", "abcd", "test"]
+        if known.contains(where: { lower.contains($0) }) { return true }
+
+        // Require a mix: an all-digit or all-letter string of any length is a
+        // poor secret even when it is long.
+        var classes = 0
+        if v.rangeOfCharacter(from: .decimalDigits) != nil { classes += 1 }
+        if v.rangeOfCharacter(from: CharacterSet.lowercaseLetters) != nil { classes += 1 }
+        if v.rangeOfCharacter(from: CharacterSet.uppercaseLetters) != nil { classes += 1 }
+        if v.rangeOfCharacter(from: CharacterSet.alphanumerics.inverted) != nil { classes += 1 }
+        return classes < 3
+    }
+
     /// Cryptographically-random, URL-safe secret for the control plane.
     static func randomSecret() -> String {
         let bytes = (0..<24).map { _ in UInt8.random(in: 0...255) }
@@ -842,12 +863,19 @@ import SwiftUI
     /// long-lived use. Awaitable so TUN / restart paths can wait for the helper
     /// reply instead of racing a detached Task and timing out with a false
     /// "权限不足".
-    func ensureRunningAsync(preferRoot: Bool = true) async {
+    /// - Parameter allowRootUpgradeRestart: whether an *already running* user-mode
+    ///   kernel may be restarted to gain root. Starting fresh as root is cheap and
+    ///   is what keeps the data directory under a single owner; tearing down a
+    ///   working kernel just to change identity is not — it costs a full reload
+    ///   and made the system-proxy toggle feel dead (v1.1.4). TUN/gateway pass
+    ///   true because root is a hard requirement for them; the system proxy,
+    ///   which only needs a listening mixed-port, passes false.
+    func ensureRunningAsync(preferRoot: Bool = true, allowRootUpgradeRestart: Bool = true) async {
         await api.probe()
 
         // If reachable, optionally upgrade to root (TUN/gateway paths only).
         if api.reachable {
-            if preferRoot && isRoot && !runningAsRoot {
+            if preferRoot && allowRootUpgradeRestart && isRoot && !runningAsRoot {
                 // Before killing a working kernel, check the real process owner.
                 // If it's already root (e.g. app restarted after a root session),
                 // just set the flag instead of doing a needless restart.

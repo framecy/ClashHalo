@@ -379,9 +379,29 @@ import ServiceManagement
                 tunOn = false
                 systemProxyOn = false
                 reachable = false
-                // 自动启动：仅监听 mixed-port / controller，不路由任何流量。
-                await engine.ensureRunningAsync(preferRoot: false)
-                mark("kernel spawned")
+                // Single-identity kernel: start as root whenever the helper is
+                // available, otherwise fall back to user mode.
+                //
+                // Running the kernel sometimes as root (TUN) and sometimes as the
+                // user (everything else) splits ownership of the shared data
+                // directory: a root session leaves `cache.db`, `providers/`,
+                // `ruleset/`, `ui/` and the geo databases owned by root with 0755,
+                // after which a user-mode kernel can read but not *write* them.
+                // The failures are silent — `store-selected` / `store-fake-ip`
+                // stop persisting, `geo-auto-update` cannot replace the .dat
+                // files, and subscription/rule-provider refreshes cannot update
+                // their cache (observed: "[CacheFile] can't open cache file:
+                // permission denied", and a provider stuck re-fetching forever).
+                // Keeping one identity removes the whole class of problem, and it
+                // also makes enabling TUN a pure config change instead of a
+                // privilege-switch restart.
+                //
+                // `isRoot` may not have been determined yet (the helper check runs
+                // in parallel), so establish it here — one handshake, and
+                // verifyConnectivity caches a success for 2 s.
+                engine.isRoot = await XPCManager.shared.verifyConnectivity()
+                await engine.ensureRunningAsync(preferRoot: engine.isRoot)
+                mark("kernel spawned(root=\(engine.isRoot))")
                 _ = await waitForKernelReady(maxAttempts: 8)
                 mark("kernel ready")
             }
