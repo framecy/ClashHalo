@@ -2,7 +2,7 @@
 
 本文件给后续 AI 编码代理使用。进入本仓库后，先读本文件，再按需读 `README.md`、`CHANGELOG.md` 和相关源码。
 
-当前主干：`main`，产品版本 **v1.1.6**（`MARKETING_VERSION`），Helper **1.0.22**（`kSharedHelperVersion`：客户端死亡 kqueue 监视、现实兜底退出清理、每 pid 一次 + 新会话接管；相对 1.0.21 及更早需强制升级）。打包时 `make.sh` 自增 `CURRENT_PROJECT_VERSION`。
+当前主干：`main`，产品版本 **v1.1.7**（`MARKETING_VERSION`），Helper **1.0.22**（`kSharedHelperVersion`：客户端死亡 kqueue 监视、现实兜底退出清理、每 pid 一次 + 新会话接管；相对 1.0.21 及更早需强制升级）。打包时 `make.sh` 自增 `CURRENT_PROJECT_VERSION`。
 
 ## 项目概览
 
@@ -96,7 +96,8 @@ bash make.sh
 - 流量 sparkline series 仅在 `route == dashboard` 或菜单栏可见时追加；默认 `trafficRefreshInterval = 2s`
 - **内核下载/检查必须直连**：`KernelManager` 使用 `connectionProxyDictionary = [:]` 的 ephemeral session，禁止经系统代理访问 GitHub
 - **内核切换顺序**：下载解压暂存 → 临时关系统代理 → `stopKernel`（`callStopMihomo` 硬超时）→ 换 bin → 启动 → `waitForKernelReady` → 成功才恢复代理；禁止先停核再下载
-- **系统代理启核**：`ensureRunningAsync(preferRoot: false)`，勿为 mixed-port 强制 root 重启
+- **单一身份内核（v1.1.7）**：Helper 可用时内核**一律以 root 启动**（启动、系统代理、TUN 同一身份）。混用 root/用户态会把数据目录属主撕裂——root 会话留下 `cache.db` / `providers/` / `ruleset/` / `ui/` 归 root（0755），之后用户态内核只能读不能写，导致 `store-selected`、`geo-auto-update`、订阅与规则集刷新**静默失效**
+- **启动身份 ≠ 升级重启**：`ensureRunningAsync(preferRoot:allowRootUpgradeRestart:)` 把两者拆开。**冷启动**可以直接以 root 起（廉价）；**把运行中的用户态内核重启成 root** 很贵（全量重载），只有 TUN/网关传 `true`，系统代理传 `false`（它只需 mixed-port，这正是 v1.1.4 修过的「开关卡死」）
 
 ## Helper / TUN 高风险边界
 
