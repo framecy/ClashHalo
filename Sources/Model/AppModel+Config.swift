@@ -337,9 +337,14 @@ extension AppModel {
         withEngineBusy(on ? "正在开启系统代理…" : "正在关闭系统代理…") {
             if on && !self.reachable {
                 self.showToast("正在启动核心以开启系统代理…")
-                // System proxy only needs a listening mixed-port — do NOT force a
-                // root upgrade restart (that path was multi-second and raced helper XPC).
-                await self.engine.ensureRunningAsync(preferRoot: false)
+                // Start as root when the helper is available so the kernel keeps a
+                // single identity (see the ownership note in AppModel.start), but
+                // never restart an already-running user-mode kernel just to gain
+                // root: the system proxy only needs a listening mixed-port, and
+                // that upgrade-restart is what made this toggle feel dead (v1.1.4).
+                self.engine.isRoot = await XPCManager.shared.verifyConnectivity()
+                await self.engine.ensureRunningAsync(preferRoot: self.engine.isRoot,
+                                                     allowRootUpgradeRestart: false)
                 guard await self.waitForKernelReady(maxAttempts: 8) else {
                     self.showToast("内核启动超时，无法开启系统代理", kind: .error)
                     return
