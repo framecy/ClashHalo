@@ -214,6 +214,29 @@ public class ProxyManager {
         return anyOK
     }
 
+    /// Restore DNS only for services whose resolver is pinned at the mihomo
+    /// fake-ip gateway (198.18.x / 198.19.x). Client-death cleanup uses this
+    /// instead of the blanket `restoreDNS()` so a user's custom DNS — or the
+    /// saved DNS the GUI already restored during a normal quit — is never
+    /// clobbered back to "Empty" when the tunnel redirect wasn't even active.
+    @discardableResult
+    public static func restoreDNSIfTunnelPinned() -> Bool {
+        var anyOK = false
+        for svc in enabledNetworkServices() {
+            guard let out = runOutput(["-getdnsservers", svc]) else { continue }
+            let pinned = out.split(separator: "\n").contains {
+                let t = $0.trimmingCharacters(in: .whitespaces)
+                return t.hasPrefix("198.18.") || t.hasPrefix("198.19.")
+            }
+            guard pinned else { continue }
+            var ok = run(["-setdnsservers", svc, "Empty"])
+            if !ok { ok = run(["-setdnsservers", svc, "223.5.5.5"]) }
+            log("restoreDNSIfTunnelPinned: \(svc) was tunnel-pinned, reset \(ok ? "ok" : "FAILED")")
+            if ok { anyOK = true }
+        }
+        return anyOK
+    }
+
     /// Read the effective system proxy state (no root required). Returns true
     /// when HTTP proxy is enabled and points to 127.0.0.1 — i.e. "our" proxy.
     public static func readCurrentState() -> Bool {
@@ -230,8 +253,12 @@ public class ProxyManager {
     /// — they persist until their controlling socket FD is closed. Bringing them
     /// down + removing addresses neutralizes their Supplemental DNS resolvers
     /// and prevents traffic from routing into a dead tunnel.
+    /// - Parameter downedOnly: When true, only neutralize interfaces whose
+    ///   flags no longer carry UP — i.e. true zombie residue. Client-death
+    ///   cleanup passes true so a *healthy* co-resident VPN tunnel sharing the
+    ///   198.18.x space (e.g. Shadowrocket, still UP) is never torn down.
     @discardableResult
-    public static func cleanupTUNResidual() -> Bool {
+    public static func cleanupTUNResidual(downedOnly: Bool = false) -> Bool {
         // 1. Find utun interfaces with 198.18.x.x addresses (mihomo TUN signature)
         let ifconfigOut = runGeneric("/sbin/ifconfig", ["-a"])
         guard let output = ifconfigOut else {
@@ -241,15 +268,27 @@ public class ProxyManager {
 
         var mihomoUtuns: [(iface: String, addr: String)] = []
         var currentIface: String?
+        var currentIfaceUp = false
         for line in output.split(separator: "\n") {
             let s = String(line)
-            // Interface header line: "utunN: flags=..."
+            // Interface header line: "utunN: flags=8051<UP,POINTOPOINT,...>"
             if !s.hasPrefix("\t") && !s.hasPrefix(" "), s.contains(": flags=") {
                 currentIface = String(s.prefix(while: { $0 != ":" }))
+                // UP flag lives in the <...> segment of the header line.
+                if let lt = s.firstIndex(of: "<"), let gt = s.firstIndex(of: ">"), lt < gt {
+                    let flags = s[s.index(after: lt)..<gt].split(separator: ",")
+                    currentIfaceUp = flags.contains("UP")
+                } else {
+                    currentIfaceUp = false
+                }
             }
             // inet line with 198.18.x.x → this is mihomo's TUN
             if let iface = currentIface, iface.hasPrefix("utun"),
                s.contains("198.18."), s.contains("inet ") {
+                if downedOnly && currentIfaceUp {
+                    log("cleanupTUNResidual: skip \(iface) — still UP (downedOnly)")
+                    continue
+                }
                 // Extract the IP address: "inet 198.18.0.1 --> ..."
                 let parts = s.trimmingCharacters(in: .whitespaces).split(separator: " ")
                 if let idx = parts.firstIndex(of: "inet"), idx + 1 < parts.count {
