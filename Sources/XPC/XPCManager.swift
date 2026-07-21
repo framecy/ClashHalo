@@ -22,6 +22,12 @@ public class XPCManager {
     /// without referencing AppModel directly (decouples helper layer from GUI).
     public var onLog: (@Sendable (String) -> Void)?
 
+    /// Timestamp of the last *successful* verifyConnectivity handshake. A short
+    /// TTL lets multi-step privileged flows (TUN enable = verify → ensureRunning
+    /// → re-verify) skip redundant XPC handshakes without ever caching failure.
+    private var lastVerifiedAt: Date = .distantPast
+    private let verifyCacheTTL: TimeInterval = 2.0
+
     private init() {}
 
     public func helper() -> HelperProtocol? {
@@ -51,6 +57,7 @@ public class XPCManager {
     public func resetConnection() {
         connection?.invalidate()
         connection = nil
+        lastVerifiedAt = .distantPast
     }
     
     /// Whether the helper *plist* **and binary** are installed on disk. NOTE: this
@@ -72,12 +79,21 @@ public class XPCManager {
     /// Performs a low-timeout `getVersion` XPC handshake over a throwaway
     /// connection; returns false on connection error or timeout. A stale/broken
     /// plist (installed but not loaded) therefore correctly reports unavailable.
+    ///
+    /// A success within the last `verifyCacheTTL` seconds short-circuits (after
+    /// the cheap on-disk install check) so a single TUN/Gateway flow doesn't pay
+    /// 2–3 identical handshakes. Failures are never cached, and install /
+    /// upgrade / uninstall / resetConnection all invalidate the cache.
     public func verifyConnectivity(timeout: TimeInterval = 1.5) async -> Bool {
-        guard checkStatus() == .enabled else { return false }
+        guard checkStatus() == .enabled else {
+            lastVerifiedAt = .distantPast
+            return false
+        }
+        if Date().timeIntervalSince(lastVerifiedAt) < verifyCacheTTL { return true }
         let conn = NSXPCConnection(machServiceName: "com.clashhalo.helper", options: .privileged)
         conn.remoteObjectInterface = NSXPCInterface(with: HelperProtocol.self)
         conn.resume()
-        return await withCheckedContinuation { (cont: CheckedContinuation<Bool, Never>) in
+        let ok = await withCheckedContinuation { (cont: CheckedContinuation<Bool, Never>) in
             let box = ResumeBox(cont)
             let finish: (Bool) -> Void = { ok in box.finish(ok); conn.invalidate() }
             guard let proxy = conn.remoteObjectProxyWithErrorHandler({ _ in finish(false) }) as? HelperProtocol else {
@@ -86,6 +102,8 @@ public class XPCManager {
             proxy.getVersion { v in finish(!v.isEmpty) }
             DispatchQueue.global().asyncAfter(deadline: .now() + timeout) { finish(false) }
         }
+        lastVerifiedAt = ok ? Date() : .distantPast
+        return ok
     }
     
     /// Set the macOS system proxy via the helper over a *fresh* connection.
@@ -333,6 +351,7 @@ public class XPCManager {
         if ok {
             connection = nil // Force reconnect
         }
+        lastVerifiedAt = .distantPast   // freshly (re)installed — force a real handshake
         return ok
     }
 
@@ -410,6 +429,7 @@ public class XPCManager {
         if ok {
             connection = nil
         }
+        lastVerifiedAt = .distantPast
         return ok
     }
 }
