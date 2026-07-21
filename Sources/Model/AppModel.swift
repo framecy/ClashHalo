@@ -109,6 +109,19 @@ import ServiceManagement
     /// happens once that teardown lands and refreshConfigs reconciles `tunOn`.
     /// Internal (not `private`) so the `AppModel+Config` extension can access it.
     var tunAutoTeardownInFlight = false
+    /// Settle window after a successful TUN enable. Bringing TUN up fires a
+    /// storm of NWPathMonitor updates (utun creation, auto-route injection,
+    /// system-DNS switch) whose concurrent refreshConfigs runs can transiently
+    /// see one of the four tunOn criteria false and flip the switch off — the
+    /// signals recover seconds later but the OFF cascade (route cleanup + DNS
+    /// restore) has already run. Within this window refreshConfigs must not
+    /// derive tunOn to false; turning ON and every *explicit* teardown path
+    /// (user toggle off, stopEngine, kernel-unreachable reconnect) are exempt.
+    var tunStateSettleUntil: Date = .distantPast
+    /// Coalesces concurrent refreshConfigs callers onto one in-flight run
+    /// (see refreshConfigs) — the path-update storm used to stack 3+ parallel
+    /// runs that raced the static-route inject/cleanup XPC calls.
+    var refreshConfigsTask: Task<Void, Never>?
     /// User intent for 网关中枢. Persisted so a restart restores a deliberate ON,
     /// but never auto-flips from residual config (see refreshConfigs).
     /// Kept as `@Published` (not `@AppStorage`) so EnvironmentObject views
@@ -215,7 +228,9 @@ import ServiceManagement
     /// PATCH `/configs` returns before utun is fully up; refreshing too early
     /// reports tunOn=false and flashes a false "开启失败" toast.
     func waitForTUNInterface(maxAttempts: Int = 10) async -> Bool {
-        if await NetScanner.mihomoTunInterface() != nil { return true }
+        // maxAge 0: bypass the interface cache — a cached negative taken just
+        // before the utun appeared would otherwise stall every poll ~1.5s.
+        if await NetScanner.mihomoTunInterface(maxAge: 0) != nil { return true }
         let delays: [UInt64] = [
             50_000_000, 100_000_000, 150_000_000, 200_000_000,
             300_000_000, 400_000_000, 500_000_000, 700_000_000,
@@ -223,7 +238,7 @@ import ServiceManagement
         ]
         for i in 0..<min(maxAttempts, delays.count) {
             try? await Task.sleep(nanoseconds: delays[i])
-            if await NetScanner.mihomoTunInterface() != nil { return true }
+            if await NetScanner.mihomoTunInterface(maxAge: 0) != nil { return true }
         }
         return false
     }
@@ -300,6 +315,14 @@ import ServiceManagement
         // Purely observation-based: Is the official mihomo REST API responding?
         let wasReachable = self.reachable
         await api.probe()
+        if !api.reachable && wasReachable {
+            // Was reachable a moment ago — a single failed probe during a network
+            // path churn (TUN bring-up, interface switch) must not cascade into
+            // the unreachable teardown (tunOn off + DNS restore + proxy off).
+            // Confirm with a short-delay second probe before declaring it dead.
+            try? await Task.sleep(nanoseconds: 300_000_000)
+            await api.probe()
+        }
         reachable = api.reachable
         version = api.version
         
@@ -341,11 +364,19 @@ import ServiceManagement
             reconnectTask = Task { [weak self] in
                 try? await Task.sleep(nanoseconds: 3_000_000_000)
                 guard !Task.isCancelled else { return }
+                // Hand off the pending slot before firing: the success-path
+                // cancel must only ever hit a still-sleeping retry, never the
+                // recovery reconnect this task is about to run.
+                self?.reconnectTask = nil
                 await self?.reconnect()
             }
             return
         }
-        reconnectTask = nil   // connected — no retry pending
+        // Connected — cancel any pending retry from an earlier failure so a
+        // stale sleeping task can't fire a surprise reconnect (with its
+        // stopStreams + probe) seconds after we already recovered.
+        reconnectTask?.cancel()
+        reconnectTask = nil
 
         syncSystemProxyState()   // re-sync after reconnect in case proxy was toggled externally
         await refreshProxies()
@@ -870,7 +901,8 @@ import ServiceManagement
             // cannot await its body, so the in-flight guard would clear before
             // the teardown actually finishes. Manual isBusy + defer guarantees
             // the guard clears only after applyTUNState(false) truly completes.
-            guard !engine.isBusy, !tunAutoTeardownInFlight else { return }
+            guard !engine.isBusy, !tunAutoTeardownInFlight,
+                  Date() >= tunStateSettleUntil else { return }
             tunAutoTeardownInFlight = true
             engine.isBusy = true
             defer {
