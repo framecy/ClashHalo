@@ -218,18 +218,25 @@ struct SdwanPage: View {
                         if hasConflicts {
                             Button("一键修复") {
                                 Task {
-                                    let sdwanPrefixes = await NetScanner.sdwanExcludePrefixes()
-                                    let tunDict = M.configs["tun"] as? [String: Any]
-                                    let existing: [String] = tunDict?["route-exclude-address"] as? [String] ?? []
-                                    var combined: [String] = existing
-                                    combined.append(contentsOf: sdwanPrefixes)
-                                    let merged: [String] = Array(Set(combined)).sorted()
-                                    var fix: [String: Any] = ["route-exclude-address": merged]
+                                    // Same planner the automatic path uses.
+                                    let plan = Coexistence.plan(await Coexistence.detect())
+                                    // A tun PATCH must restate the whole block:
+                                    // `PATCH /configs` replaces nested objects, so
+                                    // sending route-exclude-address alone comes back
+                                    // with enable=false and tears TUN down.
+                                    var fix = M.tunPatchBody(enable: M.tunOn)
+                                    if let excludes = M.coexistenceRouteBody(plan) {
+                                        fix["route-exclude-address"] = excludes
+                                    }
                                     if hasDefaultViaTun {
                                         fix["auto-route"] = false
                                         fix["auto-detect-interface"] = false
                                     }
                                     await M.patch(["tun": fix])
+                                    Coexistence.commitProvenance(
+                                        field: "route-exclude-address",
+                                        injected: plan.routeExcludes
+                                    )
                                     try? await Task.sleep(nanoseconds: 800_000_000)
                                     rescan()
                                 }

@@ -147,6 +147,12 @@ import ServiceManagement
     /// derive tunOn to false; turning ON and every *explicit* teardown path
     /// (user toggle off, stopEngine, kernel-unreachable reconnect) are exempt.
     var tunStateSettleUntil: Date = .distantPast
+    /// Digest of the coexistence plan last pushed to the kernel. Lets the
+    /// reconciler skip a PATCH when the peer-tunnel topology has not moved —
+    /// mihomo ACKs a PATCH before deciding it can apply it, so unnecessary
+    /// pushes are a way to lose a real change, not just wasted work.
+    /// Internal so the `AppModel+Config` extension can access it.
+    var lastCoexistenceFingerprint = ""
     /// Coalesces concurrent refreshConfigs callers onto one in-flight run
     /// (see refreshConfigs) — the path-update storm used to stack 3+ parallel
     /// runs that raced the static-route inject/cleanup XPC calls.
@@ -214,7 +220,8 @@ import ServiceManagement
     private var networkOnline = true
     /// True while the system is sleeping — gates background activity so
     /// wake-up callbacks don't race with half-restored subsystems.
-    private var sleeping = false
+    /// Internal (not `private`) so the `AppModel+Config` extension can gate on it.
+    var sleeping = false
     /// Saved state before sleep: used to restore after wake
     private var preSleepTunOn = false
     private var preSleepSystemProxyOn = false
@@ -332,7 +339,7 @@ import ServiceManagement
         applyActivationPolicy()        // Dock icon visibility per saved preference
         refreshLaunchAtLogin()         // sync the launch-at-login mirror
         mark("prelude")
-        engine.ensureInstalled()
+        let replacedSecret = engine.ensureInstalled()
         mark("ensureInstalled")
         api.applyController(fromConfigAt: engine.configFilePath)   // B1: discover endpoint before probing
         store.load()
@@ -350,6 +357,30 @@ import ServiceManagement
         // queueing behind privileged housekeeping. None of that is a precondition
         // for a *user-mode* start, so it now runs concurrently.
         let kernelBoot = Task { @MainActor in
+            // hardenControllerConfig() (inside ensureInstalled above) may have just
+            // swapped a secret it judged weak — but a kernel from a previous session
+            // (crash / force-quit / a root TUN kernel outliving a plain user-mode
+            // quit) can still be alive and authenticating with the value we just
+            // overwrote on disk. mihomo binds its control-plane secret once at
+            // process start — a config reload never reaches that live listener —
+            // so probe with the OLD secret to tell "kernel dead" from "kernel alive
+            // but now on a secret nobody else knows", and restart it if so.
+            // Otherwise file/kernel/client end up permanently split on which secret
+            // is correct, and every probe below reads as "kernel dead" (a secret
+            // mismatch and a dead kernel both surface as the same request failure)
+            // even though it's still running.
+            if let oldSecret = replacedSecret, !oldSecret.isEmpty {
+                let newSecret = api.secret
+                api.secret = oldSecret
+                await api.probe(timeout: 0.25)
+                let staleKernelAlive = api.reachable
+                api.secret = newSecret
+                if staleKernelAlive {
+                    await engine.restart(preferRoot: engine.isRoot)
+                    _ = await waitForKernelReady(maxAttempts: 8)
+                }
+            }
+
             // Probe first and branch on the result. Both branches below depend on
             // "is a kernel already alive?", so this must NOT be read concurrently:
             // a residual-cleanup task racing ahead of the probe would see the
@@ -843,6 +874,12 @@ import ServiceManagement
                             engine.isBusy = true
                             defer { engine.isBusy = false }
                             await applyTUNState(true)
+                        } else {
+                            // No NIC change, but a peer tunnel may have connected,
+                            // disconnected, or had its accepted subnets change —
+                            // none of which moves the default route. Cheap because
+                            // it PATCHes only when the plan fingerprint moves.
+                            await reconcileCoexistenceIfChanged()
                         }
                     }
 
