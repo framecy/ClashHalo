@@ -292,7 +292,7 @@ extension AppModel {
         // Align static routes for excluded prefixes in sync with the real TUN state.
         // Fresh XPC (not cached helper()) — same silent-drop issue as start/sysproxy.
         if tunOn && !staticRoutesInjected {
-            let excludeRoutes = await NetScanner.sdwanExcludeRoutes()
+            let excludeRoutes = Coexistence.excludeRouteMap(await Coexistence.detect())
             if !excludeRoutes.isEmpty {
                 let ok = await XPCManager.shared.callSetupExcludeRoutes(excludeRoutes)
                 logKernel("XPC Helper 注入静态路由: \(ok == true ? "成功" : "失败")")
@@ -598,6 +598,80 @@ extension AppModel {
         }
     }
 
+    // MARK: - TUN coexistence with other tunnels
+
+    /// A complete `tun` PATCH body carrying `enable` and the shape fields.
+    ///
+    /// `PATCH /configs` **replaces** each nested object rather than deep-merging
+    /// it: sending `tun: {route-exclude-address: [...]}` alone comes back with
+    /// `enable: false` and an empty `device`, i.e. it silently tears TUN down.
+    /// Every tun PATCH must therefore restate the full runtime shape.
+    func tunPatchBody(enable: Bool, extra: [String: Any] = [:]) -> [String: Any] {
+        var body: [String: Any] = [
+            "enable": enable,
+            "stack": (configs["tun"] as? [String: Any])?["stack"] ?? "gvisor",
+            "auto-route": true,
+            "auto-detect-interface": true
+        ]
+        for (k, v) in extra { body[k] = v }
+        return body
+    }
+
+    /// Fold the route half of a coexistence plan into a pending tun PATCH body.
+    ///
+    /// Route exclusion only. The DNS half (`fake-ip-filter` / `nameserver-policy`)
+    /// is deliberately *not* handled here: mihomo accepts a runtime DNS PATCH with
+    /// 204 and then ignores it entirely — verified against a live kernel — and
+    /// `GET /configs` returns an empty `dns` object, so there is no safe basis for
+    /// a merge either. DNS coexistence has to go through config.yaml + reload,
+    /// which is a heavier and more disruptive operation than this path should
+    /// ever trigger implicitly. See `coexistenceDNSAdvice`.
+    ///
+    /// Provenance is *not* recorded here — the caller records it only after the
+    /// kernel has accepted the change, so a dropped PATCH cannot leave us
+    /// believing we applied something we did not.
+    func coexistenceRouteBody(_ plan: CoexistencePlan) -> [String]? {
+        guard !plan.routeExcludes.isEmpty else { return nil }
+        let existing = (configs["tun"] as? [String: Any])?["route-exclude-address"] as? [String] ?? []
+        return Coexistence.mergePreservingUserEntries(
+            field: "route-exclude-address",
+            desired: plan.routeExcludes,
+            in: existing
+        )
+    }
+
+    /// Re-apply route coexistence when the set of peer tunnels changes *while TUN
+    /// is already up* — a VPN connecting after TUN, a new subnet route being
+    /// accepted, or a peer disconnecting. Injection used to happen only at the
+    /// moment TUN was enabled, so any of those left the exclusions stale until
+    /// the user toggled TUN by hand.
+    ///
+    /// Gated on the plan fingerprint: mihomo ACKs a PATCH before deciding whether
+    /// it can apply it, so pushing an unchanged plan on every poll risks a real
+    /// change being lost in the churn.
+    func reconcileCoexistenceIfChanged() async {
+        guard tunOn, reachable, !engine.isBusy, !sleeping else { return }
+        guard Date() >= tunStateSettleUntil else { return }
+        let plan = Coexistence.plan(await Coexistence.detect())
+        let fp = Coexistence.fingerprint(plan)
+        guard fp != lastCoexistenceFingerprint else { return }
+        guard let excludes = coexistenceRouteBody(plan) else { return }
+
+        logKernel("TUN 共存：检测到网络拓扑变化，正在同步排除规则…")
+        let ok = await engine.patchConfig([
+            "tun": tunPatchBody(enable: true, extra: ["route-exclude-address": excludes])
+        ])
+        // Only now is the change real. Recording provenance/fingerprint on a
+        // failed PATCH would both skip the retry and mis-attribute the entries
+        // as ours on the next withdrawal pass.
+        guard ok else {
+            logKernel("TUN 共存：同步失败，保留原有排除规则")
+            return
+        }
+        Coexistence.commitProvenance(field: "route-exclude-address", injected: plan.routeExcludes)
+        lastCoexistenceFingerprint = fp
+    }
+
     /// Re-establish the user's TUN state after a kernel (re)start (restart button /
     /// kernel version switch / reinstall). A restart re-reads config.yaml where
     /// `tun.enable` is always false — TUN is a runtime-only PATCH that never
@@ -614,7 +688,12 @@ extension AppModel {
     /// already-root kernel) + runtime PATCH of `tun.enable`/interface pin, then
     /// reconcile `tunOn` from the kernel's *actual* state. The shared body behind
     /// `toggleTUN` and `reapplyTUN`. Caller owns `engine.isBusy`.
-    func applyTUNState(_ want: Bool) async {
+    ///
+    /// - Parameter allowRestartFallback: when the PATCH path fails to produce a
+    ///   utun, retry once via the persist-flag + restart path (see the failure
+    ///   branch). Recursive retries pass false so a genuinely broken TUN cannot
+    ///   loop restarts.
+    func applyTUNState(_ want: Bool, allowRestartFallback: Bool = true) async {
         // Explicit disable is user/system intent — lift the bring-up settle
         // window so the OFF derivation is never blocked.
         if !want { tunStateSettleUntil = .distantPast }
@@ -646,25 +725,36 @@ extension AppModel {
             await reconnect()
         }
 
-        var tunOverrideMap: [String: Any] = [
-            "enable": want,
-            "stack": (configs["tun"] as? [String:Any])?["stack"] ?? "gvisor",
-            "auto-route": true,
-            "auto-detect-interface": true
-        ]
+        var tunOverrideMap = tunPatchBody(enable: want)
 
-        // When enabling TUN, detect active SD-WAN interfaces (Tailscale, ZeroTier, etc.)
-        // and merge their CIDR prefixes into route-exclude-address so TUN auto-route
-        // does not shadow/hijack those routes (e.g. Tailscale 100.64.0.0/10).
+        // Carve out routing room for every other tunnel on the machine before TUN
+        // takes over. (The DNS half cannot ride along here — mihomo ignores a
+        // runtime DNS PATCH; see `coexistenceRouteBody`.)
+        var pendingRouteProvenance: [String]?
         if want {
-            let sdwanPrefixes = await NetScanner.sdwanExcludePrefixes()
-            if !sdwanPrefixes.isEmpty {
-                // Merge with any existing user-defined excludes from config
-                let existing = (configs["tun"] as? [String: Any])?["route-exclude-address"] as? [String] ?? []
-                let merged = Array(Set(existing + sdwanPrefixes)).sorted()
-                tunOverrideMap["route-exclude-address"] = merged
-                logKernel("TUN 路由排除：自动注入网络拓扑前缀 \(sdwanPrefixes.joined(separator: ", "))")
+            let plan = Coexistence.plan(await Coexistence.detect())
+            if let excludes = coexistenceRouteBody(plan) {
+                tunOverrideMap["route-exclude-address"] = excludes
+                pendingRouteProvenance = plan.routeExcludes
+                logKernel("TUN 共存：排除 \(plan.routeExcludes.count) 个网段（\(plan.peerSummary)）")
             }
+            // Reported, not applied — mihomo ignores a runtime DNS PATCH, and the
+            // only working channel (rewrite config.yaml + reload) is too
+            // destructive to run behind the user's back. See `dnsAdvice`.
+            for line in plan.dnsAdvice {
+                logKernel("TUN 共存（需手动配置）：\(line)")
+            }
+            lastCoexistenceFingerprint = Coexistence.fingerprint(plan)
+        } else {
+            // Strip what we injected so a peer's prefixes do not outlive the TUN
+            // session that needed them. Withdrawal must remove the entries, not
+            // merely forget them — forgetting promotes them to user-owned and
+            // they would then survive forever.
+            let existing = (configs["tun"] as? [String: Any])?["route-exclude-address"] as? [String] ?? []
+            let kept = Coexistence.withdraw(field: "route-exclude-address", from: existing)
+            if kept.count != existing.count { tunOverrideMap["route-exclude-address"] = kept }
+            pendingRouteProvenance = []
+            lastCoexistenceFingerprint = ""
         }
 
         var overrides: [String: Any] = ["tun": tunOverrideMap]
@@ -764,6 +854,12 @@ extension AppModel {
             ok = await confirmTunFlagApplied(want: want, overrides: overrides)
         }
         if ok {
+            // The kernel took the payload — only now may we claim the coexistence
+            // entries as ours. Recording earlier would mis-attribute them on the
+            // next withdrawal pass if the PATCH had been dropped.
+            if let injected = pendingRouteProvenance {
+                Coexistence.commitProvenance(field: "route-exclude-address", injected: injected)
+            }
             // Arm the settle window immediately — the path-update storm begins
             // the moment the kernel creates the utun, i.e. right at this PATCH.
             if want { tunStateSettleUntil = Date().addingTimeInterval(10) }
@@ -807,6 +903,55 @@ extension AppModel {
                 }
             }
             if want && !tunOn {
+                // The kernel returned 200 and even read `enable: true` back, yet no
+                // utun exists. That is the documented silent-drop above: mihomo ACKs
+                // `PATCH /configs` before deciding whether it can apply the change,
+                // so a PATCH landing on a still-settling kernel updates the reported
+                // value while the TUN subsystem never starts. The pre-restart persist
+                // is the known-reliable answer, but it only runs on the
+                // `!runningAsRoot` branch — an already-root kernel that happens to
+                // have restarted moments ago (health check, profile switch, crash
+                // respawn) takes the plain PATCH path and loses the same race. That
+                // is the "第一次点击失败、第二次才成功" the comment predicts.
+                //
+                // Rather than surface a failure the user fixes by clicking again,
+                // run that reliable path once: persist the flag and restart so TUN
+                // comes up during kernel init, then re-derive from reality.
+                if allowRestartFallback {
+                    logKernel("TUN 首次 PATCH 未生成 utun，回退到持久化+重启路径重试…")
+                    showToast("正在重启核心以启用 TUN…")
+                    engine.setTunEnabled(true)
+                    await engine.restart()
+                    if await waitForKernelReady(maxAttempts: 18) {
+                        await reconnect()
+                        if !engine.runningAsRoot { await engine.syncRunningAsRootIfNeeded() }
+                        _ = await waitForTUNInterface()
+                        NetScanner.invalidateTunCache()
+                        await refreshConfigs()
+                    } else {
+                        logKernel("TUN 回退重试：内核就绪等待超时")
+                    }
+                    if !tunOn {
+                        // Still no utun after a clean init — genuinely cannot start
+                        // (no privilege, or another VPN owns the routes). Tear the
+                        // kernel back down so it cannot keep TUN half-up, and undo
+                        // the persist above so the next plain start does not retry
+                        // TUN outside this flow.
+                        await applyTUNState(false, allowRestartFallback: false)
+                        engine.setTunEnabled(false)
+                        showToast("TUN 开启失败：可能无管理员权限或路由被其他 VPN 占用冲突", kind: .error)
+                        logKernel("TUN 开启失败（含重启重试）：runningAsRoot=\(engine.runningAsRoot) reachable=\(reachable) hasIface=\(await NetScanner.mihomoTunInterface(maxAge: 0) != nil)")
+                    }
+                    return
+                }
+                // Roll the *running* kernel back too, not just the file: without
+                // this the kernel keeps TUN enabled while the file and the switch
+                // both say off, so traffic still goes through a tunnel the UI
+                // claims is disabled and no reconcile path ever closes the gap
+                // (refreshConfigs derives tunOn from `enable && root && iface`,
+                // which stays false precisely because the iface is missing).
+                // Full block, not just `enable`: PATCH replaces nested objects.
+                _ = await engine.patchConfig(["tun": tunPatchBody(enable: false)])
                 // The pre-restart persist above wrote `tun.enable: true`; undo it
                 // so a later plain start cannot bring TUN up outside this flow.
                 engine.setTunEnabled(false)
@@ -1000,15 +1145,28 @@ extension AppModel {
         guard reachable else { showToast("内核未连接，无法修改配置", kind: .error); return }
         engine.setTopLevelScalars(overrides)
         engine.setTunEnabled(tunOn)
+
+        // The control-plane secret and listen address are bound once when the
+        // REST server starts. A config reload re-applies proxies/rules/DNS to
+        // the already-running process but never touches its listener/auth, so
+        // a changed secret here would silently never take effect — the kernel
+        // keeps answering to the old one until the process itself restarts.
+        if overrides.keys.contains("external-controller") || overrides.keys.contains("secret") {
+            await engine.restart(preferRoot: engine.isRoot)
+            _ = await waitForKernelReady(maxAttempts: 8)
+            await reconnect()
+            await refreshConfigs()
+            noteConfigContentChanged()
+            if reachable {
+                showToast("配置已更新", kind: .ok)
+            } else {
+                showToast("内核重启后未响应，请检查配置", kind: .error)
+            }
+            return
+        }
+
         do {
             try await api.reloadConfig(path: engine.configFilePath)
-
-            if overrides.keys.contains("external-controller") || overrides.keys.contains("secret") {
-                // Wait briefly for the kernel to bind the new port before probing
-                try? await Task.sleep(nanoseconds: 500_000_000)
-                await reconnect()
-            }
-
             await refreshConfigs()
             noteConfigContentChanged()
             showToast("配置已更新", kind: .ok)
