@@ -106,7 +106,11 @@ import SwiftUI
     }
 
     /// Ensure the mihomo binary and configuration directory are set up.
-    func ensureInstalled() {
+    ///
+    /// Returns the secret `hardenControllerConfig()` just replaced, if any —
+    /// see that function's doc for why the caller needs it.
+    @discardableResult
+    func ensureInstalled() -> String? {
         let fm = FileManager.default
         migrateLegacyAppSupportIfNeeded()
         try? fm.createDirectory(atPath: appSupport, withIntermediateDirectories: true)
@@ -164,12 +168,14 @@ import SwiftUI
         // launch. They are all idempotent and almost always no-ops after the
         // first run, so skip the work entirely when the file is already
         // normalized: one read decides it, instead of four read+write passes.
+        var replacedSecret: String?
         if configNeedsNormalizing() {
-            hardenControllerConfig()
+            replacedSecret = hardenControllerConfig()
             normalizeGeoxURL()
             forceTUNDisabled()   // TUN is runtime-only (root) — never auto-enable from disk
             injectMemoryOptimization()
         }
+        return replacedSecret
     }
 
     /// Cheap single-read precondition for the launch-time config normalizers.
@@ -183,7 +189,7 @@ import SwiftUI
         if text.contains("geodata.kelee.one") { return true }
         if !text.contains("geodata-mode") { return true }
 
-        var hasController = false, hasStrongSecret = false, tunDisabled = false
+        var hasController = false, hasOwnSecret = false, tunDisabled = false
         var inTun = false, dnsHasSize = false, dnsHasCacheAlg = false, inDns = false
         for raw in text.split(separator: "\n", omittingEmptySubsequences: false) {
             let line = String(raw)
@@ -197,7 +203,10 @@ import SwiftUI
                     let v = line.dropFirst("secret:".count)
                         .trimmingCharacters(in: .whitespaces)
                         .trimmingCharacters(in: CharacterSet(charactersIn: "\"'"))
-                    hasStrongSecret = !Self.isWeakSecret(v)
+                    // Must mirror hardenControllerConfig's replace condition, or a
+                    // secret it would leave alone still reports "needs normalizing"
+                    // and re-runs the whole read/rewrite pass on every launch.
+                    hasOwnSecret = !Self.isReplaceableSecret(v)
                 }
                 continue
             }
@@ -206,7 +215,7 @@ import SwiftUI
             if inDns, t.hasPrefix("size:") { dnsHasSize = true }
             if inDns, t.hasPrefix("cache-algorithm:") { dnsHasCacheAlg = true }
         }
-        return !(hasController && hasStrongSecret && tunDisabled && dnsHasSize && dnsHasCacheAlg)
+        return !(hasController && hasOwnSecret && tunDisabled && dnsHasSize && dnsHasCacheAlg)
     }
 
     private func migrateLegacyAppSupportIfNeeded() {
@@ -691,11 +700,21 @@ import SwiftUI
     /// Force the kernel's REST control plane to bind loopback only, and replace a
     /// missing/known-weak secret with a strong random one — editing only the
     /// `external-controller`/`secret` scalar lines, never proxy/rule data (B6).
-    func hardenControllerConfig() {
+    ///
+    /// Returns the previous value when an existing *non-empty* secret was
+    /// replaced (as opposed to one being newly added where none existed).
+    /// Callers use this to push the rewritten file to a kernel that may
+    /// already be running under the old secret (crash / force-quit / a root
+    /// TUN kernel outliving a plain user-mode quit) — rewriting the file
+    /// alone never reaches that live process, so the app and kernel would
+    /// otherwise permanently disagree on which secret is correct.
+    @discardableResult
+    func hardenControllerConfig() -> String? {
         let path = configFilePath
-        guard let text = try? String(contentsOfFile: path, encoding: .utf8) else { return }
+        guard let text = try? String(contentsOfFile: path, encoding: .utf8) else { return nil }
         var lines = text.components(separatedBy: "\n")
         var hasController = false, hasSecret = false, changed = false
+        var replacedSecret: String?
 
         func scalar(_ line: String, _ key: String) -> String? {
             guard !line.hasPrefix(" "), !line.hasPrefix("\t"), line.hasPrefix(key) else { return nil }
@@ -714,16 +733,22 @@ import SwiftUI
                 if ec != want { lines[i] = "external-controller: \(want)"; changed = true }
             } else if let sec = scalar(lines[i], "secret") {
                 hasSecret = true
-                if Self.isWeakSecret(sec) { lines[i] = "secret: \(Self.randomSecret())"; changed = true }
+                if Self.isReplaceableSecret(sec) {
+                    lines[i] = "secret: \(Self.randomSecret())"; changed = true
+                    if !sec.isEmpty { replacedSecret = sec }
+                } else if Self.isWeakSecret(sec) {
+                    onLog?("控制面密钥强度较低，建议在「网络 → 内核 → API 控制」中更换（不会自动替换）")
+                }
             }
         }
-        
+
         if !hasController { lines.insert("external-controller: 127.0.0.1:9090", at: 0); changed = true }
         if !hasSecret { lines.insert("secret: \(Self.randomSecret())", at: 0); changed = true }
 
         if changed {
             try? lines.joined(separator: "\n").write(toFile: path, atomically: true, encoding: .utf8)
         }
+        return replacedSecret
     }
 
     /// Inject Kernel Memory Optimization: mmap for geodata & LRU Cache for DNS
@@ -788,14 +813,32 @@ import SwiftUI
         }
     }
 
-    /// Whether a control-plane secret is too weak to keep.
+    /// Whether a control-plane secret is one *we* put there and may therefore
+    /// replace on the user's behalf.
     ///
-    /// The controller binds loopback, so the threat model is *any local process*
-    /// — a weak secret lets anything on the machine drive the kernel (switch
-    /// nodes, rewrite config, read every connection). This used to be a fixed
-    /// blocklist of six strings, which let obvious keyboard-walk secrets such as
-    /// `1234qwer` through. Judge the shape instead: too short, single character
-    /// class, or a known keyboard/common pattern.
+    /// The controller binds loopback, so the threat model is any local process:
+    /// a secret that ships as a known constant lets anything on the machine
+    /// drive the kernel (switch nodes, rewrite config, read every connection).
+    /// That is worth fixing automatically — nobody chose `clashhalo`, it is just
+    /// what the initial config template writes.
+    ///
+    /// What is NOT worth fixing automatically is a secret the user deliberately
+    /// configured. A shape-based "too short / too few character classes" rule
+    /// ran on every launch and silently rewrote such secrets, so any external
+    /// client that had stored one (Zashboard, a bookmark, another dashboard)
+    /// broke after every single app restart with no indication why. Judging the
+    /// user's own choice is not this function's job; only the placeholder is.
+    static func isReplaceableSecret(_ s: String) -> Bool {
+        let v = s.trimmingCharacters(in: .whitespaces)
+        if v.isEmpty { return true }
+        // Exact matches only — a substring rule would catch user secrets that
+        // merely happen to contain one of these words.
+        let shipped = ["clashhalo", "clash", "meta", "mihomo", "123456", "password", "admin"]
+        return shipped.contains(v.lowercased())
+    }
+
+    /// Advisory-only shape check: reported in the log so a user who picked a
+    /// guessable secret finds out, without the app overriding their choice.
     static func isWeakSecret(_ s: String) -> Bool {
         let v = s.trimmingCharacters(in: .whitespaces)
         if v.count < 16 { return true }
