@@ -2,7 +2,7 @@
 
 本文件给后续 AI 编码代理使用。进入本仓库后，先读本文件，再按需读 `README.md`、`CHANGELOG.md` 和相关源码。
 
-当前主干：`main`，产品版本 **v1.1.7**（`MARKETING_VERSION`），Helper **1.0.22**（`kSharedHelperVersion`：客户端死亡 kqueue 监视、现实兜底退出清理、每 pid 一次 + 新会话接管；相对 1.0.21 及更早需强制升级）。打包时 `make.sh` 自增 `CURRENT_PROJECT_VERSION`。
+当前主干：`main`，产品版本 **v1.1.8**（`MARKETING_VERSION`），Helper **1.0.22**（`kSharedHelperVersion`：客户端死亡 kqueue 监视、现实兜底退出清理、每 pid 一次 + 新会话接管；相对 1.0.21 及更早需强制升级）。打包时 `make.sh` 自增 `CURRENT_PROJECT_VERSION`。
 
 ## 项目概览
 
@@ -25,6 +25,7 @@
   - `AppModel+Config.swift`：配置切换、`refreshConfigs`、系统代理/TUN/网关切换、`withEngineBusy`；**网关开关不从 config 推断**
   - `AppModel+Proxies.swift` / `AppModel+Connections.swift`：代理与连接；`updateGatewayDevices` 聚合 LAN 客户端
   - `Models.swift`：`NetScanner`（含 `mihomoTunInterface` / `hasDownedMihomoTun`）
+  - `Coexistence.swift`：utun 共存。分层取证检测 VPN 对端（守护进程 + IP 段，未知厂商退化为通用 peer）、`route-exclude-address` 归属追踪（自动条目可撤回，用户手写条目不动）、指纹门控。**`PATCH /configs` 对嵌套对象是整块替换不是深合并**，改 `tun` 任何字段都必须走 `tunPatchBody()` 重述完整块，否则 `enable` 会被打回 false；DNS 层无法安全 PATCH，只经 `dnsAdvice` 写日志
   - `ConfigStore.swift`：订阅 manifest；URL 存 Keychain
 - `Sources/XPC/`：
   - `HelperProtocol.swift`：XPC 协议 + 共享常量 `kSharedHelperVersion` / `kProxyBypassDomains`

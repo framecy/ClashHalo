@@ -2,6 +2,27 @@
 
 本项目所有重要变更记录于此。格式参考 [Keep a Changelog](https://keepachangelog.com/),版本遵循语义化版本。
 
+## [1.1.8] - 2026-07-22
+
+修复控制面密钥每次启动被自动替换（外部面板反复要求登录的根因），并重构 utun 共存能力，修复局部 `PATCH` 会把 TUN 关掉。Helper 仍为 **1.0.22**，升级本版**不需要再次输入管理员密码**。
+
+### Fixed
+- **控制面密钥每次启动被自动替换**：v1.1.7 引入的 `isWeakSecret()` 按「长度 <16 / 字符类别 <3」整形判弱，而 `hardenControllerConfig` 每次 App 启动都据此重写 `secret`。后果是你在「网络 → 内核 → API 控制」里设的密钥每次重启都被换成新随机值，Zashboard 等外部面板保存的凭据随之失效，表现为**每次开 App 都提示未授权、要重新登录**。
+  
+  现改为区分两件事：`isReplaceableSecret` 只认空值与出厂占位常量（`clashhalo` / `mihomo` / `admin` 等，且必须完全匹配）——出厂常量人人可知，是真实攻击面；`isWeakSecret` 降级为纯提示，只写日志不再覆盖用户的选择。`configNeedsNormalizing` 同步改用同一判据，否则它会认为仍需规范化，每次启动重跑一遍整份配置的读写。
+- **改密钥后不重启内核则不生效**：mihomo 的控制面密钥是进程启动时一次性绑定的，config reload 不会重新绑定，此前在设置里改密钥是个空操作。`hardenControllerConfig` / `ensureInstalled` 现返回被替换掉的旧密钥，供调用方在替换后把新配置推给可能仍存活的旧内核（崩溃 / 强退 / root TUN 跨会话存活），避免文件、内核、客户端三方对密钥各执一词。
+- **局部 PATCH 会关闭 TUN**：mihomo 的 `PATCH /configs` 对嵌套对象是**整块替换而非深合并**——只发 `tun:{route-exclude-address:[...]}` 会让 `enable` 变回 false、`device` 清空，即每次共存同步都把 TUN 关掉。新增 `tunPatchBody()` 强制重述完整 `tun` 块，共存同步、SD-WAN 页「一键修复」、TUN 回滚三条路径统一修正。
+- **TUN 开启失败后的分裂状态**：内核已接受 `enable=true` 但 utun 未在等待窗口内出现时，此前只改配置文件、不回滚运行中的内核，导致内核仍在跑 TUN 而开关显示关闭，流量被导进不存在的隧道 → 一堆 utun 连接且断网。现在会先自动重试一次「持久化 + 重启」这条已知可靠路径（这正是「第一次点击失败、第二次才成功」的成因），仍失败才完整回滚。
+- **无关隧道被误判为 Tailscale**：移除 `sdwanExcludeRoutes` 中「只要存在任意 utun 就断言 `100.64.0.0/10`」的兜底，它会把真实运营商 CGNAT 流量踢出代理。
+
+### Changed
+- **重构 utun 共存（新增 `Sources/Model/Coexistence.swift`）**：原实现只在「开启 TUN 的那一刻」把 SD-WAN 前缀并进 `route-exclude-address`，且只增不删、无归属标记；VPN 在 TUN 之后连接、对端新增子网或断开，排除规则都不会更新，断开的前缀永久残留且无法与用户手写条目区分。现在：
+  - **分层取证检测**：已知守护进程在跑 + IP 段匹配才认厂商；否则退化为通用 peer，仍从路由表收全前缀——WireGuard、企业 VPN 等不在注册表里也能获得完整路由排除。
+  - **归属追踪**：记录上次注入集合，merge 时算出用户手写条目并保留，撤回时精确移除自动条目。`commitProvenance` 只在内核确认接受后调用，PATCH 失败不推进记录，重试仍然有效。
+  - **指纹门控**：拓扑未变则完全不发 PATCH。
+- **DNS 层只提示不自动改**：经实测确认无法安全自动处理——`PATCH /configs` 对 `dns` 返回 204 但完全不生效，`GET /configs` 又不暴露 `dns`，既写不进也无法安全合并；唯一可行的「改文件 + reload」会重启解析并断开连接，不应隐式触发，更不该静默改写用户自己选择的解析器。因此需要的改动只经 `dnsAdvice` 写进日志，由用户决定是否采纳。
+  > Tailscale 主机名解析失败需手动改三处：`fake-ip-filter` 用 `"+.ts.net"`（原 `"*.ts.net"` 只匹配一级标签，对 `<host>.<tailnet>.ts.net` 从不生效）；`nameserver-policy` 下 `"+.ts.net"` 指向 `100.100.100.100#utun0`（必须是 MagicDNS 而非公共 DNS，`#utun0` 不可省，否则查询走物理网卡超时，接口名以本机 `ifconfig` 中带 `100.x` 地址的 utun 为准）。
+
 ## [1.1.7] - 2026-07-22
 
 单一身份内核：消除 root/用户态混跑导致的数据目录属主撕裂（订阅、节点选择、geo 更新静默失效的根因）。Helper 仍为 **1.0.22**，升级本版**不需要再次输入管理员密码**。
