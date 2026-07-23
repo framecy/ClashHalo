@@ -209,8 +209,32 @@ struct RouteConflict {
     var shadowCIDR: String { tunRoute }
 }
 
+/// The utun name this app asks mihomo to take, instead of letting the kernel
+/// hand out the next free index.
+///
+/// Two problems disappear with a fixed name. First, identity: the fake-ip range
+/// 198.18/15 is a *convention*, not an allocation — Shadowrocket and friends put
+/// their own TUN on 198.18.0.1, so the address alone cannot tell our interface
+/// from a co-resident proxy's (observed on this machine: mihomo stopped, yet a
+/// foreign `utun8` still carried 198.18.0.1). Second, stability: an index handed
+/// out in creation order changes whenever the tunnels around it churn, which is
+/// what makes hand-written `#utunN` pins in config.yaml rot across reboots.
+///
+/// 100 is chosen to sit far above the indices macOS assigns on its own (system
+/// tunnels and VPN clients occupy single digits / low teens), so it is free in
+/// practice and stays ours.
+let kPinnedTunDevice = "utun100"
+
 enum NetScanner {
     // MARK: - Interface enumeration
+
+    /// True while this build asks the kernel for `kPinnedTunDevice`. Set once at
+    /// startup from the persisted fallback flag (see `AppModel.pinnedTunDevice`).
+    ///
+    /// When it holds, a 198.18 utun under any *other* name belongs to a different
+    /// proxy app and must never be reported as ours — not as a live TUN, and
+    /// above all not as residue to tear down.
+    static var pinnedDeviceActive = false
 
     // System-proxy bypass domains live in `Sources/XPC/HelperProtocol.swift` as
     // `kProxyBypassDomains` (single source of truth shared by the XPC Helper,
@@ -325,8 +349,17 @@ enum NetScanner {
         }
 
         guard let ip = ipToUInt32(ipStr) else { return nil }
-        // If no prefix length given, treat as host route (/32)
-        let pl = prefix ?? 32
+        // netstat prints a destination abbreviated to the octets its mask covers,
+        // and appends `/len` only when that mask is *not* the natural one for that
+        // many octets. So "192.168.3" is 192.168.3.0/24 (confirmed by `route -n get
+        // 192.168.3.55` → mask 255.255.255.0) while "100.64/10" carries its length
+        // explicitly. Reading a length-less abbreviation as /32 was wrong twice
+        // over: peer subnet routes were excluded as a single host address, and
+        // mihomo's wide auto-route aggregates ("1", "126", "16/4" → /8, /8, /4)
+        // came out narrower than the SD-WAN prefixes they shadow, so the
+        // `tunPfx <= sdwanPfx` test in `conflictingRoutes` never fired.
+        // A full four-octet destination with no length really is a host route.
+        let pl = prefix ?? (octets.count < 4 ? octets.count * 8 : 32)
         guard pl >= 0 && pl <= 32 else { return nil }
         let mask: UInt32 = pl == 0 ? 0 : (0xFFFFFFFF << (32 - pl))
         return (ip & mask, pl)
@@ -460,6 +493,15 @@ enum NetScanner {
         let ifaces = interfaces()
         let candidates = ifaces.filter { $0.kind == .proxyTun }
         if candidates.isEmpty { return nil }
+        // With the device name pinned, identity is exact: our TUN is the one
+        // called `kPinnedTunDevice`, and a 198.18 interface under another name is
+        // some other proxy app's. Returning nil when the pin is absent is the
+        // correct answer *and* the detector for a kernel that ignored the pin —
+        // `applyTUNState` reads the resulting `tunOn == false` and falls back to
+        // kernel-assigned naming.
+        if pinnedDeviceActive {
+            return candidates.first(where: { $0.id == kPinnedTunDevice })?.id
+        }
         if candidates.count == 1 {
             // Single candidate — historically trusted as-is to avoid a netstat
             // fork on the common 3 s poll and to never wrongly tear down a healthy
@@ -506,6 +548,13 @@ enum NetScanner {
     /// TUN simply went away cleanly. This keeps the 198.18.x shared-address
     /// space safe for co-resident VPN apps (Shadowrocket etc.) that keep their
     /// own utun UP.
+    /// Deliberately *not* gated on `kPinnedTunDevice`, unlike the live-interface
+    /// lookup above. A co-resident proxy's TUN is UP while that app is using it,
+    /// so it never matches here anyway — but our own residue from a build that
+    /// predates the pin does, and that is precisely the case this self-heal
+    /// exists for (a downed 198.18 utun leaves the system resolver pinned at
+    /// 198.18.0.1 → total DNS blackout). Name-gating would trade a real recovery
+    /// for a conflict that cannot occur.
     static func hasDownedMihomoTun() -> Bool {
         interfaces().contains { $0.kind == .proxyTun && !$0.isUp }
     }

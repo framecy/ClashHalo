@@ -613,8 +613,33 @@ extension AppModel {
             "auto-route": true,
             "auto-detect-interface": true
         ]
+        // Ask for our own name rather than accepting the next free index. Only on
+        // enable — a disable PATCH has no device to name.
+        if enable, let dev = pinnedTunDevice { body["device"] = dev }
         for (k, v) in extra { body[k] = v }
         return body
+    }
+
+    /// The utun name to request, or nil once this kernel has proven it will not
+    /// honour one.
+    ///
+    /// The pin is what makes our interface identifiable (198.18 is shared with
+    /// other proxy apps) and stable across reboots. It is also the one thing here
+    /// a kernel could reject, and a rejected pin means no TUN at all — so
+    /// `applyTUNState` watches for that, sets this flag, and never asks again on
+    /// this machine. Worst case is therefore the old kernel-assigned behaviour,
+    /// not a broken tunnel.
+    var pinnedTunDevice: String? {
+        UserDefaults.standard.bool(forKey: Self.kTunPinUnsupportedKey) ? nil : kPinnedTunDevice
+    }
+
+    static let kTunPinUnsupportedKey = "tun.device.pinUnsupported"
+
+    /// Record that the kernel would not take the pinned name, and stop asking.
+    func disableTunDevicePin() {
+        UserDefaults.standard.set(true, forKey: Self.kTunPinUnsupportedKey)
+        NetScanner.pinnedDeviceActive = false
+        engine.setTunDevice(nil)
     }
 
     /// Fold the route half of a coexistence plan into a pending tun PATCH body.
@@ -670,6 +695,58 @@ extension AppModel {
         }
         Coexistence.commitProvenance(field: "route-exclude-address", injected: plan.routeExcludes)
         lastCoexistenceFingerprint = fp
+    }
+
+    /// Resolver pins (`<address>#<utunN>`) in config.yaml that no longer name the
+    /// interface their peer is actually on. Read-only — see
+    /// `repairDNSInterfaceBindings` for the fix.
+    func dnsInterfaceDrift() async -> [Coexistence.ResolverDrift] {
+        let desired = Coexistence.resolverInterfaces(Coexistence.plan(await Coexistence.detect()))
+        guard !desired.isEmpty else { return [] }
+        return Coexistence.resolverDrift(configured: engine.dnsResolverBindings(), desired: desired)
+    }
+
+    /// Repoint drifted resolver pins at the right interfaces, then reload.
+    ///
+    /// User-triggered only. This is the channel the automatic path deliberately
+    /// refuses to take (see `coexistenceRouteBody`): it rewrites the user's file
+    /// and a reload restarts DNS, dropping in-flight connections. Backed up and
+    /// validated first, rolled back on any failure — a bad edit here costs name
+    /// resolution outright.
+    @discardableResult
+    func repairDNSInterfaceBindings() async -> Bool {
+        let drift = await dnsInterfaceDrift()
+        guard !drift.isEmpty else {
+            showToast("DNS 出口绑定无需修复", kind: .ok)
+            return true
+        }
+        let path = engine.configFilePath
+        let backup = try? String(contentsOfFile: path, encoding: .utf8)
+        let map = Dictionary(uniqueKeysWithValues: drift.map { ($0.resolver, $0.to) })
+        let n = engine.rebindDNSResolvers(map)
+        guard n > 0 else { return false }
+        engine.setTunEnabled(tunOn)      // a reload re-reads the file; keep TUN as-is
+        if tunOn { engine.setTunDevice(pinnedTunDevice) }
+
+        func rollback(_ reason: String) {
+            if let b = backup { try? b.write(toFile: path, atomically: true, encoding: .utf8) }
+            showToast("DNS 出口修复失败，已回滚：\(reason)", kind: .error)
+        }
+        if let err = await engine.validateConfig() {
+            rollback(err)
+            return false
+        }
+        do {
+            try await api.reloadConfig(path: path)
+        } catch {
+            rollback(error.localizedDescription)
+            return false
+        }
+        await refreshConfigs()
+        noteConfigContentChanged()
+        for d in drift { logKernel("DNS 出口绑定修复：\(d.resolver)#\(d.from) → #\(d.to)") }
+        showToast("已修复 \(n) 处 DNS 出口绑定", kind: .ok)
+        return true
     }
 
     /// Re-establish the user's TUN state after a kernel (re)start (restart button /
@@ -820,6 +897,9 @@ extension AppModel {
             // `forceTUNDisabled()` at the next launch keeps a stale `true` from
             // auto-enabling TUN without privileges.
             engine.setTunEnabled(true)
+            // This start reads the file, not the PATCH — the name has to be there
+            // too or the restart path lands on a kernel-assigned utun.
+            engine.setTunDevice(pinnedTunDevice)
             let tRestart = Date()
             await engine.restart()
             logKernel("TUN 阶段：root 重启完成 +\(String(format: "%.2f", Date().timeIntervalSince(tRestart)))s")
@@ -902,6 +982,23 @@ extension AppModel {
                     if tunOn { break }
                 }
             }
+            if want && !tunOn, pinnedTunDevice != nil {
+                // Requesting a specific utun name is the one demand this flow makes
+                // that a kernel could refuse or ignore outright, and either way the
+                // result looks identical to "no TUN": with the pin active,
+                // `mihomoTunInterface` only accepts our name, so a tunnel brought up
+                // under a kernel-assigned one reads as absent.
+                //
+                // Give the name up and retry once — the pin is an improvement, never
+                // a requirement. This also swallows an unrelated transient failure
+                // into a permanent fallback, which is the deliberate trade: the cost
+                // is losing the pin's benefits on this machine, i.e. exactly the
+                // behaviour every earlier build had.
+                logKernel("TUN 未出现在固定设备名 \(kPinnedTunDevice) 上，放弃固定名后重试…")
+                disableTunDevicePin()
+                await applyTUNState(want, allowRestartFallback: allowRestartFallback)
+                return
+            }
             if want && !tunOn {
                 // The kernel returned 200 and even read `enable: true` back, yet no
                 // utun exists. That is the documented silent-drop above: mihomo ACKs
@@ -921,6 +1018,7 @@ extension AppModel {
                     logKernel("TUN 首次 PATCH 未生成 utun，回退到持久化+重启路径重试…")
                     showToast("正在重启核心以启用 TUN…")
                     engine.setTunEnabled(true)
+                    engine.setTunDevice(pinnedTunDevice)
                     await engine.restart()
                     if await waitForKernelReady(maxAttempts: 18) {
                         await reconnect()
