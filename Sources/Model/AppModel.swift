@@ -409,6 +409,17 @@ import ServiceManagement
 
             if alive {
                 logKernel("启动探测：内核存活，同步状态…")
+            } else if store.profiles.isEmpty {
+                // Nothing to run. `ensureInstalled()` has just recreated a
+                // factory config.yaml (it does that whenever the file is
+                // missing), so an unconditional auto-start here would raise a
+                // kernel on a placeholder config right after the user wiped
+                // everything — a listening proxy port and a "运行中" badge for a
+                // configuration they deleted. Stay down until a profile exists.
+                logKernel("启动探测：无配置文件，跳过内核自动启动")
+                tunOn = false
+                systemProxyOn = false
+                reachable = false
             } else {
                 logKernel("启动探测：内核未响应，自动启动内核…")
                 tunOn = false

@@ -7,10 +7,14 @@ struct ConfigPage: View {
     @State private var editingID: String? = nil
     @State private var showImportRemote = false
     @State private var showAddLocal = false
+    @State private var showWipeConfirm = false
 
     var body: some View {
         VStack(spacing: 0) {
             PageToolbar {
+                Button { showWipeConfirm = true } label: { Label("清空全部", systemImage: "trash") }
+                    .dsButton(.destructive)
+                    .disabled(M.store.profiles.isEmpty || M.engine.isBusy)
                 Button { showImportRemote = true } label: { Label("导入订阅", systemImage: "icloud.and.arrow.down") }
                     .dsButton()
                 Button { showAddLocal = true } label: { Label("添加本地", systemImage: "doc.badge.plus") }
@@ -33,6 +37,15 @@ struct ConfigPage: View {
                     .padding(.bottom, DS.Spacing.xxl)
                 }
             }
+        }
+        .confirmationDialog("清空全部 \(M.store.profiles.count) 个配置？",
+                            isPresented: $showWipeConfirm, titleVisibility: .visible) {
+            Button("清空全部", role: .destructive) { M.deleteAllProfiles() }
+            Button("取消", role: .cancel) { }
+        } message: {
+            Text("将删除所有配置文件、订阅链接与当前生效的 config.yaml，"
+                 + "并自动关闭系统代理与 TUN、停止内核。此操作不可撤销；"
+                 + "重新导入配置后需手动开启系统代理 / TUN。")
         }
         .sheet(isPresented: $showImportRemote) { ImportRemoteSheet() }
         .sheet(isPresented: $showAddLocal) { AddLocalSheet() }
