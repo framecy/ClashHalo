@@ -200,6 +200,16 @@ enum Coexistence {
         var peers: [String: CoexistencePeer] = [:]
 
         for iface in foreign {
+            // macOS runs a fleet of its own utuns — iCloud Private Relay, Wi-Fi
+            // Calling, Handoff — that carry no IPv4 address and no IPv4 route
+            // (only a link-local fe80:: and a scoped IPv6 default). They can never
+            // contribute an exclusion, and they are created and destroyed
+            // constantly, so admitting them only fills the peer list and the log
+            // with phantom "虚拟接口 utunN" entries. Nothing here is IPv6-aware
+            // yet; when it becomes so, this gate is what has to widen.
+            let ownsRoutes = !(ownedRoutes[iface.id] ?? []).isEmpty
+            guard !iface.ipv4.isEmpty || ownsRoutes else { continue }
+
             // Which known vendor, if any, owns this interface?
             let vendor = knownVendors.first { v in
                 v.processNames.contains(where: running.contains)
@@ -315,6 +325,54 @@ enum Coexistence {
     static func excludeRouteMap(_ peers: [CoexistencePeer]) -> [String: String] {
         peers.reduce(into: [String: String]()) { acc, peer in
             acc.merge(peer.routeOwners) { current, _ in current }
+        }
+    }
+
+    // MARK: DNS resolver interface pinning
+
+    /// A resolver whose `#interface` suffix in config.yaml no longer names the
+    /// interface its peer is actually on.
+    ///
+    /// This is the one piece of coexistence that cannot be expressed as a runtime
+    /// PATCH (mihomo ignores those for `dns`), so it lives in the user's file as a
+    /// hand-written `100.100.100.100#utun0` — and BSD hands out utun indices in
+    /// creation order, so the moment the tunnels around it churn the pin names an
+    /// interface the resolver isn't on and every lookup for that peer times out.
+    /// Detected here, repaired only on an explicit user action: the repair rewrites
+    /// config.yaml and reloads, which drops in-flight connections.
+    struct ResolverDrift: Equatable, Identifiable {
+        /// Resolver address, e.g. `100.100.100.100`.
+        let resolver: String
+        /// Interface written in config.yaml.
+        let from: String
+        /// Interface the peer is on right now.
+        let to: String
+        var id: String { resolver }
+    }
+
+    /// resolver address → interface it must be dialled on, read back out of the
+    /// plan so file repair and runtime planning can never disagree.
+    static func resolverInterfaces(_ plan: CoexistencePlan) -> [String: String] {
+        var out: [String: String] = [:]
+        for entry in plan.nameserverPolicy.values.flatMap({ $0 }) {
+            let parts = entry.split(separator: "#", maxSplits: 1)
+            guard parts.count == 2 else { continue }
+            out[String(parts[0])] = String(parts[1])
+        }
+        return out
+    }
+
+    /// Bindings present on disk that point at the wrong interface. Resolvers with
+    /// no detected peer are left alone — an absent peer means "cannot tell", not
+    /// "wrong", and rewriting a pin for a VPN that is merely disconnected would
+    /// destroy the correct value.
+    static func resolverDrift(configured: [(resolver: String, iface: String)],
+                              desired: [String: String]) -> [ResolverDrift] {
+        var seen = Set<String>()
+        return configured.compactMap { binding in
+            guard let want = desired[binding.resolver], want != binding.iface,
+                  seen.insert(binding.resolver).inserted else { return nil }
+            return ResolverDrift(resolver: binding.resolver, from: binding.iface, to: want)
         }
     }
 
