@@ -177,6 +177,8 @@ struct SdwanPage: View {
     @State private var ifaces: [NetIface] = []
     @State private var routes: [(dest: String, iface: String)] = []
     @State private var conflicts: [RouteConflict] = []
+    @State private var dnsDrift: [Coexistence.ResolverDrift] = []
+    @State private var repairingDNS = false
 
     private var sdwanCount: Int { ifaces.filter { $0.kind.sdwan }.count }
     private var hasDefaultViaTun: Bool { routes.contains { $0.dest == "default" } }
@@ -283,6 +285,46 @@ struct SdwanPage: View {
                         }
                     }
 
+                    // DNS resolver pins that outlived the interface they name.
+                    // Separate card from the route conflicts above: this one is
+                    // fixed by rewriting config.yaml + reload (drops connections),
+                    // never by the runtime PATCH the route repair uses.
+                    if !dnsDrift.isEmpty {
+                        Card(title: "DNS 出口绑定漂移 · \(dnsDrift.count)", icon: "arrow.triangle.branch") {
+                            VStack(spacing: 4) {
+                                ForEach(dnsDrift) { d in
+                                    HStack(spacing: 8) {
+                                        Image(systemName: "questionmark.circle")
+                                            .foregroundColor(DS.Palette.warn).font(.dsBody).frame(width: 20)
+                                        VStack(alignment: .leading, spacing: 2) {
+                                            Text("\(d.resolver)#\(d.from)").font(.dsMono).foregroundColor(DS.Palette.warn)
+                                            Text("该解析器实际位于 \(d.to)，当前绑定已失效")
+                                                .font(.dsBody).foregroundColor(.secondary)
+                                        }
+                                        Spacer()
+                                    }
+                                    .padding(.vertical, DS.Spacing.xs)
+                                }
+                                HStack {
+                                    Text("接口序号由内核按创建顺序分配，重启后会变。修复将改写 config.yaml 并重载配置（会断开当前连接）。")
+                                        .font(.dsBody).foregroundColor(.secondary)
+                                    Spacer()
+                                    Button(repairingDNS ? "修复中…" : "修复出口绑定") {
+                                        repairingDNS = true
+                                        Task {
+                                            await M.repairDNSInterfaceBindings()
+                                            repairingDNS = false
+                                            rescan()
+                                        }
+                                    }
+                                    .dsButton(.warning)
+                                    .disabled(repairingDNS)
+                                }
+                                .padding(.top, 4)
+                            }
+                        }
+                    }
+
                     // Topology view of the network routing relation map
                     SdwanTopologyView(ifaces: ifaces, routes: routes)
 
@@ -375,9 +417,11 @@ struct SdwanPage: View {
             async let r = NetScanner.tunRoutes()
             async let c = NetScanner.conflictingRoutes()
             let (routes_, conflicts_) = await (r, c)
+            let drift_ = await M.dnsInterfaceDrift()
             await MainActor.run {
                 routes = routes_
                 conflicts = conflicts_
+                dnsDrift = drift_
             }
         }
     }

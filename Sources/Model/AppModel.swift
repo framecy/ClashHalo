@@ -338,6 +338,10 @@ import ServiceManagement
         updater.onLog = { [weak self] msg in self?.logKernel(msg) }
         applyActivationPolicy()        // Dock icon visibility per saved preference
         refreshLaunchAtLogin()         // sync the launch-at-login mirror
+        // Tell the scanner whether our utun answers to a fixed name, so a
+        // co-resident proxy sharing the 198.18 fake-ip space is never taken for
+        // ours (nor torn down as our residue). See `kPinnedTunDevice`.
+        NetScanner.pinnedDeviceActive = pinnedTunDevice != nil
         mark("prelude")
         let replacedSecret = engine.ensureInstalled()
         mark("ensureInstalled")
