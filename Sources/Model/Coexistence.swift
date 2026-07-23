@@ -328,6 +328,107 @@ enum Coexistence {
         }
     }
 
+    // MARK: Advertised-but-absent peer subnets
+
+    /// A subnet a peer tunnel says it carries, paired with what the local route
+    /// table actually does about it.
+    ///
+    /// Route-table harvesting alone cannot see this class of fault. A subnet
+    /// route that is missing contributes nothing to scan, so a peer network that
+    /// has silently become unreachable looks identical to a peer that never
+    /// advertised anything — the SD-WAN page reported "拓扑正常" while
+    /// `ping 10.1.1.1` was going out the physical NIC. Asking the vendor what it
+    /// *believes* it carries turns that silence into a finding.
+    struct PeerSubnetGap: Equatable, Identifiable {
+        /// Advertised prefix, e.g. `10.1.1.0/24`.
+        let cidr: String
+        /// Peer advertising it, e.g. `GL-MT3000`.
+        let peer: String
+        /// Interface the local table sends this prefix to, nil when there is no
+        /// matching route at all.
+        let routedVia: String?
+        /// Interface the vendor's own tunnel is on.
+        let expected: String
+        var id: String { cidr }
+        var isMissing: Bool { routedVia == nil }
+    }
+
+    /// Subnets the tailnet advertises whose local route is missing or points
+    /// somewhere other than Tailscale's own interface.
+    ///
+    /// Diagnostic only — deliberately not fed into `routeExcludes`, and never
+    /// auto-installed. Excluding a prefix from mihomo's TUN that Tailscale is
+    /// *not* actually carrying would send it out the physical NIC instead of the
+    /// proxy, which is a second wrong answer; and installing the route ourselves
+    /// would duplicate management of something tailscaled owns. Reporting is the
+    /// honest action: the fix belongs to whoever owns the tunnel.
+    static func tailscaleSubnetGaps(interfaces: [NetIface],
+                                    routes: [RouteEntry]) async -> [PeerSubnetGap] {
+        guard let tsIface = interfaces.first(where: { $0.kind == .tailscale })?.id,
+              let advertised = await tailscaleAdvertisedRoutes(), !advertised.isEmpty
+        else { return [] }
+
+        return advertised.compactMap { (cidr, peer) -> PeerSubnetGap? in
+            let carrier = routes.first { r in
+                NetScanner.normalizedCIDR(r.dest) == cidr && r.iface == tsIface
+            }
+            guard carrier == nil else { return nil }
+            // No Tailscale-borne route for it — record where it does go, if
+            // anywhere specific.
+            let other = routes.first { NetScanner.normalizedCIDR($0.dest) == cidr }
+            return PeerSubnetGap(cidr: cidr, peer: peer,
+                                 routedVia: other?.iface, expected: tsIface)
+        }
+        .sorted { $0.cidr < $1.cidr }
+    }
+
+    /// `(prefix, peer hostname)` for every subnet route the tailnet says is
+    /// reachable, read from `tailscale status --json`.
+    ///
+    /// Returns nil — distinct from empty — when the CLI is absent or unusable,
+    /// so callers can tell "Tailscale advertises nothing" from "cannot ask".
+    /// The pkg/App Store builds ship the binary inside the app bundle, Homebrew
+    /// puts it on PATH; a Tailscale that is installed but not running answers
+    /// with an error, which lands in the same nil.
+    static func tailscaleAdvertisedRoutes() async -> [(cidr: String, peer: String)]? {
+        let candidates = [
+            "/Applications/Tailscale.app/Contents/MacOS/Tailscale",
+            "/usr/local/bin/tailscale",
+            "/opt/homebrew/bin/tailscale"
+        ]
+        guard let cli = candidates.first(where: { FileManager.default.isExecutableFile(atPath: $0) })
+        else { return nil }
+
+        let out: Data? = await Task.detached(priority: .utility) {
+            let p = Process()
+            p.executableURL = URL(fileURLWithPath: cli)
+            p.arguments = ["status", "--json"]
+            let pipe = Pipe(); p.standardOutput = pipe; p.standardError = Pipe()
+            do { try p.run() } catch { return nil }
+            let d = pipe.fileHandleForReading.readDataToEndOfFile()
+            p.waitUntilExit()
+            return p.terminationStatus == 0 ? d : nil
+        }.value
+
+        guard let out,
+              let root = try? JSONSerialization.jsonObject(with: out) as? [String: Any],
+              let peers = root["Peer"] as? [String: Any] else { return nil }
+
+        var result: [(String, String)] = []
+        for value in peers.values {
+            guard let peer = value as? [String: Any],
+                  // PrimaryRoutes = subnet routes this peer is the elected
+                  // carrier for. Non-primary advertisements are not routable
+                  // here and would be false alarms.
+                  let primary = peer["PrimaryRoutes"] as? [String] else { continue }
+            let name = (peer["HostName"] as? String) ?? "未知节点"
+            for cidr in primary where !cidr.contains(":") {   // IPv4 only for now
+                result.append((cidr, name))
+            }
+        }
+        return result
+    }
+
     // MARK: DNS resolver interface pinning
 
     /// A resolver whose `#interface` suffix in config.yaml no longer names the

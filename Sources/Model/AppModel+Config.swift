@@ -770,6 +770,13 @@ extension AppModel {
         lastCoexistenceFingerprint = fp
     }
 
+    /// Peer subnets the tailnet advertises that the local route table does not
+    /// carry. Read-only diagnostic; see `Coexistence.tailscaleSubnetGaps`.
+    func peerSubnetGaps() async -> [Coexistence.PeerSubnetGap] {
+        await Coexistence.tailscaleSubnetGaps(interfaces: NetScanner.interfaces(),
+                                              routes: NetScanner.allRoutes())
+    }
+
     /// Resolver pins (`<address>#<utunN>`) in config.yaml that no longer name the
     /// interface their peer is actually on. Read-only — see
     /// `repairDNSInterfaceBindings` for the fix.
