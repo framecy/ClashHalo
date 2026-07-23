@@ -42,7 +42,21 @@ extension AppModel {
         engine.isBusy = true
         Task {
             defer { engine.isBusy = false }
-            let (ok, err) = await engine.setConfig(content)
+            var (ok, err) = await engine.setConfig(content)
+            // `setConfig` applies the YAML by hot-reloading a running kernel, so
+            // it necessarily fails when there is no kernel — the normal state
+            // right after 清空全部, and after any manual stop. The file it just
+            // wrote is still the one we want, so start the kernel on it instead
+            // of reporting a config error and rolling back a perfectly good
+            // profile.
+            if !ok && !reachable {
+                logKernel("内核未运行，改为以新配置启动内核…")
+                engine.isRoot = await XPCManager.shared.verifyConnectivity()
+                await engine.ensureRunningAsync(preferRoot: engine.isRoot)
+                ok = await waitForKernelReady(maxAttempts: 10)
+                err = ok ? nil : "内核启动失败"
+                if ok { await reconnect() }
+            }
             pendingApplyID = nil
             if ok {
                 store.markApplied(id, hash: Sha1.hex(content))
@@ -329,7 +343,60 @@ extension AppModel {
         return true
     }
 
+    /// Delete every profile and leave the machine in a clean, inert state.
+    ///
+    /// Order is the whole point. Deleting the files first would strand the
+    /// machine: the system proxy would keep pointing at a dead mixed-port and
+    /// TUN would keep owning the default route for a kernel that no longer has
+    /// a config — both are full-network outages that the user cannot undo from
+    /// an app whose config is gone. So every piece of running state comes down
+    /// first, while `config.yaml` still exists for the teardown paths that edit
+    /// it (`forceTUNDisabled`), and only then does storage get wiped.
+    ///
+    /// `stopEngine()` already cascades the rest — Gateway mode, tunnel DNS
+    /// restore, system proxy, Helper-injected static routes, residual utun — so
+    /// this adds only what is specific to a wipe: an orderly TUN teardown that
+    /// withdraws the coexistence exclusions before the kernel goes away, and
+    /// dropping the provenance/fingerprint records that describe a config which
+    /// will not exist a moment later.
+    func deleteAllProfiles() {
+        guard !store.profiles.isEmpty else { return }
+        _ = withEngineBusy("正在清空全部配置…") {
+            if self.tunOn {
+                self.showToast("正在关闭 TUN…")
+                await self.applyTUNState(false, allowRestartFallback: false)
+            }
+            await self.stopEngine()
+
+            let failed = self.store.removeAll()
+            self.pendingApplyID = nil
+            // The exclusions we injected are gone with the config that held
+            // them; a record claiming otherwise would make the next TUN session
+            // withdraw entries it never wrote.
+            Coexistence.commitProvenance(field: "route-exclude-address", injected: [])
+            self.lastCoexistenceFingerprint = ""
+
+            self.logKernel("已清空全部配置文件，系统代理与 TUN 已关闭，内核已停止")
+            if failed.isEmpty {
+                self.showToast("已清空全部配置。导入新配置后需重新开启系统代理 / TUN", kind: .ok)
+            } else {
+                // Root-owned leftovers from a root kernel session. Harmless —
+                // the next kernel overwrites them — but say so rather than
+                // report a clean wipe that wasn't.
+                let list = failed.joined(separator: "、")
+                self.logKernel("以下缓存归 root 所有，用户态无法删除，已保留：\(list)")
+                self.showToast("配置已清空；缓存 \(list) 需管理员权限，已保留", kind: .warn)
+            }
+        }
+    }
+
     func toggleSystemProxy() {
+        // With no profile there is no config.yaml to start a kernel from, so the
+        // enable path would fork mihomo, time out, and blame the timeout. Say
+        // the real reason instead.
+        guard systemProxyOn || !store.profiles.isEmpty else {
+            showToast("请先导入配置后再开启系统代理", kind: .warn); return
+        }
         let on = !systemProxyOn
         let port = proxyPort
         // Hold isBusy for the full path (start kernel + set proxy) so TUN /
@@ -450,6 +517,12 @@ extension AppModel {
     }
 
     func toggleTUN() {
+        // Same reason as `toggleSystemProxy`: enabling TUN without a config
+        // would restart a kernel that has nothing to load, and the failure would
+        // surface as a privilege/route conflict it is not.
+        guard tunOn || !store.profiles.isEmpty else {
+            showToast("请先导入配置后再开启 TUN", kind: .warn); return
+        }
         let want = !tunOn
         withEngineBusy(want ? "正在开启 TUN 模式…" : "正在关闭 TUN 模式…") {
             await self.applyTUNState(want)
