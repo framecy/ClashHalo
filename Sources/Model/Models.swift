@@ -209,21 +209,22 @@ struct RouteConflict {
     var shadowCIDR: String { tunRoute }
 }
 
-/// The utun name this app asks mihomo to take, instead of letting the kernel
-/// hand out the next free index.
-///
-/// Two problems disappear with a fixed name. First, identity: the fake-ip range
-/// 198.18/15 is a *convention*, not an allocation — Shadowrocket and friends put
-/// their own TUN on 198.18.0.1, so the address alone cannot tell our interface
-/// from a co-resident proxy's (observed on this machine: mihomo stopped, yet a
-/// foreign `utun8` still carried 198.18.0.1). Second, stability: an index handed
-/// out in creation order changes whenever the tunnels around it churn, which is
-/// what makes hand-written `#utunN` pins in config.yaml rot across reboots.
-///
-/// 100 is chosen to sit far above the indices macOS assigns on its own (system
-/// tunnels and VPN clients occupy single digits / low teens), so it is free in
-/// practice and stays ours.
-let kPinnedTunDevice = "utun100"
+// `kPinnedTunDevice` — the utun name this app asks mihomo to take, instead of
+// letting the kernel hand out the next free index — is declared in
+// `Sources/XPC/HelperProtocol.swift`, the file both this target and the Helper
+// binary compile, because the Helper needs the same name to tell a route our own
+// TUN grabbed from one another tunnel owns.
+//
+// Two problems disappear with a fixed name. First, identity: the fake-ip range
+// 198.18/15 is a *convention*, not an allocation — Shadowrocket and friends put
+// their own TUN on 198.18.0.1, so the address alone cannot tell our interface
+// from a co-resident proxy's (observed on this machine: mihomo stopped, yet a
+// foreign `utun8` still carried 198.18.0.1). Second, stability: an index handed
+// out in creation order changes whenever the tunnels around it churn, which is
+// what makes hand-written `#utunN` pins in config.yaml rot across reboots.
+//
+// 100 sits far above the indices macOS assigns on its own (system tunnels and
+// VPN clients occupy single digits / low teens), so it is free in practice.
 
 enum NetScanner {
     // MARK: - Interface enumeration
@@ -315,9 +316,13 @@ enum NetScanner {
                     // Columns: Destination Gateway Flags [Refs Use] Netif [Expire]
                     guard cols.count >= 4 else { continue }
                     let dest = cols[0]; let gw = cols[1]; let flags = cols[2]
-                    let iface = cols.last ?? ""
                     // Skip header lines
                     if dest == "Destination" || dest == "Internet:" { continue }
+                    // Not `cols.last`: rows with a trailing Expire column render
+                    // it as `!` for link-local ARP entries, which produced `!`
+                    // as the interface name. See `RouteTable.parse`.
+                    guard let iface = RouteTable.parse(netstat: String(line)).first?.interface
+                    else { continue }
                     rows.append(RouteEntry(dest: dest, gateway: gw, iface: iface, flags: flags))
                 }
                 return rows
@@ -336,47 +341,19 @@ enum NetScanner {
     /// Parse a macOS netstat destination string into (baseAddress as UInt32, prefixLength).
     /// Handles: "default" -> (0, 0), "100.64/10" -> abbreviated, "192.168.1.0/24" -> full,
     /// bare host IPs, and single-octet shorthand like "100/10".
+    /// Delegates to `RouteTable` — the same parsing the privileged Helper uses
+    /// when it decides whether a prefix is already routed. Two copies of the
+    /// netstat abbreviation rule would be two chances to disagree about which
+    /// prefix a route covers, and the Helper acts on that answer with
+    /// `route add`/`route delete`.
     static func parseCIDR(_ dest: String) -> (UInt32, Int)? {
-        if dest == "default" { return (0, 0) }
-        let parts = dest.split(separator: "/", maxSplits: 1)
-        let prefix = parts.count == 2 ? Int(parts[1]) : nil
-
-        // Expand abbreviated IP (e.g. "100" -> "100.0.0.0", "100.64" -> "100.64.0.0")
-        var ipStr = String(parts[0])
-        let octets = ipStr.split(separator: ".").map(String.init)
-        if octets.count < 4 {
-            ipStr = (octets + Array(repeating: "0", count: 4 - octets.count)).joined(separator: ".")
-        }
-
-        guard let ip = ipToUInt32(ipStr) else { return nil }
-        // netstat prints a destination abbreviated to the octets its mask covers,
-        // and appends `/len` only when that mask is *not* the natural one for that
-        // many octets. So "192.168.3" is 192.168.3.0/24 (confirmed by `route -n get
-        // 192.168.3.55` → mask 255.255.255.0) while "100.64/10" carries its length
-        // explicitly. Reading a length-less abbreviation as /32 was wrong twice
-        // over: peer subnet routes were excluded as a single host address, and
-        // mihomo's wide auto-route aggregates ("1", "126", "16/4" → /8, /8, /4)
-        // came out narrower than the SD-WAN prefixes they shadow, so the
-        // `tunPfx <= sdwanPfx` test in `conflictingRoutes` never fired.
-        // A full four-octet destination with no length really is a host route.
-        let pl = prefix ?? (octets.count < 4 ? octets.count * 8 : 32)
-        guard pl >= 0 && pl <= 32 else { return nil }
-        let mask: UInt32 = pl == 0 ? 0 : (0xFFFFFFFF << (32 - pl))
-        return (ip & mask, pl)
-    }
-
-    private static func ipToUInt32(_ ip: String) -> UInt32? {
-        let parts = ip.split(separator: ".").compactMap { UInt32($0) }
-        guard parts.count == 4 else { return nil }
-        return (parts[0] << 24) | (parts[1] << 16) | (parts[2] << 8) | parts[3]
+        RouteTable.parseCIDR(dest)
     }
 
     /// Canonical `a.b.c.d/len` form of a route-table destination, which prints
     /// abbreviated (`100.64/10`, `1`). Returns nil when unparseable.
     static func normalizedCIDR(_ dest: String) -> String? {
-        guard let (base, pl) = parseCIDR(dest) else { return nil }
-        let o = [(base >> 24) & 0xFF, (base >> 16) & 0xFF, (base >> 8) & 0xFF, base & 0xFF]
-        return "\(o[0]).\(o[1]).\(o[2]).\(o[3])/\(pl)"
+        RouteTable.normalizedCIDR(dest)
     }
 
     /// Returns true if CIDR `a` overlaps with CIDR `b` (either contains or is contained).
@@ -397,14 +374,62 @@ enum NetScanner {
 
     // MARK: - Conflict detection
 
+    /// A route that cannot shadow anything, and must therefore be kept out of
+    /// the comparison entirely.
+    ///
+    /// Two kinds, both of which produced blanket false positives:
+    ///
+    ///  * The **default route** (prefix 0). Longest-prefix-match makes it the
+    ///    least specific entry there is, so it never beats a peer's /10 or /24 —
+    ///    yet `cidrsOverlap` reports a 0-length prefix as overlapping everything
+    ///    and `tunPfx <= sdwanPfx` is trivially true, which flagged *every* peer
+    ///    route the moment our own auto-route installed its default.
+    ///  * **Scoped routes** (`RTF_IFSCOPE`, the `I` flag). These only apply to
+    ///    traffic already bound to that interface. NetworkExtension VPNs install
+    ///    a scoped default as a matter of course — Tailscale's macOS app does —
+    ///    so treating it as a hijack accused a well-behaved peer of stealing the
+    ///    default route it had explicitly declined to steal.
+    private static func isNonShadowing(_ route: RouteEntry) -> Bool {
+        if route.flags.contains("I") { return true }
+        guard let (_, prefix) = parseCIDR(route.dest) else { return true }
+        return prefix == 0
+    }
+
+    /// A *foreign* tunnel holding the unscoped default route.
+    ///
+    /// This is the only form of "someone took the default route" worth
+    /// reporting: not our own TUN (auto-route installs one by design — flagging
+    /// it made the page accuse itself the instant TUN came up), and not a scoped
+    /// default (see `isNonShadowing`).
+    ///
+    /// Nothing in this app can fix it either, which is the point of separating
+    /// it: the remedy is on the other tunnel, and the "repair" that used to be
+    /// offered here — turning our own `auto-route` off — left TUN up with no
+    /// routes at all, i.e. no network.
+    static func foreignDefaultRouteHolder() async -> String? {
+        let mine = await mihomoTunInterface()
+        return await allRoutes().first {
+            $0.dest == "default"
+                && $0.iface.hasPrefix("utun")
+                && $0.iface != mine
+                && !$0.flags.contains("I")
+        }?.iface
+    }
+
     /// Detect SD-WAN routes that are shadowed by mihomo TUN auto-route prefixes.
     /// Returns list of conflicts, each describing which SD-WAN route is masked.
     static func conflictingRoutes() async -> [RouteConflict] {
         let all = await allRoutes()
         let ifaces = interfaces()
 
-        // Identify TUN proxy interface names (e.g. utun9 with 198.18.x.x)
-        let tunIfaceNames = Set(ifaces.filter { $0.kind == .proxyTun }.map { $0.id })
+        // Only *our* TUN. `kind == .proxyTun` matches any interface in the
+        // shared 198.18 fake-ip space, so a co-resident proxy app's tunnel used
+        // to be analysed as if it were ours — the page then blamed this app for
+        // shadowing (10 phantom conflicts against Shadowrocket's utun8 while our
+        // own TUN was switched off) and offered a repair that injects
+        // `route-exclude-address` into mihomo, which cannot influence another
+        // app's routes at all.
+        let tunIfaceNames: Set<String> = await mihomoTunInterface().map { [$0] } ?? []
         // Identify SD-WAN interface names (Tailscale, ZeroTier, etc.)
         let sdwanIfaceNames = Set(ifaces.filter { $0.kind.sdwan }.map { $0.id })
 
@@ -415,7 +440,7 @@ enum NetScanner {
 
         var conflicts: [RouteConflict] = []
         for sdwan in sdwanRoutes {
-            for tun in tunRoutes {
+            for tun in tunRoutes where !isNonShadowing(tun) {
                 if cidrsOverlap(sdwan.dest, tun.dest) {
                     // Check if TUN route would win (shorter prefix = wider, takes priority
                     // in a split-tunnel scenario where mihomo injects many /3-/32 aggregates)
