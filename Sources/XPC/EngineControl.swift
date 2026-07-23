@@ -270,6 +270,112 @@ import SwiftUI
         }
     }
 
+    /// Write (or clear) `tun.device` on disk so a kernel that starts from the file
+    /// takes the same utun name the runtime PATCH asks for.
+    ///
+    /// TUN is normally a runtime-only PATCH, but the root bring-up path
+    /// deliberately persists `tun.enable` and restarts (see `applyTUNState`), and
+    /// that start reads the file — not the PATCH. Without the name here, a
+    /// PATCH-started TUN and a restart-started TUN would land on different
+    /// interfaces, which is exactly the ambiguity the pin exists to remove.
+    /// `nil` deletes the key: the fallback path must leave the kernel free to
+    /// assign a name again, not merely stop mentioning one.
+    func setTunDevice(_ name: String?) {
+        let path = configFilePath
+        guard let text = try? String(contentsOfFile: path, encoding: .utf8) else { return }
+        var lines = text.components(separatedBy: "\n")
+        var inTun = false, changed = false, tunIdx = -1
+        var i = 0
+        while i < lines.count {
+            let line = lines[i]
+            if !line.hasPrefix(" ") && !line.hasPrefix("\t") {
+                inTun = line.hasPrefix("tun:")
+                if inTun { tunIdx = i }
+                i += 1
+                continue
+            }
+            guard inTun, line.trimmingCharacters(in: .whitespaces).hasPrefix("device:") else {
+                i += 1
+                continue
+            }
+            if let name {
+                let indent = String(line.prefix(while: { $0 == " " || $0 == "\t" }))
+                let want = "\(indent)device: \(name)"
+                if line != want { lines[i] = want; changed = true }
+                i += 1
+            } else {
+                lines.remove(at: i); changed = true
+            }
+            inTun = false   // only the first device: under tun:
+        }
+        // No `device:` under `tun:` yet — insert one when a name is wanted.
+        if let name, !changed, tunIdx >= 0,
+           !lines.contains(where: { $0.trimmingCharacters(in: .whitespaces) == "device: \(name)" }) {
+            lines.insert("  device: \(name)", at: tunIdx + 1)
+            changed = true
+        }
+        if changed {
+            try? lines.joined(separator: "\n").write(toFile: path, atomically: true, encoding: .utf8)
+        }
+    }
+
+    // MARK: - DNS resolver interface pins (config.yaml editing)
+
+    /// Every `<address>#<utunN>` resolver binding in the on-disk config.
+    ///
+    /// mihomo's `server#interface` form is the only way to dial a peer's resolver
+    /// over the peer's own tunnel once TUN has pinned egress to the physical NIC,
+    /// so these pins are load-bearing — and they name an interface whose index the
+    /// kernel may hand out differently after any reboot. Read-only; see
+    /// `rebindDNSResolvers` for the repair.
+    func dnsResolverBindings() -> [(resolver: String, iface: String)] {
+        guard let text = try? String(contentsOfFile: configFilePath, encoding: .utf8) else { return [] }
+        var out: [(String, String)] = []
+        for match in Self.resolverPinPattern.matches(
+            in: text, range: NSRange(text.startIndex..., in: text)
+        ) {
+            guard let r = Range(match.range(at: 1), in: text),
+                  let i = Range(match.range(at: 2), in: text) else { continue }
+            out.append((String(text[r]), String(text[i])))
+        }
+        return out
+    }
+
+    /// Repoint `<address>#<utunN>` pins at the interfaces in `map` (resolver →
+    /// interface). Returns the number of pins rewritten; 0 means nothing to do.
+    /// Callers own backup/validate/reload — this only edits the text.
+    @discardableResult
+    func rebindDNSResolvers(_ map: [String: String]) -> Int {
+        let path = configFilePath
+        guard !map.isEmpty,
+              let text = try? String(contentsOfFile: path, encoding: .utf8) else { return 0 }
+        var changed = 0
+        var out = text
+        // Walk matches back-to-front so earlier ranges stay valid as we splice.
+        let matches = Self.resolverPinPattern.matches(
+            in: text, range: NSRange(text.startIndex..., in: text)
+        )
+        for match in matches.reversed() {
+            guard let full = Range(match.range, in: out),
+                  let r = Range(match.range(at: 1), in: text),
+                  let i = Range(match.range(at: 2), in: text) else { continue }
+            let resolver = String(text[r]), iface = String(text[i])
+            guard let want = map[resolver], want != iface else { continue }
+            out.replaceSubrange(full, with: "\(resolver)#\(want)")
+            changed += 1
+        }
+        guard changed > 0 else { return 0 }
+        try? out.write(toFile: path, atomically: true, encoding: .utf8)
+        return changed
+    }
+
+    /// `<IPv4 address>#<utunN>`. Deliberately narrow: only utun pins rot with
+    /// interface renumbering, and only addresses can be re-pinned without knowing
+    /// the peer's naming scheme.
+    private static let resolverPinPattern = try! NSRegularExpression(
+        pattern: #"(\d{1,3}(?:\.\d{1,3}){3})#(utun\d+)"#
+    )
+
     /// Set/insert top-level scalar keys in the on-disk config (bool/int/string).
     /// For load-time-only settings (geodata-*, unified-delay, keep-alive…) that
     /// mihomo silently ignores on a runtime `/configs` PATCH — write + reload instead.
