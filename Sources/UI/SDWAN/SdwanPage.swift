@@ -179,10 +179,16 @@ struct SdwanPage: View {
     @State private var conflicts: [RouteConflict] = []
     @State private var dnsDrift: [Coexistence.ResolverDrift] = []
     @State private var repairingDNS = false
+    @State private var subnetGaps: [Coexistence.PeerSubnetGap] = []
+    /// Another tunnel holding the unscoped default route. Reported, never
+    /// "repaired" — see `NetScanner.foreignDefaultRouteHolder`.
+    @State private var defaultRouteHolder: String? = nil
 
     private var sdwanCount: Int { ifaces.filter { $0.kind.sdwan }.count }
-    private var hasDefaultViaTun: Bool { routes.contains { $0.dest == "default" } }
-    private var hasConflicts: Bool { !conflicts.isEmpty || hasDefaultViaTun }
+    /// Faults the "一键修复" button can actually act on — it works by injecting
+    /// `route-exclude-address`, which does nothing for an absent peer route, so
+    /// subnet gaps deliberately stay out of this gate.
+    private var hasConflicts: Bool { !conflicts.isEmpty || defaultRouteHolder != nil }
 
     var body: some View {
         VStack(spacing: 0) {
@@ -199,17 +205,21 @@ struct SdwanPage: View {
                             .foregroundColor(hasConflicts ? DS.Palette.warn : DS.Palette.accent)
                         VStack(alignment: .leading, spacing: 3) {
                             Text(hasConflicts ? "检测到路由冲突" : "智能路由隔离已生效").font(.dsLabelBold)
-                            if hasDefaultViaTun,
-                               let conflictIface = routes.first(where: {
-                                   $0.dest == "default" || $0.dest.contains("0.0.0.0/0")
-                               })?.iface {
-                                Text("接口 \(conflictIface) 接管了全局默认路由，与网络拓扑原生路由冲突。建议关闭自动路由。")
+                            if let holder = defaultRouteHolder {
+                                Text("接口 \(holder) 持有全局默认路由（非作用域限定），与本机 TUN 争夺出口。"
+                                     + "需在该隧道一侧处理——关闭本应用的自动路由只会让 TUN 失去全部路由。")
                                     .font(.dsBody).foregroundColor(.secondary)
                             } else if !conflicts.isEmpty {
                                 let desc = conflicts.prefix(2)
                                     .map { "\($0.sdwanIface) \($0.sdwanRoute) 被 \($0.tunRoute) 遮蔽" }
                                     .joined(separator: "；")
                                 Text("TUN 路由遮蔽网络拓扑网段：\(desc)。")
+                                    .font(.dsBody).foregroundColor(.secondary)
+                            } else if !subnetGaps.isEmpty {
+                                // No shadowing, but a peer subnet is unreachable
+                                // — the banner must not read "一切正常" for the
+                                // exact fault that used to go unreported.
+                                Text("代理未抢占路由，但有 \(subnetGaps.count) 个对端网段不可达，详见下方。")
                                     .font(.dsBody).foregroundColor(.secondary)
                             } else {
                                 Text("代理仅注入精确网段，未抢占网络拓扑路由；\(sdwanCount) 个接口路由完整。")
@@ -226,13 +236,17 @@ struct SdwanPage: View {
                                     // `PATCH /configs` replaces nested objects, so
                                     // sending route-exclude-address alone comes back
                                     // with enable=false and tears TUN down.
+                                    // Route exclusion only. Disabling auto-route
+                                    // used to ride along here whenever a default
+                                    // route was seen on any utun — including our
+                                    // own, and including a peer's harmless
+                                    // scoped one — and a TUN with auto-route off
+                                    // installs no routes at all: the observed
+                                    // "utun100 接管后无网络". A competing tunnel
+                                    // is reported, not "fixed" by crippling us.
                                     var fix = M.tunPatchBody(enable: M.tunOn)
                                     if let excludes = M.coexistenceRouteBody(plan) {
                                         fix["route-exclude-address"] = excludes
-                                    }
-                                    if hasDefaultViaTun {
-                                        fix["auto-route"] = false
-                                        fix["auto-detect-interface"] = false
                                     }
                                     await M.patch(["tun": fix])
                                     Coexistence.commitProvenance(
@@ -280,6 +294,37 @@ struct SdwanPage: View {
                                     if idx < conflicts.count - 1 { Divider() }
                                 }
                                 Text("建议：点击\u{201C}一键修复\u{201D}将上述网络拓扑前缀注入 tun.route-exclude-address，防止 TUN 抢占。")
+                                    .font(.dsBody).foregroundColor(.secondary).padding(.top, 4)
+                            }
+                        }
+                    }
+
+                    // Subnets the peer says it carries but the kernel does not
+                    // route there. Invisible to route-table scanning by
+                    // construction — an absent route contributes nothing to scan
+                    // — so it gets its own card rather than joining the
+                    // shadowing conflicts above.
+                    if !subnetGaps.isEmpty {
+                        Card(title: "对端网段不可达 · \(subnetGaps.count)", icon: "exclamationmark.triangle.fill") {
+                            VStack(spacing: 4) {
+                                ForEach(subnetGaps) { g in
+                                    HStack(spacing: 8) {
+                                        Image(systemName: "point.3.connected.trianglepath.dotted")
+                                            .foregroundColor(DS.Palette.warn).font(.dsBody).frame(width: 20)
+                                        VStack(alignment: .leading, spacing: 2) {
+                                            Text("\(g.cidr)  ←  \(g.peer)").font(.dsMono)
+                                                .foregroundColor(DS.Palette.warn)
+                                            Text(g.isMissing
+                                                 ? "对端广播了该网段，但本机路由表没有对应路由，流量会走物理网卡"
+                                                 : "该网段当前指向 \(g.routedVia ?? "?")，而非 \(g.expected)")
+                                                .font(.dsBody).foregroundColor(.secondary)
+                                        }
+                                        Spacer()
+                                    }
+                                    .padding(.vertical, DS.Spacing.xs)
+                                }
+                                Text("路由由对端隧道自行下发，本页只做检测不代为安装——代装会与它的路由管理相互覆盖。"
+                                     + "请检查该隧道是否开启「接受子网路由」，或重连以让它重新下发。")
                                     .font(.dsBody).foregroundColor(.secondary).padding(.top, 4)
                             }
                         }
@@ -418,10 +463,14 @@ struct SdwanPage: View {
             async let c = NetScanner.conflictingRoutes()
             let (routes_, conflicts_) = await (r, c)
             let drift_ = await M.dnsInterfaceDrift()
+            let gaps_ = await M.peerSubnetGaps()
+            let holder_ = await NetScanner.foreignDefaultRouteHolder()
             await MainActor.run {
                 routes = routes_
                 conflicts = conflicts_
                 dnsDrift = drift_
+                subnetGaps = gaps_
+                defaultRouteHolder = holder_
             }
         }
     }
