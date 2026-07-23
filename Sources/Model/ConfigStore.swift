@@ -24,6 +24,15 @@ struct YAMLPreview: Equatable {
     @Published var profiles: [Profile] = []
     @AppStorage("config.active") var activeID = ""
 
+    /// Set by `removeAll()`, cleared by any import.
+    ///
+    /// Without it the wipe does not survive a relaunch: `load()` seeds a
+    /// "默认配置" whenever the manifest is empty, and `EngineControl.
+    /// ensureInstalled()` recreates a factory config.yaml whenever the file is
+    /// missing — so the next launch would helpfully reconstruct a profile from
+    /// the very file the user just deleted.
+    @AppStorage("config.wiped") var wiped = false
+
     private let dir = NSHomeDirectory() + "/Library/Application Support/ClashHalo/profiles"
     private let configPath = NSHomeDirectory() + "/Library/Application Support/ClashHalo/config.yaml"
     private var manifestPath: String { dir + "/manifest.json" }
@@ -50,8 +59,9 @@ struct YAMLPreview: Equatable {
             }
             profiles = list
         }
-        // Seed from the existing config.yaml on first run.
-        if profiles.isEmpty {
+        // Seed from the existing config.yaml on first run — but not after an
+        // explicit wipe, where an empty list is the state the user asked for.
+        if profiles.isEmpty && !wiped {
             let id = UUID().uuidString
             let defaultContent = """
             mixed-port: 7890
@@ -124,7 +134,7 @@ struct YAMLPreview: Equatable {
         try? content.write(toFile: path(id), atomically: true, encoding: .utf8)
         let p = Profile(id: id, name: name, source: "local", url: nil,
                         importedAt: Date(), updatedAt: Date(), isApplied: false, appliedHash: nil)
-        profiles.append(p); save(); return id
+        profiles.append(p); wiped = false; save(); return id
     }
 
     /// Import a remote subscription from pre-downloaded content, persist it as a draft, return its id.
@@ -134,7 +144,7 @@ struct YAMLPreview: Equatable {
         try? content.write(toFile: path(id), atomically: true, encoding: .utf8)
         let p = Profile(id: id, name: name, source: "remote", url: url,
                         importedAt: Date(), updatedAt: Date(), isApplied: false, appliedHash: nil)
-        profiles.append(p); save(); return id
+        profiles.append(p); wiped = false; save(); return id
     }
 
     /// Download a remote subscription, persist it as a draft, return its id.
@@ -204,6 +214,55 @@ struct YAMLPreview: Equatable {
         KeychainHelper.delete(key: id)
         profiles.removeAll { $0.id == id }; save()
         if activeID == id { activeID = profiles.first?.id ?? "" }
+    }
+
+    /// Kernel-side caches that belong to the profiles being deleted: proxy- and
+    /// rule-provider downloads, and the store for fake-ip mappings / selected
+    /// group members. All are rebuilt from whatever config comes next; keeping
+    /// them would leave a deleted subscription's nodes and rulesets on disk.
+    ///
+    /// Deliberately excludes everything that is *not* configuration and would be
+    /// expensive or breaking to lose: `bin/` and `kernels/` (the mihomo binary),
+    /// `ui/` (bundled dashboards), the geo databases, and
+    /// `traffic-history.json` (usage stats the user did not ask to erase).
+    private var cachePaths: [String] {
+        let base = (configPath as NSString).deletingLastPathComponent
+        return ["providers", "ruleset", "proxies", "cache.db"].map { base + "/" + $0 }
+    }
+
+    /// Delete every profile — YAML files, manifest, Keychain-held subscription
+    /// URLs — plus the active `config.yaml` and the kernel caches derived from
+    /// them. Returns the names of items that could not be removed.
+    ///
+    /// Storage only. The caller must first bring the running state down
+    /// (`AppModel.deleteAllProfiles`): a system proxy or a TUN left pointing at
+    /// a kernel whose config just vanished takes the whole machine offline, and
+    /// `forceTUNDisabled()` edits config.yaml, so it has to run while the file
+    /// still exists.
+    ///
+    /// The failure list is not decoration. A kernel that ran as root leaves
+    /// `proxies/` (and sometimes `ruleset/`) owned by root, and a user-mode app
+    /// cannot unlink files inside a root-owned directory — the delete genuinely
+    /// fails. Reporting it beats both silence and escalating this into a
+    /// privileged "delete any path as root" XPC call.
+    @discardableResult
+    func removeAll() -> [String] {
+        for p in profiles {
+            try? fm.removeItem(atPath: path(p.id))
+            KeychainHelper.delete(key: p.id)
+        }
+        profiles.removeAll()
+        activeID = ""
+        try? fm.removeItem(atPath: manifestPath)
+        try? fm.removeItem(atPath: configPath)
+
+        var failed: [String] = []
+        for p in cachePaths where fm.fileExists(atPath: p) {
+            do { try fm.removeItem(atPath: p) }
+            catch { failed.append((p as NSString).lastPathComponent) }
+        }
+        wiped = true
+        return failed
     }
 
     // MARK: Apply pipeline (Phase 1: import isolation)
