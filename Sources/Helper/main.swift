@@ -301,69 +301,146 @@ class Helper: NSObject, HelperProtocol {
         reply(ok)
     }
 
+    // MARK: - Exclude routes
+    //
+    // These prefixes belong to *other* tunnels (Tailscale, ZeroTier, a corporate
+    // VPN). The caller discovers them by reading the route table — which means
+    // the overwhelming majority of them are routes their owner installed and
+    // still manages. That is the hazard this code exists to respect:
+    //
+    //   A route we did not create is never ours to delete.
+    //
+    // The previous implementation kept `addedRoutes = <everything the caller
+    // asked for>` regardless of whether `route add` had actually created
+    // anything, and teardown deleted that whole set. Since the caller harvests
+    // the peer's own routes, teardown deleted the peer's own routes: observed in
+    // the field as Tailscale subnet routes (10.1.1.0/24, 192.168.3.0/24)
+    // vanishing for good — tailscaled only reprograms on a netmap change, so
+    // nothing ever put them back, and the next scan could no longer even see the
+    // prefixes it had destroyed.
+    //
+    // Now: install only what is genuinely missing, record only what `route add`
+    // actually created, and before deleting re-verify the route still points
+    // where we put it. In the common case (peer routes already present) this is
+    // a no-op — which is the correct amount of work to do.
+
+    /// Routes this helper created itself, `dest -> iface`. Never populated from
+    /// the caller's wish list.
+    ///
+    /// In-memory only: if the helper is restarted while routes are installed,
+    /// they outlive the record and become someone else's problem to overwrite.
+    /// Acceptable because entries are now rare (only genuinely absent prefixes)
+    /// and always duplicates of what the peer itself would install.
     private static var addedRoutes = [String: String]()
     fileprivate static let routesLock = NSLock()
 
+    /// The interface carrying exactly `dest`, nil when nothing routes that
+    /// prefix. See `RouteTable` (shared with the app) for why "exactly" is the
+    /// whole point.
+    private static func routeInterface(exactly dest: String) -> String? {
+        RouteTable.interface(exactly: dest)
+    }
+
+    /// Run `/sbin/route` with `args`, returning true on exit status 0.
+    private static func runRoute(_ args: [String]) -> Bool {
+        let p = Process()
+        p.executableURL = URL(fileURLWithPath: "/sbin/route")
+        p.arguments = args
+        p.standardOutput = Pipe(); p.standardError = Pipe()
+        do {
+            try p.run()
+            p.waitUntilExit()
+            return p.terminationStatus == 0
+        } catch {
+            log("route \(args.joined(separator: " ")): exec failed: \(error)")
+            return false
+        }
+    }
+
+    private static func routeArgs(_ verb: String, dest: String, iface: String) -> [String] {
+        let isHost = !dest.contains("/") || dest.hasSuffix("/32")
+        let destClean = dest.replacingOccurrences(of: "/32", with: "")
+        return isHost
+            ? ["-n", verb, "-host", destClean, "-interface", iface]
+            : ["-n", verb, "-net", dest, "-interface", iface]
+    }
+
+    /// Withdraw every route this helper installed. Each one is re-verified
+    /// first: if it no longer points where we put it, its owner has taken it
+    /// over and deleting would destroy their route, not ours.
     fileprivate static func cleanupAllExcludeRoutesInternal() {
-        let routesToClean = addedRoutes
+        let ours = addedRoutes
         addedRoutes.removeAll()
-        
-        for (dest, iface) in routesToClean {
-            let process = Process()
-            process.executableURL = URL(fileURLWithPath: "/sbin/route")
-            let isHost = !dest.contains("/") || dest.hasSuffix("/32")
-            let destClean = dest.replacingOccurrences(of: "/32", with: "")
-            if isHost {
-                process.arguments = ["-n", "delete", "-host", destClean, "-interface", iface]
-            } else {
-                process.arguments = ["-n", "delete", "-net", dest, "-interface", iface]
+        for (dest, iface) in ours {
+            guard routeInterface(exactly: dest) == iface else {
+                log("cleanupAllExcludeRoutes: \(dest) 已不指向 \(iface)，跳过删除（归属已变）")
+                continue
             }
-            process.standardOutput = Pipe()
-            process.standardError = Pipe()
-            do {
-                try process.run()
-                process.waitUntilExit()
-            } catch {
-                log("cleanupAllExcludeRoutesInternal: exec route delete failed for \(dest) -> \(iface): \(error)")
+            if !runRoute(routeArgs("delete", dest: dest, iface: iface)) {
+                log("cleanupAllExcludeRoutes: route delete \(dest) -> \(iface) 失败")
             }
         }
     }
 
     func setupExcludeRoutes(_ routes: [String: String], withReply reply: @escaping (Bool) -> Void) {
-        log("setupExcludeRoutes called: \(routes)")
         Self.routesLock.lock()
-        Self.cleanupAllExcludeRoutesInternal()
-        
-        Self.addedRoutes = routes
-        let routesToApply = Self.addedRoutes
-        Self.routesLock.unlock()
-        
-        var allOk = true
-        for (dest, iface) in routesToApply {
-            let process = Process()
-            process.executableURL = URL(fileURLWithPath: "/sbin/route")
-            let isHost = !dest.contains("/") || dest.hasSuffix("/32")
-            let destClean = dest.replacingOccurrences(of: "/32", with: "")
-            if isHost {
-                process.arguments = ["-n", "add", "-host", destClean, "-interface", iface]
-            } else {
-                process.arguments = ["-n", "add", "-net", dest, "-interface", iface]
-            }
-            process.standardOutput = Pipe()
-            process.standardError = Pipe()
-            do {
-                try process.run()
-                process.waitUntilExit()
-                if process.terminationStatus != 0 {
-                    log("setupExcludeRoutes: route add \(dest) -> \(iface) status \(process.terminationStatus)")
-                }
-            } catch {
-                log("setupExcludeRoutes: exec route add failed for \(dest) -> \(iface): \(error)")
-                allOk = false
+        defer { Self.routesLock.unlock() }
+
+        var installed = 0, present = 0, failed = 0
+        var stillOurs = [String: String]()
+
+        // Withdraw only entries we created that are no longer wanted.
+        for (dest, iface) in Self.addedRoutes where routes[dest] != iface {
+            if Self.routeInterface(exactly: dest) == iface {
+                _ = Self.runRoute(Self.routeArgs("delete", dest: dest, iface: iface))
             }
         }
+
+        for (dest, iface) in routes {
+            if let current = Self.routeInterface(exactly: dest) {
+                if current == iface {
+                    // The peer installed it and still owns it. Nothing to do —
+                    // and nothing to record, or teardown would delete theirs.
+                    present += 1
+                    // Carry a prior self-install forward so we can still withdraw it.
+                    if Self.addedRoutes[dest] == iface { stillOurs[dest] = iface }
+                    continue
+                }
+                if current != kPinnedTunDevice {
+                    // Someone else's route. Whatever it is doing, it is not ours
+                    // to override — that judgement is what destroyed peer routes.
+                    log("setupExcludeRoutes: \(dest) 由 \(current) 承载（期望 \(iface)），非本应用所有，保持不动")
+                    present += 1
+                    continue
+                }
+                // Our own TUN grabbed the peer's prefix — auto-route beat the
+                // exclusion. This one *is* ours to correct: take it back, and
+                // record it so teardown returns it rather than leaving our
+                // override behind.
+                log("setupExcludeRoutes: \(dest) 被本应用 TUN(\(current)) 抢占，改回 \(iface)")
+                _ = Self.runRoute(Self.routeArgs("delete", dest: dest, iface: current))
+                if Self.runRoute(Self.routeArgs("add", dest: dest, iface: iface)) {
+                    stillOurs[dest] = iface
+                    installed += 1
+                } else {
+                    log("setupExcludeRoutes: 夺回 \(dest) -> \(iface) 失败")
+                    failed += 1
+                }
+                continue
+            }
+            if Self.runRoute(Self.routeArgs("add", dest: dest, iface: iface)) {
+                stillOurs[dest] = iface
+                installed += 1
+            } else {
+                log("setupExcludeRoutes: route add \(dest) -> \(iface) 失败")
+                failed += 1
+            }
+        }
+
+        Self.addedRoutes = stillOurs
+        log("setupExcludeRoutes: 请求 \(routes.count) 条 — 新建 \(installed)、已存在保持不动 \(present)、失败 \(failed)；自有记账 \(stillOurs.count) 条")
         Self.armWatchForCurrentClient()
-        reply(allOk)
+        reply(failed == 0)
     }
 
     func cleanupAllExcludeRoutes(withReply reply: @escaping (Bool) -> Void) {
