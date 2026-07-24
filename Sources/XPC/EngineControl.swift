@@ -466,27 +466,119 @@ import SwiftUI
     func proxyProviders() -> [(name: String, url: String)] {
         guard let text = try? String(contentsOfFile: configFilePath, encoding: .utf8) else { return [] }
         var result: [(String, String)] = []
-        var inBlock = false, curIdx = -1
-        for line in text.components(separatedBy: "\n") {
-            if !line.hasPrefix(" ") && !line.hasPrefix("\t") {
-                inBlock = line.hasPrefix("proxy-providers:"); curIdx = -1; continue
+        var inBlock = false
+        var curIdx = -1
+        var curNameIndent = -1
+
+        func leadingSpaces(_ s: Substring) -> Int {
+            var n = 0
+            for c in s { if c == " " { n += 1 } else { break } }
+            return n
+        }
+        func unquoted(_ s: Substring) -> String {
+            String(s).trimmingCharacters(in: CharacterSet(charactersIn: "\"'"))
+        }
+
+        for rawLine in text.components(separatedBy: "\n") {
+            let trimmed = rawLine.trimmingCharacters(in: .whitespaces)
+            // 空行不改变缩进状态。此前用 `!line.hasPrefix(" ")` 判断"是否退出
+            // 缩进块"，但空行本身没有前导空格，会被误判为回到顶层——proxy-providers
+            // 块内任意一个空行之后的 provider 就整体丢失（包括它的 url），
+            // 只要该 provider 的 YAML 块里有一行空行分隔（很常见的手写习惯）就会踩到。
+            if trimmed.isEmpty { continue }
+
+            let indent = leadingSpaces(rawLine[rawLine.startIndex...])
+            if indent == 0 {
+                inBlock = rawLine.hasPrefix("proxy-providers:")
+                curIdx = -1
+                curNameIndent = -1
+                continue
             }
             guard inBlock else { continue }
-            if line.hasPrefix("  ") && !line.hasPrefix("   ") {       // 2-space provider name
-                let t = line.trimmingCharacters(in: .whitespacesAndNewlines)
-                if t.hasSuffix(":") { 
-                    let name = String(t.dropLast()).replacingOccurrences(of: "\"", with: "").replacingOccurrences(of: "'", with: "")
-                    if !name.isEmpty {
-                        result.append((name, ""))
-                        curIdx = result.count - 1 
-                    }
+
+            if trimmed.hasSuffix(":"), curNameIndent == -1 || indent <= curNameIndent {
+                // provider 名称行：块内第一层缩进，且不深于当前 provider 名称
+                // （用相对层级而非写死的 "2 空格"，兼容手改文件的缩进宽度）。
+                let name = unquoted(Substring(trimmed.dropLast()))
+                if !name.isEmpty {
+                    result.append((name, ""))
+                    curIdx = result.count - 1
+                    curNameIndent = indent
                 }
-            } else if curIdx >= 0 && line.hasPrefix("    url:") {     // 4-space own url
-                let url = line.trimmingCharacters(in: .whitespacesAndNewlines).dropFirst(4).trimmingCharacters(in: .whitespacesAndNewlines)
-                result[curIdx].1 = url.replacingOccurrences(of: "\"", with: "").replacingOccurrences(of: "'", with: "")
+            } else if curIdx >= 0, indent == curNameIndent + 2, trimmed.hasPrefix("url:") {
+                // 只认"provider 名称缩进 + 1 层"的 url —— 排除 health-check 内嵌
+                // 的 url（缩进 +2 层），不再靠写死的 "line.hasPrefix(\"    url:\")"。
+                let url = trimmed.dropFirst(4).trimmingCharacters(in: .whitespaces)
+                result[curIdx].1 = unquoted(Substring(url))
             }
         }
         return result.map { (name: $0.0, url: $0.1) }
+    }
+
+    /// 从 `proxy-groups:` 的 `use:`/`proxies:`（含内联 `[A, B]` 与逐行 `- A` 两种写法）
+    /// 以及 `rules:` 里清除对 `names` 的所有引用。节点/订阅被删除后必须做这一步，
+    /// 否则残留的悬空引用会让 `mihomo -t` 校验直接失败。
+    ///
+    /// 从 `writeProxyProviders()` 抽出来的独立函数——订阅删除和本地节点删除都要
+    /// 用同一套清理逻辑，原先只有订阅那一份，本地节点直接复制一份出来只会两边
+    /// 慢慢改出行为差异。
+    static func stripReferences(to names: Set<String>, from lines: inout [String]) {
+        guard !names.isEmpty else { return }
+        var insideProxyGroups = false
+        var insideRules = false
+
+        var i = 0
+        while i < lines.count {
+            let line = lines[i]
+            let trimmed = line.trimmingCharacters(in: .whitespacesAndNewlines)
+
+            if line.hasPrefix("proxy-groups:") { insideProxyGroups = true; insideRules = false; i += 1; continue }
+            if line.hasPrefix("rules:") { insideRules = true; insideProxyGroups = false; i += 1; continue }
+            if !line.hasPrefix(" ") && !line.hasPrefix("-") && !trimmed.isEmpty { insideProxyGroups = false; insideRules = false }
+
+            if insideProxyGroups {
+                // Inline array use: [A, B] or proxies: [A, B]
+                if (trimmed.hasPrefix("use:") || trimmed.hasPrefix("proxies:")) && trimmed.contains("[") {
+                    var modified = line
+                    for d in names {
+                        modified = modified.replacingOccurrences(of: " \(d),", with: " ")
+                        modified = modified.replacingOccurrences(of: " \"\(d)\",", with: " ")
+                        modified = modified.replacingOccurrences(of: " \(d)]", with: "]")
+                        modified = modified.replacingOccurrences(of: " \"\(d)\"]", with: "]")
+                        modified = modified.replacingOccurrences(of: "[\(d), ", with: "[")
+                        modified = modified.replacingOccurrences(of: "[\"\(d)\", ", with: "[")
+                        modified = modified.replacingOccurrences(of: "[\(d)]", with: "[]")
+                        modified = modified.replacingOccurrences(of: "[\"\(d)\"]", with: "[]")
+                    }
+                    if modified != line { lines[i] = modified }
+                }
+
+                // Block array: - ProviderName
+                if trimmed.hasPrefix("- ") && !trimmed.hasPrefix("- name:") {
+                    let rawName = trimmed.dropFirst(2).trimmingCharacters(in: .whitespaces)
+                    let name = rawName.replacingOccurrences(of: "\"", with: "").replacingOccurrences(of: "'", with: "")
+                    if names.contains(name) {
+                        lines.remove(at: i)
+                        continue
+                    }
+                }
+            }
+
+            if insideRules {
+                // Rule format: - MATCH,NodeOrProvider
+                if trimmed.hasPrefix("- ") {
+                    let parts = trimmed.dropFirst(2).components(separatedBy: ",")
+                    if let lastRaw = parts.last?.trimmingCharacters(in: .whitespaces) {
+                        let last = lastRaw.replacingOccurrences(of: "\"", with: "").replacingOccurrences(of: "'", with: "")
+                        if names.contains(last) {
+                            lines.remove(at: i)
+                            continue
+                        }
+                    }
+                }
+            }
+            i += 1
+        }
     }
 
     /// Rewrite the whole `proxy-providers:` block from the given list (HTTP type +
@@ -531,61 +623,7 @@ import SwiftUI
         }
 
         // 3. Cleanup all references (use, proxies, rules)
-        var insideProxyGroups = false
-        var insideRules = false
-
-        var i = 0
-        while i < lines.count {
-            let line = lines[i]
-            let trimmed = line.trimmingCharacters(in: .whitespacesAndNewlines)
-            
-            if line.hasPrefix("proxy-groups:") { insideProxyGroups = true; insideRules = false; i += 1; continue }
-            if line.hasPrefix("rules:") { insideRules = true; insideProxyGroups = false; i += 1; continue }
-            if !line.hasPrefix(" ") && !line.hasPrefix("-") && !trimmed.isEmpty { insideProxyGroups = false; insideRules = false }
-
-            if insideProxyGroups {
-                // Inline array use: [A, B] or proxies: [A, B]
-                if (trimmed.hasPrefix("use:") || trimmed.hasPrefix("proxies:")) && trimmed.contains("[") {
-                    var modified = line
-                    for d in deleted {
-                        modified = modified.replacingOccurrences(of: " \(d),", with: " ")
-                        modified = modified.replacingOccurrences(of: " \"\(d)\",", with: " ")
-                        modified = modified.replacingOccurrences(of: " \(d)]", with: "]")
-                        modified = modified.replacingOccurrences(of: " \"\(d)\"]", with: "]")
-                        modified = modified.replacingOccurrences(of: "[\(d), ", with: "[")
-                        modified = modified.replacingOccurrences(of: "[\"\(d)\", ", with: "[")
-                        modified = modified.replacingOccurrences(of: "[\(d)]", with: "[]")
-                        modified = modified.replacingOccurrences(of: "[\"\(d)\"]", with: "[]")
-                    }
-                    if modified != line { lines[i] = modified }
-                }
-                
-                // Block array: - ProviderName
-                if trimmed.hasPrefix("- ") && !trimmed.hasPrefix("- name:") {
-                    let rawName = trimmed.dropFirst(2).trimmingCharacters(in: .whitespaces)
-                    let name = rawName.replacingOccurrences(of: "\"", with: "").replacingOccurrences(of: "'", with: "")
-                    if deleted.contains(name) {
-                        lines.remove(at: i)
-                        continue
-                    }
-                }
-            }
-
-            if insideRules {
-                // Rule format: - MATCH,NodeOrProvider
-                if trimmed.hasPrefix("- ") {
-                    let parts = trimmed.dropFirst(2).components(separatedBy: ",")
-                    if let lastRaw = parts.last?.trimmingCharacters(in: .whitespaces) {
-                        let last = lastRaw.replacingOccurrences(of: "\"", with: "").replacingOccurrences(of: "'", with: "")
-                        if deleted.contains(last) {
-                            lines.remove(at: i)
-                            continue
-                        }
-                    }
-                }
-            }
-            i += 1
-        }
+        Self.stripReferences(to: deleted, from: &lines)
 
         // 4. Sync the primary group's use: block.
         if let pgIdx = lines.firstIndex(where: { $0.hasPrefix("proxy-groups:") }) {
@@ -671,6 +709,381 @@ import SwiftUI
 
         try? lines.joined(separator: "\n").write(toFile: configFilePath, atomically: true, encoding: .utf8)
         return true
+    }
+
+    // MARK: - proxies (顶层手动/本地节点, config.yaml editing)
+    //
+    // mihomo 原生的顶层 `proxies:` 数组——手动添加/粘贴分享链接/从订阅分叉出来的
+    // 节点存在这里，与 `proxy-providers:`（订阅拉取）是完全独立的两个顶层键，互不
+    // 覆盖。写入用"只改动目标条目所在的行区间"的定点 splice，而不是像
+    // `writeProxyProviders` 那样整块重建——`proxies:` 里每一项的字段个数和结构
+    // 因协议而异，整块重建必须先能完整还原任意结构才安全，成本远高于收益；定点
+    // splice 只需要知道"这一项从哪一行开始、到哪一行结束"，不动的条目原样保留。
+    //
+    // 范围限定：只认识本 App 自己的新增/编辑表单会写出的 flat scalar 字段
+    // （`localProxyKnownKeys`）。任何这个 App 不认识的内容——不管是未知的 flat
+    // key，还是像 `ws-opts:` 这样的嵌套传输层配置——原样整行保留进 `extraLines`，
+    // 编辑时原样写回，不解析也不丢弃。v1 表单本身不提供编辑 ws-opts/grpc-opts
+    // 的入口（先只覆盖 TCP/TLS 直连的 vmess/vless/trojan/ss/hysteria2）。
+
+    /// 顶层 `proxies:` 数组里的一项。
+    struct LocalProxyEntry: Equatable {
+        var name: String
+        /// 本 App 认识的 flat scalar 字段，值已去掉包裹引号。
+        var fields: [String: String]
+        /// VLESS REALITY 的 `reality-opts:` 子块——目前唯一单独识别的嵌套结构。
+        /// REALITY 在真实订阅里相当常见（"分叉订阅节点"这个功能本身就是为了处理
+        /// 它），值得单独承载，不然编辑表单没法回显 public-key/short-id，
+        /// 只能眼睁睁看着它们躺在不透明的 extraLines 里改不了。
+        var realityPublicKey: String? = nil
+        var realityShortId: String? = nil
+        /// 这一项里本 App 不解析的原始行（未知 flat key + 除 reality-opts 外的
+        /// 任意嵌套块，如 ws-opts），按文件中原始顺序保留，写回时原样追加。
+        var extraLines: [String]
+    }
+
+    /// 手动节点表单目前覆盖的 flat 字段全集（vmess/vless/trojan/ss/hysteria2 的
+    /// 并集）。不在这个集合里的 key 一律进 `extraLines`，不会被表单静默吞掉。
+    static let localProxyKnownKeys: Set<String> = [
+        "type", "server", "port", "uuid", "password", "cipher", "alterId",
+        "flow", "sni", "servername", "tls", "skip-cert-verify", "udp", "alpn",
+        "obfs", "obfs-password", "up", "down", "client-fingerprint",
+    ]
+
+    /// 解析顶层 `proxies:` 块。跳过空行的原因同 `proxyProviders()`——空行没有
+    /// 前导空格，用 `!hasPrefix(" ")` 判断"是否退出缩进块"会被空行误判为回到顶层。
+    func localProxies() -> [LocalProxyEntry] {
+        guard let text = try? String(contentsOfFile: configFilePath, encoding: .utf8) else { return [] }
+        var result: [LocalProxyEntry] = []
+        var inBlock = false
+        var cur: LocalProxyEntry? = nil
+        var inRealityOpts = false
+
+        func leadingSpaces(_ s: Substring) -> Int {
+            var n = 0
+            for c in s { if c == " " { n += 1 } else { break } }
+            return n
+        }
+        // 空格必须和引号一起纳入 trim 字符集：`- name: "X"` 冒号后是 ` "X"`，
+        // 只 trim 引号的话，最外层的空格会挡住 trim 从两端往内推进，引号永远
+        // 剥不掉——这个 bug 用真实文件跑过一遍才发现，之前只看编译通过。
+        func unquoted(_ s: Substring) -> String {
+            String(s).trimmingCharacters(in: CharacterSet(charactersIn: " \"'"))
+        }
+        func flush() {
+            if let c = cur, !c.name.isEmpty { result.append(c) }
+            cur = nil
+        }
+        func assign(_ key: String, _ value: String, _ rawLine: String) {
+            if key == "name" { cur?.name = value }
+            else if Self.localProxyKnownKeys.contains(key) { cur?.fields[key] = value }
+            else { cur?.extraLines.append(rawLine) }
+        }
+
+        for rawLine in text.components(separatedBy: "\n") {
+            let trimmed = rawLine.trimmingCharacters(in: .whitespaces)
+            if trimmed.isEmpty { continue }
+
+            let indent = leadingSpaces(rawLine[rawLine.startIndex...])
+            if indent == 0 {
+                if inBlock { flush() }
+                inBlock = rawLine.hasPrefix("proxies:")
+                continue
+            }
+            guard inBlock else { continue }
+
+            if indent == 2, trimmed.hasPrefix("- ") {
+                flush()
+                cur = LocalProxyEntry(name: "", fields: [:], extraLines: [])
+                let rest = trimmed.dropFirst(2)
+                if let colon = rest.firstIndex(of: ":") {
+                    let key = String(rest[rest.startIndex..<colon]).trimmingCharacters(in: .whitespaces)
+                    let value = unquoted(rest[rest.index(after: colon)...])
+                    assign(key, value, rawLine)
+                }
+                inRealityOpts = false
+            } else if indent == 4, trimmed == "reality-opts:" {
+                // 只识别这一个嵌套 key；进入后接下来 indent==6 的两行单独处理。
+                inRealityOpts = true
+            } else if indent == 6, inRealityOpts, let colon = trimmed.firstIndex(of: ":") {
+                let key = String(trimmed[trimmed.startIndex..<colon]).trimmingCharacters(in: .whitespaces)
+                let value = unquoted(Substring(trimmed[trimmed.index(after: colon)...]))
+                if key == "public-key" { cur?.realityPublicKey = value }
+                else if key == "short-id" { cur?.realityShortId = value }
+                else { cur?.extraLines.append(rawLine) }   // reality-opts 下的未知子键，原样保留
+            } else if indent == 4, cur != nil, let colon = trimmed.firstIndex(of: ":") {
+                inRealityOpts = false
+                let key = String(trimmed[trimmed.startIndex..<colon]).trimmingCharacters(in: .whitespaces)
+                let value = unquoted(Substring(trimmed[trimmed.index(after: colon)...]))
+                assign(key, value, rawLine)
+            } else if indent > 4, cur != nil {
+                inRealityOpts = false
+                // 未识别的嵌套内容（如 ws-opts 的子字段）—— 原样保留。
+                cur?.extraLines.append(rawLine)
+            }
+        }
+        if inBlock { flush() }
+        return result
+    }
+
+    /// 把已知字段渲染成一行 `key: value`；纯数字/布尔不加引号，其余加引号，
+    /// 避免特殊字符（`:`、`#`、前导 0 等）被 YAML 误当成语法解析。
+    private func yamlScalar(_ raw: String) -> String {
+        if raw == "true" || raw == "false" || Int(raw) != nil { return raw }
+        return "\"\(raw.replacingOccurrences(of: "\"", with: "\\\""))\""
+    }
+
+    private func entryLines(_ e: LocalProxyEntry) -> [String] {
+        var lines = ["  - name: \(yamlScalar(e.name))"]
+        // 固定顺序输出，方便人工比对 diff；顺序本身对 mihomo 无意义。
+        let order = ["type", "server", "port", "uuid", "password", "cipher",
+                     "alterId", "flow", "sni", "servername", "tls",
+                     "skip-cert-verify", "udp", "alpn", "obfs", "obfs-password",
+                     "up", "down", "client-fingerprint"]
+        for key in order {
+            guard let v = e.fields[key] else { continue }
+            lines.append("    \(key): \(yamlScalar(v))")
+        }
+        // reality-opts 是唯一单独承载的嵌套块，两个字段都有值才发——只给
+        // public-key 不给 short-id（反之亦然）对 REALITY 握手没有意义，写出去
+        // 只会让 mihomo -t 校验失败，不如干脆不写，让节点退化成普通 TLS。
+        if let pk = e.realityPublicKey, !pk.isEmpty,
+           let sid = e.realityShortId, !sid.isEmpty {
+            lines.append("    reality-opts:")
+            lines.append("      public-key: \(yamlScalar(pk))")
+            lines.append("      short-id: \(yamlScalar(sid))")
+        }
+        lines.append(contentsOf: e.extraLines)
+        return lines
+    }
+
+    /// 定位顶层 `proxies:` 块里名为 `name` 的那一项的行区间
+    /// （含 `- ` 起始行，到下一项 `- ` 起始行或本块结束之前，不含）。
+    private func findProxyItemRange(_ lines: [String], name: String) -> Range<Int>? {
+        guard let blockStart = lines.firstIndex(where: { $0.hasPrefix("proxies:") }) else { return nil }
+        var i = blockStart + 1
+        while i < lines.count {
+            let trimmed = lines[i].trimmingCharacters(in: .whitespaces)
+            if trimmed.isEmpty { i += 1; continue }
+            let indent = lines[i].prefix(while: { $0 == " " }).count
+            if indent == 0 { break }
+            if indent == 2, trimmed.hasPrefix("- ") {
+                var itemName: String? = nil
+                let rest = trimmed.dropFirst(2)
+                if rest.hasPrefix("name:") {
+                    itemName = String(rest.dropFirst(5)).trimmingCharacters(in: CharacterSet(charactersIn: " \"'"))
+                }
+                var end = i + 1
+                while end < lines.count {
+                    let t2 = lines[end].trimmingCharacters(in: .whitespaces)
+                    if t2.isEmpty { end += 1; continue }
+                    let ind2 = lines[end].prefix(while: { $0 == " " }).count
+                    if ind2 <= 2 { break }
+                    if itemName == nil, ind2 == 4, t2.hasPrefix("name:") {
+                        itemName = String(t2.dropFirst(5)).trimmingCharacters(in: CharacterSet(charactersIn: " \"'"))
+                    }
+                    end += 1
+                }
+                if itemName == name { return i..<end }
+                i = end
+                continue
+            }
+            i += 1
+        }
+        return nil
+    }
+
+    /// 新增或原地替换（按 name 匹配）一个本地节点条目，定点 splice，不影响其它条目。
+    @discardableResult
+    func upsertLocalProxy(_ entry: LocalProxyEntry) -> Bool {
+        guard let text = try? String(contentsOfFile: configFilePath, encoding: .utf8) else { return false }
+        var lines = text.components(separatedBy: "\n")
+        let newLines = entryLines(entry)
+
+        if let range = findProxyItemRange(lines, name: entry.name) {
+            lines.replaceSubrange(range, with: newLines)
+        } else if let blockStart = lines.firstIndex(where: { $0.hasPrefix("proxies:") }) {
+            var end = blockStart + 1
+            while end < lines.count {
+                let t = lines[end].trimmingCharacters(in: .whitespaces)
+                if t.isEmpty { end += 1; continue }
+                if lines[end].prefix(while: { $0 == " " }).count == 0 { break }
+                end += 1
+            }
+            lines.insert(contentsOf: newLines, at: end)
+        } else {
+            // 顶层还没有 proxies: 块 —— 插在 proxy-providers:（如果有）之后，
+            // 否则插在 proxy-groups: 之前，与 writeProxyProviders 的插入策略一致。
+            let insertAt: Int
+            if let ppStart = lines.firstIndex(where: { $0.hasPrefix("proxy-providers:") }) {
+                var end = ppStart + 1
+                while end < lines.count {
+                    let t = lines[end].trimmingCharacters(in: .whitespaces)
+                    if t.isEmpty || lines[end].hasPrefix(" ") || lines[end].hasPrefix("\t") { end += 1; continue }
+                    break
+                }
+                insertAt = end
+            } else {
+                insertAt = lines.firstIndex(where: { $0.hasPrefix("proxy-groups:") }) ?? lines.count
+            }
+            lines.insert(contentsOf: ["proxies:"] + newLines + [""], at: insertAt)
+        }
+
+        return (try? lines.joined(separator: "\n").write(toFile: configFilePath, atomically: true, encoding: .utf8)) != nil
+    }
+
+    /// 删除一个本地节点条目（定点 splice），并清理所有策略组 / rules 对它的引用，
+    /// 避免删完节点后组里留下悬空引用导致 `mihomo -t` 校验失败。
+    @discardableResult
+    func removeLocalProxy(named name: String) -> Bool {
+        guard let text = try? String(contentsOfFile: configFilePath, encoding: .utf8) else { return false }
+        var lines = text.components(separatedBy: "\n")
+        if let range = findProxyItemRange(lines, name: name) {
+            lines.removeSubrange(range)
+            // proxies: 块因此变空的话，把空块本身也删掉，避免留下裸 "proxies:"。
+            if let blockStart = lines.firstIndex(where: { $0.hasPrefix("proxies:") }) {
+                var end = blockStart + 1
+                var hasContent = false
+                while end < lines.count {
+                    let t = lines[end].trimmingCharacters(in: .whitespaces)
+                    if t.isEmpty { end += 1; continue }
+                    if lines[end].prefix(while: { $0 == " " }).count == 0 { break }
+                    hasContent = true
+                    end += 1
+                }
+                if !hasContent { lines.removeSubrange(blockStart..<end) }
+            }
+        }
+        Self.stripReferences(to: [name], from: &lines)
+        return (try? lines.joined(separator: "\n").write(toFile: configFilePath, atomically: true, encoding: .utf8)) != nil
+    }
+
+    /// 把 `name` 加进指定策略组的 `proxies:` 列表（block 语法 `- name`）。
+    /// 已经引用过就不重复添加；找不到目标组返回 false。
+    @discardableResult
+    func addProxyToGroup(_ name: String, group: String) -> Bool {
+        guard let text = try? String(contentsOfFile: configFilePath, encoding: .utf8) else { return false }
+        var lines = text.components(separatedBy: "\n")
+        guard let pgIdx = lines.firstIndex(where: { $0.hasPrefix("proxy-groups:") }) else { return false }
+
+        var i = pgIdx + 1
+        var groupStart: Int? = nil
+        var groupEnd = lines.count
+        while i < lines.count {
+            let trimmed = lines[i].trimmingCharacters(in: .whitespaces)
+            if trimmed.isEmpty { i += 1; continue }
+            let indent = lines[i].prefix(while: { $0 == " " }).count
+            if indent == 0 { break }
+            if trimmed.hasPrefix("- name:") {
+                let gname = trimmed.dropFirst(7).trimmingCharacters(in: CharacterSet(charactersIn: " \"'"))
+                if groupStart != nil { groupEnd = i; break }
+                if gname == group { groupStart = i }
+            }
+            i += 1
+        }
+        guard let gs = groupStart else { return false }
+        if groupEnd == lines.count {
+            var end = gs + 1
+            while end < lines.count {
+                let trimmed = lines[end].trimmingCharacters(in: .whitespaces)
+                if trimmed.isEmpty { end += 1; continue }
+                if lines[end].prefix(while: { $0 == " " }).count == 0 { break }
+                end += 1
+            }
+            groupEnd = end
+        }
+
+        for j in gs..<groupEnd {
+            let t = lines[j].trimmingCharacters(in: .whitespaces)
+            if t == "- \(name)" || t == "- \"\(name)\"" { return true }
+        }
+
+        if let proxiesIdx = lines[gs..<groupEnd].firstIndex(where: { $0.trimmingCharacters(in: .whitespaces) == "proxies:" }) {
+            // 不能直接用循环 break 时的下标插入：组与组之间常有空行分隔，
+            // "跳过空行→在下一行判断缩进"会一路跳过本组子列表的空行分隔符，
+            // 停在下一个组的边界上，把新节点插到空行*之后*而不是紧跟在最后一个
+            // 已有条目之后。改为记录"最后一次仍在子列表缩进内的真实行"，插它后面。
+            let pIndent = lines[proxiesIdx].prefix(while: { $0 == " " }).count
+            var lastInScope = proxiesIdx
+            var scan = proxiesIdx + 1
+            while scan < groupEnd {
+                let t = lines[scan].trimmingCharacters(in: .whitespaces)
+                if t.isEmpty { scan += 1; continue }
+                if lines[scan].prefix(while: { $0 == " " }).count <= pIndent { break }
+                lastInScope = scan
+                scan += 1
+            }
+            lines.insert("\(String(repeating: " ", count: pIndent + 2))- \(name)", at: lastInScope + 1)
+        } else {
+            var baseIndent = "    "
+            for k in gs..<groupEnd {
+                if lines[k].trimmingCharacters(in: .whitespaces).hasPrefix("- name:") {
+                    baseIndent = String(lines[k].prefix(while: { $0 == " " }))
+                }
+            }
+            lines.insert(contentsOf: ["\(baseIndent)proxies:", "\(baseIndent)  - \(name)"], at: groupEnd)
+        }
+
+        return (try? lines.joined(separator: "\n").write(toFile: configFilePath, atomically: true, encoding: .utf8)) != nil
+    }
+
+    /// 第一个 `type: select` 策略组的名字——本地节点默认接入这里，而不是
+    /// `proxy-groups[0]`（通常是 url-test 类型，按延迟自动轮换；用户手动加的
+    /// 节点应该是"我明确要选它"，只有 select 类型的组才是用户真正能挑它的地方）。
+    /// 没有 select 类型的组时返回 nil，调用方回落到 `proxy-groups[0]`。
+    func firstSelectGroupName() -> String? {
+        guard let text = try? String(contentsOfFile: configFilePath, encoding: .utf8) else { return nil }
+        let lines = text.components(separatedBy: "\n")
+        guard let pgIdx = lines.firstIndex(where: { $0.hasPrefix("proxy-groups:") }) else { return nil }
+
+        var i = pgIdx + 1
+        var pendingName: String? = nil
+        while i < lines.count {
+            let trimmed = lines[i].trimmingCharacters(in: .whitespaces)
+            if trimmed.isEmpty { i += 1; continue }
+            if lines[i].prefix(while: { $0 == " " }).count == 0 { break }
+            if trimmed.hasPrefix("- name:") {
+                pendingName = trimmed.dropFirst(7).trimmingCharacters(in: CharacterSet(charactersIn: " \"'"))
+            } else if trimmed.hasPrefix("type:"), trimmed.dropFirst(5).trimmingCharacters(in: .whitespaces) == "select" {
+                return pendingName
+            }
+            i += 1
+        }
+        return nil
+    }
+
+    /// 在某个 proxy-provider 的本地缓存文件（`./providers/<name>.yaml`）里，找到
+    /// 名字匹配 `nodeName` 的那条原始分享链接——fork-on-edit 用它重建完整连接参数。
+    ///
+    /// 这个缓存文件通常不是 mihomo 原生的 `proxies:` YAML：大多数订阅服务器返回
+    /// 的是 base64 编码、换行分隔的分享链接列表（v2rayN 惯例），mihomo 在内部转换
+    /// 成自己的结构，但落盘缓存就是原始响应体，没有转换过。这里按同样的约定解码；
+    /// 如果响应本身就是明文链接（少数订阅服务器不做 base64），原样按行处理也一样
+    /// 能工作，不需要区分对待。
+    func shareLinkForProviderNode(providerName: String, nodeName: String) -> String? {
+        let path = appSupport + "/providers/\(providerName).yaml"
+        guard let raw = try? String(contentsOfFile: path, encoding: .utf8) else { return nil }
+        let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        let text = Self.looseBase64Decode(trimmed) ?? trimmed
+        for line in text.components(separatedBy: "\n") {
+            let l = line.trimmingCharacters(in: .whitespaces)
+            guard !l.isEmpty, let hashIdx = l.firstIndex(of: "#") else { continue }
+            let fragRaw = String(l[l.index(after: hashIdx)...])
+            let frag = fragRaw.removingPercentEncoding ?? fragRaw
+            if frag == nodeName { return l }
+        }
+        return nil
+    }
+
+    /// URL-safe / 标准 base64 都试，并补齐缺失的 padding。整个文件按一坨 base64
+    /// 尝试解码——不是任意字符串都能撞上有效 base64，解不出来就是 nil，调用方
+    /// 据此判断"这不是 base64 包装，按明文处理"。
+    private static func looseBase64Decode(_ s: String) -> String? {
+        var t = s.replacingOccurrences(of: "-", with: "+").replacingOccurrences(of: "_", with: "/")
+        let padding = t.count % 4
+        if padding > 0 { t += String(repeating: "=", count: 4 - padding) }
+        guard let data = Data(base64Encoded: t) else { return nil }
+        return String(data: data, encoding: .utf8)
     }
 
     /// The BSD name of the current default-route interface (e.g. `en0`), or nil.
