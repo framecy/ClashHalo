@@ -4,7 +4,8 @@
 
 **目标平台**：macOS 14+，视觉语言对齐现代 macOS 系统风格（macOS 27 一代：语义色、材质分层、连续圆角、工具型密度）。
 **主题**：完美支持 **Light / Dark**，跟随系统 Appearance，禁止页面级 `preferredColorScheme` 硬锁。
-**品牌**：单一 accent（PANTONE Medium Purple U / `#65428A` 数字近似），无用户可选主题色。
+**品牌**：单一 accent（科技绿 `oklch(0.72 0.17 150)` ≈ `#19C37D`，Light 取 `#0D9E67` 保证对比度），无用户可选主题色。
+**视觉基线**：`design_handoff_clashpow` 高保真原型（颜色/字号/圆角/间距为最终值）。
 
 ---
 
@@ -66,7 +67,8 @@ ClashHalo 是**网络运维工具**，不是营销站点。
 
 | Token | 语义 | 使用 |
 |---|---|---|
-| `accent` | 品牌主色 / 主操作 / 选中（Medium Purple U） | `.dsButton(.prominent)`、当前节点、TUN on |
+| `accent` | 品牌主色 / 主操作 / 选中（科技绿） | `.dsButton(.prominent)`、当前节点、TUN on |
+| `accentInk` | accent 填充之上的文字/图标 | 主按钮文字、选中导航行、选中 seg |
 | `accentSoft` | 选中底 | 列表选中、chip 选中 fill |
 | `accentStrong` | 强调描边/深色文字上的 accent | 少用 |
 | `ok` | 成功 / 低延迟 / 在线 | 就绪点、延迟 <100ms |
@@ -197,7 +199,7 @@ Card 内边距：`l`。
 ### 6.1 Shell
 
 - `NavigationSplitView` + **自绘侧栏导航**（不用 `List(.sidebar)`，避免系统 contentMargins/listRowInsets 叠出 2–4pt 无法对齐）
-- **全局 accent 统一**：`Assets.xcassets/AccentColor` + `ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME` + 根视图 `.tint(DS.Palette.accent)`。侧栏选中 / 系统开关 / Progress 与内容区重点色共用 PANTONE Medium Purple U，禁止继续依赖系统蓝
+- **全局 accent 统一**：`Assets.xcassets/AccentColor` + `ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME` + 根视图 `.tint(DS.Palette.accent)`。侧栏选中 / 系统开关 / Progress 与内容区重点色共用科技绿 accent，禁止继续依赖系统蓝
 - **跨栏对齐**：侧栏顶栏与内容区 `PageToolbar` / chrome 顶栏同高  
   `DS.Layout.chromeHeight`（= `m + controlHeight + m` = 56）  
   水平 inset 统一 `DS.Layout.pageContentInset`；**分割线通栏**（`Divider().overlay(separator)`，禁止 inset hairline）
@@ -263,30 +265,58 @@ Card 内边距：`l`。
 
 ### 6.8 Segmented Tab（胶囊滑块）
 
-唯一实现：`DSSegmentedControl`。禁止 AppKit `.segmented` / 页面自绘第二套。
+唯一实现：`DSSegmentedControl`（页面级/工具栏）与连接页筛选 chip。两者共享同一套
+高度公式与"选中态立体感"配方，禁止 AppKit `.segmented` / 页面自绘第二套。
 
 ```
-┌─ track (controlBg + border, r=6, h=32) ─────────────┐
-│ 2pt inset                                           │
-│  ┌────────┐ ┌────────┐ ┌────────┐                   │
-│  │ 选中   │ │ 未选   │ │ 未选   │  ← 等分 maxWidth  │
-│  │ accent │ │ clear  │ │ clear  │                   │
-│  │ white  │ │primary │ │primary │                   │
-│  └────────┘ └────────┘ └────────┘                   │
-└─────────────────────────────────────────────────────┘
+┌─ track (inputBg + border, r=8, h=segHeight) ──────────────┐
+│ segCapsuleInset (3pt)                                     │
+│  ┌────────┐ ┌────────┐ ┌────────┐                         │
+│  │ 选中   │ │ 未选   │ │ 未选   │  ← 等分 maxWidth        │
+│  │ 立体   │ │ clear  │ │ clear  │    高 = controlHeight   │
+│  │ accentInk│ │secondary│ │secondary│                     │
+│  └────────┘ └────────┘ └────────┘                         │
+└─────────────────────────────────────────────────────────────┘
 ```
+
+**高度不是拍出来的一个数，是从"选中胶囊必须至少和普通按钮一样高"反推的：**
+
+```
+segCapsuleInset = 3                              // 胶囊阴影的可见余量
+segHeight = controlHeight + 2 × segCapsuleInset  // 28 + 6 = 34
+```
+
+`segHeight − 2 × segCapsuleInset` 就是选中胶囊的可见高度，恒等于 `controlHeight`。
+只把 track 做高而不重算这条公式是典型错误 —— 之前 track 定为 `controlHeight + 2`、
+inset 仍是 3，选中胶囊可见高度只剩 `(controlHeight+2) − 6 = controlHeight − 4` = 24pt，
+比按钮更矮，"更醒目的当前态"反而看着最小。**改 inset 或 controlHeight 时必须
+同步改这条公式**，不要只改 `segHeight` 字面量。
 
 | 项 | 规范 |
 |---|---|
-| 高度 | `DS.Layout.controlHeight` = 32 |
-| 圆角 | track 与选中胶囊均为 `Radius.control` = 6（continuous） |
-| Track | fill `controlBg`；stroke `border` 1pt；clip continuous |
-| 选中胶囊 | fill `accent`；文字/图标 **white**；与 track **内缩 2pt**（上下左右），禁止贴边直角块 |
-| 未选中 | 透明底；文字/图标 `.primary` |
-| 图标 | 可选；`md` + `medium` + `.monochrome`；与文案间距 `xs`；禁止 `.fill` 与 outline 混用 |
-| 字体 | `.dsBodyMedium`，`lineLimit(1)` |
-| 宽度 | **等分**：每段 `maxWidth: .infinity`。页面级控件拉满 chrome 内容宽；工具栏内由外层 `.frame(width:)` 钉宽 |
+| Track 高度 | `DS.Layout.segHeight`（由上式推导，当前 34） |
+| 胶囊内缩 | `DS.Layout.segCapsuleInset`（当前 3） |
+| 圆角 | track = `Radius.node`(8)；选中胶囊 = `Radius.chip`(6) |
+| Track | fill `inputBg`；stroke `border` 0.5pt |
+| 选中胶囊 | `Shape.dsElevatedFill(accent)`（见下）；文字/图标 `accentInk`；顶缘 18% 白描边 0.5pt |
+| 未选中 | 透明底；文字/图标 `.secondary` |
+| 图标 | 可选；13pt + semibold + `.monochrome`；与文案间距 5pt |
+| 字体 | `.dsCaptionBold`，`lineLimit(1)` |
+| 宽度 | **等分**：每段 `maxWidth: .infinity`。页面级控件用 `.fixedSize()` 贴合内容宽（禁止写死 `width:`，会在内容旁留死区）；工具栏内同理 |
 | 动效 | 系统默认；禁止自定义弹簧/位移动画 |
+
+**选中态立体感 — `Shape.dsElevatedFill(_:)`**
+
+App 内唯一使用投影建立层次的地方（§3.5 卡片一律 0.5px 边框，不用投影）。
+三层缺一不可，只叠投影只是"贴纸带了点灰影"：
+
+1. 底色 + 折入同一 `Shape.fill()` 的竖直渐变高光（`selectionGlossTop` → `selectionGlossBottom`，
+   `blendMode(.overlay)`）—— **禁止用 `.overlay(gradient)`**：那是在视图的矩形包围盒上画，
+   不会裁到圆角轮廓，方形渐变会在圆角外露出方角。必须让渐变本身作为 shape 的第二层 `fill()`。
+2. 外投影两层（`selectionShadow`，radius 4/y1.5 + radius 1/y0.5）—— 离开背景。
+3. 顶缘 18% 白描边 —— 有边缘。
+
+未选中态没有这三层，只有 hover 前的纯色/透明底，对比越强，选中态的"浮起"越明确。
 
 **角色与放置**
 
@@ -455,5 +485,7 @@ padding(.vertical, 5)                    // 用 DS.Spacing.*
 | 2026-07-17 | Light 精致化：`windowBg`/`controlBg` 重标定；`border` 软化 0.10→0.06；`dsCardChrome` 双层阴影（contact+ambient）；卡片边界靠抬升+弱边，而非硬线框 |
 | 2026-07-18 | `DS.Motion` + §10/§10.1 反馈契约：press/toast/micro/toastHold；Toast generation + kind；主开关 busy 可感知；禁止装饰性 looping |
 | 2026-07-18 | 菜单栏 toast 副标题行；`DS.Progress.miniScale`；主路径 toast kind 补齐 |
+
+| 2026-07-23 | v1.2.0 UI 重构（对齐 `design_handoff_clashpow` 高保真原型）：品牌 accent 紫 → 科技绿 `#19C37D` + 新增 `accentInk`；表面色全套重标定（`cardBg` `#252528` / `inputBg` / `cardHeadBg` / `rowHover` / `borderStrong` / `textFaint`）；卡片改 0.5px 边框、去除投影；`controlHeight` 32→28、`chromeHeight` 56→44、`pageContentInset` 20→18；字阶补 `dsCardName` / `dsStatValue`(24) / `dsStatLabel` / `dsCardTitle` / `dsMonoSm` / `dsBadge` / `dsProtoTag`；新增 `DSComponents.swift`（StatCard / RegionChip / ProtoTag / LatencyBadge / FilterChip / IconSlot / FormRow / SwitchRow / Bar / Vital / TableHead / TableRow / CopyButton / IconButton / Section）；侧栏加品牌行 + 状态卡 + 概览/代理/网络/配置四分组 + 连接计数徽章；`PageToolbar` 删除，页面统一 `PageHead`（21/700 标题 + 说明行 + 右侧动作）；全部 9 页按原型重绘 |
 
 实现以代码为准；规范与代码冲突时，先修代码再回写本文。
