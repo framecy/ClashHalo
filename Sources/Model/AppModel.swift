@@ -25,11 +25,20 @@ import ServiceManagement
     private var lastGatewayHelperFailLog: Date = .distantPast
 
     // Navigation + theme
-    @Published var route = "dashboard" {
+    @Published var route = AppModel.initialRoute {
         didSet {
             reconcileActiveStreams()
         }
     }
+    /// 起始页。Release 恒为仪表盘；Debug 下可用 `CH_ROUTE=general` 直接落到某一页，
+    /// 省掉为每个页面重新构建一次的成本（UI 走查用）。
+    private static var initialRoute: String {
+        #if DEBUG
+        if let r = ProcessInfo.processInfo.environment["CH_ROUTE"], !r.isEmpty { return r }
+        #endif
+        return "dashboard"
+    }
+
     @Published var isMainWindowVisible = false {
         didSet {
             reconcileActiveStreams()
