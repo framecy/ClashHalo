@@ -8,14 +8,49 @@ struct DnsPage: View {
     @State private var result = ""
     @State private var resolving = false
 
+    /// `dns` 配置子字典。
+    private var dns: [String: Any] { M.configs["dns"] as? [String: Any] ?? [:] }
+
+    /// 活跃连接里观察到的 Fake-IP 映射（唯一 host 计数）。
+    private var fakeipConns: [Conn] {
+        M.cachedConns.filter { $0.dstIP.hasPrefix("198.18.") || $0.dstIP.hasPrefix("198.19.") }
+    }
+
     var body: some View {
         VStack(spacing: 0) {
             ScrollView {
-                VStack(spacing: DS.Spacing.l) {
-                    // DNS settings (editable) — 顶部曾有硬编码的假统计(平均解析/池/缓存),
-                    // mihomo 无对应统计端点, 已移除以免误导; 真实信息见下方 Fake-IP 映射。
-                    Card(title: "DNS 服务器", icon: "server.rack") {
-                        VStack(spacing: 2) {
+                VStack(spacing: DS.Spacing.m) {
+                    // 概览 — 只展示 mihomo 真实可得的量；命中率/平均解析无对应端点，不编造。
+                    HStack(spacing: DS.Spacing.m) {
+                        DSStatCard(label: "Fake-IP 映射",
+                                   value: "\(fakeipConns.count)",
+                                   sub: "来自活跃连接",
+                                   accent: true)
+                        DSStatCard(label: "Fake-IP 池",
+                                   value: (dns["fake-ip-range"] as? String) ?? "—",
+                                   sub: "dns.fake-ip-range")
+                        DSStatCard(label: "增强模式",
+                                   value: ((dns["enhanced-mode"] as? String) ?? "—").uppercased(),
+                                   sub: "dns.enhanced-mode")
+                        DSStatCard(label: "上游解析器",
+                                   value: "\((dns["nameserver"] as? [Any])?.count ?? 0)",
+                                   sub: "dns.nameserver")
+                    }
+
+                    // Fake-IP mappings observed in live connections — reuse the
+                    // shared AppModel cache populated by the connections / gateway
+                    // pollers. Do NOT start a second ConnectionsViewModel here
+                    // (that used to double /connections traffic every 1.5s).
+                    let fakeip = fakeipConns
+
+                    // 内容栅格：DNS 服务器跨 2 列（原型 `2fr 1fr` 宽卡位），
+                    // 解析测试占 1 列；Fake-IP 映射表跨满 3 列。
+                    Grid(alignment: .top,
+                         horizontalSpacing: DS.Layout.gridGutter,
+                         verticalSpacing: DS.Layout.gridGutter) {
+                    GridRow {
+                    Card(title: "DNS 服务器", icon: "server.rack", stretch: true) {
+                        VStack(spacing: 0) {
                             NToggle("启用 DNS", "dns", "enable")
                             NToggle("IPv6 解析", "dns", "ipv6")
                             NPicker("增强模式", "dns", "enhanced-mode", [("fake-ip","Fake-IP"),("redir-host","Redir-Host")])
@@ -25,10 +60,11 @@ struct DnsPage: View {
                             NList("Fake-IP 过滤", "dns", "fake-ip-filter", placeholder: "*.lan")
                         }
                         Text("Fake-IP 为代理域名返回保留段虚拟 IP，避免 DNS 泄漏；上游支持 DoH/DoT/DoQ/UDP。")
-                            .font(.dsBody).foregroundColor(.secondary).padding(.top, DS.Spacing.s)
+                            .font(.dsCaption).foregroundColor(.secondary).padding(.top, DS.Spacing.m)
                     }
+                    .gridCellColumns(2)
 
-                    Card(title: "DNS 解析测试", icon: "magnifyingglass") {
+                    Card(title: "DNS 解析测试", icon: "magnifyingglass", stretch: true) {
                         VStack(alignment: .leading, spacing: DS.Spacing.s) {
                             HStack(spacing: DS.Spacing.s) {
                                 TextField("输入域名，如 google.com", text: $query)
@@ -47,30 +83,51 @@ struct DnsPage: View {
                         }
                     }
 
-                    // Fake-IP mappings observed in live connections — reuse the
-                    // shared AppModel cache populated by the connections / gateway
-                    // pollers. Do NOT start a second ConnectionsViewModel here
-                    // (that used to double /connections traffic every 1.5s).
-                    let fakeip = M.cachedConns.filter { $0.dstIP.hasPrefix("198.18.") || $0.dstIP.hasPrefix("198.19.") }
-                    Card(title: "Fake-IP 映射 · \(fakeip.count)（来自活跃连接）") {
+                    }
+
+                    GridRow {
+                    Card(title: "Fake-IP 映射 · \(fakeip.count)", icon: "arrow.left.arrow.right", pad: false) {
                         if fakeip.isEmpty {
                             Text("当前无 Fake-IP 连接（需内核启用 dns.enhanced-mode: fake-ip 且有代理流量；打开「连接」页可刷新映射）")
-                                .font(.dsBody).foregroundColor(.secondary)
+                                .font(.dsCaption).foregroundColor(.secondary)
+                                .padding(DS.Spacing.m)
                         } else {
-                            VStack(spacing: DS.Spacing.xs) {
+                            VStack(spacing: 0) {
+                                HStack(spacing: DS.Spacing.s) {
+                                    DSTableHead(title: "域名")
+                                    DSTableHead(title: "FAKE-IP", width: 130)
+                                    DSTableHead(title: "真实 IP", width: 130)
+                                }
+                                .padding(.horizontal, DS.Spacing.s + 2)
+                                .frame(height: 26)
+                                .overlay(alignment: .bottom) {
+                                    Rectangle().fill(DS.Palette.border).frame(height: 0.5)
+                                }
+
                                 ForEach(fakeip.prefix(50)) { c in
-                                    HStack {
-                                        Text(c.host).font(.dsBody).lineLimit(1)
-                                        Spacer(minLength: 0)
-                                        Text(c.dstIP).font(.dsMono).foregroundColor(DS.Palette.accent)
+                                    DSTableRow {
+                                        HStack(spacing: DS.Spacing.s) {
+                                            Text(c.host).font(.dsBody).lineLimit(1)
+                                                .frame(maxWidth: .infinity, alignment: .leading)
+                                            Text(c.dstIP).font(.dsMonoSmBold)
+                                                .foregroundColor(DS.Palette.accent)
+                                                .frame(width: 130, alignment: .leading)
+                                            Text(c.host == c.dstIP ? "—" : c.host)
+                                                .font(.dsMonoSm).foregroundColor(.secondary)
+                                                .lineLimit(1)
+                                                .frame(width: 130, alignment: .leading)
+                                        }
                                     }
                                 }
                             }
                         }
                     }
-                    Spacer(minLength: 0)
+                    .gridCellColumns(3)
+                    }
+                    }
                 }
-                .padding(.horizontal, DS.Spacing.xl).padding(.bottom, DS.Spacing.xxl)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(.horizontal, DS.Layout.pageContentInset).padding(.bottom, 26)
             }
         }
     }

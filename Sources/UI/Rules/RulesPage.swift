@@ -17,30 +17,13 @@ struct RulesPage: View {
         let rows = model.nodes.filter(matches)
 
         VStack(spacing: 0) {
-            HStack(alignment: .center, spacing: DS.Spacing.m) {
-                HStack(spacing: DS.Spacing.s) {
-                    Image(systemName: "magnifyingglass")
-                        .foregroundColor(.secondary)
-                        .font(.dsBody)
-                    TextField("搜索规则类型 / 内容 / 策略", text: $q)
-                        .textFieldStyle(.plain)
-                        .font(.dsBody)
-                }
-                .dsSearchFieldChrome(maxWidth: 320)
-
-                Spacer(minLength: 0)
-
+            PageHead(title: "分流规则") {
                 if !selection.isEmpty {
-                    Text("已选 \(selection.count) 项")
-                        .font(.dsBody)
-                        .foregroundColor(.secondary)
-
                     Button("启用") {
                         model.toggleNodes(ids: selection, isEnabled: true)
                         saveAndReloadKernel()
                     }
                     .dsButton()
-
 
                     Button("禁用") {
                         model.toggleNodes(ids: selection, isEnabled: false)
@@ -48,35 +31,52 @@ struct RulesPage: View {
                     }
                     .dsButton()
 
-
                     Button("删除") {
                         model.deleteNodes(ids: selection)
                         selection.removeAll()
                         saveAndReloadKernel()
                     }
                     .dsButton(.destructive)
-
                 }
 
                 Button { reloadModel() } label: { Label("刷新", systemImage: "arrow.clockwise") }
                     .dsButton()
 
-
-                Button(action: {
+                Button {
                     editingNode = nil
                     showingForm = true
-                }) {
+                } label: {
                     Label("添加规则", systemImage: "plus")
                 }
                 .dsButton(.prominent)
+            }
 
+            HStack(alignment: .center, spacing: DS.Spacing.s) {
+                HStack(spacing: DS.Spacing.s) {
+                    Image(systemName: "magnifyingglass")
+                        .foregroundColor(.secondary)
+                        .font(.dsBody)
+                    TextField("搜索规则类型 / 内容 / 策略…", text: $q)
+                        .textFieldStyle(.plain)
+                        .font(.dsBody)
+                }
+                .dsSearchFieldChrome(maxWidth: 300)
+
+                Spacer(minLength: DS.Spacing.s)
+
+                if !selection.isEmpty {
+                    Text("已选 \(selection.count) 项")
+                        .font(.dsCaption)
+                        .monospacedDigit()
+                        .foregroundColor(DS.Palette.accent)
+                }
+                Text("\(rows.count) 条匹配")
+                    .font(.dsCaption)
+                    .monospacedDigit()
+                    .foregroundColor(DS.Palette.textFaint)
             }
             .padding(.horizontal, DS.Layout.pageContentInset)
-            .padding(.vertical, DS.Spacing.m)
-            .frame(height: DS.Layout.chromeHeight, alignment: .center)
-            .background(DS.Palette.chromeBg)
-
-            Divider().overlay(DS.Palette.separator)
+            .padding(.bottom, DS.Spacing.m)
 
             if let err = model.errorMessage {
                 ContentUnavailable("加载出错: \(err)", "exclamationmark.triangle")
@@ -120,35 +120,36 @@ struct RulesPage: View {
         }
     }
 
+    /// 规则行 — 与连接表同语言：类型徽章(mono) + 匹配内容(mono) + 右侧策略(accent)。
     private func row(_ r: RuleNode) -> some View {
         HStack(spacing: DS.Spacing.s) {
-            Toggle("", isOn: Binding(
+            DSSwitch(isOn: Binding(
                 get: { r.isEnabled },
                 set: { _ in
                     model.toggleNode(id: r.id)
                     saveAndReloadKernel()
                 }
             ))
-            .labelsHidden()
 
-            Text(r.type.rawValue).font(.dsBodyMedium)
-                .padding(.horizontal, DS.Spacing.s - 2).padding(.vertical, 2)
-                .background(Capsule().fill(DS.Palette.hairline))
+            DSKindBadge(text: r.type.rawValue)
                 .frame(width: 150, alignment: .leading)
                 .opacity(r.isEnabled ? 1.0 : 0.5)
 
             Text(r.match.isEmpty ? "—" : r.match)
-                .font(.dsMono).lineLimit(1)
+                .font(.dsMonoSm).lineLimit(1).truncationMode(.middle)
                 .strikethrough(!r.isEnabled)
                 .opacity(r.isEnabled ? 1.0 : 0.5)
 
-            Spacer()
+            Spacer(minLength: DS.Spacing.s)
 
             let actionStr = r.action == .proxy ? (r.proxyGroup ?? "PROXY") : r.action.rawValue
-            Text(actionStr).font(.dsBody).foregroundColor(DS.Palette.accent)
+            Text(actionStr)
+                .font(.dsBodySemibold)
+                .foregroundColor(r.action == .reject ? DS.Palette.error : DS.Palette.accent)
+                .lineLimit(1)
                 .opacity(r.isEnabled ? 1.0 : 0.5)
         }
-        .padding(.vertical, DS.Spacing.xs)
+        .frame(height: DS.Layout.rowHeight)
         .contentShape(Rectangle())
         .contextMenu {
             Button {

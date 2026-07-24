@@ -10,33 +10,37 @@ struct ConfigPage: View {
     @State private var showWipeConfirm = false
 
     var body: some View {
-        VStack(spacing: 0) {
-            PageToolbar {
-                Button { showWipeConfirm = true } label: { Label("清空全部", systemImage: "trash") }
-                    .dsButton(.destructive)
-                    .disabled(M.store.profiles.isEmpty || M.engine.isBusy)
-                Button { showImportRemote = true } label: { Label("导入订阅", systemImage: "icloud.and.arrow.down") }
-                    .dsButton()
-                Button { showAddLocal = true } label: { Label("添加本地", systemImage: "doc.badge.plus") }
-                    .dsButton(.prominent)
-            }
+        ScrollView {
+            VStack(alignment: .leading, spacing: DS.Spacing.m) {
+                PageHead(title: "配置编辑") {
+                    Button { showWipeConfirm = true } label: { Label("清空全部", systemImage: "trash") }
+                        .dsButton(.destructive)
+                        .disabled(M.store.profiles.isEmpty || M.engine.isBusy)
+                    Button { showImportRemote = true } label: { Label("导入订阅", systemImage: "icloud.and.arrow.down") }
+                        .dsButton()
+                    Button { showAddLocal = true } label: { Label("本地导入", systemImage: "doc.badge.plus") }
+                        .dsButton(.prominent)
+                }
+                .padding(.horizontal, -DS.Layout.pageContentInset)
 
-            if M.store.profiles.isEmpty {
-                ContentUnavailable("暂无配置，点击右上角“+”导入", "doc.text")
-            } else {
-                ScrollView {
-                    LazyVGrid(
-                        columns: [GridItem(.adaptive(minimum: 280), spacing: DS.Spacing.l)],
-                        spacing: DS.Spacing.l
-                    ) {
-                        ForEach(M.store.profiles) { p in profileCard(p) }
+                if M.store.profiles.isEmpty {
+                    ContentUnavailable("暂无配置，点击右上角「导入订阅」或「本地导入」", "doc.text")
+                        .frame(minHeight: 320)
+                } else {
+                    DSSection(title: "配置文件 · 多配置选择",
+                              count: "\(M.store.profiles.count) 个配置") {
+                        LazyVGrid(
+                            columns: [GridItem(.adaptive(minimum: DS.Layout.gridMinProfile),
+                                               spacing: DS.Layout.gridGutter)],
+                            spacing: DS.Layout.gridGutter
+                        ) {
+                            ForEach(M.store.profiles) { p in profileCard(p) }
+                        }
                     }
-                    // 顶距与 pageContentInset 节奏一致，避免卡片贴死 chrome 分割线
-                    .padding(.horizontal, DS.Layout.pageContentInset)
-                    .padding(.top, DS.Spacing.l)
-                    .padding(.bottom, DS.Spacing.xxl)
                 }
             }
+            .padding(.horizontal, DS.Layout.pageContentInset)
+            .padding(.bottom, 26)
         }
         .confirmationDialog("清空全部 \(M.store.profiles.count) 个配置？",
                             isPresented: $showWipeConfirm, titleVisibility: .visible) {
@@ -63,62 +67,54 @@ struct ConfigPage: View {
         // profiles: amber outline + a small badge instead of the empty
         // circle + "设为活动" CTA used by inactive applied ones.
         let draft = p.needsApply && !active
-        let stroke: Color = active ? DS.Palette.accent.opacity(0.4)
-            : draft ? DS.Palette.warn.opacity(0.5)
+        let stroke: Color = active ? DS.Palette.accent
+            : draft ? DS.Palette.warn.opacity(0.6)
             : DS.Palette.border
-        let strokeWidth: CGFloat = (active || draft) ? 1.5 : 1
+        let strokeWidth: CGFloat = (active || draft) ? 1 : 0.5
 
+        // 原型 `.prof-card`：图标槽 + 名称/徽章 + 来源元信息 + 路径 mono + 底部动作行
         return VStack(alignment: .leading, spacing: 0) {
-            // Header row — fixed height so badges don't stretch cards unevenly
-            HStack(spacing: DS.Spacing.s) {
-                Image(systemName: p.source == "remote" ? "icloud.fill" : "doc.fill")
-                    .font(.dsLabel)
-                    .foregroundColor(active ? DS.Palette.accent : .secondary)
-                    .frame(width: DS.Icon.md, alignment: .center)
-                Text(p.name)
-                    .font(.dsLabelBold)
-                    .lineLimit(1)
-                if draft {
-                    Text("待应用")
-                        .font(.dsBodyBold)
-                        .foregroundColor(DS.Palette.warn)
-                        .padding(.horizontal, DS.Spacing.xs)
-                        .padding(.vertical, DS.Spacing.xs / 2)
-                        .background(Capsule().fill(DS.Palette.warn.opacity(0.15)))
-                }
-                Spacer(minLength: 0)
-                if active {
-                    Text("生效中")
-                        .font(.dsBodyBold)
-                        .foregroundColor(DS.Palette.accent)
-                        .padding(.horizontal, DS.Spacing.xs)
-                        .padding(.vertical, DS.Spacing.xs / 2)
-                        .background(Capsule().fill(DS.Palette.accent.opacity(0.12)))
-                } else if pendingApply {
-                    ProgressView().controlSize(.small)
-                } else {
-                    Circle()
-                        .stroke(DS.Palette.track, lineWidth: 1.5)
-                        .frame(width: 12, height: 12)
+            HStack(alignment: .top, spacing: 10) {
+                DSIconSlot(systemImage: p.source == "remote" ? "icloud" : "doc.text",
+                           size: 30,
+                           tint: active ? DS.Palette.accent : Color.secondary)
+
+                VStack(alignment: .leading, spacing: 2) {
+                    HStack(spacing: 6) {
+                        Text(p.name).font(.dsCardLabel).lineLimit(1)
+                        if draft { DSStatusBadge(text: "待应用", tint: DS.Palette.warn) }
+                        Spacer(minLength: DS.Spacing.xs)
+                        if active {
+                            DSStatusBadge(text: "生效中")
+                        } else if pendingApply {
+                            ProgressView().controlSize(.small)
+                        } else {
+                            Circle()
+                                .strokeBorder(DS.Palette.borderStrong, lineWidth: 1.5)
+                                .frame(width: 15, height: 15)
+                        }
+                    }
+                    HStack(spacing: 5) {
+                        Text(p.source == "remote" ? "远程" : "本地")
+                            .font(.dsCaptionBold)
+                            .foregroundColor(active ? DS.Palette.accent : .secondary)
+                        Text("· 更新 \(relTime(p.updatedAt))")
+                            .font(.dsCaption).foregroundColor(.secondary)
+                    }
                 }
             }
-            .frame(height: DS.Layout.controlHeight, alignment: .center)
 
-            Text(p.source == "remote" ? "远程订阅" : "本地文件")
-                .font(.dsBody)
-                .foregroundColor(.secondary)
-                .padding(.top, DS.Spacing.xs)
+            Text(p.url ?? "本地文件")
+                .font(.dsMonoTiny)
+                .foregroundColor(DS.Palette.textFaint)
+                .lineLimit(1)
+                .truncationMode(.middle)
+                .padding(.top, DS.Spacing.s)
 
-            Spacer(minLength: DS.Spacing.m)
+            Spacer(minLength: DS.Spacing.s)
 
-            Divider().overlay(DS.Palette.separator)
-
-            // Footer row — locked to controlHeight so active checkmark / CTA share size
-            HStack(spacing: DS.Spacing.s) {
-                Text(relTime(p.updatedAt))
-                    .font(.dsBody)
-                    .foregroundColor(.secondary)
-                    .lineLimit(1)
+            // 底部动作行 — 高度锁定，使生效/未生效卡尺寸一致
+            HStack(spacing: 6) {
                 Spacer(minLength: 0)
                 if active {
                     Image(systemName: "checkmark.circle.fill")
@@ -128,22 +124,39 @@ struct ConfigPage: View {
                     Button { M.selectForApply(p.id) } label: { Text("应用此配置") }
                         .dsButton(.warning)
                 } else {
-                    Button("设为活动") { M.selectForApply(p.id) }
+                    Button("设为生效") { M.selectForApply(p.id) }
                         .dsButton()
                 }
+                if p.source == "remote" {
+                    DSIconButton(systemImage: "arrow.clockwise", help: "更新订阅") {
+                        Task {
+                            let ok = await M.store.updateRemote(p.id)
+                            if ok {
+                                if active { M.selectForApply(p.id) }
+                                M.showToast("订阅「\(p.name)」已更新成功", kind: .ok)
+                            } else {
+                                M.showToast("订阅「\(p.name)」更新失败，已保留原配置", kind: .error)
+                            }
+                        }
+                    }
+                }
+                DSIconButton(systemImage: "xmark", help: "删除") { M.store.remove(p.id) }
+                    .disabled(active || draft)
+                    .opacity(active || draft ? 0.4 : 1)
             }
             .frame(height: DS.Layout.controlHeight, alignment: .center)
-            .padding(.top, DS.Spacing.m)
+            .padding(.top, 10)
         }
-        .padding(DS.Spacing.l)
+        .padding(.horizontal, DS.Spacing.m)
+        .padding(.vertical, 11)
         .frame(maxWidth: .infinity, minHeight: DS.Layout.profileCardMinHeight, alignment: .topLeading)
         .background(
             RoundedRectangle(cornerRadius: DS.Radius.card, style: .continuous)
-                .fill(DS.Palette.cardBg)
+                .fill(active ? DS.Palette.accentSoft : DS.Palette.windowBg)
         )
         .overlay(
             RoundedRectangle(cornerRadius: DS.Radius.card, style: .continuous)
-                .stroke(stroke, lineWidth: strokeWidth)
+                .strokeBorder(stroke, lineWidth: strokeWidth)
         )
         .contentShape(Rectangle())
         .onTapGesture { if !active && !pendingApply { M.selectForApply(p.id) } }

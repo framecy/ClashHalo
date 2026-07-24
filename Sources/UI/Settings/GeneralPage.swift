@@ -11,49 +11,85 @@ struct GeneralPage: View {
     @State private var selectedTab = "general" // "general", "advanced", "privilege", "about"
     @State private var helperBusy = false
 
+
     var body: some View {
         VStack(spacing: 0) {
-            // 顶栏与侧栏 appHeader / PageToolbar 同高：m + 32 + m，分割线通栏对齐
-            DSSegmentedControl(selection: $selectedTab, choices: [
-                DSChoice("通用", "general", systemImage: "gearshape"),
-                DSChoice("高级设置", "advanced", systemImage: "slider.horizontal.3"),
-                DSChoice("权限", "privilege", systemImage: "shield"),
-                DSChoice("关于", "about", systemImage: "info.circle")
-            ])
-            .padding(.horizontal, DS.Layout.pageContentInset)
-            .padding(.vertical, DS.Spacing.m)
-            .frame(height: DS.Layout.chromeHeight, alignment: .center)
-            .frame(maxWidth: .infinity)
-            .background(DS.Palette.chromeBg)
+            PageHead(title: "设置") {
+                if selectedTab == "general" {
+                    Button { M.copyProxyCommand() } label: {
+                        Label("复制代理命令", systemImage: "doc.on.doc")
+                    }
+                    .dsButton()
+                }
+            }
 
-            Divider().overlay(DS.Palette.separator)
+            HStack {
+                DSSegmentedControl(selection: $selectedTab, choices: [
+                    DSChoice("通用", "general", systemImage: "gearshape"),
+                    DSChoice("高级设置", "advanced", systemImage: "slider.horizontal.3"),
+                    DSChoice("权限", "privilege", systemImage: "shield"),
+                    DSChoice("关于", "about", systemImage: "info.circle")
+                ])
+                .frame(maxWidth: 420)
+                Spacer(minLength: 0)
+            }
+            .padding(.horizontal, DS.Layout.pageContentInset)
+            .padding(.bottom, DS.Spacing.m)
 
             ScrollView {
                 VStack(spacing: DS.Spacing.m) {
                     if selectedTab == "general" {
+                        // 主开关 — 原型 `.switch-hero`：系统代理 / TUN 两张大卡
+                        HStack(spacing: DS.Spacing.m) {
+                            switchHero(
+                                title: "系统代理",
+                                icon: "globe",
+                                desc: M.systemProxyOn
+                                    ? "已接管 · HTTP/SOCKS 127.0.0.1:\(M.proxyPort)"
+                                    : "未接管系统网络设置",
+                                isOn: Binding(
+                                    get: { M.systemProxyOn },
+                                    set: { v in guard v != M.systemProxyOn else { return }; M.toggleSystemProxy() }
+                                )
+                            )
+                            switchHero(
+                                title: "TUN 模式",
+                                icon: "shield",
+                                desc: M.tunOn ? "用户态 UTUN · 全流量接管" : "关闭 · 仅系统代理路径生效",
+                                isOn: Binding(
+                                    get: { M.tunOn },
+                                    set: { v in guard v != M.tunOn else { return }; M.toggleTUN() }
+                                )
+                            )
+                        }
+
+                        portsCard
+
                         // 菜单栏
+                        //
+                        // 说明文字紧跟着这一个开关，不是"多行内容块之后的脚注"——
+                        // `DS.Spacing.m`(12pt) 那档留白是给 GEO 数据库那类多行块
+                        // 用的，块本身已经有分割线收尾，脚注隔远一点没问题。这里
+                        // 只有单独一行，同样留 12pt 会显得说明文字飘在开关下面一截，
+                        // 跟它说的是哪个控件不明显。改成贴近行本身的间距。
                         Card(title: "菜单栏", icon: "menubar.rectangle") {
-                            HStack {
-                                Text("显示策略组选择").font(.dsBody)
-                                Spacer()
-                                Toggle("", isOn: Binding(get: { M.menuBarGroups }, set: { M.menuBarGroups = $0 }))
-                                    .toggleStyle(.switch).labelsHidden()
-                                    .frame(width: DS.Layout.fieldTrailing, alignment: .trailing)
+                            DSFormRow(title: "显示策略组选择", monoKey: "menubar.groups", divider: false) {
+                                DSSwitch(isOn: Binding(get: { M.menuBarGroups }, set: { M.menuBarGroups = $0 }))
                             }
                             Text("开启后菜单栏面板内可逐组切换节点；策略组较多时可关闭以保持面板紧凑，节点切换仍可在「策略」页操作。")
-                                .font(.dsBody).foregroundColor(.secondary).padding(.top, DS.Spacing.s)
+                                .font(.dsCaption).foregroundColor(.secondary).padding(.top, DS.Spacing.xs)
                         }
 
                         // GEO 数据库
                         Card(title: "GEO 数据库", icon: "globe.asia.australia") {
-                            VStack(spacing: 2) {
+                            VStack(spacing: 0) {
                                 ToggleRow("DAT 模式", key: "geodata-mode", persistent: true)
                                 PickerRow("加载器", key: "geodata-loader", options: [("memconservative","内存优先"),("standard","标准")], persistent: true)
                                 ToggleRow("自动更新", key: "geo-auto-update", persistent: true)
                                 NumRow("更新间隔 (小时)", key: "geo-update-interval", persistent: true)
                             }
                             Text("DAT 模式使用 v2ray (.dat) 替代 MaxMind (.mmdb) 进行 GeoIP 匹配，文件更小；推荐“内存优先”加载器以降低后台占用。")
-                                .font(.dsBody).foregroundColor(.secondary).padding(.top, DS.Spacing.s)
+                                .font(.dsCaption).foregroundColor(.secondary).padding(.top, DS.Spacing.m)
                         }
 
                         // 外部面板
@@ -70,7 +106,7 @@ struct GeneralPage: View {
                     } else if selectedTab == "advanced" {
                         // 路由与连接
                         Card(title: "路由与连接", icon: "arrow.triangle.branch") {
-                            VStack(spacing: 2) {
+                            VStack(spacing: 0) {
                                 PickerRow("日志级别", key: "log-level", options: [("silent","静默"),("error","error"),("warning","warning"),("info","info"),("debug","debug")], persistent: true)
                                 ToggleRow("TCP 并发连接", key: "tcp-concurrent", persistent: true)
                                 ToggleRow("统一延迟测速", key: "unified-delay", persistent: true)
@@ -81,19 +117,19 @@ struct GeneralPage: View {
                                 ToggleRow("禁用 Keep-Alive", key: "disable-keep-alive", persistent: true)
                             }
                             Text("TCP 并发能极大加快多节点测速；统一延迟将握手时间计入以反映真实体感延迟；进程匹配使 macOS 能按 App 名分流。")
-                                .font(.dsBody).foregroundColor(.secondary).padding(.top, DS.Spacing.s)
+                                .font(.dsCaption).foregroundColor(.secondary).padding(.top, DS.Spacing.m)
                         }
 
                         // GEO 下载源
                         Card(title: "GEO 下载源", icon: "arrow.down.circle") {
-                            VStack(spacing: 2) {
+                            VStack(spacing: 0) {
                                 GeoURLRow("GeoIP", sub: "geoip", defaultURL: "https://cdn.jsdelivr.net/gh/Loyalsoldier/v2ray-rules-dat@release/geoip.dat")
                                 GeoURLRow("GeoSite", sub: "geosite", defaultURL: "https://cdn.jsdelivr.net/gh/Loyalsoldier/v2ray-rules-dat@release/geosite.dat")
                                 GeoURLRow("MMDB", sub: "mmdb", defaultURL: "https://cdn.jsdelivr.net/gh/Loyalsoldier/v2ray-rules-dat@release/country.mmdb")
                                 GeoURLRow("ASN", sub: "asn", defaultURL: "https://github.com/P3TERX/GeoLite.mmdb/raw/download/GeoLite2-ASN.mmdb")
                             }
                             Text("修改下载源 URL 后会在下次更新时生效。")
-                                .font(.dsBody).foregroundColor(.secondary).padding(.top, DS.Spacing.s)
+                                .font(.dsCaption).foregroundColor(.secondary).padding(.top, DS.Spacing.m)
                         }
                         // 内核管理已移至「网络 → 内核」,此处不再重复。
                     } else if selectedTab == "privilege" {
@@ -166,12 +202,105 @@ struct GeneralPage: View {
                         aboutView
                     }
                 }
-                .padding(DS.Spacing.xl)
+                .padding(.horizontal, DS.Layout.pageContentInset)
+                .padding(.bottom, 26)
             }
         }
     }
 
     /// 关于页：工具型 Card 堆叠（design.md §1/§6），禁止居中 hero / 营销文案。
+    // MARK: 主开关 / 端口表（原型 09-settings）
+
+    /// 大开关卡 — 原型 `.switch-hero`：40pt 图标槽 + 标题/状态 + 大 Toggle；
+    /// 激活时描 accent 边、图标槽转为实心 accent。
+    private func switchHero(title: String, icon: String, desc: String, isOn: Binding<Bool>) -> some View {
+        let on = isOn.wrappedValue
+        let busy = M.engine.isBusy
+        return HStack(spacing: DS.Spacing.m) {
+            DSIconSlot(systemImage: icon, size: DS.Layout.iconSlotLg, radius: 11,
+                       tint: on ? DS.Palette.accent : nil, filled: on)
+
+            VStack(alignment: .leading, spacing: 2) {
+                Text(title).font(.dsCardName).foregroundStyle(.primary)
+                Text(desc).font(.dsCaption).foregroundStyle(.secondary).lineLimit(2)
+            }
+
+            Spacer(minLength: DS.Spacing.s)
+
+            if busy {
+                ProgressView().controlSize(.small).scaleEffect(DS.Progress.miniScale)
+            }
+            DSSwitch(isOn: isOn, disabled: busy)
+        }
+        .padding(.horizontal, 15)
+        .padding(.vertical, 14)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(DS.Shape.card().fill(DS.Palette.cardBg))
+        .overlay(DS.Shape.card().strokeBorder(on ? DS.Palette.accent : DS.Palette.border,
+                                              lineWidth: on ? 1 : 0.5))
+    }
+
+    /// mihomo 端口表 — 原型 `.port-tbl`：入站 / 配置键 / 端口 / 地址 / 复制。
+    /// 端口值走 `NumRow` 的同一持久化路径（`patchPersistent`），只读地址附复制按钮。
+    /// mihomo 端口 — 原来用 4 列固定宽度表格展示，是这个页面唯一一处表格样式，
+    /// 跟其它每张卡（GEO/菜单栏/高级设置…）统一用的 `DSFormRow`（左标签+key，
+    /// 右值/控件）不是一套语言，显得突兀；而且 7 行里 4 行是"已禁用"，表格的
+    /// 列结构对大半是空值的数据来说是过度设计。改成跟全页一致的 DSFormRow。
+    private var portsCard: some View {
+        let rows: [(String, String)] = [
+            ("混合端口 (HTTP+SOCKS)", "mixed-port"),
+            ("SOCKS5 端口", "socks-port"),
+            ("HTTP 端口", "port"),
+            ("Redir 端口", "redir-port"),
+            ("TProxy 端口", "tproxy-port"),
+        ]
+        return Card(title: "mihomo 端口", icon: "number") {
+            VStack(spacing: 0) {
+                ForEach(rows, id: \.1) { label, key in
+                    portRow(label: label, key: key)
+                }
+                DSFormRow(title: "外部控制器", monoKey: "external-controller") {
+                    addressValue("\(M.api.host):\(M.api.port)",
+                                 copy: "http://\(M.api.host):\(M.api.port)")
+                }
+                DSFormRow(title: "API 密钥", monoKey: "secret", divider: false) {
+                    HStack(spacing: DS.Spacing.s) {
+                        Text(String(repeating: "•", count: min(8, M.api.secret.count)))
+                            .font(.dsMonoSm).foregroundStyle(.secondary)
+                        DSCopyButton { copyToPasteboard(M.api.secret) }
+                    }
+                }
+            }
+        }
+    }
+
+    private func portRow(label: String, key: String) -> some View {
+        let value = (M.configs[key] as? Int) ?? 0
+        return DSFormRow(title: label, monoKey: key) {
+            if value == 0 {
+                Text("已禁用").font(.dsMonoSm).foregroundStyle(DS.Palette.textFaint)
+            } else {
+                addressValue("127.0.0.1:\(value)", copy: "127.0.0.1:\(value)")
+            }
+        }
+    }
+
+    /// 地址值 + 复制按钮 — 端口/外部控制器共用同一个"能复制的地址"展示形态。
+    private func addressValue(_ text: String, copy: String) -> some View {
+        HStack(spacing: DS.Spacing.s) {
+            // verbatim：字符串插值会按 locale 给端口号加千位分隔符（9090 会被
+            // 渲染成 "9 090"），必须绕开 LocalizedStringKey 插值。
+            Text(verbatim: text).font(.dsMonoSmBold).foregroundStyle(DS.Palette.accent).lineLimit(1)
+            DSCopyButton { copyToPasteboard(copy) }
+        }
+    }
+
+    private func copyToPasteboard(_ text: String) {
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(text, forType: .string)
+        M.showToast("已复制 · \(text.count > 46 ? String(text.prefix(46)) + "…" : text)", kind: .ok)
+    }
+
     private var aboutView: some View {
         let appVersion = ContentView.appVersion
         let appBuild = ContentView.appBuild
@@ -747,13 +876,7 @@ struct MenuBarPanel: View {
                     .controlSize(.mini)
                     .scaleEffect(DS.Progress.miniScale)
             }
-            Toggle("", isOn: isOn)
-                .toggleStyle(.switch)
-                .controlSize(.mini)
-                .labelsHidden()
-                .tint(accent ? DS.Palette.accent : DS.Palette.ok)
-                .disabled(busy)
-                .opacity(busy ? 0.55 : 1)
+            DSSwitch(isOn: isOn, tint: accent ? DS.Palette.accent : DS.Palette.ok, disabled: busy)
         }
     }
 

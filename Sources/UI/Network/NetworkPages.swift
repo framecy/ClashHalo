@@ -10,58 +10,73 @@ struct NetworkPage: View {
     var body: some View {
         VStack(spacing: 0) {
             ScrollView {
-                VStack(spacing: DS.Spacing.l) {
-                    Card(title: "入站端口", icon: "arrow.down.right.circle") {
-                        VStack(spacing: 2) {
-                            NumRow("HTTP 端口", key: "port", persistent: true)
-                            NumRow("SOCKS 端口", key: "socks-port", persistent: true)
-                            NumRow("混合端口", key: "mixed-port", persistent: true)
-                            NumRow("Redir 端口", key: "redir-port", persistent: true)
-                            NumRow("TProxy 端口", key: "tproxy-port", persistent: true)
+                // 内容栅格（design.md §9）：3 列 + gridGutter，跨列用 gridCellColumns。
+                // 行 1 放三张短卡，行 2 的访问控制含 4 个列表行，跨满 3 列。
+                Grid(alignment: .top,
+                     horizontalSpacing: DS.Layout.gridGutter,
+                     verticalSpacing: DS.Layout.gridGutter) {
+                    GridRow {
+                        Card(title: "入站端口", icon: "arrow.down.right.circle", stretch: true) {
+                            VStack(spacing: 0) {
+                                NumRow("HTTP 端口", key: "port", persistent: true)
+                                NumRow("SOCKS 端口", key: "socks-port", persistent: true)
+                                NumRow("混合端口", key: "mixed-port", persistent: true)
+                                NumRow("Redir 端口", key: "redir-port", persistent: true)
+                                NumRow("TProxy 端口", key: "tproxy-port", persistent: true)
+                            }
+                            Text("端口设为 0 即禁用。建议绝大多数应用使用混合端口（兼容 HTTP 与 SOCKS5）。")
+                                .font(.dsCaption).foregroundColor(.secondary).padding(.top, DS.Spacing.m)
                         }
-                        Text("端口设为 0 即禁用。建议绝大多数应用使用混合端口（兼容 HTTP 与 SOCKS5）。")
-                            .font(.dsBody).foregroundColor(.secondary).padding(.top, DS.Spacing.s)
-                    }
-                    Card(title: "全局网络", icon: "globe") {
-                        VStack(spacing: 2) {
-                            ToggleRow("IPv6 支持", key: "ipv6", persistent: true)
-                            ToggleRow("多路径 TCP (MPTCP)", key: "inbound-mptcp", persistent: true)
-                            ToggleRow("TCP 并发连接", key: "tcp-concurrent", persistent: true)
+                        Card(title: "全局网络", icon: "globe", stretch: true) {
+                            VStack(spacing: 0) {
+                                ToggleRow("IPv6 支持", key: "ipv6", persistent: true)
+                                ToggleRow("多路径 TCP (MPTCP)", key: "inbound-mptcp", persistent: true)
+                                ToggleRow("TCP 并发连接", key: "tcp-concurrent", persistent: true)
+                            }
                         }
-                    }
-                    Card(title: "访问控制", icon: "lock.shield") {
-                        VStack(spacing: 2) {
-                            ToggleRow("允许局域网连接", key: "allow-lan", persistent: true)
-                            TextRow("绑定地址", key: "bind-address", placeholder: "*", persistent: true)
-                            StringListRow("允许的 IP", key: "lan-allowed-ips", placeholder: "0.0.0.0/0", persistent: true)
-                            StringListRow("拒绝的 IP", key: "lan-disallowed-ips", placeholder: "192.168.0.3/32", persistent: true)
-                            StringListRow("代理认证", key: "authentication", placeholder: "user:pass", persistent: true)
-                            StringListRow("免认证网段", key: "skip-auth-prefixes", placeholder: "127.0.0.1/8", persistent: true)
-                        }
-                        Text("开启“允许局域网”可将代理共享给同 Wi-Fi 下的其他设备；可用 IP 网段与认证做严格审查。")
-                            .font(.dsBody).foregroundColor(.secondary).padding(.top, DS.Spacing.s)
-                    }
-                    Card(title: "局域网网关 (旁路由)", icon: "network.badge.shield.half.filled") {
-                        VStack(spacing: 2) {
-                            HStack {
-                                Text("作为网关中枢").font(.dsBody); Spacer()
-                                if M.engine.isBusy {
-                                    ProgressView().controlSize(.mini).scaleEffect(DS.Progress.miniScale)
+                        Card(title: "局域网网关 (旁路由)", icon: "network.badge.shield.half.filled",
+                             stretch: true) {
+                            VStack(spacing: 0) {
+                                DSFormRow(title: "作为网关中枢", monoKey: "gateway-mode") {
+                                    HStack(spacing: DS.Spacing.s) {
+                                        DSSwitch(isOn: Binding(get: { M.gatewayModeOn }, set: { _ in M.toggleGatewayMode() }),
+                                                 disabled: M.engine.isBusy)
+                                        if M.engine.isBusy {
+                                            ProgressView().controlSize(.mini).scaleEffect(DS.Progress.miniScale)
+                                        }
+                                    }
                                 }
-                                Toggle("", isOn: Binding(get: { M.gatewayModeOn }, set: { _ in M.toggleGatewayMode() }))
-                                    .toggleStyle(.switch).labelsHidden()
-                                    .disabled(M.engine.isBusy)
-                                    .opacity(M.engine.isBusy ? 0.55 : 1)
-                            }.padding(.vertical, DS.Spacing.s)
+                            }
+                            Text("开启后将自动配置 IP 转发并接管局域网内其他所有设备的流量（需配合 TUN）。其他设备需将网关和 DNS 指向本机的局域网 IP。")
+                                .font(.dsCaption).foregroundColor(.secondary).padding(.top, DS.Spacing.m)
                         }
-                        Text("开启后将自动配置 IP 转发并接管局域网内其他所有设备的流量（需配合 TUN）。其他设备需将网关和 DNS 指向本机的局域网 IP。")
-                            .font(.dsBody).foregroundColor(.secondary).padding(.top, DS.Spacing.s)
                     }
+
+                    GridRow {
+                        Card(title: "访问控制", icon: "lock.shield") {
+                            VStack(spacing: 0) {
+                                ToggleRow("允许局域网连接", key: "allow-lan", persistent: true)
+                                TextRow("绑定地址", key: "bind-address", placeholder: "*", persistent: true)
+                                StringListRow("允许的 IP", key: "lan-allowed-ips", placeholder: "0.0.0.0/0", persistent: true)
+                                StringListRow("拒绝的 IP", key: "lan-disallowed-ips", placeholder: "192.168.0.3/32", persistent: true)
+                                StringListRow("代理认证", key: "authentication", placeholder: "user:pass", persistent: true)
+                                StringListRow("免认证网段", key: "skip-auth-prefixes", placeholder: "127.0.0.1/8", persistent: true)
+                            }
+                            Text("开启“允许局域网”可将代理共享给同 Wi-Fi 下的其他设备；可用 IP 网段与认证做严格审查。")
+                                .font(.dsCaption).foregroundColor(.secondary).padding(.top, DS.Spacing.m)
+                        }
+                        .gridCellColumns(3)
+                    }
+
                     if M.gatewayModeOn {
-                        GatewayDevicesView()
+                        GridRow {
+                            GatewayDevicesView().gridCellColumns(3)
+                        }
                     }
-                    Spacer(minLength: 0)
-                }.padding(DS.Spacing.xl)
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(.horizontal, DS.Layout.pageContentInset)
+                .padding(.bottom, 26)
             }
         }
     }
@@ -136,31 +151,46 @@ struct TunPage: View {
     var body: some View {
         VStack(spacing: 0) {
             ScrollView {
-                VStack(spacing: DS.Spacing.l) {
-                    Card(title: "TUN 虚拟网卡", icon: "shield.lefthalf.filled") {
-                    VStack(spacing: 2) {
-                        HStack {
-                            Text("启用 TUN").font(.dsBody); Spacer()
-                            if M.engine.isBusy {
-                                ProgressView().controlSize(.mini).scaleEffect(DS.Progress.miniScale)
+                // 3 列栅格：网卡本体跨 2 列（原型 `2fr 1fr` 的宽卡位），
+                // 路由 / DNS 劫持占 1 列。
+                Grid(alignment: .top,
+                     horizontalSpacing: DS.Layout.gridGutter,
+                     verticalSpacing: DS.Layout.gridGutter) {
+                    GridRow {
+                        Card(title: "TUN 虚拟网卡", icon: "shield.lefthalf.filled", stretch: true) {
+                            VStack(spacing: 0) {
+                                DSFormRow(title: "启用 TUN", monoKey: "tun.enable") {
+                                    HStack(spacing: DS.Spacing.s) {
+                                        DSSwitch(isOn: Binding(get: { M.tunOn }, set: { _ in M.toggleTUN() }),
+                                                 disabled: M.engine.isBusy)
+                                        if M.engine.isBusy {
+                                            ProgressView().controlSize(.mini).scaleEffect(DS.Progress.miniScale)
+                                        }
+                                    }
+                                }
+                                NPicker("协议栈", "tun", "stack", [("gvisor","gVisor"),("system","System"),("mixed","Mixed")])
+                                NToggle("自动路由", "tun", "auto-route")
+                                NToggle("自动检测网卡", "tun", "auto-detect-interface")
                             }
-                            Toggle("", isOn: Binding(get: { M.tunOn }, set: { _ in M.toggleTUN() }))
-                                .toggleStyle(.switch).labelsHidden()
-                                .disabled(M.engine.isBusy)
-                                .opacity(M.engine.isBusy ? 0.55 : 1)
-                        }.padding(.vertical, DS.Spacing.s)
-                        NPicker("协议栈", "tun", "stack", [("gvisor","gVisor"),("system","System"),("mixed","Mixed")])
-                        NToggle("自动路由", "tun", "auto-route")
-                        NToggle("自动检测网卡", "tun", "auto-detect-interface")
-                        NList("DNS 劫持", "tun", "dns-hijack", placeholder: "any:53")
-                        NList("路由排除网段", "tun", "route-exclude-address", placeholder: "192.168.0.0/16")
+                            Text("用户态 UTUN (AF_SYSTEM)，不占 VPN 插槽。")
+                                .font(.dsCaption).foregroundColor(.secondary).padding(.top, DS.Spacing.m)
+                        }
+                        .gridCellColumns(2)
+
+                        Card(title: "路由与 DNS 劫持", icon: "arrow.triangle.branch", stretch: true) {
+                            VStack(spacing: 0) {
+                                NList("DNS 劫持", "tun", "dns-hijack", placeholder: "any:53")
+                                NList("路由排除网段", "tun", "route-exclude-address", placeholder: "192.168.0.0/16")
+                            }
+                            Text("在「SD-WAN」中排除虚拟网段，可避免抢占其它隧道的路由。")
+                                .font(.dsCaption).foregroundColor(.secondary).padding(.top, DS.Spacing.m)
+                        }
                     }
-                    Text("用户态 UTUN (AF_SYSTEM)，不占 VPN 插槽。在「网络拓扑」中排除虚拟网段，可避免抢占其路由。")
-                        .font(.dsBody).foregroundColor(.secondary).padding(.top, DS.Spacing.s)
                 }
-                }
-                Spacer(minLength: 0)
-            }.padding(DS.Spacing.xl)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(.horizontal, DS.Layout.pageContentInset)
+                .padding(.bottom, 26)
+            }
         }
     }
 }
@@ -170,20 +200,31 @@ struct SnifferPage: View {
     var body: some View {
         VStack(spacing: 0) {
             ScrollView {
-                VStack(spacing: DS.Spacing.l) {
-                    Card(title: "协议嗅探 Sniffer", icon: "scope") {
-                    VStack(spacing: 2) {
-                        NToggle("启用嗅探", "sniffer", "enable")
-                        NToggle("覆盖目标地址", "sniffer", "override-destination")
-                        NToggle("强制 DNS 映射", "sniffer", "force-dns-mapping")
-                        NToggle("解析纯 IP", "sniffer", "parse-pure-ip")
+                // 只有一张卡：跨 2 列，第 3 列用透明占位撑住列宽，
+                // 这样它的宽度与其它 tab 的宽卡一致，而不是拉满整行。
+                Grid(alignment: .top,
+                     horizontalSpacing: DS.Layout.gridGutter,
+                     verticalSpacing: DS.Layout.gridGutter) {
+                    GridRow {
+                        Card(title: "协议嗅探 Sniffer", icon: "scope") {
+                            VStack(spacing: 0) {
+                                NToggle("启用嗅探", "sniffer", "enable")
+                                NToggle("覆盖目标地址", "sniffer", "override-destination")
+                                NToggle("强制 DNS 映射", "sniffer", "force-dns-mapping")
+                                NToggle("解析纯 IP", "sniffer", "parse-pure-ip")
+                            }
+                            Text("从 TLS / QUIC / HTTP 握手中提取真实域名用于分流，对走 IP 的连接尤为重要。默认嗅探协议：TLS(443,8443), HTTP(80,8080-8880), QUIC(443,8443)。修改后请重启核心生效。")
+                                .font(.dsCaption).foregroundColor(.secondary).padding(.top, DS.Spacing.m)
+                        }
+                        .gridCellColumns(2)
+
+                        Color.clear.frame(height: 1)
                     }
-                    Text("从 TLS / QUIC / HTTP 握手中提取真实域名用于分流，对走 IP 的连接尤为重要。默认嗅探协议：TLS(443,8443), HTTP(80,8080-8880), QUIC(443,8443)。修改后请重启核心生效。")
-                        .font(.dsBody).foregroundColor(.secondary).padding(.top, DS.Spacing.s)
                 }
-                }
-                Spacer(minLength: 0)
-            }.padding(DS.Spacing.xl)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(.horizontal, DS.Layout.pageContentInset)
+                .padding(.bottom, 26)
+            }
         }
     }
 }
@@ -210,33 +251,29 @@ struct NetworkHubPage: View {
         ("内核", "kernel", "cpu")
     ]
 
+
     var body: some View {
         VStack(spacing: 0) {
-            // 顶栏与侧栏 appHeader / PageToolbar 同高：m + 32 + m，分割线通栏对齐
-            DSSegmentedControl(selection: $tab, choices: tabs.map {
-                DSChoice($0.0, $0.1, systemImage: $0.2)
-            })
-            .padding(.horizontal, DS.Layout.pageContentInset)
-            .padding(.vertical, DS.Spacing.m)
-            .frame(height: DS.Layout.chromeHeight, alignment: .center)
-            .frame(maxWidth: .infinity)
-            .background(DS.Palette.chromeBg)
-
-            Divider().overlay(DS.Palette.separator)
-
-            // Tab 下方的上下文操作行：仅当当前 tab 提供页面级操作时显示
-            // 放在分割线下方，避免顶栏高度因 DNS 动作行抖动、与侧栏分割线错位
-            if tab == "dns" {
-                HStack(spacing: DS.Spacing.s) {
-                    Spacer(minLength: 0)
+            PageHead(title: "网络") {
+                if tab == "dns" {
                     Button { M.flushDnsCache() } label: { Label("刷新缓存", systemImage: "arrow.clockwise") }
                         .dsButton()
                     Button { M.clearAllCache() } label: { Label("清空", systemImage: "trash") }
                         .dsButton()
                 }
-                .padding(.horizontal, DS.Layout.pageContentInset)
-                .padding(.vertical, DS.Spacing.m)
             }
+
+            // 分区切换 — 原型 Seg 语言，位于标题行下方独立一行
+            HStack {
+                DSSegmentedControl(selection: $tab, choices: tabs.map {
+                    DSChoice($0.0, $0.1, systemImage: $0.2)
+                })
+                .frame(maxWidth: 480)
+                Spacer(minLength: 0)
+            }
+            .padding(.horizontal, DS.Layout.pageContentInset)
+            .padding(.bottom, DS.Spacing.m)
+
             Group {
                 switch tab {
                 case "tun": TunPage()
@@ -254,6 +291,22 @@ struct NetworkHubPage: View {
 
 // MARK: - Reusable config form rows (read M.configs, write via M.patch)
 
+/// 列表项 chip — StringListRow / NList 共用：mono 文本 + 移除按钮。
+@ViewBuilder
+func listChip(_ text: String, remove: @escaping () -> Void) -> some View {
+    HStack {
+        Text(text).font(.dsMonoSm).foregroundColor(.secondary)
+        Spacer(minLength: DS.Spacing.s)
+        Button(action: remove) { Image(systemName: "minus.circle").font(.dsBody) }
+            .buttonStyle(.borderless)
+    }
+    .padding(.horizontal, DS.Spacing.s)
+    .padding(.vertical, DS.Spacing.xs)
+    .frame(maxWidth: 360, alignment: .leading)
+    .background(DS.Shape.control().fill(DS.Palette.cardHeadBg))
+    .overlay(DS.Shape.control().strokeBorder(DS.Palette.border, lineWidth: 0.5))
+}
+
 /// Number field bound to a top-level config key.
 struct NumRow: View {
     @EnvironmentObject var M: AppModel
@@ -264,15 +317,12 @@ struct NumRow: View {
     @FocusState private var isFocused: Bool
 
     var body: some View {
-        HStack {
-            Text(label).font(.dsBody)
-            Spacer()
-            HStack(spacing: 8) {
+        DSFormRow(title: label, monoKey: key) {
+            HStack(spacing: DS.Spacing.s) {
                 TextField("0", text: $text)
                     .inputStyle()
-                    .font(.dsMono)
-                    .multilineTextAlignment(.trailing)
-                    .frame(width: 90)
+                    .font(.dsMonoSm)
+                    .frame(width: 110)
                     .focused($isFocused)
                     .onSubmit { commit() }
                     .onChange(of: text) { _, _ in
@@ -285,12 +335,9 @@ struct NumRow: View {
                 if hasChanges {
                     Button("应用") { commit() }
                         .dsButton(.prominent)
-
                 }
             }
-            .frame(width: DS.Layout.fieldTrailing, alignment: .trailing)
         }
-        .padding(.vertical, DS.Spacing.s)
         .onAppear { text = intStr(M.configs[key]) }
         .onChange(of: configValue) { _, _ in text = intStr(M.configs[key]); hasChanges = false }
     }
@@ -309,18 +356,12 @@ struct ToggleRow: View {
     let label: String; let key: String; let persistent: Bool
     init(_ label: String, key: String, persistent: Bool = false) { self.label = label; self.key = key; self.persistent = persistent }
     var body: some View {
-        HStack {
-            Text(label).font(.dsBody)
-            Spacer()
-            Toggle("", isOn: Binding(
+        DSFormRow(title: label, monoKey: key) {
+            DSSwitch(isOn: Binding(
                 get: { (M.configs[key] as? Bool) == true },
                 set: { v in Task { if persistent { await M.patchPersistent([key: v]) } else { await M.patch([key: v]) } } }
             ))
-            .toggleStyle(.switch)
-            .labelsHidden()
-            .frame(width: DS.Layout.fieldTrailing, alignment: .trailing)
         }
-        .padding(.vertical, DS.Spacing.s)
     }
 }
 
@@ -334,14 +375,12 @@ struct TextRow: View {
     @FocusState private var isFocused: Bool
 
     var body: some View {
-        HStack {
-            Text(label).font(.dsBody)
-            Spacer()
+        DSFormRow(title: label, monoKey: key) {
             HStack(spacing: DS.Spacing.s) {
                 TextField(placeholder, text: $text)
                     .inputStyle()
-                    .font(.dsMono)
-                    .multilineTextAlignment(.trailing)
+                    .font(.dsMonoSm)
+                    .frame(maxWidth: 280)
                     .focused($isFocused)
                     .onSubmit { commit() }
                     .onChange(of: text) { _, _ in
@@ -354,12 +393,9 @@ struct TextRow: View {
                 if hasChanges {
                     Button("应用") { commit() }
                         .dsButton(.prominent)
-
                 }
             }
-            .frame(width: DS.Layout.fieldTrailing, alignment: .trailing)
         }
-        .padding(.vertical, DS.Spacing.s)
         .onAppear { text = (M.configs[key] as? String) ?? "" }
         .onChange(of: M.configs[key] as? String) { _, _ in text = (M.configs[key] as? String) ?? ""; hasChanges = false }
     }
@@ -375,9 +411,7 @@ struct PickerRow: View {
     let label: String; let key: String; let options: [(String, String)]; let persistent: Bool
     init(_ label: String, key: String, options: [(String, String)], persistent: Bool = false) { self.label = label; self.key = key; self.options = options; self.persistent = persistent }
     var body: some View {
-        HStack {
-            Text(label).font(.dsBody)
-            Spacer()
+        DSFormRow(title: label, monoKey: key) {
             DSMenuPicker(selection: Binding<String>(
                 get: {
                     let val = (M.configs[key] as? String) ?? ""
@@ -385,9 +419,8 @@ struct PickerRow: View {
                 },
                 set: { v in Task { if persistent { await M.patchPersistent([key: v]) } else { await M.patch([key: v]) } } }
             ), choices: options.map { DSChoice($0.1, $0.0) })
-            .frame(width: DS.Layout.fieldTrailing, alignment: .trailing)
+            .frame(width: 160)
         }
-        .padding(.vertical, DS.Spacing.s)
     }
 }
 
@@ -401,39 +434,33 @@ struct StringListRow: View {
     @State private var draft = ""
     private var draftValid: Bool { draft.isEmpty || validateInput(draft) }
     var body: some View {
-        VStack(alignment: .leading, spacing: DS.Spacing.s) {
-            Text(label).font(.dsBodyMedium)
-            // Existing entries — each a chip on a subtle fill so the list reads as
-            // distinct rows, clearly separated from the add field below.
-            if !items.isEmpty {
-                VStack(spacing: DS.Spacing.xs) {
-                    ForEach(items.indices, id: \.self) { i in
-                        HStack {
-                            Text(items[i]).font(.dsMono).foregroundColor(.secondary)
-                            Spacer()
-                            Button { items.remove(at: i); commit() } label: { Image(systemName: "minus.circle").font(.dsBody) }
-                                .buttonStyle(.borderless)
+        DSFormRow(title: label, monoKey: key, stacked: true) {
+            VStack(alignment: .leading, spacing: DS.Spacing.s) {
+                // Existing entries — each a chip on a subtle fill so the list reads as
+                // distinct rows, clearly separated from the add field below.
+                if !items.isEmpty {
+                    VStack(spacing: DS.Spacing.xs) {
+                        ForEach(items.indices, id: \.self) { i in
+                            listChip(items[i]) { items.remove(at: i); commit() }
                         }
-                        .padding(.horizontal, DS.Spacing.s).padding(.vertical, DS.Spacing.xs)
-                        .background(RoundedRectangle(cornerRadius: DS.Radius.control, style: .continuous).fill(DS.Palette.hairline))
                     }
                 }
-            }
-            // Add row — visually the input affordance, set apart from the list above.
-            HStack(spacing: DS.Spacing.s) {
-                TextField(placeholder, text: $draft)
-                    .inputStyle()
-                    .font(.dsMono)
-                    .overlay(RoundedRectangle(cornerRadius: DS.Radius.control, style: .continuous).stroke(!draftValid ? DS.Palette.error.opacity(0.7) : Color.clear, lineWidth: 1))
-                Button { if !draft.isEmpty && draftValid { items.append(draft); draft = ""; commit() } } label: { Image(systemName: "plus.circle.fill") }
-                    .buttonStyle(.borderless).disabled(!draftValid || draft.isEmpty)
-            }
-            if !draftValid {
-                Text("格式无效 — 请检查输入（如 IP/CIDR: 10.0.0.0/8, URL: https://...）")
-                    .font(.dsBody).foregroundColor(DS.Palette.error)
+                // Add row — visually the input affordance, set apart from the list above.
+                HStack(spacing: DS.Spacing.s) {
+                    TextField(placeholder, text: $draft)
+                        .inputStyle()
+                        .font(.dsMonoSm)
+                        .frame(maxWidth: 360)
+                        .overlay(DS.Shape.control().strokeBorder(!draftValid ? DS.Palette.error.opacity(0.7) : Color.clear, lineWidth: 1))
+                    Button { if !draft.isEmpty && draftValid { items.append(draft); draft = ""; commit() } } label: { Image(systemName: "plus.circle.fill") }
+                        .buttonStyle(.borderless).disabled(!draftValid || draft.isEmpty)
+                }
+                if !draftValid {
+                    Text("格式无效 — 请检查输入（如 IP/CIDR: 10.0.0.0/8, URL: https://...）")
+                        .font(.dsCaption).foregroundColor(DS.Palette.error)
+                }
             }
         }
-        .padding(.vertical, DS.Spacing.s)
         .onAppear { items = (M.configs[key] as? [Any])?.map { "\($0)" } ?? [] }
     }
     private func commit() { Task { if persistent { await M.patchPersistent([key: items]) } else { await M.patch([key: items]) } } }
@@ -463,18 +490,16 @@ struct GeoURLRow: View {
     init(_ label: String, sub: String, defaultURL: String) { self.label = label; self.sub = sub; self.defaultURL = defaultURL }
     @State private var text = ""
     var body: some View {
-        HStack {
-            Text(label).font(.dsBody).frame(width: 70, alignment: .leading)
+        DSFormRow(title: label, monoKey: "geox-url.\(sub)") {
             TextField("https://…", text: $text)
                 .inputStyle()
-                .font(.dsMono)
+                .font(.dsMonoSm)
                 .onSubmit {
                     let geo = (M.configs["geox-url"] as? [String: Any] ?? [:])
                         .merging([sub: text]) { _, new in new }
                     Task { await M.patchPersistent(["geox-url": geo]) }
                 }
         }
-        .padding(.vertical, DS.Spacing.s)
         .onAppear {
             let geo = M.configs["geox-url"] as? [String: Any] ?? [:]
             text = (geo[sub] as? String) ?? defaultURL
@@ -493,9 +518,8 @@ struct NToggle: View {
     let parent: String; let sub: String; let label: String; let persistent: Bool
     init(_ label: String, _ parent: String, _ sub: String, persistent: Bool = true) { self.label = label; self.parent = parent; self.sub = sub; self.persistent = persistent }
     var body: some View {
-        HStack {
-            Text(label).font(.dsBody); Spacer()
-            Toggle("", isOn: Binding(
+        DSFormRow(title: label, monoKey: "\(parent).\(sub)") {
+            DSSwitch(isOn: Binding(
                 get: { (nestedDict(M, parent)[sub] as? Bool) == true },
                 set: { v in
                     // Optimistic UI update to prevent toggle flickering/rollback
@@ -512,10 +536,7 @@ struct NToggle: View {
                     }
                 }
             ))
-            .toggleStyle(.switch)
-            .labelsHidden()
-            .frame(width: DS.Layout.fieldTrailing, alignment: .trailing)
-        }.padding(.vertical, DS.Spacing.s)
+        }
     }
 }
 
@@ -526,8 +547,7 @@ struct NPicker: View {
         self.label = label; self.parent = parent; self.sub = sub; self.options = options; self.persistent = persistent
     }
     var body: some View {
-        HStack {
-            Text(label).font(.dsBody); Spacer()
+        DSFormRow(title: label, monoKey: "\(parent).\(sub)") {
             DSMenuPicker(selection: Binding<String>(
                 get: {
                     let val = ((nestedDict(M, parent)[sub] as? String) ?? "").lowercased()
@@ -543,8 +563,8 @@ struct NPicker: View {
                     }
                 }
             ), choices: options.map { DSChoice($0.1, $0.0) })
-            .frame(width: DS.Layout.fieldTrailing, alignment: .trailing)
-        }.padding(.vertical, DS.Spacing.s)
+            .frame(width: 160)
+        }
     }
 }
 
@@ -556,12 +576,10 @@ struct NText: View {
     }
     @State private var text = ""
     var body: some View {
-        HStack {
-            Text(label).font(.dsBody); Spacer()
+        DSFormRow(title: label, monoKey: "\(parent).\(sub)") {
             TextField(placeholder, text: $text)
                 .inputStyle()
-                .font(.dsMono)
-                .multilineTextAlignment(.trailing)
+                .font(.dsMonoSm)
                 .onSubmit {
                     Task {
                         if persistent {
@@ -571,8 +589,8 @@ struct NText: View {
                         }
                     }
                 }
-                .frame(width: DS.Layout.fieldTrailing, alignment: .trailing)
-        }.padding(.vertical, DS.Spacing.s)
+                .frame(maxWidth: 280)
+        }
         .onAppear { text = (nestedDict(M, parent)[sub] as? String) ?? "" }
     }
 }
@@ -586,27 +604,24 @@ struct NList: View {
     @State private var items: [String] = []
     @State private var draft = ""
     var body: some View {
-        VStack(alignment: .leading, spacing: DS.Spacing.s) {
-            Text(label).font(.dsBodyMedium)
-            if !items.isEmpty {
-                VStack(spacing: DS.Spacing.xs) {
-                    ForEach(items.indices, id: \.self) { i in
-                        HStack {
-                            Text(items[i]).font(.dsMono).foregroundColor(.secondary); Spacer()
-                            Button { items.remove(at: i); commit() } label: { Image(systemName: "minus.circle").font(.dsBody) }.buttonStyle(.borderless)
+        DSFormRow(title: label, monoKey: "\(parent).\(sub)", stacked: true) {
+            VStack(alignment: .leading, spacing: DS.Spacing.s) {
+                if !items.isEmpty {
+                    VStack(spacing: DS.Spacing.xs) {
+                        ForEach(items.indices, id: \.self) { i in
+                            listChip(items[i]) { items.remove(at: i); commit() }
                         }
-                        .padding(.horizontal, DS.Spacing.s).padding(.vertical, DS.Spacing.xs)
-                        .background(RoundedRectangle(cornerRadius: DS.Radius.control, style: .continuous).fill(DS.Palette.hairline))
                     }
                 }
+                HStack(spacing: DS.Spacing.s) {
+                    TextField(placeholder, text: $draft)
+                        .inputStyle()
+                        .font(.dsMonoSm)
+                        .frame(maxWidth: 360)
+                    Button { if !draft.isEmpty { items.append(draft); draft = ""; commit() } } label: { Image(systemName: "plus.circle.fill") }.buttonStyle(.borderless)
+                }
             }
-            HStack(spacing: DS.Spacing.s) {
-                TextField(placeholder, text: $draft)
-                    .inputStyle()
-                    .font(.dsMono)
-                Button { if !draft.isEmpty { items.append(draft); draft = ""; commit() } } label: { Image(systemName: "plus.circle.fill") }.buttonStyle(.borderless)
-            }
-        }.padding(.vertical, DS.Spacing.s)
+        }
         .onAppear { items = (nestedDict(M, parent)[sub] as? [Any])?.map { "\($0)" } ?? [] }
     }
     private func commit() {
@@ -631,7 +646,7 @@ struct KernelMgmtPage: View {
                     KernelCard()
 
                     Card(title: "API 控制 (外部面板)", icon: "server.rack") {
-                        VStack(spacing: 2) {
+                        VStack(spacing: 0) {
                             TextRow("API 监听地址", key: "external-controller", placeholder: "127.0.0.1:9090", persistent: true)
                             TextRow("API 密钥 (Secret)", key: "secret", placeholder: "留空即无密码", persistent: true)
                             TextRow("本地面板目录", key: "external-ui", placeholder: "zashboard", persistent: true)
@@ -639,7 +654,7 @@ struct KernelMgmtPage: View {
                             TextRow("面板下载地址", key: "external-ui-url", placeholder: "https://github.com/Zephyruso/zashboard/releases/latest/download/dist-no-fonts.zip", persistent: true)
                         }
                         Text("内核内置面板 (如 Zashboard)。配置下载地址后，内核启动时会自动下载并解压到指定目录，您可通过 http://<API地址>/ui 访问。")
-                            .font(.dsBody).foregroundColor(.secondary).padding(.top, DS.Spacing.s)
+                            .font(.dsCaption).foregroundColor(.secondary).padding(.top, DS.Spacing.m)
                     }
 
                     Card(title: "启动日志", icon: "terminal") {
@@ -657,7 +672,9 @@ struct KernelMgmtPage: View {
                     }
                 }
                 Spacer(minLength: 0)
-            }.padding(DS.Spacing.xl)
+            }
+            .padding(.horizontal, DS.Layout.pageContentInset)
+            .padding(.bottom, 26)
         }
     }
 }

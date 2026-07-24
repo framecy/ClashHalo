@@ -15,75 +15,77 @@ struct LogsPage: View {
             q.isEmpty || $0.text.localizedCaseInsensitiveContains(q)
         }
         VStack(spacing: 0) {
-            HStack(alignment: .center, spacing: DS.Spacing.m) {
-                DSSegmentedControl(selection: Binding(get: { VM.logLevel }, set: { VM.changeLogLevel($0) }), choices: [
-                    DSChoice("DEBUG", "debug"),
-                    DSChoice("INFO", "info"),
-                    DSChoice("WARN", "warning"),
-                    DSChoice("ERROR", "error")
-                ])
-                .frame(width: 240)
-                .help("日志订阅级别（服务端过滤）。默认 WARN，避免每条连接刷屏。")
+            PageHead(title: "日志") {
+                Button { paused.toggle(); if paused { frozen = VM.logs } } label: {
+                    Label(paused ? "继续" : "暂停", systemImage: paused ? "play.fill" : "pause.fill")
+                }
+                .dsButton(paused ? .prominent : .secondary)
 
+                Button { VM.clear(); frozen = [] } label: { Label("清空", systemImage: "xmark") }
+                    .dsButton()
+
+                Button { exportLogs(rows) } label: { Label("导出", systemImage: "square.and.arrow.up") }
+                    .dsButton()
+            }
+
+            // 搜索 + 级别 chips（chips 为订阅级别，服务端过滤）
+            HStack(alignment: .center, spacing: DS.Spacing.s) {
                 HStack(spacing: DS.Spacing.s) {
                     Image(systemName: "magnifyingglass").foregroundColor(.secondary).font(.dsBody)
                     TextField("过滤日志内容…", text: $q)
                         .textFieldStyle(.plain)
                         .font(.dsBody)
                 }
-                .dsSearchFieldChrome(maxWidth: 220)
+                .dsSearchFieldChrome(maxWidth: 240)
 
-                Spacer(minLength: 0)
-
-                HStack(spacing: DS.Spacing.s) {
-                    Button { paused.toggle(); if paused { frozen = VM.logs } } label: {
-                        Label(paused ? "继续" : "暂停", systemImage: paused ? "play.fill" : "pause.fill")
+                ForEach(Self.levels, id: \.0) { key, label in
+                    DSFilterChip(title: label, selected: VM.logLevel == key) {
+                        VM.changeLogLevel(key)
                     }
-                    .dsButton()
-
-                    Button { exportLogs(rows) } label: { Label("导出", systemImage: "square.and.arrow.up") }
-                        .dsButton()
-
                 }
+                .help("日志订阅级别（服务端过滤）。DEBUG 最全，WARN 可避免每条连接刷屏。")
 
-                HStack(spacing: DS.Spacing.s - 2) {
-                    Circle().fill(paused ? Color.secondary : DS.Palette.accent).frame(width: 6, height: 6)
-                    Text("\(rows.count) 行").font(.dsMono).foregroundColor(.secondary)
+                Spacer(minLength: DS.Spacing.s)
+
+                HStack(spacing: 5) {
+                    DSDot(color: paused ? DS.Palette.textFaint : DS.Palette.accent, size: 6)
+                    Text(paused ? "已暂停" : "实时")
+                        .font(.dsCaption).foregroundColor(.secondary)
+                    Text("· \(rows.count) 行")
+                        .font(.dsMonoSm).monospacedDigit().foregroundColor(DS.Palette.textFaint)
                 }
             }
             .padding(.horizontal, DS.Layout.pageContentInset)
-            .padding(.vertical, DS.Spacing.m)
-            .frame(height: DS.Layout.chromeHeight, alignment: .center)
-            .background(DS.Palette.chromeBg)
-            Divider().overlay(DS.Palette.separator)
-            if source.isEmpty {
-                ContentUnavailable("等待日志流…", "doc.text.magnifyingglass")
-            } else {
-                ScrollViewReader { sp in
-                    ScrollView {
-                        LazyVStack(alignment: .leading, spacing: DS.Spacing.xs / 2) {
-                            ForEach(rows.reversed()) { l in
-                                HStack(alignment: .top, spacing: DS.Spacing.s) {
-                                    Text(l.time).font(.dsMono).foregroundColor(.secondary)
-                                    Text(l.level.uppercased()).font(.dsBodyBold)
-                                        .foregroundColor(logColor(l.level)).frame(width: 46, alignment: .leading)
-                                    Text(l.text).font(.dsMono).textSelection(.enabled)
-                                    Spacer(minLength: 0)
+            .padding(.bottom, DS.Spacing.m)
+
+            // 日志流 — 原型 `.log-stream`：recessed 面板 + mono 11.5 行
+            Group {
+                if source.isEmpty {
+                    ContentUnavailable("等待日志流…", "doc.text.magnifyingglass")
+                } else {
+                    ScrollViewReader { sp in
+                        ScrollView {
+                            LazyVStack(alignment: .leading, spacing: 0) {
+                                ForEach(rows.reversed()) { l in
+                                    logRow(l).id(l.id)
                                 }
-                                .padding(.horizontal, DS.Spacing.m)
-                                .padding(.vertical, 1)
-                                .id(l.id)
                             }
-                        }.padding(.vertical, DS.Spacing.xs)
-                    }
-                    .onChange(of: VM.logs.count) {
-                        // Newest-first: keep the latest line pinned to the top.
-                        if !paused, let newest = rows.last {
-                            withAnimation { sp.scrollTo(newest.id, anchor: .top) }
+                            .padding(.vertical, DS.Spacing.s)
+                        }
+                        .onChange(of: VM.logs.count) {
+                            // Newest-first: keep the latest line pinned to the top.
+                            if !paused, let newest = rows.last {
+                                withAnimation { sp.scrollTo(newest.id, anchor: .top) }
+                            }
                         }
                     }
                 }
             }
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .background(DS.Shape.card().fill(DS.Palette.inputBg))
+            .overlay(DS.Shape.card().strokeBorder(DS.Palette.border, lineWidth: 0.5))
+            .padding(.horizontal, DS.Layout.pageContentInset)
+            .padding(.bottom, DS.Spacing.l)
         }
         .onAppear {
             VM.start()
@@ -91,6 +93,33 @@ struct LogsPage: View {
         .onDisappear {
             VM.stop()
         }
+    }
+
+    /// 订阅级别 chips — 键为 mihomo `log-level` 取值。
+    private static let levels: [(String, String)] = [
+        ("debug", "DEBUG"), ("info", "INFO"), ("warning", "WARN"), ("error", "ERROR")
+    ]
+
+    /// 单行日志 — 原型 `.log-line`：time(faint) · level(58pt 定宽粗体) · msg(dim)。
+    private func logRow(_ l: Log) -> some View {
+        HStack(alignment: .top, spacing: 9) {
+            Text(l.time)
+                .font(.dsMonoSm)
+                .foregroundColor(DS.Palette.textFaint)
+            Text(l.level.uppercased())
+                .font(.dsMonoSmBold)
+                .foregroundColor(logColor(l.level))
+                .frame(width: 58, alignment: .leading)
+            Text(l.text)
+                .font(.dsMonoSm)
+                .foregroundColor(.secondary)
+                .textSelection(.enabled)
+                .fixedSize(horizontal: false, vertical: true)
+            Spacer(minLength: 0)
+        }
+        .padding(.horizontal, DS.Spacing.m)
+        .padding(.vertical, 1)
+        .frame(maxWidth: .infinity, alignment: .leading)
     }
 
     private func exportLogs(_ rows: [Log]) {
@@ -155,6 +184,12 @@ struct LogsPage: View {
         // Completely clear memory
         logs.removeAll(keepingCapacity: false)
         logBuffer.removeAll(keepingCapacity: false)
+    }
+
+    /// 清空当前已缓冲的日志（不影响订阅）。
+    func clear() {
+        logs.removeAll(keepingCapacity: true)
+        logBuffer.removeAll(keepingCapacity: true)
     }
 
     func changeLogLevel(_ level: String) {
