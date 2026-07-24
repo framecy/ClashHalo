@@ -8,24 +8,27 @@ struct ContentView: View {
     struct Tab { let id, label, icon: String }
 
     // 侧栏图标约定：一律 outline（非 .fill），相近笔画密度；渲染见 sidebarIcon。
-    // 监控：实时状态与数据
-    private let monitorTabs: [Tab] = [
-        .init(id: "dashboard",   label: "仪表盘",   icon: "gauge.with.dots.needle.67percent"),
-        .init(id: "connections", label: "连接",     icon: "link"),
-        .init(id: "logs",        label: "日志",     icon: "doc.text"),
+    // 分组遵循原型：概览 / 代理 / 网络 / 配置。
+    private let overviewTabs: [Tab] = [
+        .init(id: "dashboard", label: "仪表盘", icon: "gauge.with.dots.needle.67percent"),
     ]
-    // 代理：规则与节点
+    // 代理：节点、分流规则、实时连接
     private let proxyTabs: [Tab] = [
-        .init(id: "proxies", label: "代理节点", icon: "diamond"),
-        .init(id: "rules",   label: "规则",     icon: "list.bullet.rectangle"),
-        .init(id: "subscriptions", label: "订阅", icon: "icloud.and.arrow.down"),
+        .init(id: "proxies",     label: "代理",   icon: "diamond"),
+        .init(id: "rules",       label: "规则",   icon: "list.bullet.rectangle"),
+        .init(id: "connections", label: "连接",   icon: "link"),
     ]
-    // 配置：profile · 网络(入站/TUN/DNS/嗅探/内核) · 网络拓扑 · 偏好
+    // 网络：SD-WAN 共存、入站/TUN/DNS/嗅探、日志
+    private let networkTabs: [Tab] = [
+        .init(id: "map",     label: "SD-WAN", icon: "point.3.connected.trianglepath.dotted"),
+        .init(id: "network", label: "网络",    icon: "network"),
+        .init(id: "logs",    label: "日志",    icon: "text.alignleft"),
+    ]
+    // 配置：订阅、profile 编辑、偏好
     private let configTabs: [Tab] = [
-        .init(id: "config",  label: "配置", icon: "slider.horizontal.3"),
-        .init(id: "network", label: "网络", icon: "network"),
-        .init(id: "map",     label: "网络拓扑", icon: "point.3.connected.trianglepath.dotted"),
-        .init(id: "general", label: "设置", icon: "gearshape"),
+        .init(id: "subscriptions", label: "节点",   icon: "icloud.and.arrow.down"),
+        .init(id: "config",        label: "配置编辑", icon: "slider.horizontal.3"),
+        .init(id: "general",       label: "设置",   icon: "gearshape"),
     ]
 
     /// App 版本号(随 MARKETING_VERSION),展示于侧栏头部与关于页。
@@ -73,11 +76,16 @@ struct ContentView: View {
 
             ScrollView {
                 VStack(alignment: .leading, spacing: 0) {
-                    sidebarSection("监控", tabs: monitorTabs, first: true)
+                    statusCard
+                        .padding(.top, DS.Spacing.m)
+                        .padding(.bottom, DS.Spacing.xs)
+
+                    sidebarSection("概览", tabs: overviewTabs, first: true)
                     sidebarSection("代理", tabs: proxyTabs)
+                    sidebarSection("网络", tabs: networkTabs)
                     sidebarSection("配置", tabs: configTabs)
                 }
-                .padding(.horizontal, DS.Layout.pageContentInset)
+                .padding(.horizontal, DS.Spacing.s + 2)
                 .padding(.bottom, DS.Spacing.s)
                 .frame(maxWidth: .infinity, alignment: .leading)
             }
@@ -88,42 +96,102 @@ struct ContentView: View {
         .background(DS.Palette.sidebarBg)
     }
 
+    /// 侧栏状态卡 — 原型 `.sb-status`：运行状态 + 模式徽章 / 当前出口 / 速率 + 连接数。
+    private var statusCard: some View {
+        let running = M.reachable
+        let connecting = M.engine.isBusy && !M.reachable
+        let dot = running ? DS.Palette.ok : (connecting ? DS.Palette.warn : DS.Palette.error)
+        let state = running ? "代理运行中" : (connecting ? "连接中…" : "未连接")
+
+        return VStack(alignment: .leading, spacing: 2) {
+            HStack(spacing: 7) {
+                DSDot(color: dot)
+                Text(state)
+                    .font(.dsCaption)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+                Spacer(minLength: DS.Spacing.xs)
+                DSKindBadge(text: modeLabel(M.mode))
+            }
+
+            Text(currentOutbound)
+                .font(.dsSidebarName)
+                .foregroundStyle(.primary)
+                .lineLimit(1)
+                .truncationMode(.middle)
+
+            HStack(spacing: 7) {
+                DSDot(color: DS.Palette.accent, size: 5)
+                Text(fmtRate(Double(M.curDown)))
+                    .font(.dsMonoSm)
+                    .monospacedDigit()
+                    .foregroundStyle(.secondary)
+                Spacer(minLength: DS.Spacing.xs)
+                Text("\(M.activeConnectionsCount) 连接")
+                    .font(.dsMonoSm)
+                    .monospacedDigit()
+                    .foregroundStyle(DS.Palette.textFaint)
+            }
+            .padding(.top, 1)
+        }
+        .padding(.horizontal, DS.Spacing.s + 2)
+        .padding(.vertical, 9)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .dsCardChrome(radius: 9)
+    }
+
+    /// 当前生效出口：优先第一个 selector 组的选中项，回落到模式名。
+    private var currentOutbound: String {
+        if let g = M.groups.first(where: { $0.type.lowercased() == "selector" }), !g.now.isEmpty {
+            return g.now
+        }
+        if let g = M.groups.first, !g.now.isEmpty { return g.now }
+        return modeLabel(M.mode)
+    }
+
     @ViewBuilder
     private func sidebarSection(_ title: String, tabs: [Tab], first: Bool = false) -> some View {
         Text(title)
-            .font(.dsCaption)
-            .fontWeight(.semibold)
-            .foregroundStyle(.secondary)
+            .font(.dsSectionLabel)
+            .foregroundStyle(DS.Palette.textFaint)
             .textCase(nil)
             .frame(maxWidth: .infinity, alignment: .leading)
-            .padding(.top, first ? DS.Layout.sidebarSectionTop : DS.Spacing.l)
-            .padding(.bottom, DS.Spacing.xs)
-            .padding(.leading, DS.Spacing.xs)
+            .padding(.top, first ? DS.Spacing.m : DS.Spacing.l + DS.Spacing.xs)
+            .padding(.bottom, DS.Spacing.s)
+            .padding(.leading, DS.Spacing.s + 1)
 
-        ForEach(tabs, id: \.id) { t in
-            sidebarNavRow(t)
+        VStack(alignment: .leading, spacing: DS.Layout.sidebarRowGap) {
+            ForEach(tabs, id: \.id) { t in
+                sidebarNavRow(t)
+            }
         }
     }
 
-    /// 导航行：与 statusToggle 同结构（lg 图标槽 + s 间距 + bodyMedium 文案）。
-    /// 选中语言与 DSSegmentedControl 同源（design.md §6.1 / §6.8）：
-    /// accent 胶囊 + 白字/白 outline 图标；未选透明 + primary。
+    /// 导航行 — 原型 `.sb-item`：30pt 高、radius 7、9pt 图文间距；
+    /// 选中填 accent、文字/图标走 accentInk；右侧可挂 mono 计数徽章。
     private func sidebarNavRow(_ t: Tab) -> some View {
         let selected = M.route == t.id
         return Button {
             M.route = t.id
         } label: {
-            HStack(spacing: DS.Spacing.s) {
+            HStack(spacing: 9) {
                 sidebarIcon(t.icon)
-                    .foregroundStyle(selected ? Color.white : Color.primary)
+                    .foregroundStyle(selected ? DS.Palette.accentInk : Color.secondary)
                 Text(t.label)
-                    .font(.dsBodyMedium)
-                    .foregroundStyle(selected ? Color.white : Color.primary)
+                    .font(selected ? .dsBodySemibold : .dsBody)
+                    .foregroundStyle(selected ? DS.Palette.accentInk : Color.primary)
                     .lineLimit(1)
-                Spacer(minLength: 0)
+                Spacer(minLength: DS.Spacing.xs)
+                if let badge = navBadge(t.id) {
+                    Text(badge)
+                        .font(.dsMonoTiny)
+                        .monospacedDigit()
+                        .foregroundStyle(selected ? DS.Palette.accentInk.opacity(0.8) : DS.Palette.textFaint)
+                        .lineLimit(1)
+                }
             }
-            .padding(.vertical, DS.Layout.sidebarRowVInset)
-            .padding(.horizontal, DS.Spacing.s)
+            .padding(.horizontal, 9)
+            .frame(height: DS.Layout.sidebarRowHeight)
             .frame(maxWidth: .infinity, alignment: .leading)
             .background(
                 RoundedRectangle(cornerRadius: DS.Radius.control, style: .continuous)
@@ -135,39 +203,47 @@ struct ContentView: View {
         .accessibilityAddTraits(selected ? .isSelected : [])
     }
 
+    /// 行尾计数徽章 — 仅活跃连接数（其余页面无稳定计数语义）。
+    private func navBadge(_ id: String) -> String? {
+        guard id == "connections", M.activeConnectionsCount > 0 else { return nil }
+        return "\(M.activeConnectionsCount)"
+    }
+
     /// 侧栏导航图标：统一 outline 字形、字重、渲染模式与占位框，避免 fill/line 混用导致视觉轻重不一。
     private func sidebarIcon(_ name: String) -> some View {
         Image(systemName: name)
-            .font(DS.Icon.font(DS.Icon.md, weight: .medium))
+            .font(DS.Icon.font(DS.Icon.sm, weight: .medium))
             .symbolRenderingMode(.monochrome)
-            .frame(width: DS.Icon.lg, height: DS.Icon.lg, alignment: .center)
+            .frame(width: DS.Icon.md, height: DS.Icon.md, alignment: .center)
             .contentShape(Rectangle())
     }
 
-    /// 与内容区 PageToolbar / chrome 顶栏同高：m + 32 + m，底部分割线通栏。
+    /// 品牌行 — 原型 `.sb-brand`：24pt accent 渐变 logo + 14/700 名称 + 版本副标。
+    /// 高度与内容区 PageToolbar 同为 chromeHeight，底部分割线通栏对齐。
+    /// 副标只放 App 版本 + build；内核版本在侧栏底部 footer，不在这里重复。
     private var appHeader: some View {
-        HStack(spacing: DS.Spacing.m) {
+        HStack(spacing: DS.Spacing.s) {
             Image(nsImage: NSApp.applicationIconImage ?? NSImage())
                 .resizable()
                 .interpolation(.high)
-                .frame(width: DS.Layout.controlHeight, height: DS.Layout.controlHeight)
-                .clipShape(RoundedRectangle(cornerRadius: DS.Radius.control, style: .continuous))
+                .frame(width: 24, height: 24)
+                .clipShape(DS.Shape.control())
 
             VStack(alignment: .leading, spacing: 1) {
                 Text("ClashHalo")
-                    .font(.dsLabelBold)
+                    .font(.dsAppName)
+                    .tracking(-0.2)
                     .foregroundStyle(.primary)
                     .lineLimit(1)
-                Text("v\(Self.appVersion) · \(Self.appBuild)")
-                    .font(.dsCaption)
-                    .foregroundStyle(.secondary)
-                    .monospacedDigit()
+                Text(verbatim: "v\(Self.appVersion) · build \(Self.appBuild)")
+                    .font(.dsMonoMicro)
+                    .foregroundStyle(DS.Palette.textFaint)
                     .lineLimit(1)
             }
             Spacer(minLength: 0)
         }
-        // 水平 inset 与内容区 pageContentInset 同源，跨栏视觉网格一致
-        .padding(.horizontal, DS.Layout.pageContentInset)
+        // 水平 inset 与状态卡/导航行同源，跨栏视觉网格一致
+        .padding(.horizontal, DS.Spacing.s + 6)
         .frame(height: DS.Layout.chromeHeight, alignment: .center)
         .frame(maxWidth: .infinity, alignment: .leading)
         .background(DS.Palette.sidebarBg)
@@ -180,20 +256,20 @@ struct ContentView: View {
             // Tapping routes to 设置 → 权限 where the one-tap upgrade lives.
             if M.engine.helperNeedsUpdate {
                 Button { M.route = "general" } label: {
-                    HStack(spacing: DS.Spacing.s) {
+                    HStack(spacing: 9) {
                         Image(systemName: "exclamationmark.shield.fill")
-                            .font(DS.Icon.font(DS.Icon.md, weight: .medium))
+                            .font(DS.Icon.font(DS.Icon.sm, weight: .medium))
                             .foregroundStyle(DS.Palette.warn)
-                            .frame(width: DS.Icon.lg, height: DS.Icon.lg)
+                            .frame(width: DS.Icon.md, height: DS.Icon.md)
                         Text("特权服务待更新")
-                            .font(.dsBodyMedium)
+                            .font(.dsBody)
                             .foregroundStyle(.primary)
                             .lineLimit(1)
                         Spacer(minLength: 0)
                         Image(systemName: "chevron.right").font(.dsCaption).foregroundStyle(.secondary)
                     }
-                    .padding(.vertical, DS.Spacing.xs)
-                    .padding(.horizontal, DS.Spacing.s)
+                    .padding(.horizontal, 9)
+                    .frame(height: DS.Layout.sidebarRowHeight)
                     .background(RoundedRectangle(cornerRadius: DS.Radius.control, style: .continuous)
                         .fill(DS.Palette.warn.opacity(0.12)))
                     .contentShape(Rectangle())
@@ -229,44 +305,44 @@ struct ContentView: View {
 
             // Kernel status: tri-state dot + full version. "连接中" (amber) during
             // a busy start/restart is more honest than a bare red "disconnected".
-            HStack(spacing: DS.Spacing.s) {
+            HStack(spacing: 9) {
                 let connecting = M.engine.isBusy && !M.reachable
                 Circle()
                     .fill(M.reachable ? DS.Palette.ok : (connecting ? DS.Palette.warn : DS.Palette.error))
                     .frame(width: 6, height: 6)
-                    .frame(width: DS.Icon.lg, height: DS.Icon.lg, alignment: .center)
+                    .frame(width: DS.Icon.md, height: DS.Icon.md, alignment: .center)
                 Text("内核")
-                    .font(.dsBodyMedium)
+                    .font(.dsBody)
                     .foregroundStyle(.secondary)
                     .lineLimit(1)
                 Spacer(minLength: 0)
                 Text(M.reachable ? (M.version.isEmpty || M.version == "?" ? "—" : M.version)
                                  : (connecting ? "连接中…" : "未连接"))
-                    .font(M.reachable ? .dsMono : .dsBody)
+                    .font(M.reachable ? .dsMonoSm : .dsBody)
                     .foregroundStyle(M.reachable ? .primary : .secondary)
                     .lineLimit(1)
                     .minimumScaleFactor(0.7)
             }
-            .padding(.vertical, DS.Spacing.xs / 2)
-            .padding(.horizontal, DS.Spacing.s)
+            .padding(.horizontal, 9)
+            .frame(height: DS.Layout.sidebarRowHeight - 4)
         }
-        .padding(.horizontal, DS.Layout.pageContentInset)
-        .padding(.top, DS.Spacing.m)
-        .padding(.bottom, DS.Spacing.l)
+        .padding(.horizontal, DS.Spacing.s + 2)
+        .padding(.top, DS.Spacing.s)
+        .padding(.bottom, DS.Spacing.m)
         .background(DS.Palette.sidebarBg)
     }
 
     private func statusToggle(_ label: String, icon: String, isOn: Binding<Bool>, onColor: Color) -> some View {
         let busy = M.engine.isBusy
-        return HStack(spacing: DS.Spacing.s) {
-            // 与导航行共用 md 字号 + monochrome + lg 槽
+        return HStack(spacing: 9) {
+            // 与导航行共用 sm 字号 + monochrome + md 槽
             Image(systemName: icon)
-                .font(DS.Icon.font(DS.Icon.md, weight: .medium))
+                .font(DS.Icon.font(DS.Icon.sm, weight: .medium))
                 .symbolRenderingMode(.monochrome)
                 .foregroundStyle(isOn.wrappedValue ? onColor : .secondary)
-                .frame(width: DS.Icon.lg, height: DS.Icon.lg, alignment: .center)
+                .frame(width: DS.Icon.md, height: DS.Icon.md, alignment: .center)
             Text(label)
-                .font(.dsBodyMedium)
+                .font(.dsBody)
                 .foregroundStyle(busy ? .secondary : (isOn.wrappedValue ? .primary : .secondary))
                 .lineLimit(1)
             Spacer(minLength: 0)
@@ -275,18 +351,12 @@ struct ContentView: View {
                     .controlSize(.mini)
                     .scaleEffect(DS.Progress.miniScale)
             }
-            // 开关是状态控件，不与标准 32pt 按钮/tab 共用尺寸（design.md §6.7）
+            // 走 DSSwitch —— 侧栏开关此前是 .mini，比设置页里的同类开关小一号。
             // busy 时禁用，避免连点只靠 toast 解释（design.md §10.1）
-            Toggle("", isOn: isOn)
-                .toggleStyle(.switch)
-                .controlSize(.mini)
-                .labelsHidden()
-                .tint(onColor)
-                .disabled(busy)
-                .opacity(busy ? 0.55 : 1)
+            DSSwitch(isOn: isOn, tint: onColor, disabled: busy)
         }
-        .padding(.vertical, DS.Spacing.xs / 2)
-        .padding(.horizontal, DS.Spacing.s)
+        .padding(.horizontal, 9)
+        .frame(height: DS.Layout.sidebarRowHeight)
     }
 
     // MARK: Detail
@@ -385,10 +455,12 @@ struct ContentView: View {
 
 // MARK: - Components
 
-/// Page top bar. Title/desc are optional — non-dashboard pages pass empty title and only actions.
+/// Page top bar — 标题 + 右侧动作。标题可为空（只留动作）。
+///
+/// 动作区锁死 `controlHeight`：按钮 / 分段控件 / 菜单选择器的固有高度算法不同
+/// （Seg 的等分段会把自身撑高），不锁则同一排控件高度参差。
 struct PageHead<Actions: View>: View {
     let title: String
-    let desc: String?
     @ViewBuilder var actions: () -> Actions
 
     private var hasTitle: Bool { !title.isEmpty }
@@ -396,62 +468,40 @@ struct PageHead<Actions: View>: View {
 
     var body: some View {
         if hasTitle || hasActions {
-            HStack(alignment: hasTitle ? .bottom : .center) {
+            HStack(alignment: .center, spacing: DS.Spacing.m) {
                 if hasTitle {
-                    VStack(alignment: .leading, spacing: DS.Spacing.xs) {
-                        Text(title)
-                            .font(.dsPageTitle)
-                            .foregroundColor(.primary)
-                        if let desc = desc, !desc.isEmpty {
-                            Text(desc)
-                                .font(.dsBody)
-                                .foregroundColor(.secondary)
-                        }
-                    }
-                    Spacer(minLength: 0)
-                } else {
-                    Spacer(minLength: 0)
+                    Text(title)
+                        .font(.dsPageTitle)
+                        .tracking(-0.4)
+                        .foregroundColor(.primary)
+                        .fixedSize()
                 }
+                Spacer(minLength: 0)
 
                 if hasActions {
                     HStack(spacing: DS.Spacing.s) {
                         actions()
                     }
+                    // 按最高的控件（Seg = segHeight）定高，按钮在其中垂直居中。
+                    // 用 controlHeight 会把 Seg 压掉 2pt。
+                    .frame(height: DS.Layout.segHeight)
                 }
             }
+            // 这一行必须不看 hasActions 就锁死同一个高度：之前只在有 actions 时
+            // 给内层套 segHeight，没有 actions 的页面这一行只有标题文字自己的行高
+            // （~25pt），比 segHeight（34pt）矮一截——切换到没有 actions 的页面时
+            // 标题栏就会跟着变矮，来回切页标题会明显上下跳动。
+            .frame(minHeight: DS.Layout.segHeight)
             .padding(.horizontal, DS.Layout.pageContentInset)
             .padding(.top, hasTitle ? DS.Spacing.l : DS.Spacing.m)
-            .padding(.bottom, DS.Spacing.m)
+            .padding(.bottom, 14)
         }
     }
 }
 
 extension PageHead where Actions == EmptyView {
-    init(title: String, desc: String? = nil) {
-        self.init(title: title, desc: desc, actions: { EmptyView() })
-    }
-}
-
-/// Actions-only page toolbar (no title/desc). Prefer this on non-dashboard pages.
-/// Matches design.md §6.5 / §6.1: fixed 32pt controls, pageContentInset, chromeBg strip.
-/// Height locked to `m + controlHeight + m` so the bottom Divider lines up with the sidebar header.
-struct PageToolbar<Actions: View>: View {
-    @ViewBuilder var actions: () -> Actions
-
-    var body: some View {
-        VStack(spacing: 0) {
-            HStack(spacing: DS.Spacing.s) {
-                Spacer(minLength: 0)
-                actions()
-            }
-            .padding(.horizontal, DS.Layout.pageContentInset)
-            .padding(.vertical, DS.Spacing.m)
-            .frame(height: DS.Layout.chromeHeight, alignment: .center)
-            .frame(maxWidth: .infinity)
-            .background(DS.Palette.chromeBg)
-
-            Divider().overlay(DS.Palette.separator)
-        }
+    init(title: String) {
+        self.init(title: title, actions: { EmptyView() })
     }
 }
 
@@ -461,49 +511,82 @@ struct Card<Content: View, Actions: View>: View {
     var title: String?
     var icon: String?
     var pad: Bool
+    /// 定高。同一栅格行里的卡片必须传同一个值，否则各自按内容高度渲染就会高矮不齐。
+    /// 传 `nil` 保持内容自适应（`.frame(height: nil)` 是空操作）。
+    var height: CGFloat?
+    /// 撑满所在栅格行的高度。表单卡内容高度由行数决定、事先算不出来，
+    /// 用它让同一 `GridRow` 里的卡片对齐到最高那张，而不是各自参差。
+    /// 只在栅格行内使用 —— 直接放进 ScrollView 的 VStack 会吃掉剩余高度。
+    var stretch: Bool = false
     @ViewBuilder var actions: () -> Actions
     @ViewBuilder var content: () -> Content
 
-    init(title: String? = nil, icon: String? = nil, pad: Bool = true, @ViewBuilder actions: @escaping () -> Actions, @ViewBuilder content: @escaping () -> Content) {
+    init(title: String? = nil, icon: String? = nil, pad: Bool = true, height: CGFloat? = nil,
+         stretch: Bool = false,
+         @ViewBuilder actions: @escaping () -> Actions, @ViewBuilder content: @escaping () -> Content) {
         self.title = title
         self.icon = icon
         self.pad = pad
+        self.height = height
+        self.stretch = stretch
         self.actions = actions
         self.content = content
     }
 
+    /// 卡头遵循原型 `.card-head`：uppercase 11/700 灰标题 + 0.5px 底分隔 + 极淡底色。
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
             if let title {
                 HStack(spacing: DS.Spacing.s) {
                     if let icon {
                         Image(systemName: icon)
-                            .font(.dsBody)
+                            .font(DS.Icon.font(12, weight: .semibold))
                             .foregroundColor(.secondary)
                     }
-                    Text(title).font(.dsBodyBold).foregroundColor(.secondary)
-                    Spacer(minLength: 0)
+                    Text(title)
+                        .font(.dsCardTitle)
+                        .tracking(0.4)
+                        .textCase(.uppercase)
+                        .foregroundColor(.secondary)
+                        .lineLimit(1)
+                        // 卡头标题不参与压缩：窄卡片下先挤 actions，不把标题折行
+                        .fixedSize()
+                    Spacer(minLength: DS.Spacing.xs)
                     actions()
                 }
-                .padding(.horizontal, DS.Spacing.l)
-                .padding(.top, DS.Spacing.m)
-                .padding(.bottom, DS.Spacing.s)
+                .padding(.horizontal, DS.Spacing.m)
+                .frame(height: DS.Layout.cardHeadHeight)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .background(DS.Palette.cardHeadBg)
+                .overlay(alignment: .bottom) {
+                    Rectangle().fill(DS.Palette.border).frame(height: 0.5)
+                }
             }
             content()
                 .frame(maxWidth: .infinity, alignment: .leading)
-                .padding(.horizontal, pad ? DS.Spacing.l : 0)
-                .padding(.bottom, pad ? DS.Spacing.l : 0)
-                .padding(.top, (title == nil && pad) ? DS.Spacing.l : 0)
+                .padding(.horizontal, pad ? DS.Spacing.m : 0)
+                .padding(.bottom, pad ? DS.Spacing.m : 0)
+                .padding(.top, pad ? DS.Spacing.m : 0)
             Spacer(minLength: 0)
         }
-        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+        // 高度必须在这里锁定，而不是由调用点在外面套 `.frame(height:)`：
+        // chrome（背景 + 边框）画在这一层，外层 frame 只会把已按内容高度画好的
+        // 卡片居中放进槽里 —— 于是同行卡片高矮不齐、左右列还上下错位。
+        //
+        // 不用 `maxHeight: .infinity`：那会让卡片吃掉 ScrollView 的剩余高度并
+        // 按兄弟数量瓜分，同样导致高度不一致。
+        .frame(maxWidth: .infinity, alignment: .topLeading)
+        .frame(height: height, alignment: .top)
+        .frame(maxHeight: stretch ? .infinity : nil, alignment: .top)
         .clipped()
         .dsCardChrome()
     }
 }
 
 extension Card where Actions == EmptyView {
-    init(title: String? = nil, icon: String? = nil, pad: Bool = true, @ViewBuilder content: @escaping () -> Content) {
-        self.init(title: title, icon: icon, pad: pad, actions: { EmptyView() }, content: content)
+    init(title: String? = nil, icon: String? = nil, pad: Bool = true, height: CGFloat? = nil,
+         stretch: Bool = false, @ViewBuilder content: @escaping () -> Content) {
+        self.init(title: title, icon: icon, pad: pad, height: height, stretch: stretch,
+                  actions: { EmptyView() }, content: content)
     }
 }

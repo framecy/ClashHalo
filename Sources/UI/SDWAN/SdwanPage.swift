@@ -191,20 +191,33 @@ struct SdwanPage: View {
     private var hasConflicts: Bool { !conflicts.isEmpty || defaultRouteHolder != nil }
 
     var body: some View {
-        VStack(spacing: 0) {
-            PageToolbar {
-                Button { rescan() } label: { Label("重新扫描", systemImage: "arrow.clockwise") }
-                    .dsButton()
-            }
+        ScrollView {
+            VStack(spacing: DS.Spacing.m) {
+                PageHead(title: "SD-WAN 共存") {
+                    HStack(spacing: 5) {
+                        Image(systemName: hasConflicts ? "exclamationmark.triangle.fill" : "checkmark")
+                            .font(DS.Icon.font(12, weight: .semibold))
+                        Text(hasConflicts ? "\(conflicts.count) 处冲突" : "无路由冲突")
+                            .font(.dsCaptionBold)
+                    }
+                    .foregroundStyle(hasConflicts ? DS.Palette.warn : DS.Palette.accent)
+                    .padding(.horizontal, DS.Spacing.s + 2)
+                    .frame(height: DS.Layout.controlHeight)
+                    .background(DS.Shape.control().fill((hasConflicts ? DS.Palette.warn : DS.Palette.accent).opacity(0.14)))
 
-            ScrollView {
-                VStack(spacing: DS.Spacing.m) {
-                    // status banner
+                    Button { rescan() } label: { Label("重新探测拓扑", systemImage: "arrow.clockwise") }
+                        .dsButton()
+                }
+                .padding(.horizontal, -DS.Layout.pageContentInset)
+
+                // 顶部说明卡 — 原型：图标槽 + 文案 + 右侧冲突计数大字
                     HStack(spacing: DS.Spacing.m) {
-                        Image(systemName: "shield.lefthalf.filled").font(DS.Icon.font(DS.Icon.lg))
-                            .foregroundColor(hasConflicts ? DS.Palette.warn : DS.Palette.accent)
+                        DSIconSlot(systemImage: "shield.lefthalf.filled",
+                                   size: DS.Layout.iconSlotLg, radius: 11,
+                                   tint: hasConflicts ? DS.Palette.warn : DS.Palette.accent,
+                                   filled: true)
                         VStack(alignment: .leading, spacing: 3) {
-                            Text(hasConflicts ? "检测到路由冲突" : "智能路由隔离已生效").font(.dsLabelBold)
+                            Text(hasConflicts ? "检测到路由冲突" : "自动隔离已启用").font(.dsCardLabel)
                             if let holder = defaultRouteHolder {
                                 Text("接口 \(holder) 持有全局默认路由（非作用域限定），与本机 TUN 争夺出口。"
                                      + "需在该隧道一侧处理——关闭本应用的自动路由只会让 TUN 失去全部路由。")
@@ -259,16 +272,16 @@ struct SdwanPage: View {
                             }
                             .dsButton(.warning)
                         } else {
-                            VStack {
-                                Text("0").font(.dsStatValue)
+                            VStack(alignment: .trailing, spacing: 0) {
+                                Text("0").font(.dsStatValue).tracking(-0.5)
                                     .foregroundColor(DS.Palette.accent)
-                                Text("路由冲突").font(.dsBody).foregroundColor(.secondary)
+                                Text("路由冲突").font(.dsCaption).foregroundColor(.secondary)
                             }
                         }
                     }
-                    .padding(DS.Spacing.l)
-                    .background(RoundedRectangle(cornerRadius: DS.Radius.card, style: .continuous).fill(DS.Palette.cardBg))
-                    .overlay(RoundedRectangle(cornerRadius: DS.Radius.card, style: .continuous).stroke(DS.Palette.border))
+                    .padding(.horizontal, 13)
+                    .padding(.vertical, DS.Spacing.m)
+                    .dsCardChrome()
 
                     // Conflict detail card (shown when prefix-shadowing detected)
                     if !conflicts.isEmpty {
@@ -373,87 +386,115 @@ struct SdwanPage: View {
                     // Topology view of the network routing relation map
                     SdwanTopologyView(ifaces: ifaces, routes: routes)
 
-                    // interfaces
-                    Card(title: "网络接口拓扑 · \(ifaces.count)", icon: "network") {
-                        VStack(spacing: 4) {
-                            if ifaces.isEmpty { Text("正在扫描接口…").font(.dsBody).foregroundColor(.secondary).padding() }
-                            ForEach(ifaces.indices, id: \.self) { idx in
-                                ifaceRow(ifaces[idx]).padding(.vertical, DS.Spacing.xs)
-                                if idx < ifaces.count - 1 {
-                                    Divider()
-                                }
-                            }
-                        }
+                    // 接口卡列表 — 原型：接口信息条 + 该接口持有的路由区
+                    HStack(spacing: 6) {
+                        Image(systemName: "info.circle")
+                            .font(DS.Icon.font(11)).foregroundColor(DS.Palette.textFaint)
+                        Text("路由分配由各隧道自行下发，本页只做扫描与冲突检测，不代为迁移。")
+                            .font(.dsCaption).foregroundColor(DS.Palette.textFaint)
+                        Spacer(minLength: 0)
                     }
+                    .padding(.top, DS.Spacing.xs)
 
-                    // utun routes
-                    Card(title: "UTUN 路由表 · \(routes.count)", icon: "list.bullet.indent") {
-                        VStack(spacing: 4) {
-                            if routes.isEmpty { Text("无 utun 路由").font(.dsBody).foregroundColor(.secondary).padding() }
-                            ForEach(routes.indices, id: \.self) { idx in
-                                let route = routes[idx]
-                                let iface = ifaces.first(where: { $0.name == route.iface })
-                                let kind = iface?.kind ?? .otherTun
-
-                                HStack {
-                                    Text(route.dest).font(.dsMono)
-                                    Spacer()
-                                    Image(systemName: "arrow.right").font(.dsBody).foregroundColor(.secondary)
-
-                                    // 带分类图标和颜色的接口名
-                                    HStack(spacing: 4) {
-                                        Image(systemName: icon(kind))
-                                            .foregroundColor(color(kind))
-                                            .font(.dsCaption)
-                                        Text(route.iface)
-                                            .font(.dsMono)
-                                            .foregroundColor(color(kind))
-                                    }
-                                    .padding(.horizontal, 6)
-                                    .padding(.vertical, 2)
-                                    .background(
-                                        Capsule()
-                                            .fill(color(kind).opacity(0.12))
-                                    )
-                                }
-                                .padding(.vertical, DS.Spacing.xs)
-                                if idx < routes.count - 1 {
-                                    Divider()
-                                }
-                            }
-                        }
+                    if ifaces.isEmpty {
+                        Text("正在扫描接口…").font(.dsBody).foregroundColor(.secondary)
+                            .frame(maxWidth: .infinity, minHeight: 120)
+                    }
+                    ForEach(ifaces.indices, id: \.self) { idx in
+                        ifaceCard(ifaces[idx])
                     }
 
                     Label("进程级分流 (SO_USER_COOKIE + PF) 与路由注入需特权 Helper（代码签名后于 v1.0 启用）",
-                          systemImage: "lock.shield").font(.dsBody).foregroundColor(.secondary)
+                          systemImage: "lock.shield").font(.dsCaption).foregroundColor(.secondary)
+                        .frame(maxWidth: .infinity, alignment: .leading)
                     Spacer(minLength: 0)
-                }
-                // 顶距与配置页一致，避免内容贴死 chrome 分割线
-                .padding(.horizontal, DS.Layout.pageContentInset)
-                .padding(.top, DS.Spacing.l)
-                .padding(.bottom, DS.Spacing.xxl)
             }
+            // 顶距与配置页一致，避免内容贴死 chrome 分割线
+            .padding(.horizontal, DS.Layout.pageContentInset)
+            .padding(.bottom, 26)
         }
         .onAppear { rescan() }
     }
 
-    private func ifaceRow(_ i: NetIface) -> some View {
-        HStack(spacing: DS.Spacing.s) {
-            Image(systemName: icon(i.kind)).foregroundColor(color(i.kind)).frame(width: 22)
-            VStack(alignment: .leading, spacing: 1) {
-                HStack(spacing: 6) {
-                    Text(i.name).font(.dsMonoBold)
-                    Text(i.kind.rawValue).font(.dsBody)
-                        .padding(.horizontal, DS.Spacing.s - 2).padding(.vertical, 1)
-                        .background(Capsule().fill(color(i.kind).opacity(0.15))).foregroundColor(color(i.kind))
+    /// 接口卡 — 原型 `.iface-card`：左侧 3pt 类型色条 + 图标槽 + 名称/标签/地址 + 在线点，
+    /// 下方虚线 `.route-zone` 列出该接口当前持有的 utun 路由。
+    private func ifaceCard(_ i: NetIface) -> some View {
+        let c = color(i.kind)
+        let owned = routes.filter { $0.iface == i.name }
+
+        return VStack(spacing: 0) {
+            HStack(spacing: DS.Spacing.m) {
+                DSIconSlot(systemImage: icon(i.kind), size: DS.Layout.iconSlotMd,
+                           radius: 10, tint: c, filled: true)
+
+                VStack(alignment: .leading, spacing: 2) {
+                    HStack(spacing: 6) {
+                        Text(i.name).font(.dsCardName).foregroundStyle(.primary)
+                        DSStatusBadge(text: i.kind.rawValue, tint: c)
+                    }
+                    Text(i.ipv4.joined(separator: ", ").isEmpty ? "无 IPv4" : i.ipv4.joined(separator: ", "))
+                        .font(.dsMonoSm).foregroundColor(.secondary).lineLimit(1)
                 }
-                Text(i.ipv4.joined(separator: ", ").isEmpty ? "无 IPv4" : i.ipv4.joined(separator: ", "))
-                    .font(.dsMono).foregroundColor(.secondary)
+
+                Spacer(minLength: DS.Spacing.s)
+
+                HStack(spacing: 6) {
+                    DSDot(color: i.isUp ? DS.Palette.ok : DS.Palette.textFaint, size: 6)
+                    Text(i.isUp ? "在线" : "离线").font(.dsCaption).foregroundColor(.secondary)
+                }
             }
-            Spacer()
-            Circle().fill(i.isUp ? DS.Palette.ok : Color.secondary.opacity(0.4)).frame(width: 7, height: 7)
+            .padding(.horizontal, 15)
+            .padding(.vertical, 13)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .overlay(alignment: .leading) {
+                Rectangle().fill(c).frame(width: 3)
+            }
+
+            if !owned.isEmpty {
+                VStack(spacing: 7) {
+                    ForEach(owned.indices, id: \.self) { ri in
+                        routePill(dest: owned[ri].dest, tint: c)
+                    }
+                }
+                .padding(10)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .background(DS.Shape.card().fill(DS.Palette.cardHeadBg))
+                .overlay(
+                    DS.Shape.card().strokeBorder(DS.Palette.borderStrong,
+                                                 style: StrokeStyle(lineWidth: 1, dash: [4, 3]))
+                )
+                .padding(.horizontal, 13)
+                .padding(.bottom, 13)
+            }
         }
-        .padding(.vertical, DS.Spacing.xs - 1)
+        .dsCardChrome()
+    }
+
+    /// 路由条目 — 原型 `.route-pill`：拖柄图标 + 说明 + 右侧 accent 色 CIDR。
+    private func routePill(dest: String, tint: Color) -> some View {
+        HStack(spacing: 9) {
+            Image(systemName: dest == "default" || dest == "0.0.0.0/0" ? "lock" : "line.3.horizontal")
+                .font(DS.Icon.font(11))
+                .foregroundColor(DS.Palette.textFaint)
+            Text(routeLabel(dest)).font(.dsBody).foregroundColor(.primary).lineLimit(1)
+            Spacer(minLength: DS.Spacing.s)
+            Text(dest).font(.dsMonoSmBold).foregroundColor(tint).lineLimit(1)
+        }
+        .padding(.horizontal, 11)
+        .padding(.vertical, DS.Spacing.s)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(DS.Shape.node().fill(DS.Palette.cardBg))
+        .overlay(DS.Shape.node().strokeBorder(DS.Palette.border, lineWidth: 0.5))
+    }
+
+    /// 路由条目的中文说明 — 按目的网段特征归类。
+    private func routeLabel(_ dest: String) -> String {
+        if dest == "default" || dest == "0.0.0.0/0" { return "默认路由" }
+        if dest.hasPrefix("198.18.") { return "代理流量 (规则匹配)" }
+        if dest.hasPrefix("100.") { return "Tailnet" }
+        if dest.hasPrefix("10.147.") { return "ZeroTier" }
+        if dest.hasPrefix("192.168.") || dest.hasPrefix("172.") || dest.hasPrefix("10.") { return "内网直连" }
+        return "路由条目"
     }
 
     private func rescan() {

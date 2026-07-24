@@ -25,6 +25,9 @@ struct ConnectionsPage: View {
     @State private var filteredRows: [Conn] = []
     @State private var filterFingerprint: String = ""
 
+    /// 分流类别筛选 — 原型筛选 chips：全部 / 代理 / 直连 / 拒绝。
+    @State private var category: String = "all"
+
     private func recomputeFilteredRowsIfNeeded() {
         let source = selectedTab == 0 ? VM.conns : VM.closedConnections
         // Fingerprint source identity + query + tab + sort keys. Conn is Equatable;
@@ -33,44 +36,57 @@ struct ConnectionsPage: View {
         let head = source.first?.id ?? "-"
         let tail = source.last?.id ?? "-"
         let sortKey = sortOrder.map { "\($0.keyPath):\($0.order == .forward ? "f" : "r")" }.joined(separator: ",")
-        let fp = "\(selectedTab)|\(q)|\(source.count)|\(head)|\(tail)|\(rateSum)|\(sortKey)"
+        let fp = "\(selectedTab)|\(q)|\(category)|\(source.count)|\(head)|\(tail)|\(rateSum)|\(sortKey)"
         guard fp != filterFingerprint else { return }
         filterFingerprint = fp
         filteredRows = source.filter { matches($0) }.sorted(using: sortOrder)
+        categoryCounts = source.reduce(into: [String: Int]()) { acc, c in acc[c.category, default: 0] += 1 }
+        categoryCounts["all"] = source.count
     }
+
+    @State private var categoryCounts: [String: Int] = [:]
 
     var body: some View {
         VStack(spacing: 0) {
-            HStack(alignment: .center, spacing: DS.Spacing.m) {
+            PageHead(title: "连接监控") {
                 DSSegmentedControl(selection: $selectedTab, choices: [
                     DSChoice("连接中", 0),
                     DSChoice("已关闭", 1)
                 ])
-                .frame(width: 160)
-
-                HStack(spacing: DS.Spacing.s) {
-                    Image(systemName: "magnifyingglass").foregroundColor(.secondary).font(.dsBody)
-                    TextField("搜索域名 / 进程 / 规则", text: $q)
-                        .textFieldStyle(.plain)
-                        .font(.dsBody)
-                }
-                .dsSearchFieldChrome(maxWidth: 280)
-
-                Spacer(minLength: 0)
-
-                Text("\(filteredRows.count) 匹配").font(.dsBody).foregroundColor(.secondary)
+                .frame(width: 150)
 
                 Button(role: .destructive) { showConfirmDisconnect = true } label: {
                     Label("全部断开", systemImage: "xmark.circle")
                 }
                 .dsButton(.destructive)
+            }
 
+            // 搜索 + 类别筛选 chips（原型 03-connections 第二行）
+            HStack(alignment: .center, spacing: DS.Spacing.s) {
+                HStack(spacing: DS.Spacing.s) {
+                    Image(systemName: "magnifyingglass").foregroundColor(.secondary).font(.dsBody)
+                    TextField("搜索 域名 / IP / 进程 / 规则…", text: $q)
+                        .textFieldStyle(.plain)
+                        .font(.dsBody)
+                }
+                .dsSearchFieldChrome(maxWidth: 260)
+
+                ForEach(Self.categories, id: \.0) { key, label in
+                    DSFilterChip(title: label, count: categoryCounts[key] ?? 0,
+                                 selected: category == key) {
+                        category = key
+                    }
+                }
+
+                Spacer(minLength: DS.Spacing.s)
+
+                Text("\(filteredRows.count) 条匹配")
+                    .font(.dsCaption)
+                    .monospacedDigit()
+                    .foregroundColor(DS.Palette.textFaint)
             }
             .padding(.horizontal, DS.Layout.pageContentInset)
-            .padding(.vertical, DS.Spacing.m)
-            .frame(height: DS.Layout.chromeHeight, alignment: .center)
-            .background(DS.Palette.chromeBg)
-            Divider().overlay(DS.Palette.separator)
+            .padding(.bottom, DS.Spacing.m)
 
             if filteredRows.isEmpty {
                 ContentUnavailable(
@@ -84,8 +100,9 @@ struct ConnectionsPage: View {
                 Table(filteredRows, selection: $selection, sortOrder: $sortOrder) {
                     TableColumn("目标", value: \.host) { c in
                         VStack(alignment: .leading, spacing: 1) {
-                            Text(c.host).font(.dsBodyMedium).lineLimit(1)
-                            Text("\(c.dstIP):\(c.port)").font(.dsMono).foregroundColor(.secondary).lineLimit(1)
+                            Text(c.host).font(.dsBodySemibold).lineLimit(1).truncationMode(.middle)
+                            Text("\(c.dstIP):\(c.port)")
+                                .font(.dsMonoTiny).foregroundColor(DS.Palette.textFaint).lineLimit(1)
                         }
                         .frame(maxWidth: .infinity, alignment: .leading)
                     }.width(min: 180, ideal: 240)
@@ -93,31 +110,47 @@ struct ConnectionsPage: View {
                         Text(c.process).font(.dsBody).foregroundColor(.secondary).lineLimit(1)
                             .frame(maxWidth: .infinity, alignment: .leading)
                     }.width(min: 80, ideal: 120)
+                    TableColumn("类型", value: \.network) { c in
+                        DSProtoTag(type: c.network)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                    }.width(52)
                     TableColumn("规则", value: \.rule) { c in
-                        Text(c.rule).font(.dsMono).foregroundColor(.secondary).lineLimit(1)
+                        Text(c.rule).font(.dsMonoSm).foregroundColor(.secondary).lineLimit(1)
                             .frame(maxWidth: .infinity, alignment: .leading)
                     }.width(min: 100, ideal: 150)
-                    TableColumn("链路", value: \.chain) { c in
-                        HStack(spacing: 4) {
-                            Text(c.chain).font(.dsBodySemibold).foregroundColor(c.category == "proxy" ? DS.Palette.accent : .secondary).lineLimit(1)
-                            Text(c.node).font(.dsMono).foregroundColor(.secondary).lineLimit(1)
+                    TableColumn("代理链", value: \.chain) { c in
+                        HStack(spacing: 5) {
+                            Text(c.group)
+                                .font(.dsBodySemibold)
+                                .foregroundColor(chainColor(c))
+                                .lineLimit(1)
+                            Text(c.node).font(.dsMonoTiny).foregroundColor(DS.Palette.textFaint).lineLimit(1)
                         }
                         .frame(maxWidth: .infinity, alignment: .leading)
                     }.width(min: 120, ideal: 180)
-                    TableColumn("↓", value: \.downRate) { c in
-                        Text(fmtRate(Double(c.downRate))).font(.dsMono)
-                            .frame(maxWidth: .infinity, alignment: .leading)
-                    }.width(70)
-                    TableColumn("↑", value: \.upRate) { c in
-                        Text(fmtRate(Double(c.upRate))).font(.dsMono).foregroundColor(.secondary)
-                            .frame(maxWidth: .infinity, alignment: .leading)
-                    }.width(70)
+                    TableColumn("↑ 速率", value: \.upRate) { c in
+                        Text(c.category == "reject" ? "—" : fmtRate(Double(c.upRate)))
+                            .font(.dsMonoSm).monospacedDigit()
+                            .foregroundColor(c.category == "reject" ? DS.Palette.textFaint : .secondary)
+                            .frame(maxWidth: .infinity, alignment: .trailing)
+                    }.width(78)
+                    TableColumn("↓ 速率", value: \.downRate) { c in
+                        Text(c.category == "reject" ? "阻断" : fmtRate(Double(c.downRate)))
+                            .font(.dsMonoSm).monospacedDigit()
+                            .foregroundColor(c.category == "reject" ? DS.Palette.textFaint : .primary)
+                            .frame(maxWidth: .infinity, alignment: .trailing)
+                    }.width(78)
+                    TableColumn("总量", value: \.down) { c in
+                        Text(fmtBytes(Double(c.down + c.up)))
+                            .font(.dsMonoSm).monospacedDigit().foregroundColor(.secondary)
+                            .frame(maxWidth: .infinity, alignment: .trailing)
+                    }.width(72)
                     TableColumn("") { c in
                         if selectedTab == 0 {
                             Button { M.closeConnection(id: c.id) } label: { Image(systemName: "xmark.circle") }
                                 .buttonStyle(.borderless).foregroundColor(.secondary).help("断开此连接")
                         }
-                    }.width(36)
+                    }.width(30)
                 }
                 // Lock table content inset to the same token as the toolbar strip.
                 .contentMargins(.horizontal, DS.Layout.pageContentInset, for: .scrollContent)
@@ -156,6 +189,7 @@ struct ConnectionsPage: View {
             }
         }
         .onChange(of: selectedTab) { _, _ in recomputeFilteredRowsIfNeeded() }
+        .onChange(of: category) { _, _ in recomputeFilteredRowsIfNeeded() }
         .onChange(of: q) { _, _ in recomputeFilteredRowsIfNeeded() }
         .onChange(of: sortOrder) { _, _ in recomputeFilteredRowsIfNeeded() }
         .onChange(of: VM.conns) { _, _ in recomputeFilteredRowsIfNeeded() }
@@ -187,9 +221,24 @@ struct ConnectionsPage: View {
         }
     }
 
+    /// 类别筛选项 — 键与 `Conn.category` 同源。
+    private static let categories: [(String, String)] = [
+        ("all", "全部"), ("proxy", "代理"), ("direct", "直连"), ("reject", "拒绝")
+    ]
+
+    private func chainColor(_ c: Conn) -> Color {
+        switch c.category {
+        case "proxy": return DS.Palette.accent
+        case "reject": return DS.Palette.error
+        default: return .secondary
+        }
+    }
+
     private func matches(_ c: Conn) -> Bool {
-        q.isEmpty
+        guard category == "all" || c.category == category else { return false }
+        return q.isEmpty
             || c.host.localizedCaseInsensitiveContains(q)
+            || c.dstIP.localizedCaseInsensitiveContains(q)
             || c.process.localizedCaseInsensitiveContains(q)
             || c.chain.localizedCaseInsensitiveContains(q)
             || c.rule.localizedCaseInsensitiveContains(q)
@@ -289,16 +338,16 @@ struct ConnDetailCard: View {
             }
             .font(.dsBody)
         }
-        .padding(DS.Spacing.xl)
+        .padding(DS.Spacing.l)
         .frame(width: 340)
-        .background(DS.Palette.overlayBg)
+        .background(.regularMaterial)
         .clipShape(RoundedRectangle(cornerRadius: DS.Radius.panel, style: .continuous))
         .overlay(
             RoundedRectangle(cornerRadius: DS.Radius.panel, style: .continuous)
-                .stroke(DS.Palette.border, lineWidth: 1)
+                .strokeBorder(DS.Palette.borderStrong, lineWidth: 0.5)
         )
-        .shadow(color: DS.Palette.cardShadowContact, radius: 2, x: 0, y: 1)
-        .shadow(color: DS.Palette.cardShadow, radius: 20, x: 0, y: 8)
+        // 浮层需要真实投影与内容区拉开层次（卡片本身走 0.5px 边框，不用投影）。
+        .shadow(color: .black.opacity(0.28), radius: 24, x: 0, y: 10)
     }
 
     private func formatStartTime(_ isoString: String) -> String {

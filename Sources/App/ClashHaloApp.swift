@@ -104,10 +104,11 @@ struct ClashHaloApp: App {
             ContentView()
                 .environmentObject(model)
                 .tint(DS.Palette.accent)
-                .frame(minWidth: 940, maxWidth: .infinity, minHeight: 620, maxHeight: .infinity)
+                .frame(minWidth: DS.Layout.windowMinWidth, maxWidth: .infinity,
+                       minHeight: DS.Layout.windowMinHeight, maxHeight: .infinity)
                 .onAppear { model.start() }
         }
-        .defaultSize(width: 1180, height: 780)
+        .defaultSize(width: DS.Layout.windowIdealWidth, height: DS.Layout.windowIdealHeight)
         .windowStyle(.titleBar)
 
         MenuBarExtra {
