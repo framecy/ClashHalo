@@ -1353,15 +1353,17 @@ extension AppModel {
         }
     }
 
-    /// Safely persist the proxy-providers list to config.yaml + reference them in
-    /// the primary group, then reload. Backs up first and validates with
-    /// `mihomo -t`; on any error the original config is restored (never corrupts a
-    /// working subscription). Returns true on success.
+    /// config.yaml 改动的通用提交模式：备份 → 执行 `mutate`（同步的 engine 写操作，
+    /// 可以是一次或多次）→ `mihomo -t` 校验失败则回滚 → `reloadConfig` 失败也回滚
+    /// → 成功则刷新状态、弹成功 toast。从 `saveProxyProviders` 原有实现里抽出来——
+    /// 本地节点的保存/删除要用同一套"从不留下半损坏配置"的保证，原样再抄一遍
+    /// 只会让两边慢慢改出行为差异。
     @discardableResult
-    func saveProxyProviders(_ providers: [(name: String, url: String)]) async -> Bool {
+    private func commitConfigMutation(successToast: String, failureVerb: String = "保存",
+                                       mutate: () -> Void) async -> Bool {
         let path = engine.configFilePath
         let backup = try? String(contentsOfFile: path, encoding: .utf8)
-        engine.writeProxyProviders(providers)
+        mutate()
         engine.setTunEnabled(tunOn)   // preserve running TUN across reload
         if let err = await engine.validateConfig() {
             if let b = backup { try? b.write(toFile: path, atomically: true, encoding: .utf8) }
@@ -1373,12 +1375,42 @@ extension AppModel {
             await refreshConfigs()
             await refreshProxies()
             noteConfigContentChanged()
-            showToast("订阅已保存", kind: .ok)
+            showToast(successToast, kind: .ok)
             return true
         } catch {
             if let b = backup { try? b.write(toFile: path, atomically: true, encoding: .utf8) }
-            showToast("保存失败，已回滚：\(error.localizedDescription)", kind: .error)
+            showToast("\(failureVerb)失败，已回滚：\(error.localizedDescription)", kind: .error)
             return false
+        }
+    }
+
+    /// Safely persist the proxy-providers list to config.yaml + reference them in
+    /// the primary group, then reload. Backs up first and validates with
+    /// `mihomo -t`; on any error the original config is restored (never corrupts a
+    /// working subscription). Returns true on success.
+    @discardableResult
+    func saveProxyProviders(_ providers: [(name: String, url: String)]) async -> Bool {
+        await commitConfigMutation(successToast: "订阅已保存") {
+            engine.writeProxyProviders(providers)
+        }
+    }
+
+    /// 新增或原地编辑一个本地节点（顶层 `proxies:`）。`group` 非 nil 时，把节点
+    /// 接进该策略组的 `proxies:` 列表——新增节点必须传，否则节点写进配置了但
+    /// 任何策略组都选不到它；编辑已有节点通常不用传（组成员关系不因编辑内容变）。
+    @discardableResult
+    func saveLocalProxy(_ proxy: LocalProxy, extraLines: [String] = [], addToGroup group: String? = nil) async -> Bool {
+        await commitConfigMutation(successToast: "节点已保存") {
+            engine.upsertLocalProxy(proxy.toEntry(preservingExtraLines: extraLines))
+            if let group { engine.addProxyToGroup(proxy.name, group: group) }
+        }
+    }
+
+    /// 删除一个本地节点，同时清理所有策略组对它的引用。
+    @discardableResult
+    func deleteLocalProxy(named name: String) async -> Bool {
+        await commitConfigMutation(successToast: "节点已删除", failureVerb: "删除") {
+            engine.removeLocalProxy(named: name)
         }
     }
 
