@@ -53,10 +53,17 @@ import SwiftUI
     private var legacyAppSupport: String { NSHomeDirectory() + "/Library/Application Support/ClashPow" }
 
     init() {
-        // Poll helper status — 5s is sufficient since helper state changes are
-        // rare (install/uninstall/upgrade) and verifyConnectivity creates a
-        // throwaway XPC connection each cycle.
-        Timer.scheduledTimer(withTimeInterval: 5.0, repeats: true) { [weak self] _ in
+        // Helper state changes only on install / uninstall / upgrade, yet this
+        // poll ran every 5 s forever. Each tick is a fresh privileged XPC
+        // connection, and the helper authenticates every one by building a
+        // SecStaticCode over the whole app bundle — measured on a 4-day session:
+        // 60,320 handshakes, 60,446 signature validations, and a 24 MB helper log
+        // whose top five lines were all this poll. None of it observed anything.
+        //
+        // 60 s keeps the UI's helper indicator honest at 1/12th the cost. The
+        // paths that actually need a fresh answer — every privileged operation —
+        // call `verifyConnectivity()` directly and are unaffected.
+        Timer.scheduledTimer(withTimeInterval: 60.0, repeats: true) { [weak self] _ in
             Task { @MainActor in self?.pollStatus() }
         }
     }
@@ -731,6 +738,65 @@ import SwiftUI
                 return trimmed.isEmpty ? nil : trimmed
             }
             return nil
+        }.value
+    }
+
+    /// Whether IP forwarding — the kernel side of Gateway mode — is already on
+    /// for both address families.
+    ///
+    /// `sysctlbyname` reads these without privilege and without a fork, which is
+    /// the whole point: the 30 s Gateway health check used to answer this
+    /// question by *writing* the value through the privileged helper, spending a
+    /// fresh XPC connection, a full app-bundle signature validation on the helper
+    /// side and two `sysctl -w` forks to set flags that were already set.
+    /// Measured over 10 minutes: 20 of 47 helper connections were this call, none
+    /// of them changing anything.
+    ///
+    /// Both families are checked because `setGatewayMode` writes both; treating
+    /// IPv4 alone as proof would skip the repair when only IPv6 had been reset.
+    nonisolated static func ipForwardingEnabled() -> Bool {
+        func flag(_ name: String) -> Bool {
+            var value: Int32 = 0
+            var size = MemoryLayout<Int32>.size
+            guard sysctlbyname(name, &value, &size, nil, 0) == 0 else { return false }
+            return value != 0
+        }
+        return flag("net.inet.ip.forwarding") && flag("net.inet6.ip6.forwarding")
+    }
+
+    /// Whether anything holds the wildcard DNS port (`*:53`) that Gateway mode
+    /// depends on for LAN clients.
+    ///
+    /// This exists because the config-side Gateway check cannot see runtime
+    /// reality. mihomo's `GET /configs` does not report `dns` at all, so
+    /// `AppModel.configs["dns"]` is filled in from config.yaml on disk — meaning
+    /// the check that reads `configs["dns"]["listen"]` compares the file against
+    /// itself and can only ever detect a *file* drift. The failure it cannot
+    /// detect is the one that actually strands LAN clients: the file says
+    /// `0.0.0.0:53`, mihomo tried to bind it, something else already held the
+    /// port, and nothing answers. Gateway then fails silently and the health
+    /// check reports everything fine.
+    ///
+    /// Limitation, stated rather than papered over: this proves *a* listener
+    /// exists, not that it is ours. Distinguishing mihomo's socket from another
+    /// resolver's would need privileged socket inspection. The asymmetry still
+    /// favours the check — an absent listener is unambiguously broken, which is
+    /// the case that was previously invisible.
+    nonisolated static func dnsWildcardPort53Bound() async -> Bool {
+        await Task.detached(priority: .utility) {
+            let p = Process()
+            p.executableURL = URL(fileURLWithPath: "/usr/sbin/netstat")
+            p.arguments = ["-an", "-f", "inet", "-p", "udp"]
+            let pipe = Pipe(); p.standardOutput = pipe; p.standardError = Pipe()
+            do { try p.run() } catch { return true }   // cannot tell → don't cry wolf
+            let data = pipe.fileHandleForReading.readDataToEndOfFile()
+            p.waitUntilExit()
+            guard let out = String(data: data, encoding: .utf8) else { return true }
+            // `udp46      0      0  *.53                   *.*`
+            return out.split(separator: "\n").contains { line in
+                let cols = line.split(whereSeparator: { $0 == " " || $0 == "\t" })
+                return cols.count >= 4 && cols[3] == "*.53"
+            }
         }.value
     }
 
