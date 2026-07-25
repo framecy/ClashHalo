@@ -395,6 +395,25 @@ enum NetScanner {
         return prefix == 0
     }
 
+    /// A peer route that cannot *be* shadowed, and is therefore not a finding.
+    ///
+    /// Scoped routes are symmetric: an entry that only applies to traffic already
+    /// bound to its interface is unreachable by longest-prefix competition, so no
+    /// prefix of ours can mask it. `isNonShadowing` was applied to our side only,
+    /// which left the peer side reporting exactly this shape — observed live:
+    /// Tailscale's scoped `255.255.255.255/32` announced as "被 TUN 240.0.0/4
+    /// 遮蔽". Nothing was masked and nothing needed repairing.
+    ///
+    /// Link-only prefixes are excluded for a second, stronger reason: they are
+    /// never a peer's to carry (see `PeerRouteGuard.linkOnlyPrefixes`). Listing
+    /// one as a conflict invites the repair button to hand broadcast or multicast
+    /// to a tunnel — the precise fault the guard exists to prevent.
+    private static func isUnshadowable(_ route: RouteEntry) -> Bool {
+        if route.flags.contains("I") { return true }
+        guard let cidr = normalizedCIDR(route.dest) else { return true }
+        return PeerRouteGuard.linkOnlyPrefixes.contains { RouteTable.overlaps(cidr, $0) }
+    }
+
     /// A *foreign* tunnel holding the unscoped default route.
     ///
     /// This is the only form of "someone took the default route" worth
@@ -439,7 +458,7 @@ enum NetScanner {
         let sdwanRoutes = all.filter { sdwanIfaceNames.contains($0.iface) }
 
         var conflicts: [RouteConflict] = []
-        for sdwan in sdwanRoutes {
+        for sdwan in sdwanRoutes where !isUnshadowable(sdwan) {
             for tun in tunRoutes where !isNonShadowing(tun) {
                 if cidrsOverlap(sdwan.dest, tun.dest) {
                     // Check if TUN route would win (shorter prefix = wider, takes priority

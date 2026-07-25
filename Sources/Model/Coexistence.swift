@@ -24,6 +24,13 @@ import Foundation
 //    registry only adds knowledge a scan cannot produce — chiefly which *domains*
 //    belong to the peer and which resolver answers for them.
 //
+//  * Harvesting is filtered, because every prefix credited to a peer becomes a
+//    real unscoped static route on the system. A peer's *interface-scoped* routes
+//    carry nothing globally and must be left as they are; link-only ranges
+//    (multicast, broadcast, link-local) and subnets the machine is physically
+//    attached to must never point at a tunnel at all. See `routesByInterface`
+//    and `PeerRouteGuard`.
+//
 //  * Only the route layer is applied automatically. mihomo accepts a runtime DNS
 //    PATCH with 204 and then ignores it, and `GET /configs` reports an empty
 //    `dns` object, so neither writing nor merging DNS is possible over the API.
@@ -195,7 +202,14 @@ enum Coexistence {
         guard !foreign.isEmpty else { return [] }
 
         let running = await runningProcessNames()
-        let ownedRoutes = await routesByInterface(Set(foreign.map { $0.id }))
+        // Subnets the machine is physically attached to. A peer may not claim
+        // these, whatever its route table says — see `routesByInterface`.
+        // Read through the same shared helper the privileged side enforces with:
+        // this list decides what gets *asked* for and that one decides what gets
+        // *installed*, and the two disagreeing is how a prefix slips through.
+        let localSubnets = PeerRouteGuard.localAttachedSubnets()
+        let ownedRoutes = await routesByInterface(Set(foreign.map { $0.id }),
+                                                  localSubnets: localSubnets)
 
         var peers: [String: CoexistencePeer] = [:]
 
@@ -223,24 +237,35 @@ enum Coexistence {
             )
             peer.interfaces.append(iface.id)
 
-            // The interface's own addresses always bypass TUN.
-            for ip in iface.ipv4 {
-                peer.routeExcludes.append("\(ip)/32")
-                peer.routeOwners["\(ip)/32"] = iface.id
-            }
-            // Whatever the route table says this interface carries.
-            for cidr in ownedRoutes[iface.id] ?? [] {
+            // The two outputs are not interchangeable and must not share a filter.
+            //
+            //  * `routeExcludes` feeds mihomo's `tun.route-exclude-address`, i.e.
+            //    "do not pull this into the proxy TUN". Multicast, broadcast and
+            //    the local LAN are exactly the prefixes that belong there — the
+            //    user's own config.yaml lists them for that reason.
+            //  * `routeOwners` becomes a real `route add -interface utunN`, i.e.
+            //    "send this into the peer's tunnel". Those same prefixes must
+            //    never appear here.
+            //
+            // Filtering both (the first shape of this fix) withdrew the user's
+            // hand-written `224.0.0.0/4` exclusion and let mihomo's own auto-route
+            // swallow multicast instead — the identical fault one tunnel to the
+            // left. Guard the routing half only.
+            func claim(_ cidr: String) {
                 peer.routeExcludes.append(cidr)
+                guard !PeerRouteGuard.isForbidden(cidr, localSubnets: localSubnets) else { return }
                 peer.routeOwners[cidr] = iface.id
             }
 
+            // The interface's own addresses always bypass TUN.
+            for ip in iface.ipv4 { claim("\(ip)/32") }
+            // Whatever the route table says this interface carries.
+            for cidr in ownedRoutes[iface.id] ?? [] { claim(cidr) }
+
             if let v = vendor {
-                for cidr in v.routeExcludes {
-                    peer.routeExcludes.append(cidr)
-                    // A fixed vendor allocation belongs to the interface we just
-                    // matched the vendor on.
-                    peer.routeOwners[cidr] = iface.id
-                }
+                // A fixed vendor allocation belongs to the interface we just
+                // matched the vendor on.
+                for cidr in v.routeExcludes { claim(cidr) }
                 peer.dnsDomains.append(contentsOf: v.dnsDomains)
                 // Bind each resolver to the peer's own interface. TUN enable pins
                 // mihomo's egress to the physical NIC via `interface-name`, so an
@@ -265,13 +290,34 @@ enum Coexistence {
     }
 
     /// Route-table destinations owned by each of `ifaceNames`, normalized to CIDR.
-    /// `default` is skipped: a peer claiming the default route is a conflict to
-    /// report, never something to hand it by excluding 0.0.0.0/0 from TUN.
-    private static func routesByInterface(_ ifaceNames: Set<String>) async -> [String: [String]] {
+    ///
+    /// Four classes are refused, because every entry surviving this filter is
+    /// eventually installed by the privileged helper as a **real, unscoped static
+    /// route** pointing at the peer's interface:
+    ///
+    ///  * **`default`** — a peer claiming the default route is a conflict to
+    ///    report, never something to hand it by excluding 0.0.0.0/0 from TUN.
+    ///  * **Interface-scoped routes** (`RTF_IFSCOPE`, the `I` flag). These apply
+    ///    only to traffic already bound to that interface, so they carry nothing
+    ///    globally and cost nothing to leave alone. Re-installing one *unscoped*
+    ///    — which is what the helper does — converts a deliberate no-op into a
+    ///    real hijack. This is exactly how `10.1.1.0/24` (the machine's own LAN,
+    ///    published by Tailscale as a scoped `UCSI` route) became an unscoped
+    ///    `USc` route into utun8: LAN hosts, LAN broadcast and every gateway-mode
+    ///    client reply left via the tunnel instead of the Ethernet. The same rule
+    ///    already governs `NetScanner.isNonShadowing` and
+    ///    `foreignDefaultRouteHolder`; it belongs here too.
+    ///  * **Link-only prefixes and directly-attached subnets** — both refused by
+    ///    `PeerRouteGuard.isForbidden`, the rule the privileged helper enforces
+    ///    again at install time.
+    private static func routesByInterface(_ ifaceNames: Set<String>,
+                                          localSubnets: [String]) async -> [String: [String]] {
         var out: [String: [String]] = [:]
         for route in await NetScanner.allRoutes() where ifaceNames.contains(route.iface) {
             guard route.dest != "default", !route.dest.contains("0.0.0.0/0") else { continue }
+            guard !route.flags.contains("I") else { continue }
             guard let cidr = NetScanner.normalizedCIDR(route.dest) else { continue }
+            guard !PeerRouteGuard.isForbidden(cidr, localSubnets: localSubnets) else { continue }
             out[route.iface, default: []].append(cidr)
         }
         return out
@@ -510,9 +556,29 @@ enum Coexistence {
                                            desired: [String],
                                            in existing: [String]) -> [String] {
         let previouslyInjected = Set(injectedRecord(field))
-        // Anything present that we did not inject last time is the user's.
-        let userOwned = existing.filter { !previouslyInjected.contains($0) }
+        // Anything present that we did not inject last time is the user's — and
+        // a protective exclusion is never ours to drop whatever the record says.
+        let userOwned = existing.filter {
+            !previouslyInjected.contains($0) || isProtectiveExclusion($0)
+        }
         return Array(Set(userOwned + desired)).sorted()
+    }
+
+    /// A `route-exclude-address` entry that must survive every withdrawal pass.
+    ///
+    /// Provenance is only as trustworthy as the version that wrote it. A build
+    /// that wrongly claimed `224.0.0.0/4` — as the pre-guard coexistence code did
+    /// — leaves a record asserting the user's own multicast exclusion belongs to
+    /// this app, and the next withdrawal then deletes it. Observed exactly that:
+    /// the entry vanished from the running config and mihomo's auto-route
+    /// promptly swallowed multicast into its own TUN.
+    ///
+    /// The asymmetry justifies the special case. Keeping a protective exclusion
+    /// that is no longer needed costs nothing — it only tells mihomo to leave
+    /// alone a range it should never have taken. Dropping one breaks the local
+    /// segment. When the record and the rule disagree about these, the rule wins.
+    static func isProtectiveExclusion(_ cidr: String) -> Bool {
+        PeerRouteGuard.linkOnlyPrefixes.contains { RouteTable.overlaps(cidr, $0) }
     }
 
     /// What we recorded as injected for `field` on the last accepted change.
@@ -535,6 +601,8 @@ enum Coexistence {
     /// pass: exactly the accretion this mechanism exists to prevent.
     static func withdraw(field: String, from existing: [String]) -> [String] {
         let injected = Set(injectedRecord(field))
-        return existing.filter { !injected.contains($0) }.sorted()
+        return existing
+            .filter { !injected.contains($0) || isProtectiveExclusion($0) }
+            .sorted()
     }
 }

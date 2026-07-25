@@ -327,11 +327,27 @@ class Helper: NSObject, HelperProtocol {
     /// Routes this helper created itself, `dest -> iface`. Never populated from
     /// the caller's wish list.
     ///
-    /// In-memory only: if the helper is restarted while routes are installed,
-    /// they outlive the record and become someone else's problem to overwrite.
-    /// Acceptable because entries are now rare (only genuinely absent prefixes)
-    /// and always duplicates of what the peer itself would install.
-    private static var addedRoutes = [String: String]()
+    /// Persisted, because the helper restarts on every app upgrade and an
+    /// in-memory record does not survive it. That is not hypothetical: a
+    /// diagnosed machine had `10.1.1.0/24` (its own LAN), `224.0.0.0/4` and
+    /// `255.255.255.255/32` installed pointing at a Tailscale utun, the helper
+    /// upgraded 22 minutes later, and the record went with it — leaving orphans
+    /// that nothing could attribute and nothing ever withdrew. `reclaimOrphans`
+    /// covers what was already lost; this keeps it from recurring.
+    private static var addedRoutes: [String: String] = {
+        (NSDictionary(contentsOfFile: addedRoutesPath) as? [String: String]) ?? [:]
+    }()
+
+    private static let addedRoutesPath = "/Library/Application Support/ClashHalo/added-routes.plist"
+
+    /// Mirror `addedRoutes` to disk. Best-effort: a failed write costs the same
+    /// orphan risk as the previous in-memory-only behaviour, never worse.
+    private static func persistAddedRoutes() {
+        let dir = (addedRoutesPath as NSString).deletingLastPathComponent
+        try? FileManager.default.createDirectory(atPath: dir, withIntermediateDirectories: true)
+        (addedRoutes as NSDictionary).write(toFile: addedRoutesPath, atomically: true)
+    }
+
     fileprivate static let routesLock = NSLock()
 
     /// The interface carrying exactly `dest`, nil when nothing routes that
@@ -369,8 +385,12 @@ class Helper: NSObject, HelperProtocol {
     /// first: if it no longer points where we put it, its owner has taken it
     /// over and deleting would destroy their route, not ours.
     fileprivate static func cleanupAllExcludeRoutesInternal() {
+        // Orphans first: a prefix that must never point at a tunnel is wrong
+        // whether or not we still hold the record that put it there.
+        _ = reclaimOrphanedPeerRoutes()
         let ours = addedRoutes
         addedRoutes.removeAll()
+        persistAddedRoutes()
         for (dest, iface) in ours {
             guard routeInterface(exactly: dest) == iface else {
                 log("cleanupAllExcludeRoutes: \(dest) 已不指向 \(iface)，跳过删除（归属已变）")
@@ -382,12 +402,75 @@ class Helper: NSObject, HelperProtocol {
         }
     }
 
+    /// Delete interface routes into a tunnel for prefixes that may never live
+    /// there — link-only ranges and this machine's own attached subnets.
+    ///
+    /// This is repair, not bookkeeping: it runs against the route table itself,
+    /// so it also catches entries whose provenance record was lost in a helper
+    /// restart. Two conditions keep it from touching anything that is not ours:
+    /// the route must be *unscoped* (a peer's own routes for these prefixes are
+    /// interface-scoped and legitimate — deleting those is precisely the damage
+    /// v1.1.9 fixed), and its Gateway column must repeat the interface name,
+    /// the shape only `route add -interface` produces. A peer's own entries name
+    /// their link (`link#32`) and are left alone.
+    private static func reclaimOrphanedPeerRoutes() -> Int {
+        let owners = PeerRouteGuard.localSubnetOwners()
+        let localSubnets = Array(owners.keys)
+        var removed = 0
+        for entry in RouteTable.current()
+        where entry.interface.hasPrefix("utun")
+            && entry.interface != kPinnedTunDevice
+            && !entry.isScoped
+            && entry.isInterfaceRoute
+            && PeerRouteGuard.isForbidden(entry.cidr, localSubnets: localSubnets) {
+            guard runRoute(routeArgs("delete", dest: entry.cidr, iface: entry.interface)) else {
+                log("reclaimOrphanedPeerRoutes: 撤回 \(entry.cidr) -> \(entry.interface) 失败")
+                continue
+            }
+            log("reclaimOrphanedPeerRoutes: 已撤回 \(entry.cidr) -> \(entry.interface)（该前缀不得指向隧道）")
+            addedRoutes.removeValue(forKey: entry.cidr)
+            removed += 1
+
+            // Deleting is only half the repair. The tunnel route *replaced* the
+            // NIC's own subnet route (observed: en0 held 10.1.1.20/24 while the
+            // table's only 10.1.1.0/24 entry pointed at a utun), so withdrawing
+            // it without checking can leave the LAN with no route at all — a
+            // worse outcome than the hijack. Put the prefix back on the interface
+            // that is actually attached to it, and only if nothing else picked it
+            // up in the meantime.
+            if let owner = owners[entry.cidr], RouteTable.interface(exactly: entry.cidr) == nil {
+                if runRoute(routeArgs("add", dest: entry.cidr, iface: owner)) {
+                    log("reclaimOrphanedPeerRoutes: 已将 \(entry.cidr) 归还直连网卡 \(owner)")
+                } else {
+                    log("reclaimOrphanedPeerRoutes: 归还 \(entry.cidr) -> \(owner) 失败，请检查网络")
+                }
+            }
+        }
+        return removed
+    }
+
     func setupExcludeRoutes(_ routes: [String: String], withReply reply: @escaping (Bool) -> Void) {
         Self.routesLock.lock()
         defer { Self.routesLock.unlock() }
 
-        var installed = 0, present = 0, failed = 0
+        var installed = 0, present = 0, failed = 0, refused = 0
         var stillOurs = [String: String]()
+
+        // Repair first: whatever the caller wants, prefixes that must never point
+        // at a tunnel get taken back — including orphans from a previous process.
+        let reclaimed = Self.reclaimOrphanedPeerRoutes()
+
+        // The caller applies the same rule (see `Coexistence.routesByInterface`);
+        // enforcing it again here is what makes it true of the system rather than
+        // of one code path. An older GUI talking to this helper cannot reintroduce
+        // the LAN hijack.
+        let localSubnets = PeerRouteGuard.localAttachedSubnets()
+        let routes = routes.filter { dest, _ in
+            guard PeerRouteGuard.isForbidden(dest, localSubnets: localSubnets) else { return true }
+            log("setupExcludeRoutes: 拒绝 \(dest) — 链路专用或本机直连网段，不得指向隧道")
+            refused += 1
+            return false
+        }
 
         // Withdraw only entries we created that are no longer wanted.
         for (dest, iface) in Self.addedRoutes where routes[dest] != iface {
@@ -438,7 +521,8 @@ class Helper: NSObject, HelperProtocol {
         }
 
         Self.addedRoutes = stillOurs
-        log("setupExcludeRoutes: 请求 \(routes.count) 条 — 新建 \(installed)、已存在保持不动 \(present)、失败 \(failed)；自有记账 \(stillOurs.count) 条")
+        Self.persistAddedRoutes()
+        log("setupExcludeRoutes: 请求 \(routes.count) 条 — 新建 \(installed)、已存在保持不动 \(present)、失败 \(failed)、拒绝 \(refused)、回收孤儿 \(reclaimed)；自有记账 \(stillOurs.count) 条")
         Self.armWatchForCurrentClient()
         reply(failed == 0)
     }
@@ -537,7 +621,13 @@ class HelperDelegate: NSObject, NSXPCListenerDelegate {
         // without re-arming here, a later force-quit would go entirely unnoticed
         // and leak proxy/DNS/root-kernel. Safe to arm broadly because
         // handleClientExit is reality-gated and no-ops when nothing needs undoing.
-        // The GUI's 5 s connectivity poll guarantees prompt re-arming.
+        //
+        // Re-arming rides on whatever the GUI does next. Its status poll dropped
+        // from 5 s to 60 s in v1.1.10 (it was costing ~17k signature validations a
+        // day and observing nothing), so the unwatched window after a helper
+        // restart is now up to a minute rather than five seconds. That window is
+        // the helper's own upgrade, which the GUI drives and immediately follows
+        // with privileged calls — each of which arms this too.
         Self.armClientWatch(pid: clientPid)
 
         newConnection.invalidationHandler = {
