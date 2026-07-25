@@ -6,8 +6,8 @@ import Foundation
 
 extension AppModel {
     func onTraffic(_ t: TrafficTick) {
-        if t.up != curUp { curUp = t.up }
-        if t.down != curDown { curDown = t.down }
+        if t.up != live.curUp { live.curUp = t.up }
+        if t.down != live.curDown { live.curDown = t.down }
 
         // Sparkline series only matters on the dashboard (or menu bar mini view).
         // Appending on every other route still publishes @Published arrays and
@@ -17,18 +17,18 @@ extension AppModel {
         let now = Date()
         if now.timeIntervalSince(lastUIUpdate) >= trafficRefreshInterval {
             lastUIUpdate = now
-            downSeries.append(Double(t.down))
-            if downSeries.count > 120 { downSeries.removeFirst() }
-            upSeries.append(Double(t.up))
-            if upSeries.count > 120 { upSeries.removeFirst() }
+            live.downSeries.append(Double(t.down))
+            if live.downSeries.count > 120 { live.downSeries.removeFirst() }
+            live.upSeries.append(Double(t.up))
+            if live.upSeries.count > 120 { live.upSeries.removeFirst() }
         }
     }
 
     func recordHistoryOnly(from s: ConnectionsSnapshot) {
         if uploadTotal != s.uploadTotal { uploadTotal = s.uploadTotal }
         if downloadTotal != s.downloadTotal { downloadTotal = s.downloadTotal }
-        if let m = s.memory, m > 0, memory != m {
-            memory = m
+        if let m = s.memory, m > 0, live.memory != m {
+            live.memory = m
             // Core Memory Guard: If core usage > 512MB, flush caches (max once per 30 mins)
             if m > 512 * 1024 * 1024 && Date().timeIntervalSince(lastCacheFlush) > 1800 {
                 lastCacheFlush = Date()
@@ -122,7 +122,7 @@ extension AppModel {
         lastDownTotal = s.downloadTotal
         // 仅在窗口可见时更新内存显示（避免后台轮询触发 task_info 系统调用）
         if needDetailedStats {
-            appMemoryMB = Double(Self.residentMemoryBytes()) / 1_000_000
+            live.appMemoryMB = Double(Self.residentMemoryBytes()) / 1_000_000
         }
     }
 

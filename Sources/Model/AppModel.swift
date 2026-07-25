@@ -12,6 +12,23 @@ import ServiceManagement
 //   AppModel+Config.swift       — profiles / config / switches / rules
 // This file keeps the shared state and the lifecycle (start/reconnect/streams).
 
+/// High-frequency counters the UI shows but nothing else reacts to.
+///
+/// Kept off `AppModel` on purpose — see the `live` property there for why. Add
+/// something here only if it updates on the order of once a second *and* is
+/// consumed by a small, self-contained piece of UI; anything the app's own logic
+/// branches on belongs on `AppModel`, where observers expect to be woken.
+@MainActor final class LiveMetrics: ObservableObject {
+    /// Kernel-reported memory use, bytes.
+    @Published var memory: Int64 = 0
+    /// This app's resident size, MB.
+    @Published var appMemoryMB = 0.0
+    @Published var curDown: Int64 = 0
+    @Published var curUp: Int64 = 0
+    @Published var downSeries: [Double] = Array(repeating: 0, count: 120)
+    @Published var upSeries: [Double] = Array(repeating: 0, count: 120)
+}
+
 @MainActor final class AppModel: ObservableObject {
     static let shared = AppModel()
     let api = MihomoClient.shared
@@ -23,6 +40,11 @@ import ServiceManagement
     // Throttle for verifyGatewayConfig's "helper unreachable" log so a dead
     // LaunchDaemon doesn't flood KernelLog every 30s poll cycle.
     private var lastGatewayHelperFailLog: Date = .distantPast
+    /// Earliest time the Gateway health check may skip re-asserting sysctl.
+    /// Reset to `.distantPast` on failure so a broken state retries at once.
+    private var gatewaySysctlRefreshDue: Date = .distantPast
+    /// Earliest time to re-probe the `*:53` listener (one `netstat` fork).
+    private var gatewayListenerProbeDue: Date = .distantPast
 
     // Navigation + theme
     @Published var route = "dashboard" {
@@ -49,7 +71,6 @@ import ServiceManagement
     @Published var reachable = false
     @Published var version = "?"
     @Published var mode = "rule"          // rule / global / direct
-    @Published var memory: Int64 = 0
     @Published var uploadTotal: Int64 = 0
     @Published var downloadTotal: Int64 = 0
     @Published var gatewayDevices: [String: GatewayDevice] = [:]
@@ -72,11 +93,20 @@ import ServiceManagement
     var activeConnsSet: Set<String> = []
     var totalConnsCount = 0
 
-    // Traffic rate (numbers only, sparkline moved to DashboardViewModel)
-    @Published var curDown: Int64 = 0
-    @Published var curUp: Int64 = 0
-    @Published var downSeries: [Double] = Array(repeating: 0, count: 120)
-    @Published var upSeries: [Double] = Array(repeating: 0, count: 120)
+    /// Per-second telemetry, deliberately **not** published on this object.
+    ///
+    /// `AppModel` carries 44 `@Published` properties and a dozen views observe it,
+    /// so `ObservableObject` semantics turn any one mutation into an invalidation
+    /// of every observer: a traffic tick re-laid-out the sidebar, the toolbar and
+    /// every page, once a second, for as long as data was flowing. That is the
+    /// re-render storm `sample` kept catching in `StackLayout.sizeThatFits`.
+    ///
+    /// Nesting an `ObservableObject` breaks the propagation — a change here does
+    /// not notify AppModel's observers — which is precisely the point. Views that
+    /// display these numbers observe `live` directly (see `LiveMetricsView`s in
+    /// the dashboard), so the invalidation is scoped to the few small subviews
+    /// that actually change.
+    let live = LiveMetrics()
     @AppStorage("trafficRefreshInterval") public var trafficRefreshInterval: Double = 2.0
     @Published var dash = DashStats()
     var lastUIUpdate = Date.distantPast
@@ -202,7 +232,6 @@ import ServiceManagement
 
     // Dashboard session aggregates
     @Published var closedConns = 0
-    @Published var appMemoryMB = 0.0
     var lastDownTotal: Int64 = 0
     var lastCacheFlush = Date.distantPast
     var lastInterface: String? = nil
@@ -578,8 +607,8 @@ import ServiceManagement
                 memWS = api.stream("/memory", type: MemoryTick.self) { [weak self] m in
                     Task { @MainActor in
                         if m.inuse > 0 {
-                            self?.memory = m.inuse
-                            self?.appMemoryMB = Double(Self.residentMemoryBytes()) / 1_000_000
+                            self?.live.memory = m.inuse
+                            self?.live.appMemoryMB = Double(Self.residentMemoryBytes()) / 1_000_000
                         }
                     }
                 }
@@ -1037,13 +1066,33 @@ import ServiceManagement
     private func verifyGatewayConfig() async {
         guard gatewayModeOn && reachable else { return }
 
-        // Check if config still has the Gateway overrides
+        // Two independent questions, because two independent things break.
+        //
+        //  * Does the *configuration* still declare Gateway? `allow-lan` comes
+        //    from the running kernel, but `dns.listen` does not: mihomo's
+        //    `GET /configs` omits `dns` entirely, so `refreshConfigs` fills that
+        //    key in from config.yaml on disk. Comparing it is therefore a check
+        //    on the file — worth doing (a profile switch really does drop the
+        //    overrides) but blind to runtime.
+        //  * Is the kernel *actually serving* DNS on the LAN? That is the failure
+        //    that stranded clients with nothing to show for it, and the file
+        //    cannot answer it. Probed separately, on a slow cadence — a fork per
+        //    minute, only while Gateway is on.
         let allowLan = (configs["allow-lan"] as? Bool) == true
         let dnsListen = (configs["dns"] as? [String: Any])?["listen"] as? String
-        let configOK = allowLan && dnsListen == "0.0.0.0:53"
+        let declaresGateway = allowLan && dnsListen == "0.0.0.0:53"
 
-        if !configOK {
-            logKernel("检测到网关配置丢失，正在恢复...")
+        var listenerLive = true
+        if declaresGateway, Date() >= gatewayListenerProbeDue {
+            gatewayListenerProbeDue = Date().addingTimeInterval(60)
+            listenerLive = await EngineControl.dnsWildcardPort53Bound()
+            if !listenerLive {
+                logKernel("网关 DNS 未在 53 端口监听（配置声明为 0.0.0.0:53），正在重新应用…")
+            }
+        }
+
+        if !declaresGateway || !listenerLive {
+            if !declaresGateway { logKernel("检测到网关配置丢失，正在恢复...") }
             engine.setTopLevelScalars(Self.gatewayOverrides)
             do {
                 try await api.reloadConfig(path: engine.configFilePath)
@@ -1054,8 +1103,30 @@ import ServiceManagement
             }
         }
 
-        // Don't hammer XPC every 30s when the helper is clearly down (missing
-        // binary / EX_CONFIG LaunchDaemon). Probe first; throttle failure logs.
+        // Forwarding already on, and the helper heard from us recently enough:
+        // there is nothing for this check to do, so it should cost nothing. The
+        // read is a privilege-free `sysctlbyname` — no fork, no XPC — and it
+        // comes first precisely so the steady state never opens a connection at
+        // all. Probing the helper before deciding whether we need it was the
+        // remaining expense: 10 of every 15 handshakes in a 5-minute steady state
+        // asked "are you there?" only to conclude there was nothing to ask for.
+        // `engine.isRoot` stays current regardless — `pollStatus` refreshes it on
+        // its own 60 s cadence.
+        //
+        // The refresh deadline is why this is a skip and not a short-circuit.
+        // `setGatewayMode` does more than write sysctl — it also records
+        // `gateway = true` in the helper's session state, which is what tells
+        // `handleClientExit` to turn forwarding back off if this app dies. That
+        // state does not survive a helper restart (its own upgrade), so going
+        // permanently quiet would leave a restarted helper believing Gateway was
+        // never on, and forwarding would outlive the app. Re-asserting on a slow
+        // cadence keeps that recovery intact.
+        if EngineControl.ipForwardingEnabled(), Date() < gatewaySysctlRefreshDue {
+            return
+        }
+
+        // Something needs doing. Don't hammer XPC when the helper is clearly down
+        // (missing binary / EX_CONFIG LaunchDaemon); probe first, throttle logs.
         let helperUp = await XPCManager.shared.verifyConnectivity()
         if !helperUp {
             engine.isRoot = false
@@ -1068,7 +1139,10 @@ import ServiceManagement
         }
 
         let sysctlOK = await engine.setGatewayMode(enabled: true)
-        if !sysctlOK {
+        if sysctlOK {
+            gatewaySysctlRefreshDue = Date().addingTimeInterval(300)
+        } else {
+            gatewaySysctlRefreshDue = .distantPast
             let now = Date()
             if now.timeIntervalSince(lastGatewayHelperFailLog) > 60 {
                 lastGatewayHelperFailLog = now
@@ -1076,6 +1150,7 @@ import ServiceManagement
             }
         }
     }
+
 
     /// Verify TUN DNS redirection and interface existence, re-apply or disable if issues detected.
     /// This catches two failure modes:
@@ -1127,6 +1202,14 @@ import ServiceManagement
             logKernel("检测到 TUN DNS 发生漂移，正在重新重定向...")
             await enableTunnelDNS()
         }
+
+        // Check 3: Re-converge coexistence. Peer tunnels accept and withdraw
+        // subnets on their own schedule, without touching the default route, so
+        // the network-change hook never sees it — before this, a TUN session left
+        // running simply kept whatever exclusions and static routes it had at
+        // bring-up, however wrong they had since become. Fingerprint-gated, so a
+        // steady topology costs one detection pass and no PATCH.
+        await reconcileCoexistenceIfChanged()
     }
 
     // MARK: Menu-bar app preferences

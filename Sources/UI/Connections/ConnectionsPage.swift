@@ -372,7 +372,7 @@ struct ConnDetailCard: View {
         M.downloadTotal = s.downloadTotal
 
         if let m = s.memory, m > 0 {
-            M.memory = m
+            M.live.memory = m
             // Core Memory Guard
             if m > 512 * 1024 * 1024 && Date().timeIntervalSince(M.lastCacheFlush) > 1800 {
                 M.lastCacheFlush = Date()
@@ -462,6 +462,6 @@ struct ConnDetailCard: View {
         M.history.flushIfNeeded()
         M.lastDownTotal = s.downloadTotal
 
-        M.appMemoryMB = Double(AppModel.residentMemoryBytes()) / 1_000_000
+        M.live.appMemoryMB = Double(AppModel.residentMemoryBytes()) / 1_000_000
     }
 }
