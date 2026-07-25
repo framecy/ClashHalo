@@ -538,11 +538,7 @@ struct MenuBarPanel: View {
 
                 Divider().opacity(0.4)
 
-                HStack(spacing: DS.Spacing.s) {
-                    Label(fmtRate(Double(M.curDown)), systemImage: "arrow.down").font(.dsMono)
-                    Spacer()
-                    Label(fmtRate(Double(M.curUp)), systemImage: "arrow.up").font(.dsMono).foregroundColor(.secondary)
-                }
+                MenuBarRateRow(live: M.live)
                 if M.menuBarGroups {
                     Button { M.testAll() } label: {
                         HStack(spacing: DS.Spacing.xs) {
@@ -585,28 +581,7 @@ struct MenuBarPanel: View {
 
             // Memory usage card
             card {
-                HStack(spacing: 0) {
-                    VStack(alignment: .leading, spacing: 2) {
-                        HStack(spacing: 4) {
-                            Image(systemName: "memorychip").font(.dsBody).foregroundColor(DS.Palette.roleOray)
-                            Text("核心内存").font(.dsBodyMedium).foregroundColor(.secondary)
-                        }
-                        Text(fmtBytes(Double(M.memory))).font(.dsCardLabel)
-                    }
-                    .frame(maxWidth: .infinity, alignment: .leading)
-
-                    Rectangle().fill(DS.Palette.separator).frame(width: 1, height: 24)
-                        .padding(.horizontal, DS.Spacing.m)
-
-                    VStack(alignment: .leading, spacing: 2) {
-                        HStack(spacing: 4) {
-                            Image(systemName: "app.dashed").font(.dsBody).foregroundColor(DS.Palette.warn)
-                            Text("应用内存").font(.dsBodyMedium).foregroundColor(.secondary)
-                        }
-                        Text(String(format: "%.0f MB", M.appMemoryMB)).font(.dsCardLabel)
-                    }
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                }
+                MenuBarMemoryRow(live: M.live)
             }
 
             // Quick actions (pill tiles)
@@ -812,4 +787,56 @@ struct ContentUnavailable: View {
 #Preview("Settings") {
     GeneralPage().environmentObject(AppModel.shared)
         .frame(minWidth: 900, idealWidth: 1000, maxWidth: 1200, minHeight: 720, idealHeight: 800, maxHeight: 1000)
+}
+
+// MARK: - Menu-bar live telemetry
+//
+// Same reasoning as the dashboard's `TrafficLiveBody`: these observe
+// `LiveMetrics` directly so a per-second traffic or memory tick redraws two
+// labels instead of the whole menu-bar panel. Reading them through
+// `@EnvironmentObject var M: AppModel` would not update at all — a nested
+// ObservableObject does not notify the outer object's observers.
+
+/// Down/up rate line in the menu-bar panel.
+struct MenuBarRateRow: View {
+    @ObservedObject var live: LiveMetrics
+
+    var body: some View {
+        HStack(spacing: DS.Spacing.s) {
+            Label(fmtRate(Double(live.curDown)), systemImage: "arrow.down").font(.dsMono)
+            Spacer()
+            Label(fmtRate(Double(live.curUp)), systemImage: "arrow.up")
+                .font(.dsMono).foregroundColor(.secondary)
+        }
+    }
+}
+
+/// Kernel / app memory pair in the menu-bar panel.
+struct MenuBarMemoryRow: View {
+    @ObservedObject var live: LiveMetrics
+
+    var body: some View {
+        HStack(spacing: 0) {
+            VStack(alignment: .leading, spacing: 2) {
+                HStack(spacing: 4) {
+                    Image(systemName: "memorychip").font(.dsBody).foregroundColor(DS.Palette.roleOray)
+                    Text("核心内存").font(.dsBodyMedium).foregroundColor(.secondary)
+                }
+                Text(fmtBytes(Double(live.memory))).font(.dsCardLabel)
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+
+            Rectangle().fill(DS.Palette.separator).frame(width: 1, height: 24)
+                .padding(.horizontal, DS.Spacing.m)
+
+            VStack(alignment: .leading, spacing: 2) {
+                HStack(spacing: 4) {
+                    Image(systemName: "app.dashed").font(.dsBody).foregroundColor(DS.Palette.warn)
+                    Text("应用内存").font(.dsBodyMedium).foregroundColor(.secondary)
+                }
+                Text(String(format: "%.0f MB", live.appMemoryMB)).font(.dsCardLabel)
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+        }
+    }
 }

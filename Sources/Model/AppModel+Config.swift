@@ -750,7 +750,8 @@ extension AppModel {
     func reconcileCoexistenceIfChanged() async {
         guard tunOn, reachable, !engine.isBusy, !sleeping else { return }
         guard Date() >= tunStateSettleUntil else { return }
-        let plan = Coexistence.plan(await Coexistence.detect())
+        let peers = await Coexistence.detect()
+        let plan = Coexistence.plan(peers)
         let fp = Coexistence.fingerprint(plan)
         guard fp != lastCoexistenceFingerprint else { return }
         guard let excludes = coexistenceRouteBody(plan) else { return }
@@ -767,6 +768,21 @@ extension AppModel {
             return
         }
         Coexistence.commitProvenance(field: "route-exclude-address", injected: plan.routeExcludes)
+
+        // The system route table is the other half of the same plan. Leaving it
+        // to `staticRoutesInjected` — a latch set once when TUN came up — meant
+        // the kernel's exclusions and the real routes drifted apart for as long
+        // as TUN stayed on, and a stale route pointing into a peer tunnel is the
+        // half that actually breaks traffic. Re-push both together.
+        let excludeRoutes = Coexistence.excludeRouteMap(peers)
+        if !excludeRoutes.isEmpty {
+            let routesOK = await XPCManager.shared.callSetupExcludeRoutes(excludeRoutes)
+            logKernel("TUN 共存：静态路由同步 \(routesOK == true ? "成功" : "失败")（\(excludeRoutes.count) 条）")
+            staticRoutesInjected = routesOK == true
+        } else {
+            _ = await XPCManager.shared.callCleanupAllExcludeRoutes()
+            staticRoutesInjected = false
+        }
         lastCoexistenceFingerprint = fp
     }
 

@@ -75,32 +75,14 @@ struct DashboardPage: View {
                                 ])
                                 .frame(width: 72)
                             }) {
-                                VStack(spacing: 0) {
-                                    HStack(spacing: DS.Spacing.l + 2) {
-                                        Label(fmtRate(Double(M.curDown)), systemImage: "arrow.down")
-                                            .foregroundColor(DS.Palette.download)
-                                            .font(.dsMonoBold)
-                                        Label(fmtRate(Double(M.curUp)), systemImage: "arrow.up")
-                                            .foregroundColor(DS.Palette.upload)
-                                            .font(.dsMonoBold)
-                                        Spacer()
-                                    }.padding(.bottom, DS.Spacing.s - 2)
-                                    TrafficSparkline(down: M.downSeries, up: M.upSeries, accent: DS.Palette.upload)
-                                        .frame(maxWidth: .infinity, maxHeight: .infinity)
-                                        .drawingGroup()
-                                }
+                                TrafficLiveBody(live: M.live)
                             }
                             .frame(height: DS.Layout.cardRow)
                             .gridCellColumns(3)
 
-                            VStack(spacing: DS.Spacing.l) {
-                                MiniStat("核心内存", fmtBytes(Double(M.memory)), sub: nil, icon: "memorychip", color: DS.Palette.roleOray)
-                                    .frame(maxHeight: .infinity)
-                                MiniStat("应用内存", String(format: "%.0f MB", M.appMemoryMB), sub: nil, icon: "app.dashed", color: DS.Palette.warn)
-                                    .frame(maxHeight: .infinity)
-                            }
-                            .frame(height: DS.Layout.cardRow)
-                            .gridCellColumns(1)
+                            MemoryLiveColumn(live: M.live)
+                                .frame(height: DS.Layout.cardRow)
+                                .gridCellColumns(1)
                         }
                     }
 
@@ -471,4 +453,51 @@ struct TrafficSparkline: View, Equatable {
 #Preview("Dashboard") {
     DashboardPage().environmentObject(AppModel.shared)
         .frame(minWidth: 1000, idealWidth: 1100, maxWidth: 1400, minHeight: 760, idealHeight: 840, maxHeight: 1100)
+}
+
+// MARK: - Live telemetry subviews
+//
+// These exist so a traffic tick invalidates *them* and nothing else. Reading
+// `M.live.curDown` from `DashboardPage.body` would not work: a nested
+// ObservableObject does not notify the outer object's observers, so the numbers
+// would simply stop updating. Observing `live` here is what makes the split
+// both correct and the point of the exercise — the re-layout is now confined to
+// a rate label, a sparkline and two stat tiles.
+
+/// Download/upload rate plus the sparkline, redrawn once per traffic tick.
+struct TrafficLiveBody: View {
+    @ObservedObject var live: LiveMetrics
+
+    var body: some View {
+        VStack(spacing: 0) {
+            HStack(spacing: DS.Spacing.l + 2) {
+                Label(fmtRate(Double(live.curDown)), systemImage: "arrow.down")
+                    .foregroundColor(DS.Palette.download)
+                    .font(.dsMonoBold)
+                Label(fmtRate(Double(live.curUp)), systemImage: "arrow.up")
+                    .foregroundColor(DS.Palette.upload)
+                    .font(.dsMonoBold)
+                Spacer()
+            }.padding(.bottom, DS.Spacing.s - 2)
+            TrafficSparkline(down: live.downSeries, up: live.upSeries, accent: DS.Palette.upload)
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                .drawingGroup()
+        }
+    }
+}
+
+/// Kernel and app memory tiles beside the traffic card.
+struct MemoryLiveColumn: View {
+    @ObservedObject var live: LiveMetrics
+
+    var body: some View {
+        VStack(spacing: DS.Spacing.l) {
+            MiniStat("核心内存", fmtBytes(Double(live.memory)), sub: nil,
+                     icon: "memorychip", color: DS.Palette.roleOray)
+                .frame(maxHeight: .infinity)
+            MiniStat("应用内存", String(format: "%.0f MB", live.appMemoryMB), sub: nil,
+                     icon: "app.dashed", color: DS.Palette.warn)
+                .frame(maxHeight: .infinity)
+        }
+    }
 }
