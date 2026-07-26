@@ -374,6 +374,49 @@ enum Coexistence {
         }
     }
 
+    // MARK: Route-table drift
+
+    /// One prefix whose actual carrier disagrees with the coexistence plan.
+    ///
+    /// This class of fault is invisible to `fingerprint(plan)`, which is why
+    /// auditing the table itself is necessary rather than merely thorough.
+    /// mihomo re-runs `auto-route` every time its TUN is rebuilt — a kernel
+    /// restart, a config reload, a default-interface change — and the
+    /// split-default it installs swallows peer prefixes again. The set of peers
+    /// is unchanged throughout, so the fingerprint is unchanged, so
+    /// `reconcileCoexistenceIfChanged` correctly concludes there is nothing to
+    /// do. The hijack then persists until something unrelated happens to move
+    /// the topology. Reading the route table is the only thing that sees it.
+    /// Display wrapper over `RouteTable.Drift`. The comparison itself lives in
+    /// `HelperProtocol.swift` beside the guard the Helper enforces with, so the
+    /// asking side and the installing side cannot drift apart; only the Chinese
+    /// rendering belongs up here.
+    struct RouteDrift: Equatable, Identifiable {
+        let inner: RouteTable.Drift
+        var id: String { inner.cidr }
+        var cidr: String { inner.cidr }
+        var expected: String { inner.expected }
+
+        var describe: String {
+            switch inner.kind {
+            case .hijackedByOurTun:
+                return "\(inner.cidr) 被本机 TUN（\(inner.actual ?? "?")）抢占，应由 \(inner.expected) 承载"
+            case .missing:
+                return "\(inner.cidr) 无任何路由承载，应由 \(inner.expected) 承载"
+            }
+        }
+    }
+
+    /// Compare the plan's route ownership against the live table.
+    ///
+    /// Privilege-free — one `netstat -rn` fork, the same read the Helper makes
+    /// before it changes anything — so this is cheap enough to run on a timer
+    /// without opening an XPC connection to find out there was nothing to do.
+    static func auditRoutes(expected: [String: String]) -> [RouteDrift] {
+        RouteTable.drift(expected: expected, in: RouteTable.current())
+            .map(RouteDrift.init)
+    }
+
     // MARK: Advertised-but-absent peer subnets
 
     /// A subnet a peer tunnel says it carries, paired with what the local route

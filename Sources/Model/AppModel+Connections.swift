@@ -127,20 +127,51 @@ extension AppModel {
     }
 
     /// Aggregate LAN gateway clients from a connections snapshot.
+    ///
     /// Filters out loopback / this host's own IPs, and also the TUN fake-ip
     /// address range (198.18.0.0/15) which mihomo reports as sourceIP for
-    /// local processes under fake-ip mode. Relies on `prevConnBytes` still
-    /// holding the previous tick so per-device rates stay accurate.
+    /// local processes under fake-ip mode.
+    ///
+    /// Two things this deliberately does *not* do any more, because both made
+    /// the numbers disagree badly with the kernel's own:
+    ///
+    ///  * **Totals are not accumulated from per-tick deltas.** A delta needs a
+    ///    previous sample, so the first tick of every connection contributed
+    ///    zero — and most LAN traffic is short-lived connections that are born
+    ///    and die between two polls, so the bulk of their bytes was never
+    ///    counted at all. Bytes of connections that closed were dropped outright
+    ///    for the same reason. Totals are now `Σ live connection bytes` (an
+    ///    absolute figure straight from mihomo) plus a per-device accumulator
+    ///    for connections that have since closed — continuous across a close,
+    ///    because the bytes move from one term to the other rather than
+    ///    vanishing.
+    ///  * **Rates are not raw byte deltas.** They were displayed as B/s while
+    ///    actually being "bytes since the previous poll", and the poll interval
+    ///    is 1.5 s on the Connections page, 3 s elsewhere and 30 s in the
+    ///    background — so the same traffic read 2×, 3× or 20× high depending on
+    ///    which page happened to be open. Divided by measured elapsed time now.
     func updateGatewayDevices(from items: [ConnectionItem]) {
-        var newGatewayDevices = gatewayDevices
-        for ip in newGatewayDevices.keys {
-            newGatewayDevices[ip]?.activeConnections = 0
-            newGatewayDevices[ip]?.uploadRate = 0
-            newGatewayDevices[ip]?.downloadRate = 0
+        let nowTime = Date()
+
+        // Any of the several `gatewayDevices.removeAll()` sites (profile switch,
+        // gateway off, kernel restart, memory guard) must also reset the byte
+        // bookkeeping, or a device that comes back gets the old accumulator
+        // added on top of its fresh live bytes. One check covers all of them.
+        if gatewayDevices.isEmpty && !gatewayConnBytes.isEmpty {
+            gatewayConnBytes.removeAll(keepingCapacity: false)
+            gatewayClosedBytes.removeAll(keepingCapacity: false)
         }
 
+        let elapsed = max(0.2, nowTime.timeIntervalSince(lastGatewaySampleAt))
+        // A first sample has no interval to divide by; report totals, no rate.
+        let hasBaseline = lastGatewaySampleAt != .distantPast
+        lastGatewaySampleAt = nowTime
+
         let localIPs = Set(NetScanner.interfaces().flatMap { $0.ipv4 })
-        let nowTime = Date()
+        var liveUp = [String: Int64](), liveDown = [String: Int64]()
+        var liveConns = [String: Int]()
+        var seenIDs = Set<String>()
+
         for c in items {
             let srcIP = c.metadata.sourceIP ?? ""
             guard !srcIP.isEmpty,
@@ -148,33 +179,59 @@ extension AppModel {
                   srcIP != "::1",
                   !localIPs.contains(srcIP),
                   !Self.isFakeIP(srcIP) else { continue }
+            seenIDs.insert(c.id)
+            liveUp[srcIP, default: 0] += c.upload
+            liveDown[srcIP, default: 0] += c.download
+            liveConns[srcIP, default: 0] += 1
+            gatewayConnBytes[c.id] = (srcIP, c.upload, c.download)
+        }
 
-            let prev = prevConnBytes[c.id]
-            let upRate = prev.map { max(0, c.upload - $0.up) } ?? 0
-            let downRate = prev.map { max(0, c.download - $0.down) } ?? 0
+        // Retire connections that were live last tick and are gone now, keeping
+        // their final byte counts on the device they belonged to.
+        for (id, rec) in gatewayConnBytes where !seenIDs.contains(id) {
+            var acc = gatewayClosedBytes[rec.ip] ?? (0, 0)
+            acc.up += rec.up
+            acc.down += rec.down
+            gatewayClosedBytes[rec.ip] = acc
+            gatewayConnBytes.removeValue(forKey: id)
+        }
 
-            var dev = newGatewayDevices[srcIP] ?? GatewayDevice(
-                ip: srcIP,
+        var newGatewayDevices = gatewayDevices
+        for ip in Set(newGatewayDevices.keys).union(liveUp.keys) {
+            let closed = gatewayClosedBytes[ip] ?? (up: Int64(0), down: Int64(0))
+            let totalUp = closed.up + (liveUp[ip] ?? 0)
+            let totalDown = closed.down + (liveDown[ip] ?? 0)
+            let conns = liveConns[ip] ?? 0
+
+            var dev = newGatewayDevices[ip] ?? GatewayDevice(
+                ip: ip,
                 activeConnections: 0,
                 uploadRate: 0,
                 downloadRate: 0,
-                totalUpload: 0,
-                totalDownload: 0,
+                totalUpload: totalUp,
+                totalDownload: totalDown,
                 firstSeen: nowTime,
                 lastSeen: nowTime
             )
-            dev.activeConnections += 1
-            dev.uploadRate += Int64(upRate)
-            dev.downloadRate += Int64(downRate)
-            dev.totalUpload += Int64(upRate)
-            dev.totalDownload += Int64(downRate)
-            dev.lastSeen = nowTime
-            newGatewayDevices[srcIP] = dev
+            // `max(0, …)` is belt-and-braces: both terms are monotonic, so a
+            // negative delta would mean the kernel reset its counters.
+            let dUp = max(0, totalUp - dev.totalUpload)
+            let dDown = max(0, totalDown - dev.totalDownload)
+            dev.activeConnections = conns
+            dev.uploadRate = hasBaseline ? Int64(Double(dUp) / elapsed) : 0
+            dev.downloadRate = hasBaseline ? Int64(Double(dDown) / elapsed) : 0
+            dev.totalUpload = totalUp
+            dev.totalDownload = totalDown
+            if conns > 0 { dev.lastSeen = nowTime }
+            newGatewayDevices[ip] = dev
         }
 
-        // Drop devices that have been idle for >10 minutes.
-        newGatewayDevices = newGatewayDevices.filter {
-            $0.value.activeConnections > 0 || nowTime.timeIntervalSince($0.value.lastSeen) < 600
+        // Drop devices that have been idle for >10 minutes, and let go of their
+        // accumulator at the same time so the two never drift apart.
+        for (ip, dev) in newGatewayDevices
+        where dev.activeConnections == 0 && nowTime.timeIntervalSince(dev.lastSeen) >= 600 {
+            newGatewayDevices.removeValue(forKey: ip)
+            gatewayClosedBytes.removeValue(forKey: ip)
         }
         if newGatewayDevices != gatewayDevices {
             gatewayDevices = newGatewayDevices
