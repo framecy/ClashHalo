@@ -102,6 +102,23 @@ struct DashboardPage: View {
                     }
 
 
+                    // Row 4: Gateway clients. Absent unless there is something to
+                    // say — Gateway off, or on with nobody behind it, both leave
+                    // the dashboard exactly as it was.
+                    if M.gatewayModeOn && !M.gatewayDevices.isEmpty {
+                        Card(title: "网关已接入设备 (\(M.gatewayDevices.count))",
+                             icon: "desktopcomputer.network") {
+                            ScrollView {
+                                VStack(spacing: DS.Spacing.s) {
+                                    ForEach(gatewayDevicesByRate) { dev in
+                                        GatewayDeviceRow(dev: dev)
+                                    }
+                                }
+                            }
+                        }
+                        .frame(height: DS.Layout.cardRow)
+                    }
+
                     // Row 5: Rank lists (3 columns, height 208)
                     HStack(spacing: DS.Spacing.l) {
                         Card(title: "高频规则", icon: "list.number") {
@@ -132,6 +149,15 @@ struct DashboardPage: View {
     // MARK: aggregations (read precomputed snapshot — no per-render work)
 
     private var uniqueHosts: Int { M.dash.uniqueHosts }
+
+    /// Busiest client first — on a dashboard "who is using the link right now"
+    /// is the question; the Network page orders by recency instead.
+    private var gatewayDevicesByRate: [GatewayDevice] {
+        M.gatewayDevices.values.sorted {
+            ($0.downloadRate + $0.uploadRate, $0.lastSeen)
+                > ($1.downloadRate + $1.uploadRate, $1.lastSeen)
+        }
+    }
     private var policyGroupRows: [Rank] { M.dash.policyGroups }
     private var topHosts: [Rank] { M.dash.hosts }
     private var topNodes: [Rank] { M.dash.nodes }

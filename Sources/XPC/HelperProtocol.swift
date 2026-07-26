@@ -193,6 +193,58 @@ public enum RouteTable {
 
     /// True when `a` and `b` overlap — either contains the other.
     ///
+    /// A prefix whose actual carrier disagrees with what the coexistence plan
+    /// says should carry it.
+    public struct Drift: Equatable {
+        public enum Kind: Equatable {
+            /// Our own TUN has taken a prefix that belongs to a peer.
+            case hijackedByOurTun
+            /// Nothing carries the prefix at all.
+            case missing
+        }
+        public let cidr: String
+        /// Interface that should carry it, e.g. `utun8`.
+        public let expected: String
+        /// Interface that does, or nil when nothing does.
+        public let actual: String?
+        public let kind: Kind
+
+        public init(cidr: String, expected: String, actual: String?, kind: Kind) {
+            self.cidr = cidr; self.expected = expected
+            self.actual = actual; self.kind = kind
+        }
+    }
+
+    /// Compare a plan's route ownership against a route table.
+    ///
+    /// Pure, so the caller supplies the table — the app passes `current()` on a
+    /// timer, and the tests pass a real failing machine's table verbatim. Lives
+    /// here beside `PeerRouteGuard` for the same reason that does: this decides
+    /// what gets *asked for*, `setupExcludeRoutes` decides what gets *installed*,
+    /// and the two disagreeing is how a prefix slips through.
+    ///
+    /// Two verdicts, and the narrowness is deliberate. A prefix carried by some
+    /// *third* interface is left alone: overriding another owner's routing
+    /// decision is exactly what tore down peer tunnels before. Scoped routes are
+    /// filtered out first — they only apply to traffic already bound to their
+    /// interface, so they are never an answer to "what carries this prefix".
+    public static func drift(expected: [String: String],
+                             in table: [Entry],
+                             pinned: String = kPinnedTunDevice) -> [Drift] {
+        guard !expected.isEmpty else { return [] }
+        var carrier = [String: String]()
+        for e in table where !e.isScoped && carrier[e.cidr] == nil {
+            carrier[e.cidr] = e.interface
+        }
+        return expected.compactMap { cidr, want -> Drift? in
+            guard let have = carrier[cidr] else {
+                return Drift(cidr: cidr, expected: want, actual: nil, kind: .missing)
+            }
+            guard have != want, have == pinned else { return nil }
+            return Drift(cidr: cidr, expected: want, actual: have, kind: .hijackedByOurTun)
+        }.sorted { $0.cidr < $1.cidr }
+    }
+
     /// Prefixes of different families never overlap: an IPv6 prefix cannot be
     /// contained in an IPv4 one, and treating an unparseable pair as "overlapping"
     /// would make the guard reject prefixes at random.

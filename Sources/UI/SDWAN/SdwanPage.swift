@@ -184,6 +184,12 @@ struct SdwanPage: View {
     /// "repaired" — see `NetScanner.foreignDefaultRouteHolder`.
     @State private var defaultRouteHolder: String? = nil
 
+    /// Repair timestamps only ever render as a wall clock, so the formatter is
+    /// built once rather than per body evaluation.
+    private static let clock: DateFormatter = {
+        let f = DateFormatter(); f.dateFormat = "HH:mm:ss"; return f
+    }()
+
     private var sdwanCount: Int { ifaces.filter { $0.kind.sdwan }.count }
     /// Faults the "一键修复" button can actually act on — it works by injecting
     /// `route-exclude-address`, which does nothing for an absent peer route, so
@@ -269,6 +275,45 @@ struct SdwanPage: View {
                     .padding(DS.Spacing.l)
                     .background(RoundedRectangle(cornerRadius: DS.Radius.card, style: .continuous).fill(DS.Palette.cardBg))
                     .overlay(RoundedRectangle(cornerRadius: DS.Radius.card, style: .continuous).stroke(DS.Palette.border))
+
+                    // What the periodic audit last put back, and what it could
+                    // not. Shown whenever a repair has run this session — a
+                    // silent self-heal is indistinguishable from a self-heal
+                    // that never happened, and the whole point of repairing at
+                    // the route layer is that the user feels nothing.
+                    if let r = M.lastRouteRepair {
+                        Card(title: "自动路由修复 · \(Self.clock.string(from: r.at))",
+                             icon: "wrench.and.screwdriver.fill") {
+                            VStack(alignment: .leading, spacing: 4) {
+                                ForEach(r.fixed, id: \.self) { line in
+                                    HStack(spacing: 8) {
+                                        Image(systemName: "checkmark.circle.fill")
+                                            .foregroundColor(DS.Palette.accent).font(.dsBody).frame(width: 20)
+                                        Text(line).font(.dsMono)
+                                        Spacer()
+                                        Text("已改回").font(.dsBody)
+                                            .padding(.horizontal, DS.Spacing.s - 2).padding(.vertical, 2)
+                                            .background(Capsule().fill(DS.Palette.accent.opacity(0.15)))
+                                            .foregroundColor(DS.Palette.accent)
+                                    }
+                                }
+                                ForEach(r.remaining, id: \.self) { line in
+                                    HStack(spacing: 8) {
+                                        Image(systemName: "xmark.circle.fill")
+                                            .foregroundColor(DS.Palette.warn).font(.dsBody).frame(width: 20)
+                                        Text(line).font(.dsBody).foregroundColor(DS.Palette.warn)
+                                        Spacer()
+                                    }
+                                }
+                                if r.fixed.isEmpty && r.remaining.isEmpty {
+                                    Text("本轮无需改动。").font(.dsBody).foregroundColor(.secondary)
+                                }
+                                Text("修复在路由表上逐条执行（route delete/add），不重载内核、不中断既有连接。"
+                                     + "完整过程见\u{201C}日志\u{201D}页。")
+                                    .font(.dsBody).foregroundColor(.secondary).padding(.top, 4)
+                            }
+                        }
+                    }
 
                     // Conflict detail card (shown when prefix-shadowing detected)
                     if !conflicts.isEmpty {
