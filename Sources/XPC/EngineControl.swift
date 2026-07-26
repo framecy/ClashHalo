@@ -800,6 +800,56 @@ import SwiftUI
         }.value
     }
 
+    /// `dnsWildcardPort53Bound()`, but allowed to wait for a listener that is
+    /// still coming up.
+    ///
+    /// A single shot is the right question for the periodic health check and
+    /// the wrong one immediately after a reload. `PUT /configs?force=true`
+    /// answers as soon as mihomo *accepts* the config; tearing down and
+    /// rebuilding the DNS server — and re-binding `0.0.0.0:53`, which needs
+    /// root — happens afterwards. Probing 300 ms later measured the gap, not
+    /// the outcome, and a repair that had in fact worked was recorded as a
+    /// failure. Two of those and the listener check gave up permanently on a
+    /// Gateway that was serving LAN clients perfectly well.
+    ///
+    /// Polls rather than sleeping the full budget so the common case (bound in
+    /// well under a second) stays fast.
+    nonisolated static func dnsWildcardPort53Bound(waitingUpTo budget: TimeInterval) async -> Bool {
+        let deadline = Date().addingTimeInterval(budget)
+        while true {
+            if await dnsWildcardPort53Bound() { return true }
+            guard Date() < deadline else { return false }
+            try? await Task.sleep(nanoseconds: 500_000_000)
+        }
+    }
+
+    /// Every UDP socket bound to port 53, as `netstat` renders the local
+    /// address (`*.53`, `127.0.0.1.53`, …). Empty means nothing holds the port.
+    ///
+    /// Purely diagnostic, and deliberately only called on the failure path: a
+    /// declared-but-absent `0.0.0.0:53` listener has two very different causes
+    /// — the port is already taken by another resolver, or mihomo declined to
+    /// bind it — and the repair loop could not tell them apart. Reporting what
+    /// is actually on the port turns "网关模式无效" from a bare symptom into
+    /// something actionable without attaching a debugger.
+    nonisolated static func udpPort53Bindings() async -> [String] {
+        await Task.detached(priority: .utility) {
+            let p = Process()
+            p.executableURL = URL(fileURLWithPath: "/usr/sbin/netstat")
+            p.arguments = ["-an", "-p", "udp"]
+            let pipe = Pipe(); p.standardOutput = pipe; p.standardError = Pipe()
+            do { try p.run() } catch { return [] }
+            let data = pipe.fileHandleForReading.readDataToEndOfFile()
+            p.waitUntilExit()
+            guard let out = String(data: data, encoding: .utf8) else { return [] }
+            return out.split(separator: "\n").compactMap { line -> String? in
+                let cols = line.split(whereSeparator: { $0 == " " || $0 == "\t" })
+                guard cols.count >= 4, cols[3].hasSuffix(".53") else { return nil }
+                return "\(cols[0]) \(cols[3])"
+            }
+        }.value
+    }
+
     /// Read the system DNS servers for the default service.
     nonisolated static func currentSystemDNS() async -> [String] {
         guard let svc = await defaultNetworkService() else { return [] }

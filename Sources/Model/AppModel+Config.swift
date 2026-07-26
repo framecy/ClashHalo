@@ -265,7 +265,15 @@ extension AppModel {
         // on at startup, then verifyGatewayConfig re-enforced sysctl IP forwarding
         // and could cascade into a black-hole network. The write path
         // (applyGatewayMode) remains the only place that turns Gateway on.
-        if !gatewayModeOn {
+        // `gatewayApplyInFlight` is the difference between residue and an enable
+        // that has not finished committing. Without it this branch fires from
+        // the `refreshConfigs()` call inside `applyGatewayMode` itself — the
+        // overrides are on disk, `gatewayModeOn` is not yet true, so the enable
+        // reverts its own work. Every Gateway enable then produced the same
+        // cascade: clean → "配置丢失" → two repair reloads → give up, nine full
+        // kernel reloads inside ten minutes, each one dropping every live
+        // connection. Deterministic, not a race.
+        if !gatewayModeOn && !gatewayApplyInFlight {
             let dnsListen = (c["dns"] as? [String: Any])?["listen"] as? String
             if dnsListen == "0.0.0.0:53" {
                 // Soft-clean residual Gateway DNS bind so a cold start with the
@@ -551,6 +559,11 @@ extension AppModel {
 
     private func applyGatewayMode(_ want: Bool) async {
         if want {
+            // Held for the whole enable, including every early `return` below —
+            // an abandoned transaction must leave the residue detector armed
+            // again, or a half-applied Gateway would never be cleaned up.
+            gatewayApplyInFlight = true
+            defer { gatewayApplyInFlight = false }
             // Check helper privileges for sysctl and root-mode mihomo.
             if !engine.isRoot {
                 showToast("开启网关中枢需要管理员授权…")
@@ -784,6 +797,71 @@ extension AppModel {
             staticRoutesInjected = false
         }
         lastCoexistenceFingerprint = fp
+    }
+
+    /// Periodic route-table audit, and a surgical repair when it finds drift.
+    ///
+    /// Separate from `reconcileCoexistenceIfChanged` on purpose. That one asks
+    /// "have the peers changed?" and pushes a `tun` PATCH when they have; this
+    /// one asks "does the route table still match what we already agreed?" and
+    /// touches nothing but the routes. They catch different faults and the
+    /// cheap one must not be gated on the expensive one's trigger.
+    ///
+    /// Nothing here reloads or PATCHes the kernel. The repair is `route delete`
+    /// + `route add` on individual prefixes, which does not disturb the tunnel
+    /// or drop a single connection — the whole reason to fix this at the route
+    /// layer instead of by re-applying config.
+    func auditAndRepairPeerRoutes() async {
+        guard tunOn, reachable, !engine.isBusy, !sleeping else { return }
+        guard Date() >= tunStateSettleUntil else { return }
+
+        let peers = await Coexistence.detect()
+        let expected = Coexistence.excludeRouteMap(peers)
+        guard !expected.isEmpty else { return }
+
+        let drift = Coexistence.auditRoutes(expected: expected)
+        guard !drift.isEmpty else {
+            // A silent pass and a pass that never ran look identical, which makes
+            // the whole self-heal unverifiable — the mistake the Gateway loop
+            // made in the other direction by logging success unconditionally.
+            // Heartbeat on a slow cadence: enough to prove liveness in a support
+            // log, too rare to bury the lines that matter.
+            if Date() >= routeAuditHeartbeatDue {
+                routeAuditHeartbeatDue = Date().addingTimeInterval(600)
+                logKernel("路由巡检：\(expected.count) 个对端网段归属正常，无需修复")
+            }
+            return
+        }
+
+        logKernel("路由巡检：发现 \(drift.count) 条对端网段异常，正在修复…")
+        for d in drift { logKernel("　· \(d.describe)") }
+
+        let replied = await XPCManager.shared.callSetupExcludeRoutes(expected)
+
+        // Verify against the table, not against the reply. A repair that
+        // reports success and changes nothing is the failure mode that let the
+        // Gateway self-heal claim "已自动恢复" 113 times in a row.
+        let after = Coexistence.auditRoutes(expected: expected)
+        let stillBroken = Set(after.map(\.cidr))
+        let fixed = drift.filter { !stillBroken.contains($0.cidr) }
+
+        for d in fixed {
+            logKernel("　✓ \(d.cidr) 已改回 \(d.expected)")
+        }
+        for d in after {
+            logKernel("　✗ \(d.describe) —— 修复未生效")
+        }
+        if fixed.isEmpty && replied != true {
+            logKernel("路由巡检：特权服务未响应，本轮未做任何改动")
+        }
+        logKernel("路由巡检：修复 \(fixed.count) 条，仍异常 \(after.count) 条")
+
+        lastRouteRepair = RouteRepairReport(
+            at: Date(),
+            fixed: fixed.map { "\($0.cidr) → \($0.expected)" },
+            remaining: after.map(\.describe)
+        )
+        staticRoutesInjected = true
     }
 
     /// Peer subnets the tailnet advertises that the local route table does not

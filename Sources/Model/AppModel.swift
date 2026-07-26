@@ -45,6 +45,25 @@ import ServiceManagement
     private var gatewaySysctlRefreshDue: Date = .distantPast
     /// Earliest time to re-probe the `*:53` listener (one `netstat` fork).
     private var gatewayListenerProbeDue: Date = .distantPast
+    /// Consecutive repair attempts that did not bring the `*:53` listener up.
+    /// Cleared the moment a probe finds it live.
+    private var gatewayRepairAttempts = 0
+    /// Set once the repair has given up. Suppresses both the probe and the
+    /// repair until Gateway mode is toggled, so a failure the retry cannot fix
+    /// costs nothing instead of reloading the kernel every minute forever.
+    /// See `repairGateway` for why that mattered.
+    private var gatewayRepairAbandoned = false
+    /// How many times `repairGateway` may reload the kernel before declaring
+    /// the listener unfixable. Each reload costs every in-flight connection, so
+    /// this is deliberately small.
+    private static let kGatewayRepairMaxAttempts = 2
+    /// Earliest time a *declaration* repair may reload again, and how many in a
+    /// row have failed to stick. Unlike the listener repair this one is never
+    /// abandoned — a profile switch clearing the overrides is both real and
+    /// fixable — but it still must not reload the kernel every minute forever
+    /// if something upstream keeps rewriting the file back.
+    private var gatewayDeclareRepairDue: Date = .distantPast
+    private var gatewayDeclareRepairFailures = 0
 
     // Navigation + theme
     @Published var route = "dashboard" {
@@ -74,6 +93,18 @@ import ServiceManagement
     @Published var uploadTotal: Int64 = 0
     @Published var downloadTotal: Int64 = 0
     @Published var gatewayDevices: [String: GatewayDevice] = [:]
+    /// Last-seen absolute byte counts for every *gateway client* connection,
+    /// keyed by connection id. Kept separately from `prevConnBytes` on purpose:
+    /// that dictionary is capped, trimmed and cleared by the memory guards, and
+    /// losing an entry there would silently drop a device's traffic. This one
+    /// only ever holds LAN clients' connections, so it stays small.
+    var gatewayConnBytes: [String: (ip: String, up: Int64, down: Int64)] = [:]
+    /// Per-device bytes carried over from connections that have already closed.
+    var gatewayClosedBytes: [String: (up: Int64, down: Int64)] = [:]
+    /// When `updateGatewayDevices` last ran — the denominator for per-device
+    /// rates, which must be measured rather than assumed because the caller's
+    /// cadence varies between 1 s, 1.5 s, 3 s and 30 s.
+    var lastGatewaySampleAt: Date = .distantPast
 
     // Proxies
     @Published var groups: [ProxyGroup] = []
@@ -195,8 +226,40 @@ import ServiceManagement
         didSet {
             guard oldValue != gatewayModeOn else { return }
             UserDefaults.standard.set(gatewayModeOn, forKey: "net.gatewayModeOn")
+            // Toggling is the user's "I have dealt with it, try again" signal —
+            // the only thing that re-arms a repair that gave up.
+            gatewayRepairAttempts = 0
+            gatewayRepairAbandoned = false
+            gatewayListenerProbeDue = .distantPast
+            gatewayDeclareRepairFailures = 0
+            gatewayDeclareRepairDue = .distantPast
         }
     }
+    /// What the last route audit actually changed, for the UI to show. Set only
+    /// when a repair ran, so a quiet system leaves the previous report standing
+    /// rather than replacing it with an empty one every 30 s.
+    struct RouteRepairReport: Equatable {
+        let at: Date
+        /// `"100.64.0.0/10 → utun8"` per entry.
+        let fixed: [String]
+        /// Drifts the repair did not resolve, described in full.
+        let remaining: [String]
+    }
+    @Published var lastRouteRepair: RouteRepairReport?
+    /// Earliest time the route audit may log a "nothing to do" heartbeat.
+    var routeAuditHeartbeatDue: Date = .distantPast
+    /// True while `applyGatewayMode(true)` is midway through writing and
+    /// reloading the Gateway overrides.
+    ///
+    /// `gatewayModeOn` is user intent and is only committed once the whole
+    /// enable has succeeded, so for the duration of the transaction the config
+    /// on disk says Gateway while the flag says otherwise. Every consumer that
+    /// reads "declares Gateway but the switch is off" as *residue from a past
+    /// session* has to sit out that window, or it will undo the enable that is
+    /// still in progress — which is exactly what `refreshConfigs` did, from a
+    /// call `applyGatewayMode` makes itself.
+    var gatewayApplyInFlight = false
+
     /// Snapshot of allow-lan / dns.listen before Gateway mode overrode them,
     /// used to restore config.yaml when Gateway is disabled.
     var preGatewayAllowLan: Bool?
@@ -652,6 +715,7 @@ import ServiceManagement
                         }
                         if self.tunOn && self.reachable {
                             await self.verifyTUNConfig()
+                            await self.auditAndRepairPeerRoutes()
                         }
                         self.bgTickCount = 0
                     }
@@ -674,22 +738,29 @@ import ServiceManagement
         pollTask?.cancel(); pollTask = nil
     }
 
+    /// True when a gateway client list is actually being looked at, which is the
+    /// only situation that justifies polling `/connections` once a second.
+    var gatewayDevicesOnScreen: Bool {
+        gatewayModeOn && isMainWindowVisible && (route == "network" || route == "dashboard")
+    }
+
     private func startPolling() {
         pollTask?.cancel()
         pollTask = Task { [weak self] in
-            var checkCounter = 0
-            // Fire a full config refresh immediately, then every ~12s.
-            var configCounter = 4
+            // Deadlines rather than tick counters. The tick rate is no longer
+            // fixed — it speeds up while a gateway device list is on screen —
+            // and counting ticks would have dragged the 12 s config refresh and
+            // the 30 s health check up to 3× faster along with it. That would
+            // have meant three times as many kernel reloads from the gateway
+            // repair path, i.e. paying for a smoother readout with dropped
+            // connections. Each job keeps its own wall-clock cadence instead.
+            var configDue = Date.distantPast          // fire immediately
+            var healthDue = Date().addingTimeInterval(30)
+            var gatewayDue = Date.distantPast
             while let self, !Task.isCancelled, self.reachable, self.isMainWindowVisible || self.isMenuBarVisible {
-                // Layered tick (perf plan C):
-                // - every 3s: optional /connections for gateway devices
-                // - every ~12s (4 ticks): refreshConfigs (was every tick — heavy
-                //   HTTP + yaml merge + TUN interface probe)
-                // - every ~30s (10 ticks): gateway/TUN health checks
-                configCounter += 1
-                if configCounter >= 4 {
-                    await self.refreshConfigs()
-                    configCounter = 0
+                if Date() >= configDue {
+                    await self.refreshConfigs()       // heavy: HTTP + yaml merge + TUN probe
+                    configDue = Date().addingTimeInterval(12)
                 }
 
                 // Gateway device list is driven by /connections snapshots. The
@@ -697,27 +768,32 @@ import ServiceManagement
                 // else (Network page, dashboard, menu bar) we pull a lightweight
                 // snapshot here so 已接入设备 stays live without the heavy
                 // Conn-row conversion. DnsPage reuses cachedConns — no third poller.
-                if self.gatewayModeOn && !self.isConnectionsPageActive {
+                if self.gatewayModeOn, !self.isConnectionsPageActive, Date() >= gatewayDue {
                     do {
                         let snapshot = try await self.api.fetchConnectionsSnapshot()
                         self.recordHistoryOnly(from: snapshot)
                     } catch {
                         // Transient API blip — skip this tick.
                     }
+                    gatewayDue = Date().addingTimeInterval(self.gatewayDevicesOnScreen ? 1 : 3)
                 }
 
-                checkCounter += 1
-                if checkCounter >= 10 {
+                if Date() >= healthDue {
                     if self.gatewayModeOn {
                         await self.verifyGatewayConfig()
                     }
                     if self.tunOn {
                         await self.verifyTUNConfig()
+                        // Cheap and independent of the coexistence fingerprint —
+                        // see `auditAndRepairPeerRoutes` for why the fingerprint
+                        // cannot catch an auto-route hijack.
+                        await self.auditAndRepairPeerRoutes()
                     }
-                    checkCounter = 0
+                    healthDue = Date().addingTimeInterval(30)
                 }
 
-                try? await Task.sleep(nanoseconds: 3_000_000_000)
+                try? await Task.sleep(nanoseconds: self.gatewayDevicesOnScreen ? 500_000_000
+                                                                              : 3_000_000_000)
             }
         }
     }
@@ -907,8 +983,25 @@ import ServiceManagement
                     // If TUN is supposed to be on, ensure it's healthy and interface is pinned
                     if tunOn && !engine.isBusy {
                         let currentIface = await EngineControl.defaultInterface()
-                        if onlineChanged || (currentIface != nil && currentIface != lastInterface) {
-                            if let iface = currentIface { lastInterface = iface }
+                        let ifaceMoved = currentIface != nil && currentIface != lastInterface
+                        // Recorded unconditionally, so a value left stale by the
+                        // settle window below cannot fire a rebuild once it closes.
+                        if let iface = currentIface { lastInterface = iface }
+                        // Bringing TUN up *is* a path change: creating utun100 and
+                        // injecting the exclude routes moves the default interface,
+                        // and NWPathMonitor reports it milliseconds later. Reading
+                        // that as an external NIC switch made the enable rebuild the
+                        // tunnel it had just finished building — two
+                        // `PATCH(enable=true)` 250 ms apart, each dropping every live
+                        // connection. The settle window already guards refreshConfigs,
+                        // verifyTUNConfig and the coexistence paths against this same
+                        // storm; this was the one handler still reacting to it, and
+                        // the only one that answered by rebuilding the tunnel.
+                        //
+                        // A genuine NIC change inside the 10 s window is therefore
+                        // deferred, not lost: verifyTUNConfig re-checks on its 30 s
+                        // cadence once the window closes.
+                        if (onlineChanged || ifaceMoved) && Date() >= tunStateSettleUntil {
                             // Manual isBusy + defer (not `withEngineBusy`) because this runs
                             // fire-and-forget inside a Task whose caller cannot await the body —
                             // `withEngineBusy`'s guard would clear before applyTUNState(true)
@@ -1065,6 +1158,11 @@ import ServiceManagement
     /// Gateway mode stays healthy (config persists, sysctl stays set).
     private func verifyGatewayConfig() async {
         guard gatewayModeOn && reachable else { return }
+        // Never audit a Gateway that is still being applied. The write path
+        // reloads the kernel more than once, and a health check landing between
+        // those reloads sees a config or a listener that is legitimately absent
+        // for another second — then "repairs" it with another full reload.
+        guard !gatewayApplyInFlight else { return }
 
         // Two independent questions, because two independent things break.
         //
@@ -1084,23 +1182,28 @@ import ServiceManagement
 
         var listenerLive = true
         if declaresGateway, Date() >= gatewayListenerProbeDue {
-            gatewayListenerProbeDue = Date().addingTimeInterval(60)
+            // Abandoned means "stop reloading the kernel", not "stop looking".
+            // Those were the same thing, and that is why a Gateway could sit
+            // there working — `dig @<lan-ip>` answering, clients proxying fine —
+            // while the app still showed the give-up message from an hour ago.
+            // Whatever the listener was waiting on (a slow bind, a port briefly
+            // held by another resolver) resolved itself and nothing was left
+            // watching. Keep probing on a slow cadence and let the app notice.
+            gatewayListenerProbeDue = Date().addingTimeInterval(gatewayRepairAbandoned ? 300 : 60)
             listenerLive = await EngineControl.dnsWildcardPort53Bound()
-            if !listenerLive {
-                logKernel("网关 DNS 未在 53 端口监听（配置声明为 0.0.0.0:53），正在重新应用…")
+            if listenerLive {
+                gatewayRepairAttempts = 0
+                if gatewayRepairAbandoned {
+                    gatewayRepairAbandoned = false
+                    logKernel("网关 DNS 已恢复在 53 端口监听，自动校验重新生效。")
+                }
             }
         }
 
-        if !declaresGateway || !listenerLive {
-            if !declaresGateway { logKernel("检测到网关配置丢失，正在恢复...") }
-            engine.setTopLevelScalars(Self.gatewayOverrides)
-            do {
-                try await api.reloadConfig(path: engine.configFilePath)
-                await refreshConfigs()
-                logKernel("网关配置已自动恢复")
-            } catch {
-                logKernel("网关配置恢复失败：\(error.localizedDescription)")
-            }
+        // A probe that was skipped this round says nothing; only re-enter the
+        // repair when the listener was actually measured missing.
+        if !declaresGateway || (!listenerLive && !gatewayRepairAbandoned) {
+            await repairGateway(listenerMissing: !listenerLive)
         }
 
         // Forwarding already on, and the helper heard from us recently enough:
@@ -1151,6 +1254,95 @@ import ServiceManagement
         }
     }
 
+    /// Bring the Gateway declaration — and the `*:53` listener it promises —
+    /// back in line. Called only when something is measurably wrong.
+    ///
+    /// Repairing here means reloading the kernel from disk, and that is not a
+    /// cheap thing to do: `PUT /configs?force=true` rebuilds the DNS server,
+    /// every inbound and outbound, and the TUN interface, and drops every
+    /// in-flight connection with them. A PATCH would be gentler but cannot do
+    /// this job — mihomo answers a runtime `dns` PATCH with 204 and then
+    /// ignores it, which is the same reason `Coexistence` only ever *reports*
+    /// its DNS half.
+    ///
+    /// So the reload stays, and the cost is contained by bounding it instead.
+    /// v1.1.10 did neither: it reloaded on every 60 s health check for as long
+    /// as the probe kept failing, and the probe kept failing because a reload
+    /// was never going to fix it. The machine's logs show 113 consecutive
+    /// cycles over three hours, each one logging "网关配置已自动恢复" — that
+    /// line was printed on the HTTP call returning, not on the listener coming
+    /// up, so it stayed true through every failure. Downstream that reads as
+    /// video stalling and pages needing a reload roughly once a minute, with
+    /// the connection count looking perfectly healthy because the table refills
+    /// immediately.
+    ///
+    /// Hence the two rules here: claim success only against a fresh
+    /// measurement, and stop after `kGatewayRepairMaxAttempts` with an
+    /// actionable message rather than retrying something that does not work.
+    private func repairGateway(listenerMissing: Bool) async {
+        // Only the listener repair is abandoned. A dropped declaration is a
+        // different, genuinely fixable fault — a profile switch really does
+        // clear the overrides — and must stay repairable regardless.
+        if listenerMissing {
+            if gatewayRepairAbandoned { return }
+            gatewayRepairAttempts += 1
+            logKernel("网关 DNS 未在 53 端口监听（配置声明为 0.0.0.0:53），正在重新应用"
+                    + "（第 \(gatewayRepairAttempts)/\(Self.kGatewayRepairMaxAttempts) 次）…")
+        } else {
+            guard Date() >= gatewayDeclareRepairDue else { return }
+            logKernel("检测到网关配置丢失，正在恢复…")
+        }
+
+        engine.setTopLevelScalars(Self.gatewayOverrides)
+        do {
+            try await api.reloadConfig(path: engine.configFilePath)
+            await refreshConfigs()
+        } catch {
+            logKernel("网关配置恢复失败：\(error.localizedDescription)")
+        }
+
+        // Did the declaration actually take? `refreshConfigs` re-reads the file,
+        // so this is a real answer rather than a restatement of what we wrote.
+        if !listenerMissing {
+            let allowLan = (configs["allow-lan"] as? Bool) == true
+            let listen = (configs["dns"] as? [String: Any])?["listen"] as? String
+            if allowLan && listen == "0.0.0.0:53" {
+                gatewayDeclareRepairFailures = 0
+                gatewayDeclareRepairDue = .distantPast
+            } else {
+                gatewayDeclareRepairFailures += 1
+                // 2, 4, 8 … minutes, capped. Something else owns this file;
+                // fighting it once a minute helps nobody.
+                let backoff = min(120.0 * pow(2, Double(gatewayDeclareRepairFailures - 1)), 900)
+                gatewayDeclareRepairDue = Date().addingTimeInterval(backoff)
+                logKernel("网关配置写入后未生效，\(Int(backoff / 60)) 分钟后重试"
+                        + "（配置文件可能被订阅更新或配置切换覆盖）")
+            }
+        }
+
+        // Measure, don't assume — but give the kernel time to finish what the
+        // reload only just accepted. `reloadConfig` returns on acceptance; the
+        // DNS server is rebuilt and re-bound afterwards, so an immediate probe
+        // measured the gap and scored a working repair as a failure.
+        let live = await EngineControl.dnsWildcardPort53Bound(waitingUpTo: 8)
+        gatewayListenerProbeDue = Date().addingTimeInterval(60)
+
+        if live {
+            gatewayRepairAttempts = 0
+            logKernel("网关配置已自动恢复（已确认 53 端口正在监听）")
+            return
+        }
+
+        if !gatewayRepairAbandoned, gatewayRepairAttempts >= Self.kGatewayRepairMaxAttempts {
+            gatewayRepairAbandoned = true
+            let held = await EngineControl.udpPort53Bindings()
+            let detail = held.isEmpty
+                ? "53 端口当前无任何 UDP 监听 —— 内核未能绑定，请检查内核日志"
+                : "53 端口当前被占用：\(held.joined(separator: "、"))"
+            logKernel("网关 DNS 仍未在 53 端口监听，已停止自动重载 —— 继续反复重载内核会持续中断网络。"
+                    + "\(detail)。仍会每 5 分钟静默复查，一旦监听恢复会自动解除并记录。")
+        }
+    }
 
     /// Verify TUN DNS redirection and interface existence, re-apply or disable if issues detected.
     /// This catches two failure modes:

@@ -189,6 +189,48 @@ expect(!live.contains { $0.hasSuffix("/32") }, "不产生 /32 主机掩码")
 expect(!live.contains("198.18.0.0/30"), "不把 utun 的网段当直连（utun 已排除）")
 expect(!live.contains("127.0.0.0/8"), "不含回环")
 
+section("drift — auto-route 抢占侦测")
+// 基线：mihomo 的 auto-route 重建 TUN 后，把 Tailscale 承载的网段吞进了
+// utun100。对端集合没有任何变化，所以共存指纹也没变 —— 这正是只看指纹
+// 的 reconcile 永远发现不了的那一类故障。
+let hijacked = RouteTable.parse(netstat: """
+Internet:
+Destination        Gateway            Flags        Netif Expire
+default            link#33            UCSg        utun100
+100.64/10          utun100            UCS         utun100
+100.100.100.100/32 utun8              UCS           utun8
+192.168.3          link#32            UCSI          utun8
+10.1.1/24          link#15            UCS             en0
+""")
+let want = ["100.64.0.0/10": "utun8",
+            "100.100.100.100/32": "utun8",
+            "192.168.3.0/24": "utun8",
+            "172.30.0.0/16": "utun8"]
+let drifts = RouteTable.drift(expected: want, in: hijacked)
+let byCIDR = Dictionary(uniqueKeysWithValues: drifts.map { ($0.cidr, $0) })
+
+expect(byCIDR["100.64.0.0/10"]?.kind == .hijackedByOurTun,
+       "被 utun100 抢占的对端网段被识别")
+expect(byCIDR["100.64.0.0/10"]?.expected == "utun8", "报告应归属的接口")
+expect(byCIDR["100.100.100.100/32"] == nil, "对端自己持有的路由不算漂移")
+expect(byCIDR["192.168.3.0/24"]?.kind == .missing,
+       "作用域路由不算承载 —— 只对已绑定该接口的流量生效")
+expect(byCIDR["172.30.0.0/16"]?.kind == .missing, "无人承载的网段被识别为缺失")
+expect(drifts.count == 3, "恰好三条漂移，不多不少")
+expect(drifts.map(\.cidr) == drifts.map(\.cidr).sorted(), "输出按 CIDR 排序，日志稳定")
+
+// 第三方接口持有 —— 绝不能去抢。这条约束上一版是靠 Helper 单方面守住的，
+// 现在侦测侧也必须同意，否则日志会天天报一条永远修不好的"异常"。
+let thirdParty = RouteTable.parse(netstat: """
+Internet:
+Destination        Gateway            Flags        Netif Expire
+100.64/10          link#40            UCS          utun12
+""")
+expect(RouteTable.drift(expected: ["100.64.0.0/10": "utun8"], in: thirdParty).isEmpty,
+       "第三方接口承载时不报漂移（不是我们的路由，无权覆盖）")
+
+expect(RouteTable.drift(expected: [:], in: hijacked).isEmpty, "空计划不产生漂移")
+
 print("\n" + String(repeating: "=", count: 46))
 print(failures == 0 ? "全部通过：\(checks)/\(checks)" : "失败 \(failures)/\(checks)")
 exit(failures == 0 ? 0 : 1)
