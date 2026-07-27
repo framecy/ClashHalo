@@ -946,8 +946,12 @@ extension AppModel {
     ///   loop restarts.
     func applyTUNState(_ want: Bool, allowRestartFallback: Bool = true) async {
         // Explicit disable is user/system intent — lift the bring-up settle
-        // window so the OFF derivation is never blocked.
-        if !want { tunStateSettleUntil = .distantPast }
+        // window so the OFF derivation is never blocked. Also cancel any pending
+        // data-plane probe / recovery so a late result cannot re-open TUN.
+        if !want {
+            tunStateSettleUntil = .distantPast
+            cancelTUNDataPlaneProbe(resetHealth: true)
+        }
         if want && !reachable {
             showToast("正在启动核心以启用 TUN…")
             // TUN needs root. Verify helper before forcing isRoot — a stale
@@ -1255,6 +1259,11 @@ extension AppModel {
                 // warm so re-enabling TUN is a PATCH, not a full root restart.
                 if want {
                     showToast("TUN 模式已开启", kind: .ok)
+                    // Delayed acceptance: wait for the settle window to close, then
+                    // prove the data plane actually answers. A utun that exists but
+                    // whose fd is already stale would otherwise look healthy until
+                    // the next 30 s poll.
+                    scheduleTUNDataPlaneProbe(reason: "开启验收", delay: 2.0)
                 } else if !systemProxyOn && reachable {
                     showToast("TUN 模式已关闭（内核仍在运行，可在侧栏停止）", kind: .ok)
                 } else {
@@ -1309,6 +1318,221 @@ extension AppModel {
         }
         logKernel("TUN 阶段：内核始终未采纳 tun.enable=\(want)")
         return false
+    }
+
+    // MARK: - TUN data-plane probe & recovery
+    //
+    // Interface-table / route-table health is not enough: macOS can re-mount
+    // `utun100` under mihomo and leave a stale TUN fd that still looks UP. The
+    // probe round-trips a one-packet DNS query to the fake-ip gateway; recovery
+    // is a full process restart (PATCH cannot re-open the fd). See
+    // `Sources/Model/TUNDataPlaneProbe.swift` and the matching EngineControl
+    // helpers. Third-party routes stay untouched — only our own residual cleanup
+    // and coexistence provenance run during recovery.
+
+    /// Cancel any in-flight data-plane probe. Optionally reset the failure
+    /// counter (user-driven TUN off / completed recovery).
+    func cancelTUNDataPlaneProbe(resetHealth: Bool = false) {
+        tunDataPlaneProbeTask?.cancel()
+        tunDataPlaneProbeTask = nil
+        if resetHealth { tunDataPlaneHealth.reset() }
+    }
+
+    /// Schedule a debounced data-plane probe. Multiple triggers within the
+    /// settle/cooldown windows collapse onto one Task. Never restarts the
+    /// kernel by itself — only a failed probe cycle may escalate to recovery.
+    func scheduleTUNDataPlaneProbe(reason: String, delay: TimeInterval = 0) {
+        guard tunOn, reachable, !sleeping else { return }
+        guard !tunDataPlaneRecoveryInFlight else { return }
+        guard !engine.isBusy, !tunAutoTeardownInFlight else { return }
+        guard Date() >= tunStateSettleUntil else { return }
+        guard Date() >= tunDataPlaneRecoveryCooldownUntil else { return }
+
+        // Coalesce concurrent schedules onto one Task so a path-update storm
+        // cannot spawn three parallel probe cycles that all race into recovery.
+        tunDataPlaneProbeTask?.cancel()
+        tunDataPlaneProbeTask = Task { @MainActor [weak self] in
+            guard let self else { return }
+            if delay > 0 {
+                try? await Task.sleep(nanoseconds: UInt64(delay * 1_000_000_000))
+            }
+            guard !Task.isCancelled else { return }
+            await self.runTUNDataPlaneProbe(reason: reason)
+        }
+    }
+
+    /// One probe cycle. On threshold failure, escalates to at most one recovery.
+    private func runTUNDataPlaneProbe(reason: String) async {
+        guard tunOn, reachable, !sleeping else { return }
+        guard !tunDataPlaneRecoveryInFlight else { return }
+        guard !engine.isBusy, !tunAutoTeardownInFlight else { return }
+        guard Date() >= tunStateSettleUntil else { return }
+        guard Date() >= tunDataPlaneRecoveryCooldownUntil else { return }
+
+        // The interface must still exist — if it is gone, the existing B10 /
+        // verifyTUNConfig teardown path owns the response. Probing a missing
+        // gateway would only produce false "data plane dead" noise.
+        guard await NetScanner.mihomoTunInterface(maxAge: 0) != nil else { return }
+
+        let gateway = tunnelDNSAddress()
+        logKernel("TUN 数据面探测开始（\(reason)）→ \(gateway):53")
+        let outcomes = await engine.runTUNDataPlaneProbeCycle(gateway: gateway)
+        // Feed each attempt into the pure state machine on this actor — never
+        // pass actor-isolated state as `inout` into an async helper.
+        var trip = false
+        for (i, ok) in outcomes.enumerated() {
+            if ok {
+                tunDataPlaneHealth.reset()
+                trip = false
+                break
+            }
+            let n = i + 1
+            logKernel("TUN 数据面探测失败 \(n)/\(tunDataPlaneHealth.threshold): DNS gateway \(gateway) timeout")
+            if tunDataPlaneHealth.record(success: false) {
+                trip = true
+            }
+        }
+        guard trip else { return }
+
+        logKernel("TUN 数据面探测失败 \(tunDataPlaneHealth.consecutiveFailures)/\(tunDataPlaneHealth.threshold)：准备重建 mihomo")
+        await performTUNDataPlaneRecovery(gateway: gateway)
+    }
+
+    /// Full process rebuild after a confirmed data-plane fault.
+    ///
+    /// Order mirrors the documented recovery path and reuses existing stop /
+    /// start / residual / coexistence helpers — no second process-manager.
+    /// At most one recovery per anomaly; on secondary probe failure after the
+    /// rebuild, TUN is closed and the system returns to direct connectivity.
+    private func performTUNDataPlaneRecovery(gateway: String) async {
+        guard !tunDataPlaneRecoveryInFlight else { return }
+        tunDataPlaneRecoveryInFlight = true
+        engine.isBusy = true
+        let t0 = Date()
+        defer {
+            engine.isBusy = false
+            tunDataPlaneRecoveryInFlight = false
+            // Cool-down so a recovery-induced path storm cannot immediately
+            // re-enter. Also covers the failure path where we closed TUN.
+            tunDataPlaneRecoveryCooldownUntil = Date().addingTimeInterval(30)
+            tunDataPlaneHealth.reset()
+        }
+
+        logKernel("TUN 自愈阶段: 停止内核")
+        showToast("检测到 TUN 数据面异常，正在自动重建…", kind: .warn)
+
+        // Best-effort logical disable so the kernel releases its TUN fd before
+        // the process is killed. Failure is fine — stopKernel is the authority.
+        _ = await engine.patchConfig(["tun": tunPatchBody(enable: false)])
+        engine.setTunEnabled(false)
+
+        await engine.stopKernel()
+        reachable = false
+        // Do not flip tunOn=false here: user intent is still ON. refreshConfigs
+        // will re-derive from reality after the rebuild; if we closed it, the
+        // fallback path writes tunOn explicitly.
+
+        // Only our residual. Helper refuses peer-owned routes; hasDowned gate
+        // keeps a co-resident 198.18 VPN untouched when nothing of ours remains.
+        logKernel("TUN 自愈阶段: 清理残留")
+        // Do not put `await` on the RHS of `||` — Swift autoclosure there does
+        // not support concurrency (same constraint as stopEngine).
+        var residualVisible = NetScanner.hasDownedMihomoTun()
+        if !residualVisible {
+            residualVisible = await NetScanner.mihomoTunInterface(maxAge: 0) != nil
+        }
+        if residualVisible {
+            let ok = await XPCManager.shared.callCleanupTUNResidual()
+            logKernel("TUN 自愈阶段: 清理残留完成（\(ok == true ? "成功" : "跳过/失败")）")
+        } else {
+            logKernel("TUN 自愈阶段: 无残留可清理")
+        }
+
+        // Rebuild as root — TUN requires it. Persist enable + device so the
+        // cold start brings the tunnel up during init (same race the normal
+        // enable path already solved).
+        logKernel("TUN 自愈阶段: 启动内核")
+        engine.setTunEnabled(true)
+        engine.setTunDevice(pinnedTunDevice)
+        await engine.ensureRunningAsync(preferRoot: true, allowRootUpgradeRestart: true)
+        let ready = await waitForKernelReady(maxAttempts: 18)
+        let readyElapsed = String(format: "%.1f", Date().timeIntervalSince(t0))
+        guard ready else {
+            logKernel("TUN 自愈失败: 内核就绪超时 +\(readyElapsed)s")
+            await fallbackCloseTUNAfterFailedRecovery(reason: "内核重启后未就绪")
+            return
+        }
+        logKernel("TUN 自愈阶段: 内核就绪 +\(readyElapsed)s")
+        await reconnect()
+        if !engine.runningAsRoot { await engine.syncRunningAsRootIfNeeded() }
+
+        // Ensure TUN is on (cold start from persisted enable usually already is).
+        // Use the full apply path only if the interface is still missing — it
+        // reuses coexistence injection and the restart-fallback already proven.
+        NetScanner.invalidateTunCache()
+        var up = await waitForTUNInterface(maxAttempts: 20)
+        if !up {
+            logKernel("TUN 自愈阶段: utun 未出现，走 applyTUNState 重建")
+            await applyTUNState(true, allowRestartFallback: true)
+            let ifacePresent = await NetScanner.mihomoTunInterface(maxAge: 0) != nil
+            up = tunOn && ifacePresent
+        } else {
+            // Interface is up from cold start — still re-sync coexistence routes
+            // the stop may have left stale, without a second full TUN rebuild.
+            tunOn = true
+            tunStateSettleUntil = Date().addingTimeInterval(10)
+            await enableTunnelDNS()
+            await reconcileCoexistenceIfChanged()
+            // Force a coexistence push even if fingerprint matches the pre-crash
+            // plan: static routes may have been wiped with the residual cleanup.
+            lastCoexistenceFingerprint = ""
+            await reconcileCoexistenceIfChanged()
+        }
+        let ifaceElapsed = String(format: "%.1f", Date().timeIntervalSince(t0))
+        logKernel("TUN 自愈阶段: utun\(up ? "就绪" : "仍缺失") +\(ifaceElapsed)s")
+
+        guard up, tunOn else {
+            await fallbackCloseTUNAfterFailedRecovery(reason: "重建后 utun 未出现")
+            return
+        }
+
+        // Secondary acceptance: 2–3 short probes. Any success unlocks the lock.
+        // All fail → close TUN, restore direct, stop looping.
+        var accepted = false
+        for attempt in 1...3 {
+            if await engine.probeTUNDataPlane(gateway: gateway, timeout: 0.8) {
+                accepted = true
+                break
+            }
+            logKernel("TUN 自愈验收失败 \(attempt)/3: DNS gateway \(gateway) 无响应")
+            if attempt < 3 {
+                try? await Task.sleep(nanoseconds: UInt64(attempt) * 1_000_000_000)
+            }
+        }
+
+        let total = String(format: "%.1f", Date().timeIntervalSince(t0))
+        if accepted {
+            logKernel("TUN 自愈成功: DNS 数据面恢复，总耗时 \(total)s")
+            showToast("TUN 数据面已自动恢复", kind: .ok)
+            return
+        }
+
+        logKernel("TUN 自愈失败: 重建后数据面仍不可用，总耗时 \(total)s — 关闭 TUN 并恢复直连")
+        await fallbackCloseTUNAfterFailedRecovery(reason: "重建后 DNS 数据面仍失败")
+    }
+
+    /// Terminal failure path of recovery: stop auto-restart, close TUN, clear
+    /// residual, restore direct connectivity, and surface a clear notice.
+    /// System proxy is intentionally left alone — only TUN is the broken face.
+    private func fallbackCloseTUNAfterFailedRecovery(reason: String) async {
+        logKernel("TUN 自愈回退: \(reason)")
+        // applyTUNState(false) also cancels probes / resets health via the OFF path.
+        await applyTUNState(false, allowRestartFallback: false)
+        engine.setTunEnabled(false)
+        if NetScanner.hasDownedMihomoTun() {
+            _ = await XPCManager.shared.callCleanupTUNResidual()
+        }
+        showToast("TUN 数据面异常，自动重建后仍未恢复。已关闭 TUN 并恢复直连，请稍后重试。", kind: .error, duration: 8)
     }
 
     // MARK: TUN DNS redirection
@@ -1478,6 +1702,7 @@ extension AppModel {
 
     func stopEngine() async {
         logKernel("正在停止核心...")
+        cancelTUNDataPlaneProbe(resetHealth: true)
         // Snapshot residual state before stopKernel clears ownership flags.
         // TUN is runtime-only, but reloads may have written tun.enable=true to
         // disk to preserve a live root TUN — force it back off so the next
