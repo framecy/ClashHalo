@@ -199,6 +199,24 @@ import ServiceManagement
     /// happens once that teardown lands and refreshConfigs reconciles `tunOn`.
     /// Internal (not `private`) so the `AppModel+Config` extension can access it.
     var tunAutoTeardownInFlight = false
+    /// True while a TUN *data-plane* self-heal is mid-flight (probe-confirmed
+    /// dead fd → full process rebuild). Distinct from `tunAutoTeardownInFlight`
+    /// (which tears TUN *off* when the interface is gone) because recovery keeps
+    /// TUN *desired on* and rebuilds the kernel. One anomaly may start at most
+    /// one recovery; a second probe result while this is true is dropped.
+    var tunDataPlaneRecoveryInFlight = false
+    /// Consecutive-failure counter for the TUN data-plane DNS probe. Reset on
+    /// success, on user-driven TUN off, and after a completed recovery cycle.
+    /// See `TUNDataPlaneHealthState` / `Sources/Model/TUNDataPlaneProbe.swift`.
+    var tunDataPlaneHealth = TUNDataPlaneHealthState()
+    /// In-flight probe Task, cancelled when the user turns TUN off or the app
+    /// is about to exit so a late result cannot restart a kernel the user no
+    /// longer wants.
+    var tunDataPlaneProbeTask: Task<Void, Never>?
+    /// Earliest time a new data-plane recovery may start. Prevents a recovery
+    /// that itself restarts the kernel (and fires path-update storms) from
+    /// immediately re-entering recovery on the next poll.
+    var tunDataPlaneRecoveryCooldownUntil: Date = .distantPast
     /// Settle window after a successful TUN enable. Bringing TUN up fires a
     /// storm of NWPathMonitor updates (utun creation, auto-route injection,
     /// system-DNS switch) whose concurrent refreshConfigs runs can transiently
@@ -909,6 +927,12 @@ import ServiceManagement
                 logKernel("恢复 TUN 模式...")
                 await applyTUNState(true)
             }
+            // Sleep/wake can re-mount utun under mihomo the same way a topology
+            // change does. Accept the restored TUN with a delayed data-plane probe
+            // rather than assuming the interface table means the fd is live.
+            if preSleepTunOn || tunOn {
+                scheduleTUNDataPlaneProbe(reason: "睡眠唤醒", delay: 3.0)
+            }
 
             // Restore system proxy if it was active before sleep
             if preSleepSystemProxyOn && !systemProxyOn {
@@ -1017,6 +1041,13 @@ import ServiceManagement
                             // none of which moves the default route. Cheap because
                             // it PATCHes only when the plan fingerprint moves.
                             await reconcileCoexistenceIfChanged()
+                        }
+                        // Topology change itself never restarts the kernel for a
+                        // data-plane fault — normal detach/attach is common and
+                        // must not thrash mihomo. After the route table settles,
+                        // a DNS probe decides whether the fd is still live.
+                        if onlineChanged || ifaceMoved {
+                            scheduleTUNDataPlaneProbe(reason: "网络拓扑变化", delay: 2.5)
                         }
                     }
 
@@ -1402,6 +1433,13 @@ import ServiceManagement
         // bring-up, however wrong they had since become. Fingerprint-gated, so a
         // steady topology costs one detection pass and no PATCH.
         await reconcileCoexistenceIfChanged()
+
+        // Check 4: TUN data-plane liveness. Interface UP + route table healthy is
+        // not enough — macOS re-mounts utun100 under mihomo and leaves a stale
+        // fd that still looks alive from the outside. A DNS probe to the fake-ip
+        // gateway is the only check that actually exercises the data plane.
+        // Topology change alone never restarts: normal detach/attach is common.
+        scheduleTUNDataPlaneProbe(reason: "巡检")
     }
 
     // MARK: Menu-bar app preferences
