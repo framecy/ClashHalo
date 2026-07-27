@@ -1,6 +1,7 @@
 import Foundation
 import Combine
 import SwiftUI
+import Network
 
 @MainActor final class EngineControl: ObservableObject {
     static let shared = EngineControl()
@@ -1480,6 +1481,104 @@ import SwiftUI
     /// Start the kernel without stopping first (caller already stopped + swapped
     /// the binary, e.g. KernelManager.activate).
     func launch() async { await ensureRunningAsync() }
+
+    // MARK: - TUN data-plane probe & recovery
+    //
+    // When macOS re-mounts `utun100` underneath mihomo the interface table and
+    // route table look healthy, but every packet mihomo writes hits a stale fd
+    // and is dropped (`bad file descriptor / file already closed`). A plain
+    // "interface exists?" check cannot see this. The probe round-trips a
+    // one-packet UDP DNS query to the fake-ip gateway through the kernel's own
+    // dns-hijack and decisions are made by `TUNDataPlaneProbe` — see that file
+    // for the state-machine + retry policy.
+    //
+    // Recovery is one full process restart (not a PATCH toggle): a PATCH cannot
+    // re-open a TUN fd, mihomo answers 200 before deciding whether it can apply.
+    // The steps mirror `applyTUNState`-root-restart but keep `isBusy`/ownership
+    // flags coherent. Third-party routes are untouched — only the kernel's own
+    // `route-exclude-address` provenance and `cleanupTUNResidual` are used, both
+    // of which already refuse to touch a peer tunnel's owned routes.
+
+    /// Send a one-packet UDP DNS probe to the TUN gateway and return whether the
+    /// kernel's dns-hijack round-tripped a valid reply within `timeout`.
+    ///
+    /// Runs as a receive loop with a hard deadline so a missing fd (no reply
+    /// ever) is reported as false rather than hanging the recovery orchestrator.
+    /// The `gateway` MUST be the same `tunnelDNSAddress` the caller uses for the
+    //  system DNS redirect — defaults to mihomo's fake-ip gateway.
+    nonisolated func probeTUNDataPlane(gateway: String, timeout: TimeInterval = 0.8) async -> Bool {
+        // In-process UDP, no shell/privilege. Bound on a throwaway socket and
+        // closed before return so a stuck fd cannot outlive the probe.
+        let probe = DNSProbe(txID: UInt16.random(in: 1...UInt16.max))
+        let payload = probe.query()
+        guard let port = NWEndpoint.Port(rawValue: 53) else { return false }
+        let host = NWEndpoint.Host(gateway)
+        let params = NWParameters.udp
+        // Prefer the default path — the system route table should already pin
+        // 198.18/15 at our utun. Forcing a specific interface is a privilege we
+        // do not need, and would break the probe on the very machines where the
+        // route has been re-homed by a peer tunnel.
+        let dg = NWConnection(host: host, port: port, using: params)
+        return await withCheckedContinuation { (cont: CheckedContinuation<Bool, Never>) in
+            // Completion can race the hard deadline; lock so we resume exactly once.
+            let lock = NSLock()
+            var resumed = false
+            let finish: (Bool) -> Void = { v in
+                lock.lock(); defer { lock.unlock() }
+                if !resumed {
+                    resumed = true
+                    cont.resume(returning: v)
+                    dg.cancel()
+                }
+            }
+            // Hard deadline — a missing fd never replies.
+            let queue = DispatchQueue.global(qos: .userInitiated)
+            queue.asyncAfter(deadline: .now() + timeout) { finish(false) }
+
+            dg.stateUpdateHandler = { state in
+                switch state {
+                case .ready:
+                    dg.send(content: payload, completion: .contentProcessed { err in
+                        if err != nil { finish(false); return }
+                        dg.receiveMessage { data, _, _, err in
+                            if err != nil { finish(false); return }
+                            let r = data.map { probe.validate(response: $0) } ?? .never
+                            finish(r == .valid)
+                        }
+                    })
+                case .failed, .cancelled:
+                    finish(false)
+                default:
+                    break
+                }
+            }
+            dg.start(queue: queue)
+        }
+    }
+
+    /// Run a *single probe cycle*: short-window spaced retries. Returns the
+    /// outcomes of each attempt in order (`true` = data plane answered). The
+    /// caller owns the health state machine so actor-isolated counters never
+    /// need to cross an `inout` boundary into this helper.
+    ///
+    /// The cycle lives inside one poll task so the orchestrator never carries a
+    /// partial counter across 10-minute cadences; the total window is ≈3 s by
+    /// default (first attempt, +1 s, +2 s). A mid-cycle success short-circuits
+    /// remaining attempts.
+    func runTUNDataPlaneProbeCycle(gateway: String,
+                                   delays: [TimeInterval] = [1, 2]) async -> [Bool] {
+        var outcomes: [Bool] = []
+        let firstOK = await probeTUNDataPlane(gateway: gateway)
+        outcomes.append(firstOK)
+        if firstOK { return outcomes }
+        for delay in delays {
+            try? await Task.sleep(nanoseconds: UInt64(delay * 1_000_000_000))
+            let ok = await probeTUNDataPlane(gateway: gateway)
+            outcomes.append(ok)
+            if ok { return outcomes }
+        }
+        return outcomes
+    }
 
     /// Re-probe the helper for its version (manual "检查" button feedback).
     func refreshHelperVersion() {
