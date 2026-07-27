@@ -1,8 +1,14 @@
 # ClashHalo
 
-> macOS 14+ 原生 SwiftUI 代理客户端，直接编排官方 `mihomo` (Clash.Meta) 内核。当前版本 **v1.1.11**。
+> macOS 14+ 原生 SwiftUI 代理客户端，直接编排官方 `mihomo` (Clash.Meta) 内核。当前版本 **v1.1.12**。
 
 ClashHalo 采用纯 Swift 的原生编排器架构：应用层负责界面与状态管理，独立签名的 Helper 处理特权操作，内核层直接驱动 `mihomo`。目标很明确，少一层中间件，少一层不稳定性。
+
+## 新特性 (v1.1.12)
+
+- **TUN 数据面自愈**：macOS 网络拓扑变化时 `configd` 可能重挂载 `utun100`，接口与路由表仍显示正常，但 mihomo 持有失效 TUN 文件描述符（`bad file descriptor`）。现向本地 fake-ip 网关做 DNS 数据面探针，短窗口确认失败后整进程重建 mihomo；重建仍失败则关闭 TUN 并恢复直连。**Helper 仍为 1.0.24，本版不需要重新授权。**
+- **不会误重启 / 误清第三方路由**：正常 `detach/attach`、SD-WAN 启停重连不直接触发重建；残留清理只动本应用自有路由与 TUN。
+- **探测触发面**：周期巡检、网络拓扑变化防抖、TUN 开启验收、睡眠唤醒恢复。
 
 ## 新特性 (v1.1.11)
 
