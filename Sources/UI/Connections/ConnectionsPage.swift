@@ -13,6 +13,26 @@ struct ConnectionsPage: View {
         let conn: Conn
     }
 
+    /// Domain-aggregated row for "聚合" view: folds every active Conn sharing
+    /// the same host into one expandable row. Useful when a single backend
+    /// (e.g. gateway.icloud.com) opens dozens of independent sessions — one
+    /// collapsed row surfaces "who keeps phoning home" cleanly.
+    struct ConnGroup: Identifiable {
+        let id: String          // host, falls back to dstIP
+        var host: String
+        var dstIPHint: String   // representative IP:port from first member
+        var processes: String   // joined unique processes (top 2 + "+N")
+        var rule: String        // representative rule of max-rate member
+        var chain: String       // representative chain
+        var count: Int
+        var isDirect: Bool
+        var upRate: Int64
+        var downRate: Int64
+        var upTotal: Int64
+        var downTotal: Int64
+        var members: [Conn]    // sorted by combined rate desc
+    }
+
     // Sort & Selection
     @State private var sortOrder = [KeyPathComparator(\Conn.downRate, order: .reverse)]
     @State private var selection: Conn.ID? = nil
@@ -44,9 +64,10 @@ struct ConnectionsPage: View {
             HStack(alignment: .center, spacing: DS.Spacing.m) {
                 DSSegmentedControl(selection: $selectedTab, choices: [
                     DSChoice("连接中", 0),
-                    DSChoice("已关闭", 1)
+                    DSChoice("已关闭", 1),
+                    DSChoice("聚合", 2)
                 ])
-                .frame(width: 160)
+                .frame(width: 232)
 
                 HStack(spacing: DS.Spacing.s) {
                     Image(systemName: "magnifyingglass").foregroundColor(.secondary).font(.dsBody)
@@ -72,7 +93,15 @@ struct ConnectionsPage: View {
             .background(DS.Palette.chromeBg)
             Divider().overlay(DS.Palette.separator)
 
-            if filteredRows.isEmpty {
+            if selectedTab == 2 {
+                ConnAggregateView(
+                    groups: aggregateGroups(),
+                    query: q,
+                    onDisconnectOne: { id in M.closeConnection(id: id) },
+                    onDisconnectHost: { host in M.closeConnections(host: host) },
+                    onPrepareRuleEdit: prepareRuleEdit(for:)
+                )
+            } else if filteredRows.isEmpty {
                 ContentUnavailable(
                     q.isEmpty
                         ? (selectedTab == 0 ? "暂无活跃连接" : "暂无已关闭连接")
@@ -252,6 +281,255 @@ struct ConnectionsPage: View {
         }
 
         activeRuleEdit = RuleEditContext(node: finalNode, conn: c)
+    }
+
+    /// Build domain-aggregated groups from the *active* connections only —
+    /// closed conns are already transient (zero rate) and would just add noise.
+    /// Groups are keyed by `host` (falling back to `dstIP` for raw-IP traffic)
+    /// and sorted by combined rate descending so the busiest domain floats up.
+    private func aggregateGroups() -> [ConnGroup] {
+        var map: [String: ConnGroup] = [:]
+        for c in VM.conns {
+            let key = c.host.isEmpty ? c.dstIP : c.host
+            let isDirect = c.category == "direct"
+            if var g = map[key] {
+                g.count += 1
+                g.upRate += max(0, c.upRate)
+                g.downRate += max(0, c.downRate)
+                g.upTotal += c.up
+                g.downTotal += c.down
+                g.members.append(c)
+                map[key] = g
+            } else {
+                map[key] = ConnGroup(
+                    id: key,
+                    host: key,
+                    dstIPHint: "\(c.dstIP):\(c.port)",
+                    processes: c.process,
+                    rule: c.rule,
+                    chain: c.chain,
+                    count: 1,
+                    isDirect: isDirect,
+                    upRate: max(0, c.upRate),
+                    downRate: max(0, c.downRate),
+                    upTotal: c.up,
+                    downTotal: c.down,
+                    members: [c]
+                )
+            }
+        }
+        var groups = Array(map.values)
+        // Recompute representative fields from the hottest member of each group.
+        for i in groups.indices {
+            let sorted = groups[i].members.sorted { $0.downRate + $0.upRate > $1.downRate + $1.upRate }
+            groups[i].members = sorted
+            if let hot = sorted.first {
+                groups[i].dstIPHint = "\(hot.dstIP):\(hot.port)"
+                groups[i].rule = hot.rule
+                groups[i].chain = hot.chain
+            }
+            // Summarise processes: up to 2 unique names then "+N more".
+            let unique = Array(Set(groups[i].members.map { $0.process })).filter { $0 != "—" }
+            if unique.count <= 2 {
+                groups[i].processes = unique.joined(separator: ", ")
+            } else {
+                groups[i].processes = "\(unique.prefix(2).joined(separator: ", ")) (+\(unique.count - 2))"
+            }
+        }
+        // Apply text filter (host / processes / chain / rule).
+        let query = q.trimmingCharacters(in: .whitespaces)
+        if !query.isEmpty {
+            groups = groups.filter { g in
+                g.host.localizedCaseInsensitiveContains(query)
+                    || g.processes.localizedCaseInsensitiveContains(query)
+                    || g.chain.localizedCaseInsensitiveContains(query)
+                    || g.rule.localizedCaseInsensitiveContains(query)
+            }
+        }
+        groups.sort { lhs, rhs in
+            (lhs.downRate + lhs.upRate, lhs.count) > (rhs.downRate + rhs.upRate, rhs.count)
+        }
+        return groups
+    }
+}
+
+// MARK: - Aggregate View (per-host collapse)
+struct ConnAggregateView: View {
+    let groups: [ConnectionsPage.ConnGroup]
+    let query: String
+    let onDisconnectOne: (String) -> Void
+    let onDisconnectHost: (String) -> Void
+    let onPrepareRuleEdit: (Conn) -> Void
+
+    @State private var expanded: Set<String> = []
+
+    var body: some View {
+        if groups.isEmpty {
+            ContentUnavailable(
+                query.isEmpty ? "暂无活跃连接" : "无匹配结果",
+                "point.3.connected.trianglepath.dotted"
+            )
+        } else {
+            ScrollView {
+                LazyVStack(spacing: 0) {
+                    ForEach(groups) { g in
+                        VStack(spacing: 0) {
+                            groupHeader(g)
+                            if expanded.contains(g.id) {
+                                // Inline member rows — not a Table, to keep things
+                                // compact and avoid a second scroll surface.
+                                VStack(spacing: 0) {
+                                    ForEach(g.members) { c in
+                                        memberRow(c, inGroup: g)
+                                        if c.id != g.members.last?.id {
+                                            Rectangle().fill(DS.Palette.separator).frame(height: 0.5)
+                                        }
+                                    }
+                                }
+                                .background(DS.Palette.cardBg)
+                                .overlay(alignment: .leading) {
+                                    Rectangle().fill(DS.Palette.accent).frame(width: 2)
+                                }
+                            }
+                            Rectangle().fill(DS.Palette.separator).frame(height: 0.5)
+                        }
+                    }
+                }
+                .padding(.horizontal, DS.Layout.pageContentInset)
+                .padding(.vertical, DS.Spacing.s)
+            }
+        }
+    }
+
+    private func groupHeader(_ g: ConnectionsPage.ConnGroup) -> some View {
+        HStack(spacing: DS.Spacing.m) {
+            Button {
+                if #available(macOS 14.0, *) {
+                    withAnimation(DS.Motion.micro) {
+                        if expanded.contains(g.id) { expanded.remove(g.id) } else { expanded.insert(g.id) }
+                    }
+                } else {
+                    if expanded.contains(g.id) { expanded.remove(g.id) } else { expanded.insert(g.id) }
+                }
+            } label: {
+                HStack(spacing: DS.Spacing.xs) {
+                    Image(systemName: expanded.contains(g.id) ? "chevron.down" : "chevron.right")
+                        .font(.dsBody)
+                        .foregroundColor(.secondary)
+                        .frame(width: 14)
+                    Text(g.host)
+                        .font(.dsBodyMedium)
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+                }
+            }
+            .buttonStyle(.plain)
+
+            // Connection count pill — a near-1 entry shows nothing, dozens show
+            // immediately why this row exists.
+            if g.count > 1 {
+                Text("\(g.count)")
+                    .font(.dsMono)
+                    .foregroundColor(.white)
+                    .padding(.horizontal, DS.Spacing.s)
+                    .padding(.vertical, 1)
+                    .background(Capsule().fill(DS.Palette.accent.opacity(0.85)))
+            }
+
+            Spacer(minLength: 0)
+
+            Text(g.processes)
+                .font(.dsBody)
+                .foregroundColor(.secondary)
+                .lineLimit(1)
+                .truncationMode(.middle)
+                .frame(maxWidth: 220, alignment: .trailing)
+
+            // Rule badge
+            Text(g.rule)
+                .font(.dsMono)
+                .foregroundColor(.secondary)
+                .lineLimit(1)
+                .truncationMode(.middle)
+                .frame(maxWidth: 140, alignment: .leading)
+
+            // Chain
+            HStack(spacing: DS.Spacing.xs) {
+                Text(g.chain)
+                    .font(.dsBodySemibold)
+                    .foregroundColor(g.isDirect ? .secondary : DS.Palette.accent)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+            }
+            .frame(maxWidth: 160, alignment: .leading)
+
+            // Aggregate rates
+            Text(fmtRate(Double(g.downRate))).font(.dsMono)
+                .frame(width: 70, alignment: .leading)
+            Text(fmtRate(Double(g.upRate))).font(.dsMono)
+                .foregroundColor(.secondary)
+                .frame(width: 70, alignment: .leading)
+
+            // Row-level actions
+            Menu {
+                Button("断开该域名全部", role: .destructive) { onDisconnectHost(g.host) }
+                Button("添加/修改分流规则...") { onPrepareRuleEdit(g.members.first!) }
+            } label: {
+                Image(systemName: "ellipsis.circle")
+                    .foregroundColor(.secondary)
+            }
+            .menuStyle(.borderlessButton)
+            .frame(width: 28)
+        }
+        .padding(.horizontal, DS.Spacing.s)
+        .padding(.vertical, DS.Spacing.s)
+        .contentShape(Rectangle())
+        .background(DS.Palette.windowBg)
+    }
+
+    private func memberRow(_ c: Conn, inGroup g: ConnectionsPage.ConnGroup) -> some View {
+        HStack(spacing: DS.Spacing.m) {
+            Text("")
+                .frame(width: 14) // indent under chevron column
+            Text("\(c.dstIP):\(c.port)")
+                .font(.dsMono)
+                .foregroundColor(.secondary)
+                .lineLimit(1)
+                .truncationMode(.middle)
+            Spacer(minLength: 0)
+            Text(c.process)
+                .font(.dsBody)
+                .foregroundColor(.secondary)
+                .lineLimit(1)
+                .truncationMode(.middle)
+                .frame(maxWidth: 160, alignment: .trailing)
+            Text(c.rule)
+                .font(.dsMono)
+                .foregroundColor(.secondary)
+                .lineLimit(1)
+                .truncationMode(.middle)
+                .frame(maxWidth: 140, alignment: .leading)
+            Text(c.chain)
+                .font(.dsMono)
+                .foregroundColor(.secondary)
+                .lineLimit(1)
+                .truncationMode(.middle)
+                .frame(maxWidth: 160, alignment: .leading)
+            Text(fmtRate(Double(c.downRate))).font(.dsMono)
+                .frame(width: 70, alignment: .leading)
+            Text(fmtRate(Double(c.upRate))).font(.dsMono)
+                .foregroundColor(.secondary)
+                .frame(width: 70, alignment: .leading)
+            Button { onDisconnectOne(c.id) } label: {
+                Image(systemName: "xmark.circle")
+            }
+            .buttonStyle(.borderless)
+            .foregroundColor(.secondary)
+            .help("断开此连接")
+            .frame(width: 28)
+        }
+        .padding(.horizontal, DS.Spacing.s)
+        .padding(.vertical, DS.Spacing.xs)
     }
 }
 

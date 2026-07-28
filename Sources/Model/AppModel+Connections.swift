@@ -309,6 +309,18 @@ extension AppModel {
         }
     }
 
+    /// Close every *active* connection whose host (or dstIP when host is empty)
+    /// equals `host`. mihomo has no per-host close endpoint, so we enumerate
+    /// the cached active set and fire DELETE per id.
+    func closeConnections(host: String) {
+        let ids = cachedConns.filter { ($0.host.isEmpty ? $0.dstIP : $0.host) == host }.map { $0.id }
+        guard !ids.isEmpty else { return }
+        Task {
+            for id in ids { try? await api.closeConnection(id: id) }
+            showToast("已断开 \(ids.count) 条 \(host)", kind: .ok)
+        }
+    }
+
     func flushDnsCache() {
         Task {
             do { try await api.flushDnsCache(); showToast("DNS 缓存已刷新", kind: .ok) }
