@@ -418,52 +418,36 @@ struct SdwanPage: View {
                     // Topology view of the network routing relation map
                     SdwanTopologyView(ifaces: ifaces, routes: routes)
 
-                    // interfaces
+                    // interfaces — agated by interface: each interface is
+                    // one mini-card; its carried route prefixes flow inside it.
+                    let ifaceGroups = aggregateByIface()
                     Card(title: "网络接口拓扑 · \(ifaces.count)", icon: "network") {
-                        VStack(spacing: 4) {
-                            if ifaces.isEmpty { Text("正在扫描接口…").font(.dsBody).foregroundColor(.secondary).padding() }
-                            ForEach(ifaces.indices, id: \.self) { idx in
-                                ifaceRow(ifaces[idx]).padding(.vertical, DS.Spacing.xs)
-                                if idx < ifaces.count - 1 {
-                                    Divider()
+                        if ifaces.isEmpty {
+                            Text("正在扫描接口…").font(.dsBody).foregroundColor(.secondary).padding()
+                        } else {
+                            VStack(spacing: DS.Spacing.s) {
+                                ForEach(Array(ifaceGroups.enumerated()), id: \.offset) { _, g in
+                                    SdwanAggregateRow(group: g) { dest in
+                                        routeDestLabel(dest, kind: g.kind)
+                                    }
                                 }
                             }
                         }
                     }
 
-                    // utun routes
+                    // utun routes — same aggregate-by-egress style; here the
+                    // group key is purely the utun egress and the body lists its
+                    // prefixes, also wrapped in mini-cards.
+                    let routeGroups = routeGroupsByIface()
                     Card(title: "UTUN 路由表 · \(routes.count)", icon: "list.bullet.indent") {
-                        VStack(spacing: 4) {
-                            if routes.isEmpty { Text("无 utun 路由").font(.dsBody).foregroundColor(.secondary).padding() }
-                            ForEach(routes.indices, id: \.self) { idx in
-                                let route = routes[idx]
-                                let iface = ifaces.first(where: { $0.name == route.iface })
-                                let kind = iface?.kind ?? .otherTun
-
-                                HStack {
-                                    Text(route.dest).font(.dsMono)
-                                    Spacer()
-                                    Image(systemName: "arrow.right").font(.dsBody).foregroundColor(.secondary)
-
-                                    // 带分类图标和颜色的接口名
-                                    HStack(spacing: 4) {
-                                        Image(systemName: icon(kind))
-                                            .foregroundColor(color(kind))
-                                            .font(.dsCaption)
-                                        Text(route.iface)
-                                            .font(.dsMono)
-                                            .foregroundColor(color(kind))
+                        if routeGroups.isEmpty {
+                            Text("无 utun 路由").font(.dsBody).foregroundColor(.secondary).padding()
+                        } else {
+                            VStack(spacing: DS.Spacing.s) {
+                                ForEach(Array(routeGroups.enumerated()), id: \.offset) { _, g in
+                                    SdwanAggregateRow(group: g) { dest in
+                                        routeDestLabel(dest, kind: g.kind)
                                     }
-                                    .padding(.horizontal, 6)
-                                    .padding(.vertical, 2)
-                                    .background(
-                                        Capsule()
-                                            .fill(color(kind).opacity(0.12))
-                                    )
-                                }
-                                .padding(.vertical, DS.Spacing.xs)
-                                if idx < routes.count - 1 {
-                                    Divider()
                                 }
                             }
                         }
@@ -480,25 +464,6 @@ struct SdwanPage: View {
             }
         }
         .onAppear { rescan() }
-    }
-
-    private func ifaceRow(_ i: NetIface) -> some View {
-        HStack(spacing: DS.Spacing.s) {
-            Image(systemName: icon(i.kind)).foregroundColor(color(i.kind)).frame(width: 22)
-            VStack(alignment: .leading, spacing: 1) {
-                HStack(spacing: 6) {
-                    Text(i.name).font(.dsMonoBold)
-                    Text(i.kind.rawValue).font(.dsBody)
-                        .padding(.horizontal, DS.Spacing.s - 2).padding(.vertical, 1)
-                        .background(Capsule().fill(color(i.kind).opacity(0.15))).foregroundColor(color(i.kind))
-                }
-                Text(i.ipv4.joined(separator: ", ").isEmpty ? "无 IPv4" : i.ipv4.joined(separator: ", "))
-                    .font(.dsMono).foregroundColor(.secondary)
-            }
-            Spacer()
-            Circle().fill(i.isUp ? DS.Palette.ok : Color.secondary.opacity(0.4)).frame(width: 7, height: 7)
-        }
-        .padding(.vertical, DS.Spacing.xs - 1)
     }
 
     private func rescan() {
@@ -541,5 +506,288 @@ struct SdwanPage: View {
         default: return .secondary
         }
     }
+
+    /// Build per-interface aggregate rows for the "网络接口拓扑" card.
+    /// Each interface becomes one expandable row; dests seeded from routes
+    /// routed via that interface (so a utun's bundled /22–/24 prefixes surface
+    /// inline instead of as a separate flat list).
+    private func aggregateByIface() -> [SdwanRouteGroup] {
+        var groups: [String: SdwanRouteGroup] = [:]
+        for i in ifaces {
+            groups[i.id] = SdwanRouteGroup(
+                ifaceName: i.name,
+                primaryIP: i.primaryIP,
+                kind: i.kind,
+                isUp: i.isUp,
+                dests: []
+            )
+        }
+        for r in routes {
+            var g = groups[r.iface, default: SdwanRouteGroup(
+                ifaceName: r.iface, primaryIP: "—", kind: .otherTun, isUp: false, dests: [])]
+            g.dests.append(r.dest)
+            groups[r.iface] = g
+        }
+        // Order: utun (proxyTun > tailscale > zerotier > oray > otherTun) then physical,
+        // then anything left, each bucket by name so the display is stable across refreshes.
+        func rank(_ k: IfaceKind) -> Int {
+            switch k {
+            case .proxyTun: return 0
+            case .tailscale: return 1
+            case .zerotier: return 2
+            case .oray:  return 3
+            case .otherTun: return 4
+            case .physical: return 5
+            default: return 9
+            }
+        }
+        return groups.values.sorted { lhs, rhs in
+            let r = rank(lhs.kind) - rank(rhs.kind)
+            if r != 0 { return r < 0 }
+            return lhs.ifaceName.localizedStandardCompare(rhs.ifaceName) == .orderedAscending
+        }
+    }
+
+    /// Per-utun-egress groups for the "UTUN 路由表" card: purely route-driven,
+    /// so interfaces carrying no routes won't appear here.
+    private func routeGroupsByIface() -> [SdwanRouteGroup] {
+        var groups: [String: SdwanRouteGroup] = [:]
+        for r in routes {
+            let kind = ifaces.first(where: { $0.name == r.iface })?.kind ?? .otherTun
+            if var g = groups[r.iface] {
+                g.dests.append(r.dest)
+                groups[r.iface] = g
+            } else {
+                groups[r.iface] = SdwanRouteGroup(
+                    ifaceName: r.iface, primaryIP: "—", kind: kind, isUp: true, dests: [r.dest]
+                )
+            }
+        }
+        // Sort by kind (utun roles first) then name, same key as interface card
+        // so the two cards visually mirror each other.
+        func rank(_ k: IfaceKind) -> Int {
+            switch k {
+            case .proxyTun: return 0
+            case .tailscale: return 1
+            case .zerotier: return 2
+            case .oray:  return 3
+            case .otherTun: return 4
+            default: return 9
+            }
+        }
+        return groups.values.sorted { lhs, rhs in
+            let r = rank(lhs.kind) - rank(rhs.kind)
+            if r != 0 { return r < 0 }
+            return lhs.ifaceName.localizedStandardCompare(rhs.ifaceName) == .orderedAscending
+        }
+    }
+
+    /// Small inline row for one route destination — shown inside an expanded
+    /// SdwanAggregateRow. Pure presentational.
+    @ViewBuilder
+    private func routeDestLabel(_ dest: String, kind: IfaceKind) -> some View {
+        HStack(spacing: DS.Spacing.xs) {
+            Image(systemName: "arrow.up.right.circle.fill")
+                .foregroundColor(color(kind))
+                .font(.dsCaption)
+            Text(dest)
+                .font(.dsMono)
+                .foregroundColor(.primary)
+            Spacer(minLength: 0)
+        }
+        .padding(.leading, DS.Spacing.m + 6)
+        // Looser vertical padding: each dest reads as its own line, not cramped stripes.
+        .padding(.vertical, DS.Spacing.xs)
+    }
 }
 
+
+// MARK: - Aggregated row (utun-egress group)
+
+/// Per-egress group used by both the 网络接口拓扑 and UTUN 路由表 cards so they
+/// share the same collapsed→expanded shape: an egress (iface) + the routes it
+/// carries. Mirrors the ``ConnectionsPage.ConnGroup`` pattern.
+struct SdwanRouteGroup: Identifiable {
+    let id: String          // iface name
+    let ifaceName: String
+    let primaryIP: String
+    let kind: IfaceKind
+    let isUp: Bool
+    var dests: [String]
+
+    init(ifaceName: String, primaryIP: String, kind: IfaceKind, isUp: Bool, dests: [String]) {
+        self.id = ifaceName
+        self.ifaceName = ifaceName
+        self.primaryIP = primaryIP
+        self.kind = kind
+        self.isUp = isUp
+        self.dests = dests
+    }
+}
+
+/// Collapsible egress card: egress header + (when expanded) the bundled
+/// route prefixes, all wrapped in a single nested surface (`dsControlChrome`)
+/// so each utun group reads as its own mini-card inside the parent `Card`.
+/// Tapping anywhere on the header toggles the whole group.
+struct SdwanAggregateRow<Dest: View>: View {
+    let group: SdwanRouteGroup
+    @ViewBuilder let destLabel: (String) -> Dest
+
+    @State private var expanded = false
+
+    private func icon(_ k: IfaceKind) -> String {
+        switch k {
+        case .physical: return "wifi"
+        case .proxyTun: return "shield.fill"
+        case .tailscale: return "point.3.connected.trianglepath.dotted"
+        case .zerotier: return "globe"
+        case .oray: return "link"
+        case .otherTun: return "network"
+        default: return "questionmark.circle"
+        }
+    }
+    private func color(_ k: IfaceKind) -> Color {
+        switch k {
+        case .physical: return DS.Palette.rolePhysical
+        case .proxyTun: return DS.Palette.accent
+        case .tailscale: return DS.Palette.roleTailscale
+        case .zerotier: return DS.Palette.roleZerotier
+        case .oray: return DS.Palette.roleOray
+        case .otherTun: return DS.Palette.roleOther
+        default: return .secondary
+        }
+    }
+
+    var body: some View {
+        let tint = color(group.kind)
+        return VStack(spacing: 0) {
+            if group.dests.isEmpty {
+                // Leaf egress (physical NIC carrying no tun routes) — no chevron,
+                // not expandable, dashed (not solid) tinted border: signals
+                // "this is a terminal endpoint, no bundled prefixes below".
+                leafHeader
+            } else {
+                Button {
+                    if #available(macOS 14.0, *) {
+                        withAnimation(DS.Motion.micro) { expanded.toggle() }
+                    } else {
+                        expanded.toggle()
+                    }
+                } label: { expandableHeader }
+                    .buttonStyle(.plain)
+
+                if expanded && !group.dests.isEmpty {
+                    // Body — bundled prefixes flow inside the same mini-card so
+                    // the surface wraps both header and details.
+                    VStack(alignment: .leading, spacing: DS.Spacing.s - 2) {
+                        Rectangle().fill(tint.opacity(0.25)).frame(height: 0.6)
+                        ForEach(Array(group.dests.enumerated()), id: \.offset) { _, dest in
+                            destLabel(dest)
+                        }
+                    }
+                    .padding(.vertical, DS.Spacing.xs)
+                    .padding(.bottom, DS.Spacing.xs + 2)
+                }
+            }
+        }
+        .modifier(NestedControlSurface(tint: tint, dashed: group.dests.isEmpty))
+    }
+
+    /// Static (no-button) header for leaf egresses: only icon + name + IP +
+    /// status dot; no chevron, no route-count pill, not tappable.
+    private var leafHeader: some View {
+        let tint = color(group.kind)
+        return HStack(spacing: DS.Spacing.s) {
+            // Reserve the chevron slot so leaf rows align with expandable ones.
+            Color.clear.frame(width: 14)
+            Image(systemName: icon(group.kind))
+                .foregroundColor(tint)
+                .font(.dsBody)
+                .frame(width: 18)
+            Text(group.ifaceName).font(.dsMonoBold)
+            Spacer(minLength: 0)
+            if group.primaryIP != "—" {
+                Text(group.primaryIP)
+                    .font(.dsMono)
+                    .foregroundColor(.secondary)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+            }
+            Circle()
+                .fill(group.isUp ? DS.Palette.ok : Color.secondary.opacity(0.4))
+                .frame(width: 7, height: 7)
+        }
+        .padding(.horizontal, DS.Spacing.m)
+        .padding(.vertical, DS.Spacing.s)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .contentShape(RoundedRectangle(cornerRadius: DS.Radius.control, style: .continuous))
+    }
+
+    /// Button label for expandable egresses: chevron + icon + name + count
+    /// pill + IP + status dot. Tapping the header toggles the whole group.
+    private var expandableHeader: some View {
+        let tint = color(group.kind)
+        return HStack(spacing: DS.Spacing.s) {
+            Image(systemName: expanded ? "chevron.down" : "chevron.right")
+                .font(.dsBody)
+                .foregroundColor(.secondary)
+                .frame(width: 14)
+            Image(systemName: icon(group.kind))
+                .foregroundColor(tint)
+                .font(.dsBody)
+                .frame(width: 18)
+            Text(group.ifaceName).font(.dsMonoBold)
+            Spacer(minLength: 0)
+            // Demoted count pill: 14% tinted fill + tinted text, same tier as
+            // a header chip. Lets the colored border carry the visual lead.
+            if group.dests.count > 0 {
+                Text("\(group.dests.count)")
+                    .font(.dsMono)
+                    .foregroundColor(tint)
+                    .padding(.horizontal, DS.Spacing.s)
+                    .padding(.vertical, 1)
+                    .background(Capsule().fill(tint.opacity(0.14)))
+            }
+            if group.primaryIP != "—" {
+                Text(group.primaryIP)
+                    .font(.dsMono)
+                    .foregroundColor(.secondary)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+            }
+            Circle()
+                .fill(group.isUp ? DS.Palette.ok : Color.secondary.opacity(0.4))
+                .frame(width: 7, height: 7)
+        }
+        .padding(.horizontal, DS.Spacing.m)
+        .padding(.vertical, DS.Spacing.s)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .contentShape(RoundedRectangle(cornerRadius: DS.Radius.control, style: .continuous))
+    }
+}
+
+/// Wraps a view in a tinted control surface: card bg + 1.2pt stroke in the
+/// egress's role color ("角色色描边"), no ambient shadow so the parent Card
+/// keeps breathing. Replaces the textual role chip in the header — the border
+/// now carries the "which egress am I" signal at a glance.
+private struct NestedControlSurface: ViewModifier {
+    let tint: Color
+    /// Dashed border for leaf egresses (no bundled routes below):
+    /// visually signals "terminal endpoint, nothing to expand".
+    let dashed: Bool
+
+    func body(content: Content) -> some View {
+        let shape = RoundedRectangle(cornerRadius: DS.Radius.control, style: .continuous)
+        return content
+            .background(shape.fill(DS.Palette.cardBg))
+            .overlay(
+                shape.stroke(
+                    tint.opacity(0.7),
+                    style: StrokeStyle(
+                        lineWidth: 1.2,
+                        dash: dashed ? [4, 3] : []
+                    )
+                )
+            )
+    }
+}
