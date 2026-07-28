@@ -300,6 +300,22 @@ Card 内边距：`l`。
 
 选中语言同源（`accent` 胶囊 + 白字/白 outline 图标）。侧栏是导航行，不是 `DSSegmentedControl`；禁止把侧栏改成 segmented。
 
+### 6.9 分组折叠行（Aggregate Row）
+
+一份数据里同一个键下挂着几十条同质条目时（同一 host 的连接会话、同一 utun 出口承载的多条前缀），逐条平铺会把卡片刷屏。统一按「分组头 + 内联展开体」呈现，而不是新开一层弹窗或第二张卡。
+
+| 项 | 规范 |
+|---|---|
+| 容器 | 头与展开体裹在**同一层嵌套控件表面**内（`cardBg` 底 + 描边，圆角 `Radius.control` = 6），不加 ambient 阴影——它在 `Card` 之内，不是第二层顶层卡 |
+| 命中区 | 头部整行可点，`contentShape` 用与表面同形状的 `RoundedRectangle`；禁止只让 chevron 可点 |
+| 计数胶囊 | `Capsule` + 着色底 `tint.opacity(0.14)` + 着色文字；**不用**实心高饱和底，它不是状态徽章 |
+| 角色表达 | 由**卡片描边着色**（`tint.opacity(0.7)`，1.2pt）承载，不再额外占一个文字 chip |
+| 叶子节点 | 无下挂条目时不画 chevron，描边改为**虚线**（`dash: [4, 3]`）表示「终端节点，无可展开内容」 |
+| 排列 | 展开体条目行间距 `Spacing.s - 2` ~ `Spacing.xs`；镜像卡片（如接口拓扑 / 路由表）必须共用同一排序键，否则左右对不上 |
+| 动效 | `DS.Motion.micro`；禁止自定义弹簧与位移 |
+
+现有实现：`SdwanPage.swift` 的 `SdwanAggregateRow` / `NestedControlSurface`（按 utun 出口分组），`ConnectionsPage.swift` 的 `ConnAggregateView`（按 host 分组）。
+
 ---
 
 ## 7. Light / Dark 验收清单
@@ -455,5 +471,6 @@ padding(.vertical, 5)                    // 用 DS.Spacing.*
 | 2026-07-17 | Light 精致化：`windowBg`/`controlBg` 重标定；`border` 软化 0.10→0.06；`dsCardChrome` 双层阴影（contact+ambient）；卡片边界靠抬升+弱边，而非硬线框 |
 | 2026-07-18 | `DS.Motion` + §10/§10.1 反馈契约：press/toast/micro/toastHold；Toast generation + kind；主开关 busy 可感知；禁止装饰性 looping |
 | 2026-07-18 | 菜单栏 toast 副标题行；`DS.Progress.miniScale`；主路径 toast kind 补齐 |
+| 2026-07-28 | v1.1.13：新增 §6.9 分组折叠行契约（嵌套控件表面、整行命中、14% 着色计数胶囊、角色走描边、叶子虚线）；连接页「聚合」tab 与网络拓扑双卡按出口折叠为 mini-card，两卡共用 role/name 排序键 |
 
 实现以代码为准；规范与代码冲突时，先修代码再回写本文。
