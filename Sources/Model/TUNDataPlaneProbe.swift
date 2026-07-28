@@ -22,10 +22,14 @@ import Foundation
 //      the question "is the data plane alive" is not the question "did the name
 //      resolve". Only reaching the TUN gateway and getting an answer back proves
 //      the fd is not stale.
-//   2. `TUNDataPlaneHealthState` is the consecutive-failure counter with a
-//      short-window, in-task retry policy: 3 failures collected *within a single
-//      probe run* trigger recovery, not 3 spaced poll cycles (a 10-minute cadence
-//      would mean 20–30 minutes of blackout before action). One success resets it.
+//   2. `TUNDataPlaneHealthState` is the sliding-window failure counter: a
+//      bad fd is an unreliable channel that can still answer the occasional
+//      probe, so recovery fires when the failures accumulated over the last
+//      `window` attempts reach `failThreshold` — never reset by an isolated
+//      success the way the old consecutive run was. With the default 6-slot
+//      window / 4-failure threshold and a ≈3 s per-cycle retry, a half-dead
+//      fd that otherwise masquerades as healthy is caught inside ~10 s rather
+//      than 20–30 minutes (the 10-minute poll cadence).
 
 /// Minimal in-memory model of a DNS request/response pair used by the TUN
 /// data-plane probe. The wire bytes are produced by `query(host:)` and
@@ -83,35 +87,84 @@ struct DNSProbe {
     }
 }
 
-/// Consecutive-failure counter with a short-window, in-task retry policy.
+/// Sliding-window failure counter with a short-window, in-task retry policy.
 ///
-/// A single `probe(attempt:)` records one attempt's success/failure. It returns
-/// true exactly when the *threshold* (default 3) failures have all been observed
-/// *within a single probe cycle* — i.e. immediately after the third failure of a
-/// cycle, before any intervening success. A success at any point resets the run,
-/// so 2 failures + 1 success + 2 failures does NOT trigger; the data plane came
-/// back. The threshold is intentionally met inside one short window (≈4–6 s),
-/// not across three spaced 10-minute polls, so a genuine fd break is acted on in
-/// seconds rather than tens of minutes.
+/// A single `record(success:)` push enrolls one probe attempt into a ring that
+/// keeps the last `window` outcomes. It returns true (recover now) exactly when
+/// the failures accumulated inside that window reach `failThreshold`. A single
+/// success no longer clears the window — a half-dead fd (macOS's remount leaves
+/// the path open for writes but returns EBADF on every batch read) can still
+/// round-trip the occasional probe, but that one good packet does not mean the
+/// data plane is healthy: the flood of `bad file descriptor` continues because
+/// the read goroutine is still busted. The sliding window treats the data plane
+/// as an unreliable channel and lets the bad bursts accumulate across cycles
+/// until the evidence is overwhelming, instead of being erased by an isolated
+/// success the way the old `consecutiveFailures` counter was.
 struct TUNDataPlaneHealthState {
+    /// Outcomes of the last `window` probes, oldest-first. `true` = answered.
+    private var window: [Bool] = []
+    private let capacity: Int
+    /// Recover once this many failures sit inside the window.
+    private let failThreshold: Int
+
+    /// Failures currently inside the window. Exposed for logging so the
+    /// "N/threshold" message mirrors what actually drives the decision.
     private(set) var consecutiveFailures: Int = 0
-    let threshold: Int
 
-    init(threshold: Int = 3) { self.threshold = max(1, threshold) }
+    /// Historical alias kept for call-site logging; equals `failThreshold`.
+    var threshold: Int { failThreshold }
 
-    /// Record one attempt. Returns true when recovery should fire (the threshold
-    /// is met this very call), false otherwise. A success always resets the run.
-    @discardableResult
-    mutating func record(success: Bool) -> Bool {
-        if success {
-            consecutiveFailures = 0
-            return false
-        }
-        consecutiveFailures += 1
-        return consecutiveFailures >= threshold
+    /// - Parameters:
+    ///   - threshold: kept for source compatibility; mapped to `failThreshold`.
+    ///   - window: ring-buffer capacity (default 6 — about two probe cycles).
+    ///   - failThreshold: failures-in-window needed to trip recovery
+    ///     (default 4 — tolerate up to 2 transient successes out of 6 while still
+    ///     catching a half-dead fd within a few seconds of persistent bad reads).
+    init(threshold: Int = 4, window: Int = 6, failThreshold: Int? = nil) {
+        self.capacity = max(2, window)
+        self.failThreshold = max(1, failThreshold ?? max(1, threshold))
     }
 
-    /// Reset the counter to zero (e.g. after a completed recovery, on TUN being
-    /// manually turned off, or on app exit).
-    mutating func reset() { consecutiveFailures = 0 }
+    /// Record one attempt into the ring and return whether the window's failure
+    /// count just crossed `failThreshold` — `true` means recover now.
+    ///
+    /// A success is recorded (so it dilutes the failure ratio as the window
+    /// slides) but it never clears the window by itself: a half-dead fd is
+    /// exactly the case where one good packet should not cancel an ongoing bad
+    /// burst. The caller clears the window with `reset()` after a completed
+    /// recovery, or once a full probe cycle comes back unambiguously healthy.
+    @discardableResult
+    mutating func record(success: Bool) -> Bool {
+        window.append(success)
+        if window.count > capacity { window.removeFirst() }
+        // Recompute the in-window failure count after every push so the
+        // log-facing `consecutiveFailures` stays accurate; a stale failure
+        // dropping off the ring must be correctly subtracted.
+        consecutiveFailures = window.filter { !$0 }.count
+        // Only a failure can trip recovery: a healthy probe — even one landing
+        // on a window that already holds the threshold worth of failures —
+        // must not re-announce the same fault. Recovery fires once, on the
+        // attempt that pushes the count across the line.
+        guard !success else { return false }
+        // Trip only on the moment the window's failures first reach the
+        // threshold; once we are *at* it, subsequent failures keep the count
+        // at/around the threshold but the orchestrator has already acted, so
+        // don't re-trip. (It clears the window on completed recovery.)
+        return consecutiveFailures == failThreshold
+    }
+
+    /// True when the window is full and every entry is a success. The
+    /// orchestrator uses this to decide the data plane is unambiguously healthy
+    /// and the ring should be cleared, so an earlier bad burst cannot keep
+    /// dragging the decision once the fd is genuinely restored.
+    var allHealthy: Bool {
+        !window.isEmpty && window.count == capacity && window.allSatisfy { $0 }
+    }
+
+    /// Reset the window to empty (e.g. after a completed recovery, on TUN being
+    /// manually turned off, or after a full healthy cycle).
+    mutating func reset() {
+        window.removeAll(keepingCapacity: true)
+        consecutiveFailures = 0
+    }
 }

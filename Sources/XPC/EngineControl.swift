@@ -1558,24 +1558,34 @@ import Network
 
     /// Run a *single probe cycle*: short-window spaced retries. Returns the
     /// outcomes of each attempt in order (`true` = data plane answered). The
-    /// caller owns the health state machine so actor-isolated counters never
-    /// need to cross an `inout` boundary into this helper.
+    /// caller owns the sliding-window health state so actor-isolated counters
+    /// never need to cross an `inout` boundary into this helper.
     ///
-    /// The cycle lives inside one poll task so the orchestrator never carries a
-    /// partial counter across 10-minute cadences; the total window is ≈3 s by
-    /// default (first attempt, +1 s, +2 s). A mid-cycle success short-circuits
-    /// remaining attempts.
+    /// The cycle covers one short window (first attempt, then retries at the
+    /// spacings in `delays`) so the orchestrator never carries a partial counter
+    /// across 10-minute cadences. A *first*-attempt success still short-circuits
+    /// remaining attempts (a fd that answers instantly is healthy and we want to
+    /// stop the cycle in ~1 s — not pay 5 more probes). A failure or a late-cycle
+    /// success runs the remaining attempts so a half-dead fd (which only answers
+    /// after a beat or two, or intermittently) leaves enough evidence in the
+    /// window for the state machine to trip on the next pass.
     func runTUNDataPlaneProbeCycle(gateway: String,
-                                   delays: [TimeInterval] = [1, 2]) async -> [Bool] {
+                                   delays: [TimeInterval] = [1, 1, 2, 2]) async -> [Bool] {
         var outcomes: [Bool] = []
         let firstOK = await probeTUNDataPlane(gateway: gateway)
         outcomes.append(firstOK)
+        // An instant first-attempt reply is healthy — return in ~1 s without
+        // paying the remaining 4 retries. Anything else (failure OR later success)
+        // runs the rest of the cycle so a half-dead fd can be characterized.
         if firstOK { return outcomes }
         for delay in delays {
             try? await Task.sleep(nanoseconds: UInt64(delay * 1_000_000_000))
             let ok = await probeTUNDataPlane(gateway: gateway)
             outcomes.append(ok)
-            if ok { return outcomes }
+            // Do not short-circuit on a mid-cycle success: a fd that only
+            // answers after retry/re-mounting is the precise failure we are
+            // trying to surface, not a clean signal that the data plane is back.
+            _ = ok
         }
         return outcomes
     }

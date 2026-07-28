@@ -1377,24 +1377,36 @@ extension AppModel {
         let gateway = tunnelDNSAddress()
         logKernel("TUN 数据面探测开始（\(reason)）→ \(gateway):53")
         let outcomes = await engine.runTUNDataPlaneProbeCycle(gateway: gateway)
-        // Feed each attempt into the pure state machine on this actor — never
-        // pass actor-isolated state as `inout` into an async helper.
+        // Feed every attempt into the sliding-window state machine on this
+        // actor — never pass actor-isolated state as `inout` into an async
+        // helper. A success does NOT reset the window: a half-dead fd can
+        // round-trip an occasional probe and that one good packet must not
+        // erase an in-flight bad burst. Only a full healthy cycle clears it.
         var trip = false
+        var sawAnyFailure = false
+        var sawAnySuccess = false
         for (i, ok) in outcomes.enumerated() {
             if ok {
-                tunDataPlaneHealth.reset()
-                trip = false
-                break
+                sawAnySuccess = true
+                logKernel("TUN 数据面探测 \(i + 1)/\(outcomes.count): DNS gateway \(gateway) 应答")
+            } else {
+                sawAnyFailure = true
+                logKernel("TUN 数据面探测 \(i + 1)/\(outcomes.count) 失败: DNS gateway \(gateway) timeout")
             }
-            let n = i + 1
-            logKernel("TUN 数据面探测失败 \(n)/\(tunDataPlaneHealth.threshold): DNS gateway \(gateway) timeout")
-            if tunDataPlaneHealth.record(success: false) {
+            if tunDataPlaneHealth.record(success: ok) {
                 trip = true
             }
         }
+        // Only a completely clean cycle (every attempt answered) clears the
+        // window. A half-dead fd will still see `sawAnyFailure == true` after
+        // the burst, so the bad evidence persists across cycles until either
+        // the recovery threshold trips or the fd genuinely returns to 100%.
+        if !sawAnyFailure, sawAnySuccess, !trip {
+            tunDataPlaneHealth.reset()
+        }
         guard trip else { return }
 
-        logKernel("TUN 数据面探测失败 \(tunDataPlaneHealth.consecutiveFailures)/\(tunDataPlaneHealth.threshold)：准备重建 mihomo")
+        logKernel("TUN 数据面窗口失败 \(tunDataPlaneHealth.consecutiveFailures)/\(tunDataPlaneHealth.threshold)：准备重建 mihomo")
         await performTUNDataPlaneRecovery(gateway: gateway)
     }
 
