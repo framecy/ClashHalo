@@ -2,7 +2,7 @@
 
 本文件给后续 AI 编码代理使用。进入本仓库后，先读本文件，再按需读 `README.md`、`CHANGELOG.md` 和相关源码。
 
-当前主干：`main`，产品版本 **v1.1.10**（`MARKETING_VERSION`），Helper **1.0.24**（`kSharedHelperVersion`：对端路由拒绝规则 + 孤儿路由回收 + 自有路由记账持久化；相对 1.0.23 及更早需强制升级）。打包时 `make.sh` 自增 `CURRENT_PROJECT_VERSION`。
+当前主干：`main`，产品版本 **v1.1.13**（`MARKETING_VERSION`），Helper **1.0.24**（`kSharedHelperVersion`：对端路由拒绝规则 + 孤儿路由回收 + 自有路由记账持久化；相对 1.0.23 及更早需强制升级）。打包时 `make.sh` 自增 `CURRENT_PROJECT_VERSION`。
 
 ## 项目概览
 
@@ -140,6 +140,16 @@ bash make.sh
 5. **逻辑关闭**：`refreshConfigs`（约 3s）与 `verifyTUNConfig`（约 30s）两条 auto-teardown 持 `isBusy` + `tunAutoTeardownInFlight`，调用 `applyTUNState(false)` 并恢复 DNS
 6. **物理清理兜底**：逻辑关闭后若 `hasDownedMihomoTun()`（`proxyTun && !isUp`）为真，经 XPC 调 `cleanupTUNResidual`（`ifconfig down` + 删 IP + route flush）。门控避免误清仍 UP 的同址段 VPN（如 Shadowrocket）
 7. **旧 Helper 共存**：无 `cleanupTUNResidual` 时新鲜连接超时返回 nil，只记日志、不误操作
+
+### TUN 数据面探针（v1.1.12 → v1.1.13）
+
+「接口存在」不等于「数据面活着」：`configd` 在 mihomo 底下重挂 `utun100` 后，接口表与路由表都正常，mihomo 却握着失效 fd。纯逻辑部分在 `Sources/Model/TUNDataPlaneProbe.swift`（无 UI、无进程管理、无 MainActor，直接被 `Tests/TUNDataPlaneProbe` 编译）：
+
+1. **`DNSProbe`**：向 fake-ip 网关（默认 `198.18.0.1:53`）发最小 UDP DNS 查询，校验 transaction ID / 长度 / QR 位。**NXDOMAIN、SERVFAIL 只要格式有效就算活着**——问的是 fd 能不能收发包，不是名字能不能解析
+2. **`TUNDataPlaneHealthState` 是滑动窗口，不是连续失败计数**：保留最近 `window`（默认 6）次结果，窗口内失败数达到 `failThreshold`（默认 4）触发自愈。**一次成功不清空窗口**——半死 fd 恰恰是「大部分失败、偶尔成功」，连续计数在这种形态下永远不触发（v1.1.12 的实际漏洞）
+3. **一轮内每次尝试都要记入窗口**：`runTUNDataPlaneProbe` 不得一遇成功就 break；`runTUNDataPlaneProbeCycle` 默认 5 次，只在**首次尝试即刻应答**时短路
+4. **`reset()` 只在 `allHealthy`（满窗口全成功）后调用**，别让一次侥幸成功抹掉判定
+5. **自愈是整进程重建**，不是 `PATCH tun off/on`——PATCH 不保证重开失效 fd；二次验收仍失败则关 TUN 回退直连，不动用户原本开启的系统代理
 
 ### 网络拓扑 / 静态路由绕行
 
