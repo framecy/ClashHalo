@@ -81,34 +81,62 @@ let noQR = makeResponse(for: req, qr: false)
 expect(probe.validate(response: noQR) == .malformed,
        "QR 位未置位（不是响应）→ malformed")
 
-// MARK: - TUNDataPlaneHealthState
+// MARK: - TUNDataPlaneHealthState (sliding window)
 
-section("TUNDataPlaneHealthState — 连续失败 / 成功清零 / 阈值触发")
-var state = TUNDataPlaneHealthState(threshold: 3)
+section("TUNDataPlaneHealthState — 滑动窗口：单次成功不清窗")
+var state = TUNDataPlaneHealthState(threshold: 4, window: 6)
 expect(state.record(success: false) == false, "第 1 次失败不触发")
-expect(state.consecutiveFailures == 1, "连续失败计数 = 1")
+expect(state.consecutiveFailures == 1, "窗口失败计数 = 1")
 expect(state.record(success: false) == false, "第 2 次失败不触发")
-expect(state.consecutiveFailures == 2, "连续失败计数 = 2")
-expect(state.record(success: false) == true,  "第 3 次失败触发一次修复")
-expect(state.consecutiveFailures == 3, "连续失败计数 = 3")
+expect(state.consecutiveFailures == 2, "窗口失败计数 = 2")
+expect(state.record(success: false) == false, "第 3 次失败不触发")
+expect(state.consecutiveFailures == 3, "窗口失败计数 = 3")
+expect(state.record(success: false) == true,  "第 4 次失败触发一次修复")
+expect(state.consecutiveFailures == 4, "触发时窗口失败计数 = 4")
 
-// 成功后清零
+// 成功不触发修复，也不清零窗口
 expect(state.record(success: true) == false, "成功不触发修复")
-expect(state.consecutiveFailures == 0, "成功后失败计数清零")
+expect(state.consecutiveFailures == 4, "成功后窗口失败计数不变（下面窗口中的成功只是稀释）")
 
-// 2 次失败 + 1 次成功 + 2 次失败 不应触发（数据面曾恢复）
+// 2 失败 + 1 成功 + 2 失败：半残 fd 间歇成功仍能被识别
+state.reset()
 _ = state.record(success: false)
 _ = state.record(success: false)
-_ = state.record(success: true)
-expect(state.consecutiveFailures == 0, "中途成功打断连续失败")
-expect(state.record(success: false) == false, "重新计数后第 1 次失败不触发")
-expect(state.record(success: false) == false, "重新计数后第 2 次失败不触发")
-expect(state.record(success: false) == true,  "重新计数后第 3 次失败才触发")
+_ = state.record(success: true)   // ← 间歇成功
+_ = state.record(success: false)
+expect(state.consecutiveFailures == 3, "间歇成功不清窗：3 个失败仍在窗内")
+expect(state.record(success: false) == true,  "再一个失败，0失败达阈值触发修复")
+
+// 窗口滚动：旧失败滑出不再被计入
+state.reset()
+for _ in 0..<4 { _ = state.record(success: false) }   // 4 失 → 应已触发
+_ = state.record(success: false)                                  // idx 4: window=5, fails=5
+_ = state.record(success: true)                                   // idx 5: window full (6)
+// 窗内已有 4 失，未触发（阈值 4）但很低
+expect(state.consecutiveFailures == 5, "满窗口后失败计数仍为 5")
+_ = state.record(success: true)                                   // idx 6: window shifts，最旧的 fail 退出
+expect(state.consecutiveFailures == 4, "最旧失败退出窗口，计数递减")
+// 连续补成功应让窗口滑动到 0 失败，因为最旧 successes 会填充窗口
+for _ in 0..<5 { _ = state.record(success: true) }
+expect(state.consecutiveFailures == 0, "剩余窗口成功使 failures 归零")
 
 // reset()
 state.reset()
-expect(state.consecutiveFailures == 0, "reset() 将计数清零")
+expect(state.consecutiveFailures == 0, "reset() 清窗")
 expect(state.record(success: false) == false, "reset 后第 1 次失败不触发")
+
+// allHealthy 门槛：只有窗口满且全为成功才 true
+state.reset()
+for _ in 0..<6 { _ = state.record(success: true) }
+expect(state.allHealthy == true, "窗口满且全成功 → allHealthy")
+// 中间一个失败 → allHealthy false
+state.reset()
+for i in 0..<6 { _ = state.record(success: i != 3) }
+expect(state.allHealthy == false, "窗口满但含一次失败 → allHealthy false")
+// 不满窗口不开 allHealthy
+state.reset()
+for _ in 0..<3 { _ = state.record(success: true) }
+expect(state.allHealthy == false, "窗口未满（3/6）不开 allHealthy")
 
 // threshold=1：单次失败即触发（用于“一个 cycle 确认即恢复”的配置）
 var once = TUNDataPlaneHealthState(threshold: 1)
