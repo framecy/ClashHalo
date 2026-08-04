@@ -26,5 +26,16 @@ run_one tundataplane-tests \
   "$ROOT/Sources/Model/TUNDataPlaneProbe.swift" \
   "$ROOT/Tests/TUNDataPlaneProbe/main.swift"
 
+# YAML 标量：行尾注释剥离，且不得破坏 nameserver 的 #接口/#策略组 绑定。
+run_one yamlscalar-tests \
+  "$ROOT/Sources/Core/YamlEditor/YamlScalar.swift" \
+  "$ROOT/Tests/YamlScalar/main.swift"
+
+# 共存条目归属：只认领真正新增的排除项，不得撤回用户手写条目。
+run_one coexprovenance-tests \
+  "$ROOT/Sources/XPC/HelperProtocol.swift" \
+  "$ROOT/Sources/Model/CoexistenceProvenance.swift" \
+  "$ROOT/Tests/CoexistenceProvenance/main.swift"
+
 echo ""
 echo "全部测试通过。"
