@@ -59,7 +59,12 @@ extension AppModel {
         
         if needDetailedStats {
             var bytes: [String: (up: Int64, down: Int64)] = [:]
-            var activeIDs = Set<String>()
+            bytes.reserveCapacity(items.count)
+            var activeIDs = Set<String>(minimumCapacity: items.count)
+            // Sum the tick locally and hand `history` a single write — see
+            // `TrafficHistory.recordBatch` for why per-connection calls were
+            // expensive out of all proportion to the three numbers they carry.
+            var tickDirect = 0.0, tickProxy = 0.0, tickReject = 0.0, tickDown = 0.0
 
             for c in items {
                 activeIDs.insert(c.id)
@@ -70,10 +75,20 @@ extension AppModel {
                 bytes[c.id] = (c.upload, c.download)
 
                 // attribute this connection's byte delta to its category → history
-                let cat = (c.chains.first == "DIRECT" || c.chains.contains("DIRECT")) ? "direct"
-                        : (c.chains.first == "REJECT" || c.chains.contains("REJECT")) ? "reject" : "proxy"
-                history.record(category: cat, down: Int64(downRate), up: Int64(upRate), hour: hour)
+                let delta = Double(upRate + downRate)
+                if delta > 0 {
+                    if c.chains.first == "DIRECT" || c.chains.contains("DIRECT") {
+                        tickDirect += delta
+                    } else if c.chains.first == "REJECT" || c.chains.contains("REJECT") {
+                        tickReject += delta
+                    } else {
+                        tickProxy += delta
+                    }
+                    tickDown += Double(downRate)
+                }
             }
+            history.recordBatch(direct: tickDirect, proxy: tickProxy, reject: tickReject,
+                                down: tickDown, hour: hour)
 
             // Must run before prevConnBytes is overwritten so per-tick rates stay correct.
             if gatewayModeOn {

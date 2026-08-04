@@ -278,9 +278,10 @@ import ServiceManagement
     /// call `applyGatewayMode` makes itself.
     var gatewayApplyInFlight = false
 
-    /// Snapshot of allow-lan / dns.listen before Gateway mode overrode them,
-    /// used to restore config.yaml when Gateway is disabled.
+    /// Snapshot of allow-lan / bind-address / dns.listen before Gateway mode
+    /// overrode them, used to restore config.yaml when Gateway is disabled.
     var preGatewayAllowLan: Bool?
+    var preGatewayBindAddress: String?
     var preGatewayDNSListen: String?
 
     /// Bumps whenever on-disk `config.yaml` content changes (rules save, profile
@@ -292,8 +293,19 @@ import ServiceManagement
 
     /// The proxy port from the running config. Centralises the repeated
     /// `(configs["mixed-port"] ?? configs["port"] ?? 7890)` lookup.
+    ///
+    /// `configs` is only populated by `refreshConfigs`, which needs a reachable
+    /// kernel — so with the core stopped (a fresh launch, or the user stopping
+    /// it from the sidebar) it is empty and the literal 7890 was the answer.
+    /// Enabling the system proxy from that state pointed macOS at a port the
+    /// profile may never listen on, and the user got a proxy switch that flips
+    /// on and blackholes everything. config.yaml is on disk either way and knows
+    /// the real port, so read it before falling back to the default.
     var proxyPort: Int {
-        (configs["mixed-port"] as? Int) ?? (configs["port"] as? Int) ?? 7890
+        if let p = (configs["mixed-port"] as? Int) ?? (configs["port"] as? Int) { return p }
+        if let disk = engine.readConfigFile(),
+           let p = (disk["mixed-port"] as? Int) ?? (disk["port"] as? Int) { return p }
+        return 7890
     }
 
     // Menu-bar app preferences
