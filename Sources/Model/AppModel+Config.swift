@@ -5,15 +5,123 @@ import Foundation
 // proxy / TUN / engine), mode, and the read-only rules view.
 
 extension AppModel {
-    /// Gateway mode configuration overrides (allow-lan + DNS listen on 0.0.0.0:53)
+    /// Gateway mode configuration overrides (allow-lan + a LAN-wide bind +
+    /// DNS listen on 0.0.0.0:53).
+    ///
+    /// `bind-address` belongs here for the same reason `allow-lan` does: a
+    /// profile that pins it to `127.0.0.1` keeps every inbound on loopback, so
+    /// gateway clients reach the box and get nothing. `allow-lan: true` alone
+    /// does not override it.
     static let gatewayOverrides: [String: Any] = [
         "allow-lan": true,
+        "bind-address": "*",
         "dns": [
             "enable": true,
             "listen": "0.0.0.0:53",
             "enhanced-mode": "fake-ip"
         ]
     ]
+
+    // MARK: - 访问控制 × 局域网网关
+    //
+    // These two cards write the same mihomo fields with opposite intent, and
+    // neither knew the other existed. Gateway is not a config flag — it is
+    // `allow-lan` + a DNS listener on `0.0.0.0:53` + IP forwarding — and mihomo
+    // enforces every 访问控制 key on exactly the inbounds gateway clients arrive
+    // on. So each of these silently half-breaks an active Gateway:
+    //
+    //   * `allow-lan: false` / a non-wildcard `bind-address` unbind the DNS and
+    //     mixed-port listeners from the LAN. Forwarded clients lose name
+    //     resolution while the Gateway switch still reads "开启".
+    //   * `lan-allowed-ips` / `lan-disallowed-ips` filter those same inbounds, so
+    //     an allow-list that omits the local subnet excludes every client.
+    //   * `authentication` demands proxy credentials that transparently
+    //     forwarded traffic can never supply — the only remedy mihomo offers is
+    //     listing the client prefixes in `skip-auth-prefixes`.
+    //
+    // None of these settings is wrong on its own; they were wrong *silently*.
+    // The two structural ones (allow-lan / bind-address) are Gateway's to own
+    // while it runs and are refused with a reason; `authentication` is repaired
+    // by widening `skip-auth-prefixes` (additive, never removes a user entry);
+    // the IP filters are the user's call and only earn a warning.
+
+    /// Private ranges a gateway client can plausibly come from. Gateway forwards
+    /// LAN traffic, and the LAN is RFC1918 — matching on those rather than
+    /// guessing a prefix length off the interface address keeps this correct on
+    /// /16 and /22 home networks alike.
+    static let lanAuthPrefixes = ["127.0.0.1/8", "10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16"]
+
+    /// Reconcile an access-control write against a running Gateway.
+    ///
+    /// Returns the patch to actually apply (possibly narrowed or widened) plus
+    /// the messages to surface. A no-op when Gateway is off — access control is
+    /// then free to do whatever the user asked.
+    func reconcileAccessControlWithGateway(
+        _ overrides: [String: Any]
+    ) -> (patch: [String: Any], blocked: [String], warnings: [String]) {
+        guard gatewayModeOn || gatewayApplyInFlight else { return (overrides, [], []) }
+        var patch = overrides
+        var blocked: [String] = []
+        var warnings: [String] = []
+
+        if let allow = patch["allow-lan"] as? Bool, !allow {
+            patch.removeValue(forKey: "allow-lan")
+            blocked.append("「允许局域网连接」")
+        }
+        if let bind = patch["bind-address"] as? String, !Self.isWildcardBindAddress(bind) {
+            patch.removeValue(forKey: "bind-address")
+            blocked.append("「绑定地址 \(bind)」")
+        }
+
+        // Auth would lock out every forwarded client; widen the skip list to the
+        // private ranges they arrive from instead of letting Gateway go dark.
+        let auth = (patch["authentication"] as? [Any]) ?? (configs["authentication"] as? [Any]) ?? []
+        // `gatewayApplyInFlight` covers the reverse order: auth configured first,
+        // Gateway switched on afterwards.
+        let touchesAuth = patch["authentication"] != nil
+            || patch["skip-auth-prefixes"] != nil
+            || gatewayApplyInFlight
+        if !auth.isEmpty, touchesAuth {
+            let existing = (patch["skip-auth-prefixes"] as? [Any])
+                ?? (configs["skip-auth-prefixes"] as? [Any]) ?? []
+            var skip = existing.map { "\($0)" }
+            let missing = Self.lanAuthPrefixes.filter { p in
+                !skip.contains { NetScanner.cidrsOverlap($0, p) }
+            }
+            if !missing.isEmpty {
+                skip.append(contentsOf: missing)
+                patch["skip-auth-prefixes"] = skip
+                warnings.append("已为网关客户端补充免认证网段 \(missing.joined(separator: "、"))")
+            }
+        }
+
+        // IP filters stay the user's decision — the whole point of the card — so
+        // say what it costs rather than overriding it.
+        if let allowed = patch["lan-allowed-ips"] as? [Any], !allowed.isEmpty {
+            let list = allowed.map { "\($0)" }
+            let localIPs = NetScanner.interfaces()
+                .filter { $0.kind == .physical && $0.isUp }
+                .flatMap { $0.ipv4 }
+            let covered = localIPs.contains { ip in list.contains { NetScanner.cidrsOverlap($0, ip + "/32") } }
+            if !localIPs.isEmpty && !covered {
+                warnings.append("「允许的 IP」未包含本机所在网段，网关客户端将被拒绝")
+            }
+        }
+        if let denied = patch["lan-disallowed-ips"] as? [Any], !denied.isEmpty {
+            let list = denied.map { "\($0)" }
+            if list.contains(where: { NetScanner.parseCIDR($0).map { $0.1 <= 16 } ?? false }) {
+                warnings.append("「拒绝的 IP」覆盖了整段私有网络，网关客户端可能被拒绝")
+            }
+        }
+
+        return (patch, blocked, warnings)
+    }
+
+    /// Whether a `bind-address` leaves inbounds reachable from the LAN.
+    static func isWildcardBindAddress(_ raw: String) -> Bool {
+        let v = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        return v.isEmpty || v == "*" || v == "0.0.0.0" || v == "::" || v == "[::]"
+    }
 
     /// Promote an Imported (or re-activate an Applied) profile to the
     /// running kernel: persist → reload → mark applied. Pure side-effects;
@@ -351,6 +459,49 @@ extension AppModel {
         return true
     }
 
+    /// Run a kernel restart (or any window where the mixed-port stops
+    /// listening) with the system proxy suspended, restoring it only once the
+    /// kernel answers again.
+    ///
+    /// The system proxy points every app on the Mac at `127.0.0.1:mixed-port`.
+    /// macOS does not fall back to direct when that port stops answering — it
+    /// fails the connection — so any restart taken while the proxy is on is a
+    /// hard blackout for its full duration, and a restart that never completes
+    /// is a permanent one. The kernel-switch path has bracketed its restart this
+    /// way since v1.0.18; the TUN root-switch restarts for exactly the same
+    /// reason (user-mode kernel → root kernel) and never did, which is why
+    /// enabling TUN while the proxy was on read as "开 TUN 把网断了".
+    ///
+    /// Restoring is deliberately gated on `reachable`: putting the proxy back in
+    /// front of a port nothing is listening on would re-create the very blackout
+    /// the suspend avoided, and leaving it off is both visible and recoverable.
+    func withSystemProxySuspended<T>(_ reason: String, _ body: () async -> T) async -> T {
+        guard systemProxyOn else { return await body() }
+        let port = proxyPort
+        logKernel("\(reason)：临时关闭系统代理以防断网")
+        _ = await engine.setSystemProxy(enabled: false, port: port)
+        systemProxyOn = false
+
+        let result = await body()
+
+        guard reachable else {
+            logKernel("\(reason)：内核未就绪，系统代理保持关闭")
+            showToast("内核未就绪，系统代理未恢复（避免断网）", kind: .warn)
+            return result
+        }
+        // Re-read: a restart can land on a profile with a different mixed-port.
+        let restorePort = proxyPort
+        if await engine.setSystemProxy(enabled: true, port: restorePort) {
+            systemProxyOn = true
+            logKernel("\(reason)：已恢复系统代理 (port \(restorePort))")
+        } else {
+            syncSystemProxyState()
+            logKernel("\(reason)：系统代理恢复失败")
+            showToast("系统代理恢复失败，请重新开启", kind: .error)
+        }
+        return result
+    }
+
     /// Delete every profile and leave the machine in a clean, inert state.
     ///
     /// Order is the whole point. Deleting the files first would strand the
@@ -406,7 +557,7 @@ extension AppModel {
             showToast("请先导入配置后再开启系统代理", kind: .warn); return
         }
         let on = !systemProxyOn
-        let port = proxyPort
+        var port = proxyPort
         // Hold isBusy for the full path (start kernel + set proxy) so TUN /
         // engine / rule reload cannot interleave mid-flight.
         withEngineBusy(on ? "正在开启系统代理…" : "正在关闭系统代理…") {
@@ -426,6 +577,13 @@ extension AppModel {
                 }
                 // reconnect() re-syncs proxy from SCDynamicStore (still off here).
                 await self.reconnect()
+                // The port above was read with `configs` still empty (the core
+                // was down), i.e. from config.yaml. Now that a kernel is
+                // answering, take the port it actually bound — a profile switch
+                // or a kernel-side normalization can make the two differ, and
+                // pointing macOS at the wrong one is a silent blackout.
+                await self.refreshConfigs()
+                port = self.proxyPort
             }
 
             let ok = await self.engine.setSystemProxy(enabled: on, port: port)
@@ -583,20 +741,27 @@ extension AppModel {
             // but the current kernel is user-mode, restart it through the helper.
             if !engine.runningAsRoot {
                 showToast("正在以 Root 权限重启核心…")
-                await engine.restart()
-                guard await waitForKernelReady(maxAttempts: 8) else {
+                // Same mixed-port blackout as the TUN root switch — see
+                // `withSystemProxySuspended`.
+                let restarted = await withSystemProxySuspended("网关 Root 切换") { () -> Bool in
+                    await engine.restart()
+                    guard await waitForKernelReady(maxAttempts: 8) else { return false }
+                    await reconnect()
+                    return true
+                }
+                guard restarted else {
                     showToast("Root 内核启动超时，未开启网关", kind: .error)
                     return
                 }
-                await reconnect()
             }
 
             // Write configs for gateway mode (allow-lan and dns listen).
             let oldTun = tunOn
 
-            // Snapshot current allow-lan / dns.listen values so Gateway
-            // disable can restore them later (avoid stale overrides).
+            // Snapshot current allow-lan / bind-address / dns.listen values so
+            // Gateway disable can restore them later (avoid stale overrides).
             preGatewayAllowLan = (configs["allow-lan"] as? Bool) ?? false
+            preGatewayBindAddress = configs["bind-address"] as? String
             if let dns = configs["dns"] as? [String: Any] {
                 preGatewayDNSListen = dns["listen"] as? String
             }
@@ -606,7 +771,18 @@ extension AppModel {
             let cfgPath = engine.configFilePath
             let backup = try? String(contentsOfFile: cfgPath, encoding: .utf8)
 
-            engine.setTopLevelScalars(Self.gatewayOverrides)
+            var overrides = Self.gatewayOverrides
+            // An access-control `authentication` list that predates this enable
+            // would reject every forwarded client, and the user has no way to
+            // hand credentials to transparently routed traffic. Widen
+            // `skip-auth-prefixes` the same way an edit made *during* Gateway
+            // would be widened, so the order the two cards are used in stops
+            // mattering.
+            let (reconciled, _, notes) = reconcileAccessControlWithGateway(overrides)
+            overrides = reconciled
+            for n in notes { logKernel("网关中枢：\(n)") }
+
+            engine.setTopLevelScalars(overrides)
             engine.setTunEnabled(oldTun)
             showToast("正在应用网关配置…")
             do {
@@ -619,7 +795,7 @@ extension AppModel {
                     try? await api.reloadConfig(path: cfgPath)
                     await refreshConfigs()
                 }
-                preGatewayAllowLan = nil; preGatewayDNSListen = nil
+                preGatewayAllowLan = nil; preGatewayBindAddress = nil; preGatewayDNSListen = nil
                 showToast("网关配置应用失败，请检查 53 端口是否被占用", kind: .error)
                 return
             }
@@ -635,7 +811,7 @@ extension AppModel {
                         try? await api.reloadConfig(path: cfgPath)
                         await refreshConfigs()
                     }
-                    preGatewayAllowLan = nil; preGatewayDNSListen = nil
+                    preGatewayAllowLan = nil; preGatewayBindAddress = nil; preGatewayDNSListen = nil
                     showToast("TUN 恢复失败，未开启网关中枢", kind: .error)
                     return
                 }
@@ -649,12 +825,15 @@ extension AppModel {
             } else {
                 gatewayModeOn = false
                 gatewayDevices.removeAll(keepingCapacity: false)
-                preGatewayAllowLan = nil; preGatewayDNSListen = nil
+                preGatewayAllowLan = nil; preGatewayBindAddress = nil; preGatewayDNSListen = nil
                 showToast("底层 IP 转发开启失败", kind: .error)
             }
         } else {
-            // Restore config.yaml overrides that Gateway mode applied.
-            let restores: [String: Any] = [
+            // Restore config.yaml overrides that Gateway mode applied. The
+            // snapshot is still authoritative because `allow-lan` /
+            // `bind-address` are refused to the 访问控制 card for as long as
+            // Gateway runs, so nothing can have moved underneath it.
+            var restores: [String: Any] = [
                 "allow-lan": preGatewayAllowLan ?? false,
                 "dns": [
                     "enable": true,
@@ -662,7 +841,11 @@ extension AppModel {
                     "enhanced-mode": "fake-ip"
                 ]
             ]
-            preGatewayAllowLan = nil; preGatewayDNSListen = nil
+            // Only restore a bind-address the profile actually carried: writing
+            // `*` back for a config that never had the key would hand the user a
+            // setting Gateway invented.
+            if let bind = preGatewayBindAddress { restores["bind-address"] = bind }
+            preGatewayAllowLan = nil; preGatewayBindAddress = nil; preGatewayDNSListen = nil
             engine.setTopLevelScalars(restores)
 
             let ok = await engine.setGatewayMode(enabled: false)
@@ -686,19 +869,65 @@ extension AppModel {
 
     // MARK: - TUN coexistence with other tunnels
 
-    /// A complete `tun` PATCH body carrying `enable` and the shape fields.
+    /// The `tun` block as the running kernel sees it, merged over the one
+    /// persisted in config.yaml.
+    ///
+    /// `configs` is only populated by `refreshConfigs`, which needs a reachable
+    /// kernel — so on a cold start, or in the window right after a restart, it is
+    /// empty and every read off it silently yields a hardcoded default instead of
+    /// the user's actual setting. The disk block is the fallback for exactly
+    /// those windows.
+    ///
+    /// Read as a whole block rather than per key: config.yaml is ~32 KB and
+    /// `readConfigFile` line-scans all of it, so a per-field accessor would have
+    /// re-parsed the file once for every field of every PATCH body.
+    func liveTunBlock() -> [String: Any] {
+        let live = (configs["tun"] as? [String: Any]) ?? [:]
+        guard live.isEmpty else { return live }
+        return (engine.readConfigFile()?["tun"] as? [String: Any]) ?? [:]
+    }
+
+    /// A complete `tun` PATCH body: `enable` plus every field of the running
+    /// shape that the user owns.
     ///
     /// `PATCH /configs` **replaces** each nested object rather than deep-merging
     /// it: sending `tun: {route-exclude-address: [...]}` alone comes back with
     /// `enable: false` and an empty `device`, i.e. it silently tears TUN down.
-    /// Every tun PATCH must therefore restate the full runtime shape.
+    /// Every tun PATCH must therefore restate the full runtime shape — and for a
+    /// long time this function did not, which made "replaces, not merges" a
+    /// standing hazard rather than a handled one:
+    ///
+    ///   * `dns-hijack` was never restated, so every PATCH-path TUN toggle (the
+    ///     normal case once the kernel is already root) silently dropped
+    ///     `any:53` hijacking from the running kernel. The file still declared
+    ///     it, `/configs` no longer reported it, and DNS quietly stopped being
+    ///     captured until something reloaded the file.
+    ///   * `route-exclude-address` was only attached when a *peer tunnel* was
+    ///     detected, so with no peer up the user's own exclusions — private
+    ///     ranges, multicast, link-local, ping targets — were wiped the same way.
+    ///   * `stack` fell back to the literal `"gvisor"` whenever `configs` was
+    ///     empty, so a cold-start TUN enable could silently switch a `mixed`
+    ///     config onto a different stack.
+    ///
+    /// Fields are therefore sourced from the kernel first and config.yaml second
+    /// (`liveTunBlock`), never from a literal, and only truly kernel-derived
+    /// values (`file-descriptor`, `inet4-address`, `gso-max-size`, `recvmsgx`)
+    /// are left out — echoing those back is not ours to do.
     func tunPatchBody(enable: Bool, extra: [String: Any] = [:]) -> [String: Any] {
+        let live = liveTunBlock()
         var body: [String: Any] = [
             "enable": enable,
-            "stack": (configs["tun"] as? [String: Any])?["stack"] ?? "gvisor",
-            "auto-route": true,
-            "auto-detect-interface": true
+            "stack": live["stack"] ?? "gvisor",
+            "auto-route": live["auto-route"] ?? true,
+            "auto-detect-interface": live["auto-detect-interface"] ?? true
         ]
+        // Restate the user-owned fields that would otherwise be dropped by the
+        // replace semantics. Only when actually present — inventing a key the
+        // config never had would be its own kind of surprise.
+        for key in ["dns-hijack", "route-exclude-address", "mtu", "strict-route",
+                    "endpoint-independent-nat", "include-package", "exclude-package"] {
+            if let v = live[key] { body[key] = v }
+        }
         // Ask for our own name rather than accepting the next free index. Only on
         // enable — a disable PATCH has no device to name.
         if enable, let dev = pinnedTunDevice { body["device"] = dev }
@@ -741,14 +970,23 @@ extension AppModel {
     /// Provenance is *not* recorded here — the caller records it only after the
     /// kernel has accepted the change, so a dropped PATCH cannot leave us
     /// believing we applied something we did not.
-    func coexistenceRouteBody(_ plan: CoexistencePlan) -> [String]? {
+    /// The merged `route-exclude-address` list to send, plus the entries this
+    /// injection is actually responsible for.
+    ///
+    /// The two differ whenever the plan agrees with something the user already
+    /// wrote, and conflating them is what let a teardown delete the user's own
+    /// entries — see `Coexistence.newlyInjected`. Callers must commit
+    /// provenance with `.injected`, never with the whole plan.
+    func coexistenceRouteBody(_ plan: CoexistencePlan) -> (merged: [String], injected: [String])? {
         guard !plan.routeExcludes.isEmpty else { return nil }
-        let existing = (configs["tun"] as? [String: Any])?["route-exclude-address"] as? [String] ?? []
-        return Coexistence.mergePreservingUserEntries(
+        let existing = liveTunBlock()["route-exclude-address"] as? [String] ?? []
+        let merged = Coexistence.mergePreservingUserEntries(
             field: "route-exclude-address",
             desired: plan.routeExcludes,
             in: existing
         )
+        return (merged, Coexistence.newlyInjected(desired: plan.routeExcludes,
+                                                  existingBefore: existing))
     }
 
     /// Re-apply route coexistence when the set of peer tunnels changes *while TUN
@@ -767,11 +1005,11 @@ extension AppModel {
         let plan = Coexistence.plan(peers)
         let fp = Coexistence.fingerprint(plan)
         guard fp != lastCoexistenceFingerprint else { return }
-        guard let excludes = coexistenceRouteBody(plan) else { return }
+        guard let ex = coexistenceRouteBody(plan) else { return }
 
         logKernel("TUN 共存：检测到网络拓扑变化，正在同步排除规则…")
         let ok = await engine.patchConfig([
-            "tun": tunPatchBody(enable: true, extra: ["route-exclude-address": excludes])
+            "tun": tunPatchBody(enable: true, extra: ["route-exclude-address": ex.merged])
         ])
         // Only now is the change real. Recording provenance/fingerprint on a
         // failed PATCH would both skip the retry and mis-attribute the entries
@@ -780,7 +1018,7 @@ extension AppModel {
             logKernel("TUN 共存：同步失败，保留原有排除规则")
             return
         }
-        Coexistence.commitProvenance(field: "route-exclude-address", injected: plan.routeExcludes)
+        Coexistence.commitProvenance(field: "route-exclude-address", injected: ex.injected)
 
         // The system route table is the other half of the same plan. Leaving it
         // to `staticRoutesInjected` — a latch set once when TUN came up — meant
@@ -988,11 +1226,17 @@ extension AppModel {
         var pendingRouteProvenance: [String]?
         if want {
             let plan = Coexistence.plan(await Coexistence.detect())
-            if let excludes = coexistenceRouteBody(plan) {
-                tunOverrideMap["route-exclude-address"] = excludes
-                pendingRouteProvenance = plan.routeExcludes
-                logKernel("TUN 共存：排除 \(plan.routeExcludes.count) 个网段（\(plan.peerSummary)）")
+            if let ex = coexistenceRouteBody(plan) {
+                tunOverrideMap["route-exclude-address"] = ex.merged
+                // Only what we added — claiming the user's pre-existing entries
+                // is what made the next teardown delete them.
+                pendingRouteProvenance = ex.injected
+                logKernel("TUN 共存：排除 \(plan.routeExcludes.count) 个网段"
+                          + "（其中本次新增 \(ex.injected.count) 条 · \(plan.peerSummary)）")
             }
+            // No `else` needed: with no peer tunnel to carve room for,
+            // `tunPatchBody` has already restated the exclusions the config
+            // carries, so the replace semantics cannot empty them.
             // Reported, not applied — mihomo ignores a runtime DNS PATCH, and the
             // only working channel (rewrite config.yaml + reload) is too
             // destructive to run behind the user's back. See `dnsAdvice`.
@@ -1079,20 +1323,30 @@ extension AppModel {
             // too or the restart path lands on a kernel-assigned utun.
             engine.setTunDevice(pinnedTunDevice)
             let tRestart = Date()
-            await engine.restart()
-            logKernel("TUN 阶段：root 重启完成 +\(String(format: "%.2f", Date().timeIntervalSince(tRestart)))s")
-            // restart = stop + start; a cold root spawn must parse the profile and
-            // load geodata before the controller answers. `maxAttempts` is now
-            // honoured literally (it used to be silently capped at 8 ≈ 3.2 s, too
-            // short for a real profile) — 18 attempts ≈ 13 s of headroom.
-            let tReady = Date()
-            guard await waitForKernelReady(maxAttempts: 18) else {
-                logKernel("TUN 阶段：内核就绪等待超时 +\(String(format: "%.2f", Date().timeIntervalSince(tReady)))s")
+            // The user→root swap takes the mixed-port away for seconds. With the
+            // system proxy on that is a blackout, so suspend it across the whole
+            // window — restart, readiness wait and reconnect — and let the helper
+            // put it back only once a kernel is answering again.
+            let restarted = await withSystemProxySuspended("TUN 切换") { () -> Bool in
+                await engine.restart()
+                logKernel("TUN 阶段：root 重启完成 +\(String(format: "%.2f", Date().timeIntervalSince(tRestart)))s")
+                // restart = stop + start; a cold root spawn must parse the profile and
+                // load geodata before the controller answers. `maxAttempts` is now
+                // honoured literally (it used to be silently capped at 8 ≈ 3.2 s, too
+                // short for a real profile) — 18 attempts ≈ 13 s of headroom.
+                let tReady = Date()
+                guard await waitForKernelReady(maxAttempts: 18) else {
+                    logKernel("TUN 阶段：内核就绪等待超时 +\(String(format: "%.2f", Date().timeIntervalSince(tReady)))s")
+                    return false
+                }
+                logKernel("TUN 阶段：内核就绪 +\(String(format: "%.2f", Date().timeIntervalSince(tReady)))s")
+                await self.reconnect()
+                return true
+            }
+            guard restarted else {
                 showToast("Root 内核启动超时，TUN 未启用", kind: .error)
                 return
             }
-            logKernel("TUN 阶段：内核就绪 +\(String(format: "%.2f", Date().timeIntervalSince(tReady)))s")
-            await self.reconnect()
             if !engine.runningAsRoot {
                 await engine.syncRunningAsRootIfNeeded()
             }
@@ -1101,6 +1355,39 @@ extension AppModel {
                 logKernel("TUN 中止：restart 后 runningAsRoot 仍为 false")
                 return
             }
+        }
+
+        // Turning TUN *off* with no kernel to PATCH is not a failure — there is
+        // no tunnel left to disable. The old code sent the PATCH anyway, watched
+        // it fail against a dead controller, and fell through to a toast; `tunOn`
+        // was never cleared and none of the disable cascade ran, so the switch
+        // stayed stuck on with no way to move it while the core was stopped.
+        // Do the local half of the teardown and treat it as done.
+        if !want && !reachable {
+            engine.forceTUNDisabled()
+            tunOn = false
+            Coexistence.commitProvenance(field: "route-exclude-address", injected: [])
+            lastCoexistenceFingerprint = ""
+            if gatewayModeOn {
+                _ = await engine.setGatewayMode(enabled: false)
+                gatewayModeOn = false
+                gatewayDevices.removeAll(keepingCapacity: false)
+            }
+            await restoreTunnelDNS()
+            // The kernel that owned these is gone, so nothing else will ever
+            // withdraw them — same reasoning as the `stopEngine` teardown.
+            if staticRoutesInjected {
+                let ok = await XPCManager.shared.callCleanupAllExcludeRoutes()
+                logKernel("XPC Helper 清理静态路由: \(ok == true ? "成功" : "失败")")
+                if ok == true || ok == nil { staticRoutesInjected = false }
+            }
+            if NetScanner.hasDownedMihomoTun() {
+                logKernel("关闭 TUN 时检测到残留 utun，请求特权服务物理清理…")
+                _ = await XPCManager.shared.callCleanupTUNResidual()
+            }
+            logKernel("内核未运行，TUN 已就地关闭（配置落盘 tun.enable=false）")
+            showToast("TUN 模式已关闭", kind: .ok)
+            return
         }
 
         let tPatch = Date()
@@ -1197,15 +1484,18 @@ extension AppModel {
                     showToast("正在重启核心以启用 TUN…")
                     engine.setTunEnabled(true)
                     engine.setTunDevice(pinnedTunDevice)
-                    await engine.restart()
-                    if await waitForKernelReady(maxAttempts: 18) {
-                        await reconnect()
-                        if !engine.runningAsRoot { await engine.syncRunningAsRootIfNeeded() }
-                        _ = await waitForTUNInterface()
-                        NetScanner.invalidateTunCache()
-                        await refreshConfigs()
-                    } else {
-                        logKernel("TUN 回退重试：内核就绪等待超时")
+                    // Same blackout window as the root switch above.
+                    await withSystemProxySuspended("TUN 重启重试") {
+                        await engine.restart()
+                        if await waitForKernelReady(maxAttempts: 18) {
+                            await reconnect()
+                            if !engine.runningAsRoot { await engine.syncRunningAsRootIfNeeded() }
+                            _ = await waitForTUNInterface()
+                            NetScanner.invalidateTunCache()
+                            await refreshConfigs()
+                        } else {
+                            logKernel("TUN 回退重试：内核就绪等待超时")
+                        }
                     }
                     if !tunOn {
                         // Still no utun after a clean init — genuinely cannot start
@@ -1251,7 +1541,7 @@ extension AppModel {
                             "enhanced-mode": "fake-ip"
                         ]
                     ]
-                    preGatewayAllowLan = nil; preGatewayDNSListen = nil
+                    preGatewayAllowLan = nil; preGatewayBindAddress = nil; preGatewayDNSListen = nil
                     engine.setTopLevelScalars(restores)
                     noteConfigContentChanged()
                 }
@@ -1649,8 +1939,22 @@ extension AppModel {
     /// (geodata-*, unified-delay, keep-alive…): write them to config.yaml and
     /// reload. The current runtime TUN state is written back first so the reload
     /// (which re-reads the file) doesn't drop a running root TUN.
-    func patchPersistent(_ overrides: [String: Any]) async {
+    func patchPersistent(_ rawOverrides: [String: Any]) async {
         guard reachable else { showToast("内核未连接，无法修改配置", kind: .error); return }
+
+        // 访问控制 and 局域网网关 write the same fields — see the reconcile.
+        let (overrides, blocked, warnings) = reconcileAccessControlWithGateway(rawOverrides)
+        for w in warnings { logKernel("访问控制：\(w)"); showToast(w, kind: .warn) }
+        if !blocked.isEmpty {
+            let what = blocked.joined(separator: "、")
+            logKernel("访问控制：网关中枢运行中，拒绝写入 \(what)")
+            showToast("网关中枢运行中，\(what) 不可更改；请先关闭网关", kind: .warn)
+            // Put the UI back on the kernel's actual values — the row already
+            // rendered the write it never got.
+            await refreshConfigs()
+            if overrides.isEmpty { return }
+        }
+
         engine.setTopLevelScalars(overrides)
         engine.setTunEnabled(tunOn)
 

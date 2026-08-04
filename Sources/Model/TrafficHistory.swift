@@ -23,8 +23,18 @@ import SwiftUI
         return f
     }()
 
+    /// `dayDF.string(from:)` is not cheap, and the key is needed on every read
+    /// and every write of the hot path. The answer only changes at midnight, so
+    /// cache it and re-derive when the calendar day rolls over.
+    private var cachedDayKey = ""
+    private var cachedDayStart = Date.distantPast
     private var todayKey: String {
-        Self.dayDF.string(from: Date())
+        let now = Date()
+        if now < cachedDayStart || now.timeIntervalSince(cachedDayStart) >= 86_400 {
+            cachedDayStart = Calendar.current.startOfDay(for: now)
+            cachedDayKey = Self.dayDF.string(from: now)
+        }
+        return cachedDayKey
     }
 
     func load() {
@@ -36,17 +46,26 @@ import SwiftUI
         }
     }
 
-    func record(category: String, down: Int64, up: Int64, hour: Int) {
-        let bytes = Double(down + up)
-        guard bytes > 0 else { return }
-        var day = days[todayKey] ?? Day()
-        switch category {
-        case "direct": day.direct += bytes
-        case "reject": day.reject += bytes
-        default: day.proxy += bytes
-        }
-        if hour >= 0 && hour < 24 { day.hourlyDown[hour] += Double(down) }
-        days[todayKey] = day
+    /// One tick's totals in a single write.
+    ///
+    /// The caller used to invoke `record` once per active connection, and each
+    /// call copied the whole `Day` (including its 24-element hourly array) out
+    /// of the dictionary, mutated it, and wrote it back — through a `@Published`
+    /// property, so every one of them also emitted an `objectWillChange`. On a
+    /// busy kernel that is a couple of thousand array copies and a couple of
+    /// thousand SwiftUI invalidations *per poll*, for three numbers that could
+    /// just as well be summed first. Callers now accumulate locally and land
+    /// here once.
+    func recordBatch(direct: Double, proxy: Double, reject: Double,
+                     down: Double, hour: Int) {
+        guard direct > 0 || proxy > 0 || reject > 0 || down > 0 else { return }
+        let key = todayKey
+        var day = days[key] ?? Day()
+        day.direct += direct
+        day.proxy += proxy
+        day.reject += reject
+        if hour >= 0 && hour < 24 { day.hourlyDown[hour] += down }
+        days[key] = day
         dirty = true
     }
 

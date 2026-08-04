@@ -2,6 +2,50 @@
 
 本项目所有重要变更记录于此。格式参考 [Keep a Changelog](https://keepachangelog.com/),版本遵循语义化版本。
 
+## [1.1.14] - 2026-08-04
+
+启动与开关路径的一组修复，外加一条从真实日志追出来的根因。Helper 仍为 **1.0.24**，本版**不需要重新授权**。
+
+主线是同一个类别的问题：**`PATCH /configs` 对嵌套对象是整块替换而不是深合并**，而 `tunPatchBody` 只重述了 `tun` 块 8 个字段里的 4 个。这条早就写在注释里的约束，实现上一直没有兑现。
+
+### Fixed
+
+- **开机自启后从状态栏开 TUN/系统代理，提示「请先导入配置」**：`model.start()` 只挂在主窗口的 `.onAppear` 上。登录项启动时 App 在后台运行，SwiftUI 不会实例化未上屏的 `Window` 场景内容，于是 `start()` 从不执行、`store.load()` 从不调用；而 MenuBarExtra 从第一帧就可点，两个开关取到空的 `profiles` 便报「请先导入配置」——配置其实好端端躺在磁盘上。改为在 `applicationDidFinishLaunching` 启动（`.onAppear` 保留为幂等兜底）。同一根因还导致内核不自启、不轮询、Dock 策略不生效。
+
+- **App 异常退出后内核无法启动**：强退/崩溃不会执行 `AppDelegate.performCleanup`，mihomo 子进程被 launchd 收养后继续占用 mixed-port 与 external-controller。重启后用户态启动路径直接 spawn，新内核几毫秒内 bind 失败退出，而所有症状（「内核未响应」、就绪超时、开关无反应）都指向别处。新增 `reapOrphanKernels()`：用 `ps -o comm` **按可执行路径**精确识别本 App 管理的内核（不误杀其它客户端的 mihomo），SIGTERM→SIGKILL 回收，root 残留交由 Helper。动手前补一次 2 秒完整探测——原判据是 0.25s/0.3s 短超时，正在初始化的内核（载入 geodata 约 600ms）与死掉的看起来一样，误杀会把慢启动变成重启循环。用户态内核输出改接 `mihomo-user.log`，spawn 后 300ms 检查早退并记录内核自己的报错。
+
+- **`tun` PATCH 静默丢失 `dns-hijack`**：`tunPatchBody` 从不重述该字段，因此每次走 PATCH 路径的 TUN 切换（内核已是 root 时的常规路径）都会把运行态的 `any:53` 劫持清掉。配置文件仍声明着，`/configs` 已经查不到，DNS 从此不再被捕获，直到某次重载文件才恢复。
+
+- **`tun` PATCH 静默清空 `route-exclude-address`**：该字段此前只在检测到对端隧道时才附带。没有对端隧道时整份排除项——私网、组播、链路本地——被整块替换语义清空。
+
+- **冷启动开 TUN 可能换栈**：`stack` 在 `configs` 尚未填充时回落到字面量 `"gvisor"`，会把 `mixed` 的配置悄悄换掉。所有字段改为「内核 → config.yaml」两级取值，不再有字面量兜底。
+
+- **共存条目归属误判，撤回时删掉用户手写的排除项**：Tailscale 厂商条目输出 `100.64.0.0/10`，与 Tailscale 用户手写在 `route-exclude-address` 里的**是同一个字符串**；而 `commitProvenance` 记录的是整份计划，于是一次开启 TUN 就把用户条目改标为「本应用注入」，下一次关闭时 `withdraw` 将其删除——CGNAT 落入 auto-route，Tailscale 流量进错隧道，而配置文件里那行还在。现改为只记录**实际新增**的条目。已有的 `isProtectiveExclusion` 是同类问题（组播）的补丁，这次修的是整类。
+
+- **`readConfigFile` 把行尾注释当作值**：`- 127.0.0.0/8   # 回环` 原样成为值，`mixed-port: 7890  # ...` 解析不出 Int 而回落默认端口。按 YAML 规则处理（只有前置空白的 `#` 才是注释），因此 mihomo 的 `100.100.100.100#utun8`（绑定出口接口）与 `https://dns.google/dns-query#默认代理`（绑定策略组）不受影响——按 `#` 直接切分会破坏这两者。
+
+- **内核停止状态下无法关闭 TUN**：该路径去 PATCH 一个不存在的控制面，失败后 `tunOn` 从未清零、关闭级联也未执行，开关卡在「开」且无法拨动。现就地完成本地侧拆除：落盘 `tun.enable=false`、拆网关、恢复 DNS、清理 Helper 静态路由与残留 utun。
+
+- **内核未运行时开启系统代理指向错误端口**：`proxyPort` 在 `configs` 为空（冷启动或用户停核）时返回硬编码 7890，若订阅使用其它端口即为静默断网。改为先读 config.yaml，内核起来后再复读实际端口。
+
+- **开 TUN / 开网关时系统代理断网**：用户态→root 的内核重启会让 mixed-port 消失数秒，而 macOS 在代理端口无应答时不会回退直连，是硬断网；重启失败则是永久断网。内核切换路径自 v1.0.18 起就括起了这个窗口，TUN 与网关的 root 切换一直没有。新增 `withSystemProxySuspended`，恢复以内核可达为前提。
+
+- **访问控制与局域网网关互相拆台**：两张卡片写同一批 mihomo 字段。`allow-lan: false` 或非通配 `bind-address` 会把 DNS 与 mixed-port 监听从局域网上摘下来，网关开关却仍显示「开启」；`authentication` 要求透明转发流量提供根本无法提供的凭据。现在网关运行期间拒绝前两者并说明原因，`authentication` 自动补齐 `skip-auth-prefixes` 的 RFC1918 网段（只增不删，开启网关时同样生效，两张卡片的使用先后不再影响结果），IP 过滤器只警告不覆盖——那是用户的主权设置。`bind-address` 一并纳入网关的快照与恢复。
+
+- **SD-WAN「修复路由冲突」按钮**：同样省略 `route-exclude-address`，且无论 PATCH 成败都无条件 `commitProvenance`。
+
+### Changed
+
+- **流量历史按轮次批量写入**：此前每个活动连接每轮调用一次 `history.record`，每次都要把整个 `Day`（含 24 元素小时数组）拷出改回，而且它是 `@Published`——繁忙内核上每轮就是上千次数组拷贝加上千次 SwiftUI 失效，只为三个可以先求和的数。连接页 1.5 秒一轮，是最热的调用方。`todayKey` 的 `DateFormatter` 调用同时改为按日缓存。
+- **注入 `geodata-loader: memconservative`**：mihomo v1.19.29 起该值已是默认，此项仅在切换到旧内核时兜底。
+- `liveTunBlock()` 整块读取 `tun`：按字段读会让 32KB 的 config.yaml 在每个 PATCH body 上重复行扫描十余次。
+
+### Tests
+
+- `Tests/YamlScalar`（19 项）：行尾注释剥离，且 `#utun8` / `#默认代理` 两种绑定语义、引号内的 `#`、流式数组均不受影响。
+- `Tests/CoexistenceProvenance`（28 项）：以真实部署的排除项列表为输入，断言开关一轮 TUN 后用户条目全部存活、仅本应用注入的条目被撤回；其中一项专门断言**旧写法确实会删掉用户条目**，防止测试本身失效。
+- 为此将 `YamlScalar` 与 `CoexistenceProvenance` 拆为独立文件——按本仓库既有约定，测试编译真实生产源码而非复刻规则，而原文件经 `Models.swift` 牵连到 SwiftUI 无法单独编译。
+
 ## [1.1.13] - 2026-07-28
 
 修正 v1.1.12 数据面探针的一个致命盲区：**半死的 TUN fd 永远触发不了自愈**。同时补两处信息密度问题——连接页被单域名的几十条会话淹没，网络拓扑页的接口与路由卡片逐条平铺。Helper 仍为 **1.0.24**，本版**不需要重新授权**。

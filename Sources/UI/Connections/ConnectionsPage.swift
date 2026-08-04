@@ -661,9 +661,14 @@ struct ConnDetailCard: View {
 
         let items = s.connections ?? []
         var next: [Conn] = []
+        next.reserveCapacity(items.count)
         var bytes: [String: (up: Int64, down: Int64)] = [:]
-        var activeIDs = Set<String>()
+        bytes.reserveCapacity(items.count)
+        var activeIDs = Set<String>(minimumCapacity: items.count)
         let hour = Calendar.current.component(.hour, from: Date())
+        // Accumulated, then written once — this page polls every 1.5 s, so it is
+        // the hottest caller of all. See `TrafficHistory.recordBatch`.
+        var tickDirect = 0.0, tickProxy = 0.0, tickReject = 0.0, tickDown = 0.0
 
         for c in items {
             activeIDs.insert(c.id)
@@ -673,9 +678,17 @@ struct ConnDetailCard: View {
             let downRate = prev.map { max(0, c.download - $0.down) } ?? 0
             bytes[c.id] = (c.upload, c.download)
 
-            let cat = (c.chains.first == "DIRECT" || c.chains.contains("DIRECT")) ? "direct"
-                    : (c.chains.first == "REJECT" || c.chains.contains("REJECT")) ? "reject" : "proxy"
-            M.history.record(category: cat, down: Int64(downRate), up: Int64(upRate), hour: hour)
+            let delta = Double(upRate + downRate)
+            if delta > 0 {
+                if c.chains.first == "DIRECT" || c.chains.contains("DIRECT") {
+                    tickDirect += delta
+                } else if c.chains.first == "REJECT" || c.chains.contains("REJECT") {
+                    tickReject += delta
+                } else {
+                    tickProxy += delta
+                }
+                tickDown += Double(downRate)
+            }
 
             let conn = Conn(
                 id: c.id,
@@ -697,6 +710,8 @@ struct ConnDetailCard: View {
             )
             next.append(conn)
         }
+        M.history.recordBatch(direct: tickDirect, proxy: tickProxy, reject: tickReject,
+                              down: tickDown, hour: hour)
         // Gateway aggregation must run before prevConnBytes is overwritten.
         if M.gatewayModeOn {
             M.updateGatewayDevices(from: items)

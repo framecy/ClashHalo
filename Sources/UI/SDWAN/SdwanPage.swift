@@ -250,14 +250,24 @@ struct SdwanPage: View {
                                     // installs no routes at all: the observed
                                     // "utun100 接管后无网络". A competing tunnel
                                     // is reported, not "fixed" by crippling us.
+                                    // tunPatchBody already restates the exclusions
+                                    // the config carries; this only *adds* what
+                                    // the current peer set needs on top.
                                     var fix = M.tunPatchBody(enable: M.tunOn)
-                                    if let excludes = M.coexistenceRouteBody(plan) {
-                                        fix["route-exclude-address"] = excludes
+                                    var injected: [String] = []
+                                    if let ex = M.coexistenceRouteBody(plan) {
+                                        fix["route-exclude-address"] = ex.merged
+                                        injected = ex.injected
                                     }
+                                    // Claim provenance only for what we actually
+                                    // sent. Recording the plan unconditionally
+                                    // mis-attributed the user's own entries as
+                                    // ours, and the next withdrawal pass would
+                                    // then delete them.
                                     await M.patch(["tun": fix])
                                     Coexistence.commitProvenance(
                                         field: "route-exclude-address",
-                                        injected: plan.routeExcludes
+                                        injected: injected
                                     )
                                     try? await Task.sleep(nanoseconds: 800_000_000)
                                     rescan()

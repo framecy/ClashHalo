@@ -196,6 +196,7 @@ import Network
         // Any of these means at least one normalizer has work to do.
         if text.contains("geodata.kelee.one") { return true }
         if !text.contains("geodata-mode") { return true }
+        if !text.contains("geodata-loader") { return true }
 
         var hasController = false, hasOwnSecret = false, tunDisabled = false
         var inTun = false, dnsHasSize = false, dnsHasCacheAlg = false, inDns = false
@@ -980,6 +981,7 @@ import Network
         guard let text = try? String(contentsOfFile: path, encoding: .utf8) else { return }
         var lines = text.components(separatedBy: "\n")
         var hasGeodataMode = false
+        var hasGeodataLoader = false
         var inDns = false
         var hasDnsCacheAlg = false
         var hasDnsSize = false
@@ -997,6 +999,9 @@ import Network
             let line = lines[i]
             if scalar(line, "geodata-mode") != nil {
                 hasGeodataMode = true
+            }
+            if scalar(line, "geodata-loader") != nil {
+                hasGeodataLoader = true
             }
             if !line.hasPrefix(" ") && !line.hasPrefix("\t") {
                 inDns = line.hasPrefix("dns:")
@@ -1016,6 +1021,18 @@ import Network
         
         if !hasGeodataMode {
             lines.insert("geodata-mode: true", at: 0)
+            changed = true
+            if dnsIndex != -1 { dnsIndex += 1 }
+        }
+        // `geodata-mode: true` selects the V2Ray `.dat` databases, and mihomo's
+        // default loader ("standard") unmarshals the whole GeoSite/GeoIP file
+        // into the heap and keeps it there — tens of MB of resident memory for
+        // data that is only consulted on a rule miss. `memconservative` is
+        // mihomo's own low-memory loader for exactly this file format: same
+        // matching results, a fraction of the retained heap. Purely a loader
+        // choice, so it cannot change which rules match.
+        if !hasGeodataLoader {
+            lines.insert("geodata-loader: memconservative", at: 0)
             changed = true
             if dnsIndex != -1 { dnsIndex += 1 }
         }
@@ -1200,6 +1217,14 @@ import Network
         await api.probe(timeout: 0.3)
         if api.reachable { return }
 
+        // Unreachable *and* still in the process table means residue, not a peer
+        // to defer to. Clear it before spawning — see `reapOrphanKernels`.
+        await reapOrphanKernels()
+        // The reap re-probes with a full timeout before it kills anything, so a
+        // kernel that was merely slow to initialize is alive and answering by
+        // now. Adopt it instead of spawning a second one on top.
+        if api.reachable { return }
+
         let process = Process()
         process.executableURL = URL(fileURLWithPath: kernelPath)
         process.arguments = ["-d", appSupport]
@@ -1207,6 +1232,16 @@ import Network
         env["GOGC"] = "50"
         env["GODEBUG"] = "madvdontneed=1"
         process.environment = env
+        // Capture the kernel's own output. A user-mode start that dies on
+        // "address already in use" or an unreadable config used to leave nothing
+        // behind but the caller's generic "内核启动超时": the reason went to the
+        // app's stdout, which nobody reads in a released build.
+        let kernelLog = appSupport + "/mihomo-user.log"
+        FileManager.default.createFile(atPath: kernelLog, contents: nil)
+        if let handle = try? FileHandle(forWritingTo: URL(fileURLWithPath: kernelLog)) {
+            process.standardOutput = handle
+            process.standardError = handle
+        }
         do {
             try process.run()
             userProcess = process
@@ -1214,7 +1249,139 @@ import Network
         } catch {
             print("ensureRunning: failed to start: \(error)")
             onLog?("用户模式启动失败：\(error.localizedDescription)")
+            return
         }
+        // mihomo binds its ports during init, so a fatal start is over well
+        // inside 300 ms. Report it with the kernel's own last words instead of
+        // letting `waitForKernelReady` time out and blame something else.
+        try? await Task.sleep(nanoseconds: 300_000_000)
+        if !process.isRunning {
+            userProcess = nil
+            let tail = Self.tail(of: kernelLog, lines: 4)
+            onLog?("用户模式内核启动后立即退出 (status \(process.terminationStatus))"
+                   + (tail.isEmpty ? "" : "：\(tail)"))
+        }
+    }
+
+    /// Running `mihomo` processes whose executable is *this app's* managed kernel
+    /// binary, as `(pid, isRoot)`.
+    ///
+    /// Matching on the executable path — macOS `ps -o comm` prints it in full —
+    /// rather than on the process name is the whole point: a `mihomo` belonging
+    /// to another client, or one the user runs by hand from a terminal, is not
+    /// ours to signal. (The helper's root start path can afford a blanket
+    /// `killall mihomo` because it needs the utun and ports unconditionally; the
+    /// user-mode path has no such excuse.)
+    nonisolated private static func managedKernels(at kernelPath: String) async -> [(pid: Int32, root: Bool)] {
+        let suffix = "/Library/Application Support/ClashHalo/bin/mihomo"
+        return await withCheckedContinuation { (cont: CheckedContinuation<[(pid: Int32, root: Bool)], Never>) in
+            DispatchQueue.global().async {
+                let p = Process()
+                p.executableURL = URL(fileURLWithPath: "/bin/ps")
+                p.arguments = ["-axww", "-o", "pid=,uid=,comm="]
+                let out = Pipe()
+                p.standardOutput = out
+                p.standardError = Pipe()
+                guard (try? p.run()) != nil else { cont.resume(returning: []); return }
+                let data = out.fileHandleForReading.readDataToEndOfFile()
+                p.waitUntilExit()
+                let text = String(data: data, encoding: .utf8) ?? ""
+
+                var found: [(pid: Int32, root: Bool)] = []
+                for row in text.split(separator: "\n") {
+                    // Hand-parsed rather than `split(separator: " ")`: the path
+                    // lives under "Application Support", so the last column
+                    // contains spaces and must be taken as the whole remainder.
+                    var rest = row.drop { $0 == " " }
+                    guard let pidEnd = rest.firstIndex(of: " "),
+                          let pid = Int32(rest[..<pidEnd]) else { continue }
+                    rest = rest[pidEnd...].drop { $0 == " " }
+                    guard let uidEnd = rest.firstIndex(of: " "),
+                          let uid = UInt32(rest[..<uidEnd]) else { continue }
+                    let comm = String(rest[uidEnd...].drop { $0 == " " })
+                    // Suffix as well as equality: `ps` can report the firmlinked
+                    // `/System/Volumes/Data/Users/...` form of a home path, and a
+                    // near-miss here would silently disable the whole reap.
+                    // Still specific enough that no foreign `mihomo` matches.
+                    guard comm == kernelPath || comm.hasSuffix(suffix) else { continue }
+                    found.append((pid, uid == 0))
+                }
+                cont.resume(returning: found)
+            }
+        }
+    }
+
+    nonisolated private static func managedKernelsGone(at path: String, within seconds: TimeInterval) async -> Bool {
+        let deadline = Date().addingTimeInterval(seconds)
+        while Date() < deadline {
+            if await managedKernels(at: path).isEmpty { return true }
+            try? await Task.sleep(nanoseconds: 100_000_000)
+        }
+        return await managedKernels(at: path).isEmpty
+    }
+
+    /// Kill leftover kernels from a previous session before spawning a new one.
+    ///
+    /// Only reached once the controller is confirmed unreachable, so a managed
+    /// `mihomo` still in the process table is residue by definition. It gets
+    /// there whenever the app dies without running `AppDelegate.performCleanup`
+    /// — force quit, crash, SIGKILL — because macOS reparents the child to
+    /// launchd instead of killing it with us, and the helper's client-death
+    /// watchdog only reaches processes *it* started (or none at all, when the
+    /// helper was not running at the time).
+    ///
+    /// The orphan still holds mixed-port and external-controller, so the fresh
+    /// spawn dies on bind within milliseconds and every symptom the user sees —
+    /// "内核未响应", a readiness timeout, a dead toggle — describes something
+    /// other than the cause. Reaping first is what makes the relaunch work.
+    private func reapOrphanKernels() async {
+        let path = kernelPath
+        var orphans = await Self.managedKernels(at: path)
+        guard !orphans.isEmpty else { return }
+
+        // The probes that got us here were deliberately short (0.25 s / 0.3 s) so
+        // a cold start does not idle in front of a kernel that is not there. But
+        // a kernel that *is* there and merely mid-initialization — parsing a big
+        // profile, loading geodata, ~600 ms on this config — looks identical to a
+        // dead one at that timeout. Killing it would turn a slow start into a
+        // restart loop. Give a process that exists one honest, full-length probe
+        // before deciding it is residue.
+        await api.probe(timeout: 2.0)
+        if api.reachable {
+            onLog?("内核仍在初始化中（已应答），取消回收")
+            return
+        }
+        orphans = await Self.managedKernels(at: path)
+        guard !orphans.isEmpty else { return }
+
+        onLog?("检测到上次会话遗留的内核进程 (\(orphans.map { String($0.pid) }.joined(separator: ", ")))，回收后再启动")
+
+        // Root-owned residue cannot be signalled from a user-level process; only
+        // the helper can. Ask it first, then handle our own with SIGTERM.
+        if orphans.contains(where: { $0.root }) {
+            if await XPCManager.shared.verifyConnectivity() {
+                _ = await XPCManager.shared.callStopMihomo()
+            } else {
+                onLog?("⚠️ 遗留内核以 root 运行且特权服务不可达，无法回收；请在「网络 → 内核」重装特权服务")
+            }
+        }
+        for o in orphans where !o.root { kill(o.pid, SIGTERM) }
+
+        // Ports are released on exit, so wait for the table to clear rather than
+        // for a fixed delay — a clean SIGTERM usually costs one 100 ms poll.
+        if await Self.managedKernelsGone(at: path, within: 0.6) { return }
+        for o in await Self.managedKernels(at: path) where !o.root { kill(o.pid, SIGKILL) }
+        if await Self.managedKernelsGone(at: path, within: 0.9) { return }
+        onLog?("⚠️ 遗留内核未退出，新内核可能因端口占用启动失败")
+    }
+
+    /// Last `lines` lines of a log file, flattened for a one-line log entry.
+    nonisolated private static func tail(of path: String, lines: Int) -> String {
+        guard let text = try? String(contentsOfFile: path, encoding: .utf8) else { return "" }
+        return text.split(separator: "\n")
+            .suffix(lines)
+            .map { $0.trimmingCharacters(in: .whitespaces) }
+            .joined(separator: " | ")
     }
 
     /// Check whether the installed helper is outdated and upgrade it automatically.
@@ -1799,7 +1966,10 @@ import Network
                     if let parsedStr = parseValue(value) as? String {
                         arr.append(parsedStr)
                     } else {
-                        arr.append(value)
+                        // Non-string (a bare number / bool in a list). The raw
+                        // text still has to lose its comment — this branch
+                        // bypasses `parseValue`'s return value, not its cleanup.
+                        arr.append(YamlScalar.stripInlineComment(value))
                     }
                     currentDict[key] = arr
                 }
@@ -1813,25 +1983,7 @@ import Network
         return result
     }
 
-    private func parseValue(_ value: String) -> Any {
-        if value == "true" { return true }
-        if value == "false" { return false }
-        if let i = Int(value) { return i }
-        // Remove quotes
-        if value.hasPrefix("'") && value.hasSuffix("'") {
-            return String(value.dropFirst().dropLast())
-        }
-        if value.hasPrefix("\"") && value.hasSuffix("\"") {
-            return String(value.dropFirst().dropLast())
-        }
-        // Handle flow-style array
-        if value.hasPrefix("[") && value.hasSuffix("]") {
-            let inner = value.dropFirst().dropLast().trimmingCharacters(in: .whitespaces)
-            if inner.isEmpty { return [] as [String] }
-            return inner.components(separatedBy: ",").map { 
-                $0.trimmingCharacters(in: .whitespaces).trimmingCharacters(in: CharacterSet(charactersIn: "\"'"))
-            }
-        }
-        return value
-    }
+    /// Scalar interpretation lives in `YamlScalar` so the regression suite can
+    /// compile the real rules instead of re-implementing them.
+    private func parseValue(_ raw: String) -> Any { YamlScalar.parse(raw) }
 }

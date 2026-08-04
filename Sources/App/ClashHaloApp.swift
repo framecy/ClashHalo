@@ -3,7 +3,24 @@ import SwiftUI
 // MARK: - App Delegate
 
 final class AppDelegate: NSObject, NSApplicationDelegate {
+    /// Boot the model here rather than from the main window's `.onAppear`.
+    ///
+    /// A login-item launch (SMAppService) starts ClashHalo in the background:
+    /// SwiftUI does not instantiate a `Window` scene's content until that window
+    /// is actually ordered on screen, so `.onAppear` never fired and `start()`
+    /// never ran. The menu bar extra, however, is live from the first frame — so
+    /// the user could open it and hit Proxy / TUN against a model that had never
+    /// called `store.load()`. With `profiles` still empty both toggles take their
+    /// "no profile" guard and answer "请先导入配置", for configs that are sitting
+    /// on disk. Nothing else in `start()` had run either: no kernel auto-start,
+    /// no polling, no helper check — the menu bar just sat disconnected until the
+    /// user happened to open the main window.
+    ///
+    /// Launching is the right trigger for all of that; a window being drawn is
+    /// not. `start()` is idempotent (guarded by `started`), so the `.onAppear`
+    /// call below remains as a harmless backstop.
     func applicationDidFinishLaunching(_ notification: Notification) {
+        MainActor.assumeIsolated { AppModel.shared.start() }
     }
 
     func applicationWillTerminate(_ notification: Notification) {
