@@ -399,6 +399,28 @@ public let kProxyBypassDomains: [String] = {
     var list = ["localhost", "127.0.0.1", "*.local", "10.*", "192.168.*", "169.254.*"]
     list += (16...31).map { "172.\($0).*" }
     list += (64...127).map { "100.\($0).*" }
+    // Tailscale control plane + DERP relays + MagicDNS address.
+    //
+    // Scope: **system proxy only**. `kProxyBypassDomains` is consumed by
+    // ProxyManager / the local shell fallback / `reconcileProxyBypassIfNeeded`.
+    // It does NOT affect pure TUN traffic — that path is carved out by
+    // `tun.route-exclude-address` (`100.64.0.0/10`, `100.100.100.100/32`) and
+    // the DNS half reported via `CoexistencePlan.dnsAdvice` (`+.ts.net`). Do
+    // not read a bypass entry here as a TUN fix.
+    //
+    // When the system proxy is ON, sending `login.tailscale.com` and
+    // `*.derp.tailscale.com` through mihomo routinely times out the QUIC
+    // probe (`Connection exceeded max PTO count`) and tailscaled flaps.
+    // Bypass is unconditional: a host running Tailscale needs these even
+    // before any keys are entered in Settings, and these are stable public
+    // domains (not user secrets), so the single-source const is the right
+    // home — Helper, fallback and reconcile all inherit them with no second
+    // list to drift.
+    //
+    // `100.100.100.100` is already covered by the CGNAT `100.100.*` wildcard
+    // above; the explicit entry is kept as a readable anchor for MagicDNS
+    // (and is harmless to duplicate in the macOS bypass list).
+    list += ["*.tailscale.com", "100.100.100.100"]
     return list
 }()
 
