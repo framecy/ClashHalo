@@ -234,6 +234,13 @@ import ServiceManagement
     /// stage-and-forget on a dropped PATCH or the reconciler will skip forever.
     /// Internal so the `AppModel+Config` extension can access it.
     var lastCoexistenceFingerprint = ""
+    /// True while `reconcileCoexistenceIfChanged` is mid-flight. The fingerprint
+    /// above cannot do this job: it is written only after the PATCH and the XPC
+    /// route push both return, so two path callbacks arriving inside that window
+    /// each read the *old* fingerprint and run the whole reconcile — observed in
+    /// the field as paired "检测到网络拓扑变化"/"静态路由同步 成功" lines 85 ms
+    /// apart, i.e. two whole-block `tun` PATCHes for one topology change.
+    var coexistenceReconcileInFlight = false
     /// Coalesces concurrent refreshConfigs callers onto one in-flight run
     /// (see refreshConfigs) — the path-update storm used to stack 3+ parallel
     /// runs that raced the static-route inject/cleanup XPC calls.
