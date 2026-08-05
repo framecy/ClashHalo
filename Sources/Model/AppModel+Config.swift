@@ -1224,6 +1224,13 @@ extension AppModel {
         // takes over. (The DNS half cannot ride along here — mihomo ignores a
         // runtime DNS PATCH; see `coexistenceRouteBody`.)
         var pendingRouteProvenance: [String]?
+        // Fingerprint is staged here and written only after the kernel has
+        // actually accepted the change (same gate as provenance). Writing it
+        // up-front made a dropped PATCH look like a successful push:
+        // `reconcileCoexistenceIfChanged` then saw `fp == last…` and skipped
+        // forever, leaving peer prefixes inside auto-route until the topology
+        // itself moved. `nil` = leave the latch alone (failure path).
+        var pendingCoexistenceFingerprint: String? = nil
         if want {
             let plan = Coexistence.plan(await Coexistence.detect())
             if let ex = coexistenceRouteBody(plan) {
@@ -1243,17 +1250,20 @@ extension AppModel {
             for line in plan.dnsAdvice {
                 logKernel("TUN 共存（需手动配置）：\(line)")
             }
-            lastCoexistenceFingerprint = Coexistence.fingerprint(plan)
+            pendingCoexistenceFingerprint = Coexistence.fingerprint(plan)
         } else {
             // Strip what we injected so a peer's prefixes do not outlive the TUN
             // session that needed them. Withdrawal must remove the entries, not
             // merely forget them — forgetting promotes them to user-owned and
             // they would then survive forever.
-            let existing = (configs["tun"] as? [String: Any])?["route-exclude-address"] as? [String] ?? []
+            // `liveTunBlock` (kernel → config.yaml), not the in-memory `configs`
+            // snapshot: an empty/stale snapshot made withdraw a no-op and left
+            // injected exclusions in the running kernel across a TUN-off.
+            let existing = liveTunBlock()["route-exclude-address"] as? [String] ?? []
             let kept = Coexistence.withdraw(field: "route-exclude-address", from: existing)
             if kept.count != existing.count { tunOverrideMap["route-exclude-address"] = kept }
             pendingRouteProvenance = []
-            lastCoexistenceFingerprint = ""
+            pendingCoexistenceFingerprint = ""
         }
 
         var overrides: [String: Any] = ["tun": tunOverrideMap]
@@ -1497,12 +1507,24 @@ extension AppModel {
                             logKernel("TUN 回退重试：内核就绪等待超时")
                         }
                     }
-                    if !tunOn {
+                    if tunOn {
+                        // Restart path brought the tunnel up outside the PATCH
+                        // success latch below — commit the staged fingerprint now
+                        // so reconcile does not re-push the same plan, and so a
+                        // *failed* first PATCH that later recovered via restart
+                        // is not stuck with a blank latch forever.
+                        if let fp = pendingCoexistenceFingerprint {
+                            lastCoexistenceFingerprint = fp
+                        }
+                    } else {
                         // Still no utun after a clean init — genuinely cannot start
                         // (no privilege, or another VPN owns the routes). Tear the
                         // kernel back down so it cannot keep TUN half-up, and undo
                         // the persist above so the next plain start does not retry
                         // TUN outside this flow.
+                        // Leave `lastCoexistenceFingerprint` untouched: the staged
+                        // value was never committed, so reconcile can still retry
+                        // after a later successful enable.
                         await applyTUNState(false, allowRestartFallback: false)
                         engine.setTunEnabled(false)
                         showToast("TUN 开启失败：可能无管理员权限或路由被其他 VPN 占用冲突", kind: .error)
@@ -1524,6 +1546,13 @@ extension AppModel {
                 showToast("TUN 开启失败：可能无管理员权限或路由被其他 VPN 占用冲突", kind: .error)
                 logKernel("TUN 开启失败：runningAsRoot=\(engine.runningAsRoot) reachable=\(reachable) hasIface=\(await NetScanner.mihomoTunInterface(maxAge: 0) != nil)")
             } else {
+                // Kernel state now matches intent (tunOn == want after refresh).
+                // Only here is the coexistence latch safe to advance — mirrors
+                // `reconcileCoexistenceIfChanged`, which writes the fingerprint
+                // after a confirmed PATCH, never before.
+                if let fp = pendingCoexistenceFingerprint {
+                    lastCoexistenceFingerprint = fp
+                }
                 // TUN disable cascades: Gateway mode requires TUN, so if we
                 // just turned TUN off, also tear down Gateway (sysctl + UI +
                 // restore the allow-lan/dns.listen overrides Gateway applied).
@@ -1913,16 +1942,22 @@ extension AppModel {
 
     /// Deep-merge config overrides into the running config via the engine
     /// (validate + rollback). The primitive behind all settings forms.
-    func patch(_ overrides: [String: Any]) async {
+    ///
+    /// Returns whether the kernel accepted the change. Callers that record
+    /// side effects (coexistence provenance, fingerprints) must gate those on
+    /// the return value — a dropped PATCH must not be treated as applied.
+    @discardableResult
+    func patch(_ overrides: [String: Any]) async -> Bool {
         guard reachable else {
             showToast("内核未连接，无法修改配置", kind: .error)
-            return
+            return false
         }
 
         let ok = await engine.patchConfig(overrides)
         if ok {
             await refreshConfigs()
             showToast("配置已更新", kind: .ok)
+            return true
         } else {
             // Check if it just died
             await api.probe(timeout: 0.5)
@@ -1932,6 +1967,7 @@ extension AppModel {
                 reachable = false
                 showToast("内核已断开，配置写入失败", kind: .error)
             }
+            return false
         }
     }
 
