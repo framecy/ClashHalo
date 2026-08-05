@@ -2,6 +2,28 @@
 
 本项目所有重要变更记录于此。格式参考 [Keep a Changelog](https://keepachangelog.com/),版本遵循语义化版本。
 
+## [1.1.15] - 2026-08-05
+
+围绕对端隧道共存的一组修复，两条来自一次 6.5 小时不间断运行时监控的实测捕获。Helper 仍为 **1.0.24**，本版**不需要重新授权**。
+
+### Fixed
+
+- **同一次拓扑变化重复下发 `tun` PATCH**：`reconcileCoexistenceIfChanged` 的去重只依赖 `lastCoexistenceFingerprint`，而该值直到 `patchConfig` 与 `callSetupExcludeRoutes` 两次 await 之后才写入。网络路径监视器成簇投递的回调都能通过 fingerprint guard，于是整段流程跑两遍，对内核连发两次 `tun` **整块替换** PATCH。监控在两次真实拓扑变化中均复现：10:34（Tailscale 自更新导致隧道接口 utun4→utun11）与 14:31（第二条隧道 utun10 接入），日志中「检测到网络拓扑变化」与「静态路由同步 成功」成对出现，两次回调相隔 85ms。现加 in-flight 标志；被合流掉的调用无需补跑，`verifyTUNConfig` 每 2 分钟会重新触发一次 reconcile。
+
+- **PATCH 被内核静默丢弃后 reconcile 永久跳过**：`applyTUNState` 在 PATCH 之前就写 `lastCoexistenceFingerprint`，mihomo 丢弃时对端网段会被 auto-route 吞掉，直到拓扑本身再次变化才有机会恢复。fingerprint 现与 provenance 同门控：先 stage，confirm / restart 成功后再 commit，失败保持旧 latch 以便重试。关闭 TUN 时撤回 `route-exclude-address` 改用 `liveTunBlock()`（kernel → config.yaml 两级取值），避免 `configs` 空窗让 withdraw 空转、注入项残留在运行态。
+
+- **系统代理开启时 Tailscale 反复 flap**：`login.tailscale.com` 与 `*.derp.tailscale.com` 经 mihomo 会让 tailscaled 的 QUIC 探路超时（`Connection exceeded max PTO count`）。`kProxyBypassDomains` 追加 `*.tailscale.com` 与 `100.100.100.100`。作用域**仅系统代理**；纯 TUN 路径仍由 `tun.route-exclude-address` 与 `CoexistencePlan.dnsAdvice` 负责，注释已写明以免误当 TUN 修复。已安装的 Helper 编译进的是旧列表，但 `reconcileProxyBypassIfNeeded` 本就绕开 Helper 用 `networksetup` 直写，因此无需重装 Helper 即可生效。
+
+- **`setSystemProxyFallback` 的 shell 注入路径 glob 展开**：`*.local` 等未加引号拼进 shell，CWD 下存在同名文件时会被展开，静默写残 bypass 列表。现对每项做 POSIX 单引号转义。Helper 与 GUI 路径走 argv，本就不受影响。
+
+### Changed
+
+- 预留 Tailscale Keychain 账户名（`kTailscaleAuthKey` / `kTailscaleAPIToken` / `maskTailscaleKey`）与 `TailscaleDevice` 模型，与订阅 URL 共用 `com.clashhalo.secrets` 服务但 account 隔离。本项无调用方，不改变运行时行为。
+
+### Tests
+
+- `Scripts/run-tests.sh` 91/92。唯一失败项 `Tests/RouteGuard` 的 `localAttachedSubnets — 本机实测`，断言运行机器的 en0 上存在 `10.1.1.0/24`；该网段在当前机器上属于 Tailscale 的 utun 接口而非 en0，故不成立。该断言读取实时网卡状态，与本版改动无关——在不含本版任何改动的 v1.1.14 提交上同样失败。
+
 ## [1.1.14] - 2026-08-04
 
 启动与开关路径的一组修复，外加一条从真实日志追出来的根因。Helper 仍为 **1.0.24**，本版**不需要重新授权**。
