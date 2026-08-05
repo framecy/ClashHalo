@@ -226,10 +226,12 @@ import ServiceManagement
     /// derive tunOn to false; turning ON and every *explicit* teardown path
     /// (user toggle off, stopEngine, kernel-unreachable reconnect) are exempt.
     var tunStateSettleUntil: Date = .distantPast
-    /// Digest of the coexistence plan last pushed to the kernel. Lets the
+    /// Digest of the coexistence plan last *accepted* by the kernel. Lets the
     /// reconciler skip a PATCH when the peer-tunnel topology has not moved —
     /// mihomo ACKs a PATCH before deciding it can apply it, so unnecessary
     /// pushes are a way to lose a real change, not just wasted work.
+    /// Written only after a confirmed apply (same gate as provenance); never
+    /// stage-and-forget on a dropped PATCH or the reconciler will skip forever.
     /// Internal so the `AppModel+Config` extension can access it.
     var lastCoexistenceFingerprint = ""
     /// Coalesces concurrent refreshConfigs callers onto one in-flight run
