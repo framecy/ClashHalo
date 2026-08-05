@@ -1844,10 +1844,20 @@ import Network
         let shell: String
         if enabled {
             // Bypass domains: the single-source `kProxyBypassDomains` (RFC1918 +
-            // link-local + CGNAT) so this fallback stays in lockstep with the XPC
-            // path and the GUI reconcile — no duplicated list to drift. See
-            // ProxyManager.setSystemProxy for the rationale.
-            let bypass = kProxyBypassDomains.joined(separator: " ")
+            // link-local + CGNAT + Tailscale control plane) so this fallback stays
+            // in lockstep with the XPC path and the GUI reconcile — no duplicated
+            // list to drift. See ProxyManager.setSystemProxy for the rationale.
+            //
+            // Each entry is single-quoted. Entries like `*.local` and
+            // `*.tailscale.com` are shell globs; left bare they expand against the
+            // process CWD and `networksetup` receives whatever files happen to
+            // match (or nothing), silently writing a mangled bypass list. The
+            // Helper and GUI reconcile paths pass argv arrays and never hit this;
+            // only this string-built fallback needs the quotes. Single-quote
+            // escaping follows POSIX (`'` → `'\''`).
+            let bypass = kProxyBypassDomains
+                .map { "'\($0.replacingOccurrences(of: "'", with: "'\\''"))'" }
+                .joined(separator: " ")
             shell = """
             networksetup -listallnetworkservices | tail -n +2 | while read -r svc; do
                 [[ "$svc" == \\** ]] && continue
