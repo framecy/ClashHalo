@@ -260,15 +260,18 @@ struct SdwanPage: View {
                                         injected = ex.injected
                                     }
                                     // Claim provenance only for what we actually
-                                    // sent. Recording the plan unconditionally
-                                    // mis-attributed the user's own entries as
-                                    // ours, and the next withdrawal pass would
-                                    // then delete them.
-                                    await M.patch(["tun": fix])
-                                    Coexistence.commitProvenance(
-                                        field: "route-exclude-address",
-                                        injected: injected
-                                    )
+                                    // *applied*. Recording on a dropped PATCH
+                                    // mis-attributes the user's own entries as
+                                    // ours (and the next withdrawal deletes them),
+                                    // and also makes the automatic reconciler
+                                    // think the plan is already live.
+                                    let ok = await M.patch(["tun": fix])
+                                    if ok {
+                                        Coexistence.commitProvenance(
+                                            field: "route-exclude-address",
+                                            injected: injected
+                                        )
+                                    }
                                     try? await Task.sleep(nanoseconds: 800_000_000)
                                     rescan()
                                 }
