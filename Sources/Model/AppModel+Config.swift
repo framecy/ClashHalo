@@ -998,9 +998,20 @@ extension AppModel {
     /// Gated on the plan fingerprint: mihomo ACKs a PATCH before deciding whether
     /// it can apply it, so pushing an unchanged plan on every poll risks a real
     /// change being lost in the churn.
+    ///
+    /// Re-entrancy is guarded separately from the fingerprint. The fingerprint is
+    /// written only after the PATCH *and* the static-route push have returned, so
+    /// it cannot dedupe callers that arrive inside that window — and the network
+    /// path monitor does deliver them in bursts (two callbacks 85 ms apart on a
+    /// peer tunnel moving interface). A caller arriving mid-run returns instead of
+    /// pushing a second whole-block `tun` PATCH for the same topology; whatever it
+    /// would have seen is re-detected by the 2-minute `verifyTUNConfig` sweep.
     func reconcileCoexistenceIfChanged() async {
         guard tunOn, reachable, !engine.isBusy, !sleeping else { return }
         guard Date() >= tunStateSettleUntil else { return }
+        guard !coexistenceReconcileInFlight else { return }
+        coexistenceReconcileInFlight = true
+        defer { coexistenceReconcileInFlight = false }
         let peers = await Coexistence.detect()
         let plan = Coexistence.plan(peers)
         let fp = Coexistence.fingerprint(plan)
