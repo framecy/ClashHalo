@@ -2,6 +2,52 @@
 
 本项目所有重要变更记录于此。格式参考 [Keep a Changelog](https://keepachangelog.com/),版本遵循语义化版本。
 
+## [1.1.17] - 2026-08-09
+
+TUN 持久化设备名与 flap 熔断器。Helper 仍为 **1.0.24**，本版**不需要重新授权**。
+
+### Added
+
+- **`persistTunState`：内核重启后 TUN 落在同一 utun 接口**。Mihomo
+  `PATCH /configs` 对 `tun` 字段是整块替换，不是深合并，所以在 reload
+  时只写 `tun.enable` 会丢失 `tun.device`，内核可能重选不同接口名
+  （`utun9` → `utun13`）。路由表、DNS 重定向、共存推理全部基于接口名，
+  一旦切换就各自为政。`persistTunStateForReload()` 读取当前生效的
+  device 名，连同 `enable` 一起写入磁盘，使 reload 后的内核仍落在
+  同一接口。
+
+- **TUN flap 熔断器**：TUN 接口丢失自愈本意是好事，但一个无法稳定
+  保持 UP 的 TUN 会把自愈本身变成故障——开启 → utun 消失 → 自动关闭
+  → 用户或路径监视器再次开启 → 重复。现增加 `noteTunInterfaceTeardown`
+  在 10 分钟内计数，3 次后锁死 `tunFlapAbandoned`，停止自动重开，
+  只在用户手动切换时解锁。verifyTUNConfig 的 30s 巡检也同样记账，
+  避免 30s 这条路径独立触发 flap 时熔断器形同虚设。
+
+- **`gatewayPendingTunRestore`：TUN 关闭后不丢网关意图**。网关依赖
+  TUN，TUN 关闭时级联关闭网关——sysctl 转发、`allow-lan`、
+  `dns.listen=0.0.0.0:53` 全部恢复。但用户的意图没有变。`gatewayPendingTunRestore`
+  在 TUN 关闭时置位，下次 TUN 恢复时自动恢复网关，不再把 LAN 客户端
+  丢在无网关/无 DNS 状态。显式关闭网关或停止内核时清除。
+
+### Changed
+
+- `resetGatewayRepairBreakers` 从 `gatewayModeOn.didSet` 移出：级联
+  写入 `gatewayModeOn`（TUN 关闭级联关网关、TUN 恢复再打开）会反复
+  重设修复断路器，导致一个已经放弃的修复被重新激活。现只在用户手动
+  切换网关时（`toggleGatewayMode`）调用。
+
+### 已知行为变化
+
+- 一个反复掉线的 TUN 会在 10 分钟内自动关闭 3 次后停止自动重开，
+  需要用户手动开启。这是新行为，不是缺陷。
+
+### Tests
+
+- `Scripts/run-tests.sh` **92 + 33 + 24 全部通过**。
+- 新增 `appmemoryguard-tests`（24 项）：`AppMemoryGuardPolicy` 的
+  阈值分档、限频、UI 可见性判定，覆盖 v1.1.15 实际故障点（350MB
+  必须触发旧 400MB 阈值不触发的场景）。
+
 ## [1.1.16] - 2026-08-09
 
 内存占用治理。用户反馈应用长期盘桓在 350MB+，根因是三个问题叠加，而不是任何单点泄漏。Helper 仍为 **1.0.24**，本版**不需要重新授权**。
