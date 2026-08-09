@@ -176,7 +176,13 @@ private struct SafeDecoder: @unchecked Sendable {
     func fetchConnectionsSnapshot() async throws -> ConnectionsSnapshot {
         guard let req = request("/connections", method: "GET") else { throw MihomoError.badURL }
         let (data, _) = try await session.data(for: req)
-        return try SafeDecoder.shared.decode(ConnectionsSnapshot.self, from: data)
+        // Largest and most frequent decode in the app (every 1.5 s, one object
+        // per live connection). Pool it like the generic `get` path already does
+        // so JSONDecoder's temporaries drain here instead of piling up in the
+        // caller's run-loop pool.
+        return try autoreleasepool {
+            try SafeDecoder.shared.decode(ConnectionsSnapshot.self, from: data)
+        }
     }
 
     /// Flush the kernel's DNS resolver cache.

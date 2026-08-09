@@ -124,6 +124,20 @@ import ServiceManagement
     var activeConnsSet: Set<String> = []
     var totalConnsCount = 0
 
+    /// Hard ceiling on how many `Conn` rows stay resident.
+    ///
+    /// `cachedConns` is replaced wholesale each tick, so it never grows without
+    /// bound in the literal sense — but a download / P2P burst can push several
+    /// thousand live connections, and each `Conn` carries 14 `String` fields
+    /// (~300–800 B). Keeping the whole set resident means multiple MB of freshly
+    /// allocated strings per tick, which is what actually fragments the heap.
+    /// Rows are sorted by rate before truncation, so what gets dropped is always
+    /// the idle tail; the count shown in the UI comes from
+    /// `activeConnectionsCount`, which stays exact.
+    static let maxCachedConns = 2000
+    /// Closed-connection ring is user-facing history only — same reasoning.
+    static let maxClosedConns = 200
+
     /// Per-second telemetry, deliberately **not** published on this object.
     ///
     /// `AppModel` carries 44 `@Published` properties and a dozen views observe it,
@@ -336,6 +350,11 @@ import ServiceManagement
     @Published var closedConns = 0
     var lastDownTotal: Int64 = 0
     var lastCacheFlush = Date.distantPast
+    /// Rate-limits `enforceAppMemoryGuard`. The guard is now called from every
+    /// hot path (1.5 s connections poll, 3 s gateway poll, foreground loop), and
+    /// without this it would thrash the caches several times a second once RSS
+    /// settles just above the threshold.
+    var lastAppMemoryGuardAt = Date.distantPast
     var lastInterface: String? = nil
 
     // Toast — single-slot, generation-guarded (see showToast).
@@ -830,6 +849,14 @@ import ServiceManagement
                     }
                     healthDue = Date().addingTimeInterval(30)
                 }
+
+                // Foreground safety net. The other two guard sites hang off a
+                // connections snapshot, and neither fires when the window is
+                // open on a page that isn't Connections with gateway mode off —
+                // the common case, and exactly where RSS was observed sitting at
+                // 350 MB with nothing ever reclaiming it. The guard rate-limits
+                // itself, so running it each iteration is cheap.
+                self.enforceAppMemoryGuard()
 
                 try? await Task.sleep(nanoseconds: self.gatewayDevicesOnScreen ? 500_000_000
                                                                               : 3_000_000_000)

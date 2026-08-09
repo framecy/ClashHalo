@@ -37,17 +37,7 @@ extension AppModel {
             }
         }
 
-        // App Memory Guard: If app RSS > 400MB, aggressively free local caches
-        let appRSS = Self.residentMemoryBytes()
-        if appRSS > 400 * 1_000_000 {
-            cachedConns.removeAll(keepingCapacity: false)
-            cachedClosedConnections.removeAll(keepingCapacity: false)
-            if !isMainWindowVisible && !isMenuBarVisible {
-                prevConnBytes.removeAll(keepingCapacity: false)
-                activeConnsSet.removeAll(keepingCapacity: false)
-            }
-            logKernel("App 内存占用过高 (\(appRSS / 1_000_000)MB)，已释放缓存")
-        }
+        enforceAppMemoryGuard()
 
         let items = s.connections ?? []
         let hour = Calendar.current.component(.hour, from: Date())
@@ -56,7 +46,14 @@ extension AppModel {
         // unless the user is actually looking at the dashboard or connections page.
         // history.record() calls within this loop are the main culprit for background CPU/memory churn.
         let needDetailedStats = isMainWindowVisible || isMenuBarVisible
-        
+
+        // Everything below allocates per connection — the byte dictionary, the id
+        // set, and `computeDashRaw`'s five scratch dictionaries. Without an
+        // explicit pool those temporaries sit in the main run loop's autorelease
+        // pool until the next `await`, so at a 3 s cadence several ticks' worth of
+        // garbage stays live at once. Draining per tick is what keeps the
+        // footprint flat instead of sawtoothing upward.
+        autoreleasepool {
         if needDetailedStats {
             var bytes: [String: (up: Int64, down: Int64)] = [:]
             bytes.reserveCapacity(items.count)
@@ -131,13 +128,93 @@ extension AppModel {
             }
             if !activeConnsSet.isEmpty { activeConnsSet.removeAll(keepingCapacity: false) }
         }
-        
+        }
+
         closedConns = max(0, totalConnsCount - activeConnectionsCount)
         history.flushIfNeeded()
         lastDownTotal = s.downloadTotal
         // 仅在窗口可见时更新内存显示（避免后台轮询触发 task_info 系统调用）
         if needDetailedStats {
             live.appMemoryMB = Double(Self.residentMemoryBytes()) / 1_000_000
+        }
+    }
+
+    // MARK: - App memory guard
+
+    /// Soft threshold. Below this the caches are left alone.
+    ///
+    /// Was 400 MB, which sits *above* the ~350 MB plateau users actually
+    /// reported — so in practice the guard never ran even while the app was
+    /// visibly bloated. 250 MB is above a healthy idle footprint (~80–150 MB)
+    /// but below that plateau, so it engages before the heap has already
+    /// fragmented rather than after.
+    static let appMemorySoftLimit: UInt64 = 250 * 1_000_000
+    /// Hard threshold — drop everything, visible or not.
+    static let appMemoryHardLimit: UInt64 = 400 * 1_000_000
+    /// Minimum spacing between two guard actions.
+    static let appMemoryGuardInterval: TimeInterval = 15
+
+    /// Trim local connection caches when this process' RSS gets high.
+    ///
+    /// Called from **every** snapshot consumer — `recordHistoryOnly`, the
+    /// Connections page view model, and the foreground poll loop. It previously
+    /// lived only inside `recordHistoryOnly`, which the Connections page (the
+    /// most allocation-heavy path in the app, polling at 1.5 s) bypasses
+    /// entirely; that page read RSS purely to display it and never acted on it.
+    ///
+    /// Two tiers, because a blanket `removeAll` while the user is looking at the
+    /// connections table blanks the table for a tick:
+    ///
+    ///  * **soft** — shed the closed-connection history and truncate the live
+    ///    rows to a small working set. The table stays populated.
+    ///  * **hard**, or UI not visible — release everything, including the
+    ///    diffing bookkeeping, since nothing on screen can go blank.
+    ///
+    /// Rate-limited internally, so hot callers can invoke it every tick.
+    @discardableResult
+    func enforceAppMemoryGuard() -> Bool {
+        let now = Date()
+        guard now.timeIntervalSince(lastAppMemoryGuardAt) >= Self.appMemoryGuardInterval else { return false }
+
+        let appRSS = Self.residentMemoryBytes()
+        guard appRSS > Self.appMemorySoftLimit else { return false }
+        lastAppMemoryGuardAt = now
+
+        let uiVisible = isMainWindowVisible || isMenuBarVisible
+        let hard = appRSS > Self.appMemoryHardLimit || !uiVisible
+
+        if hard {
+            cachedConns.removeAll(keepingCapacity: false)
+            cachedClosedConnections.removeAll(keepingCapacity: false)
+            if !uiVisible {
+                prevConnBytes.removeAll(keepingCapacity: false)
+                activeConnsSet.removeAll(keepingCapacity: false)
+            }
+        } else {
+            // `cachedConns` is already sorted by rate by its producer, so a
+            // prefix keeps the busiest slice — which is what the user is looking
+            // at — and drops the idle tail.
+            cachedClosedConnections.removeAll(keepingCapacity: false)
+            if cachedConns.count > 300 {
+                cachedConns = Array(cachedConns.prefix(300))
+            }
+        }
+        logKernel("App 内存占用过高 (\(appRSS / 1_000_000)MB)，已\(hard ? "释放" : "缩减")缓存")
+        return true
+    }
+
+    /// Clamp `cachedConns` / `cachedClosedConnections` to their ceilings.
+    ///
+    /// `Array(_:prefix:)` allocates a right-sized buffer, which also lets go of
+    /// capacity over-provisioned during a connection spike — assigning a
+    /// 5000-element array and later a 200-element one otherwise keeps the 5000
+    /// slots alive for the lifetime of the process.
+    func clampConnectionCaches() {
+        if cachedConns.count > Self.maxCachedConns {
+            cachedConns = Array(cachedConns.prefix(Self.maxCachedConns))
+        }
+        if cachedClosedConnections.count > Self.maxClosedConns {
+            cachedClosedConnections = Array(cachedClosedConnections.prefix(Self.maxClosedConns))
         }
     }
 
