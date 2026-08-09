@@ -37,6 +37,7 @@
 		FD83734160422E089693C6FF /* PrivilegedPrompt.swift in Sources */ = {isa = PBXBuildFile; fileRef = A15DB0EB9DCC4DF76EE089D8 /* PrivilegedPrompt.swift */; };
 		AMC1 /* AppModel+Connections.swift in Sources */ = {isa = PBXBuildFile; fileRef = AMC2 /* AppModel+Connections.swift */; };
 		AMG1 /* AppModel+Config.swift in Sources */ = {isa = PBXBuildFile; fileRef = AMG2 /* AppModel+Config.swift */; };
+		AMG3 /* AppMemoryGuard.swift in Sources */ = {isa = PBXBuildFile; fileRef = AMG4 /* AppMemoryGuard.swift */; };
 		AMP1 /* AppModel+Proxies.swift in Sources */ = {isa = PBXBuildFile; fileRef = AMP2 /* AppModel+Proxies.swift */; };
 		B1F3682AEF4F4C8AB5A97582 /* EngineControl.swift in Sources */ = {isa = PBXBuildFile; fileRef = 43A486CB7FAA4FBBAEBFCCE6 /* EngineControl.swift */; };
 		BA90C1F3406546599706585F /* NetworkPages.swift in Sources */ = {isa = PBXBuildFile; fileRef = A8B1C01AAFB044E986219D24 /* NetworkPages.swift */; };
@@ -76,6 +77,7 @@
 		AABBCCDD0000000000000004 /* XPCManager.swift */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.swift; path = Sources/XPC/XPCManager.swift; sourceTree = "<group>"; };
 		AMC2 /* AppModel+Connections.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "Sources/Model/AppModel+Connections.swift"; sourceTree = SOURCE_ROOT; };
 		AMG2 /* AppModel+Config.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "Sources/Model/AppModel+Config.swift"; sourceTree = SOURCE_ROOT; };
+		AMG4 /* AppMemoryGuard.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "Sources/Model/AppMemoryGuard.swift"; sourceTree = SOURCE_ROOT; };
 		AMP2 /* AppModel+Proxies.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "Sources/Model/AppModel+Proxies.swift"; sourceTree = SOURCE_ROOT; };
 		B001 /* ClashHaloApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ClashHaloApp.swift; sourceTree = "<group>"; };
 		B002 /* ContentView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ContentView.swift; sourceTree = "<group>"; };
@@ -131,6 +133,7 @@
 				A7EFEC0FDBC0406AA6A9D774 /* AppModel.swift */,
 				AMP2 /* AppModel+Proxies.swift */,
 				AMC2 /* AppModel+Connections.swift */,
+				AMG4 /* AppMemoryGuard.swift */,
 				AMG2 /* AppModel+Config.swift */,
 				9641FF3F733D4D03A5FC9B70 /* ConfigStore.swift */,
 				06A576D2F0DE48B7BA1A37D7 /* TrafficHistory.swift */,
@@ -321,6 +324,7 @@
 				AMP1 /* AppModel+Proxies.swift in Sources */,
 				AMC1 /* AppModel+Connections.swift in Sources */,
 				AMG1 /* AppModel+Config.swift in Sources */,
+				AMG3 /* AppMemoryGuard.swift in Sources */,
 				DST1 /* DesignTokens.swift in Sources */,
 				0F32145D5136BC694424C663 /* RuleNode.swift in Sources */,
 				8F14ED3CECAC0F5F7C81C9A9 /* RuleValidator.swift in Sources */,

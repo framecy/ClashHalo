@@ -141,18 +141,9 @@ extension AppModel {
 
     // MARK: - App memory guard
 
-    /// Soft threshold. Below this the caches are left alone.
-    ///
-    /// Was 400 MB, which sits *above* the ~350 MB plateau users actually
-    /// reported — so in practice the guard never ran even while the app was
-    /// visibly bloated. 250 MB is above a healthy idle footprint (~80–150 MB)
-    /// but below that plateau, so it engages before the heap has already
-    /// fragmented rather than after.
-    static let appMemorySoftLimit: UInt64 = 250 * 1_000_000
-    /// Hard threshold — drop everything, visible or not.
-    static let appMemoryHardLimit: UInt64 = 400 * 1_000_000
-    /// Minimum spacing between two guard actions.
-    static let appMemoryGuardInterval: TimeInterval = 15
+    /// Thresholds and tiering live in `AppMemoryGuardPolicy` so they can be
+    /// tested without a kernel or a window — see `Tests/AppMemoryGuard`.
+    static let appMemoryGuardPolicy = AppMemoryGuardPolicy()
 
     /// Trim local connection caches when this process' RSS gets high.
     ///
@@ -174,32 +165,40 @@ extension AppModel {
     @discardableResult
     func enforceAppMemoryGuard() -> Bool {
         let now = Date()
-        guard now.timeIntervalSince(lastAppMemoryGuardAt) >= Self.appMemoryGuardInterval else { return false }
-
         let appRSS = Self.residentMemoryBytes()
-        guard appRSS > Self.appMemorySoftLimit else { return false }
-        lastAppMemoryGuardAt = now
+        let action = Self.appMemoryGuardPolicy.decide(
+            rss: appRSS,
+            uiVisible: isMainWindowVisible || isMenuBarVisible,
+            now: now,
+            lastRun: lastAppMemoryGuardAt
+        )
 
-        let uiVisible = isMainWindowVisible || isMenuBarVisible
-        let hard = appRSS > Self.appMemoryHardLimit || !uiVisible
+        switch action {
+        case .skip:
+            return false
 
-        if hard {
+        case let .hard(includingBookkeeping):
             cachedConns.removeAll(keepingCapacity: false)
             cachedClosedConnections.removeAll(keepingCapacity: false)
-            if !uiVisible {
+            if includingBookkeeping {
                 prevConnBytes.removeAll(keepingCapacity: false)
                 activeConnsSet.removeAll(keepingCapacity: false)
             }
-        } else {
+
+        case let .soft(keepRows):
             // `cachedConns` is already sorted by rate by its producer, so a
             // prefix keeps the busiest slice — which is what the user is looking
             // at — and drops the idle tail.
             cachedClosedConnections.removeAll(keepingCapacity: false)
-            if cachedConns.count > 300 {
-                cachedConns = Array(cachedConns.prefix(300))
+            if cachedConns.count > keepRows {
+                cachedConns = Array(cachedConns.prefix(keepRows))
             }
         }
-        logKernel("App 内存占用过高 (\(appRSS / 1_000_000)MB)，已\(hard ? "释放" : "缩减")缓存")
+
+        lastAppMemoryGuardAt = now
+        let freed: Bool
+        if case .hard = action { freed = true } else { freed = false }
+        logKernel("App 内存占用过高 (\(appRSS / 1_000_000)MB)，已\(freed ? "释放" : "缩减")缓存")
         return true
     }
 
