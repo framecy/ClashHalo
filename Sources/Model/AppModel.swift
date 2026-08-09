@@ -1546,7 +1546,7 @@ import ServiceManagement
             return false
         }
         showToast("正在重载配置…")
-        engine.setTunEnabled(tunOn)   // preserve running TUN across the reload
+        persistTunStateForReload()    // preserve running TUN *and its pinned device* across the reload
         do {
             try await api.reloadConfig(path: engine.configFilePath)
             await refreshConfigs()
@@ -1599,7 +1599,7 @@ import ServiceManagement
             return true
         }
 
-        engine.setTunEnabled(tunOn)
+        persistTunStateForReload()
         do {
             try await api.reloadConfig(path: path)
             await refreshConfigs()
