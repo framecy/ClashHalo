@@ -2,7 +2,7 @@
 
 本文件给后续 AI 编码代理使用。进入本仓库后，先读本文件，再按需读 `README.md`、`CHANGELOG.md` 和相关源码。
 
-当前主干：`main`，产品版本 **v1.1.14**（`MARKETING_VERSION`），Helper **1.0.24**（`kSharedHelperVersion`：对端路由拒绝规则 + 孤儿路由回收 + 自有路由记账持久化；相对 1.0.23 及更早需强制升级）。打包时 `make.sh` 自增 `CURRENT_PROJECT_VERSION`。
+当前主干：`main`，产品版本 **v1.1.16**（`MARKETING_VERSION`），Helper **1.0.24**（`kSharedHelperVersion`：对端路由拒绝规则 + 孤儿路由回收 + 自有路由记账持久化；相对 1.0.23 及更早需强制升级）。打包时 `make.sh` 自增 `CURRENT_PROJECT_VERSION`。
 
 ## 项目概览
 
@@ -95,6 +95,8 @@ bash make.sh
 - Progress：表单用 `.small`；密集 chrome 用 `.mini` + `DS.Progress.miniScale`
 - 前台轮询分层：`refreshConfigs` 约 12s；网关设备 `/connections` 3s；连接页 1.5s；后台 30s；**禁止** DnsPage 等再起独立连接轮询
 - 高频 `@Published` 写入前做等值短路（`mode` / `tunOn` / totals / `gatewayDevices` / `dash`）
+- **App 内存警卫唯一入口是 `enforceAppMemoryGuard()`**（`AppModel+Connections.swift`）：软档 250MB / 硬档 400MB，内部 15s 限频。**新增任何连接快照消费方都必须调它**——v1.1.16 之前连接页（最密集的 1.5s 路径）就是因为只读 RSS 显示、不调警卫而完全失守。禁止再写第二份内联阈值判断
+- 连接热路径（`onConnections` / `recordHistoryOnly` / `fetchConnectionsSnapshot` 解码）必须包 `autoreleasepool`；`cachedConns` 走 `clampConnectionCaches()` 上限，截断前先按速率排序且 `activeConnectionsCount` 先赋值（计数不受截断影响）
 - 流量 sparkline series 仅在 `route == dashboard` 或菜单栏可见时追加；默认 `trafficRefreshInterval = 2s`
 - **内核下载/检查必须直连**：`KernelManager` 使用 `connectionProxyDictionary = [:]` 的 ephemeral session，禁止经系统代理访问 GitHub
 - **内核切换顺序**：下载解压暂存 → 临时关系统代理 → `stopKernel`（`callStopMihomo` 硬超时）→ 换 bin → 启动 → `waitForKernelReady` → 成功才恢复代理；禁止先停核再下载
