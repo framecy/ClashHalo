@@ -278,6 +278,27 @@ import Network
         }
     }
 
+    /// Persist the runtime TUN state ahead of anything that makes the kernel
+    /// re-read `config.yaml` — a reload (`PUT /configs?force=true`) or a restart.
+    ///
+    /// `enable` and `device` have to move together, and forgetting the second
+    /// half is not a cosmetic slip. A reload that restores `tun.enable` without
+    /// the pinned name brings the tunnel back on a *kernel-assigned* utun; with
+    /// the pin active `NetScanner.mihomoTunInterface()` accepts only
+    /// `kPinnedTunDevice`, so the restored TUN reads as absent, the health check
+    /// calls it "TUN 接口丢失" and tears the whole tunnel down — dropping every
+    /// live connection. Observed in the wild as a 10–30 s teardown/re-enable
+    /// loop whenever a Gateway apply reloaded the kernel behind a running TUN.
+    ///
+    /// Every reload path must call this instead of `setTunEnabled` on its own.
+    /// The device is only written when enabling: a disable leaves the key alone
+    /// so the pin survives for the next enable (only `disableTunDevicePin`, the
+    /// deliberate give-up, clears it).
+    func persistTunState(enabled: Bool, device: String?) {
+        setTunEnabled(enabled)
+        if enabled { setTunDevice(device) }
+    }
+
     /// Write (or clear) `tun.device` on disk so a kernel that starts from the file
     /// takes the same utun name the runtime PATCH asks for.
     ///

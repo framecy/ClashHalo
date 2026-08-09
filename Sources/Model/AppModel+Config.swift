@@ -79,6 +79,7 @@ extension AppModel {
                 // the gateway keeps working.
                 if gatewayModeOn {
                     engine.setTopLevelScalars(Self.gatewayOverrides)
+                    persistTunStateForReload()
                     do {
                         try await api.reloadConfig(path: engine.configFilePath)
                         await refreshConfigs()
@@ -224,6 +225,7 @@ extension AppModel {
                 tunAutoTeardownInFlight = true
                 engine.isBusy = true
                 logKernel("检测到 TUN 接口丢失（可能与其他 utun 服务冲突），正在自动关闭...")
+                noteTunInterfaceTeardown()
                 Task {
                     defer {
                         self.engine.isBusy = false
@@ -532,13 +534,42 @@ extension AppModel {
             showToast("请先导入配置后再开启 TUN", kind: .warn); return
         }
         let want = !tunOn
+        // An explicit toggle is a fresh decision, not a retry: clear the flap
+        // breaker so the user's request is honoured and, if it flaps again, gets
+        // its own full window before the app gives up a second time.
+        resetTunFlapBreaker()
         withEngineBusy(want ? "正在开启 TUN 模式…" : "正在关闭 TUN 模式…") {
             await self.applyTUNState(want)
         }
     }
 
+    /// Re-apply Gateway after a TUN teardown took it down with the tunnel.
+    ///
+    /// Only runs when TUN is genuinely up — Gateway without a tunnel is the
+    /// black-hole state `applyGatewayMode` guards against. The pending flag is
+    /// consumed either way: a restore that fails surfaces its own error, and
+    /// retrying it on every enable would just replay the failure.
+    func restoreGatewayAfterTUNIfPending() async {
+        guard gatewayPendingTunRestore else { return }
+        gatewayPendingTunRestore = false
+        guard tunOn, reachable else { return }
+        logKernel("TUN 已恢复，正在同步恢复网关中枢…")
+        showToast("正在恢复网关中枢…")
+        await applyGatewayMode(true)
+        if !gatewayModeOn {
+            logKernel("网关中枢自动恢复失败，请在「网络」页手动重新开启")
+        }
+    }
+
     func toggleGatewayMode() {
         let want = !gatewayModeOn
+        // An explicit switch-off is the user's decision and must stick: drop any
+        // pending "restore Gateway with TUN" intent so a later TUN enable doesn't
+        // turn it back on behind their back.
+        if !want { gatewayPendingTunRestore = false }
+        // A hand-thrown switch is also the one signal that re-arms a repair that
+        // gave up — cascaded changes to `gatewayModeOn` deliberately do not.
+        resetGatewayRepairBreakers()
 
         // Active Gateway needs TUN, let's enforce it
         if want && !tunOn {
@@ -607,7 +638,7 @@ extension AppModel {
             let backup = try? String(contentsOfFile: cfgPath, encoding: .utf8)
 
             engine.setTopLevelScalars(Self.gatewayOverrides)
-            engine.setTunEnabled(oldTun)
+            engine.persistTunState(enabled: oldTun, device: pinnedTunDevice)
             showToast("正在应用网关配置…")
             do {
                 try await api.reloadConfig(path: cfgPath)
@@ -720,6 +751,58 @@ extension AppModel {
     }
 
     static let kTunPinUnsupportedKey = "tun.device.pinUnsupported"
+
+    /// Persist the *current* runtime TUN state (enable + pinned device) so a
+    /// config reload or kernel restart that re-reads `config.yaml` brings back
+    /// the same tunnel, on the same interface name.
+    ///
+    /// Call this before every `reloadConfig` / `restart`. See
+    /// `EngineControl.persistTunState` for why writing only `tun.enable` is a
+    /// network-outage bug rather than a partial fix.
+    func persistTunStateForReload() {
+        engine.persistTunState(enabled: tunOn, device: pinnedTunDevice)
+    }
+
+    // MARK: TUN flap circuit breaker
+
+    /// Record one interface-missing auto-teardown and decide whether the loop has
+    /// become the problem. Called by both teardown sites (`refreshConfigs` B10 and
+    /// `verifyTUNConfig`) *before* they tear TUN down — the teardown itself is
+    /// always correct; what must stop is the automatic re-enable that follows it.
+    ///
+    /// Returns true the moment the breaker latches, so the caller can say so once
+    /// rather than on every subsequent cycle.
+    @discardableResult
+    func noteTunInterfaceTeardown() -> Bool {
+        let now = Date()
+        if now.timeIntervalSince(tunFlapWindowStart) > Self.kTunFlapWindow {
+            tunFlapWindowStart = now
+            tunFlapTeardownCount = 0
+        }
+        tunFlapTeardownCount += 1
+        tunFlapLastTeardown = now
+        guard !tunFlapAbandoned, tunFlapTeardownCount >= Self.kTunFlapMaxTeardowns else {
+            return false
+        }
+        tunFlapAbandoned = true
+        logKernel("TUN 在 \(Int(Self.kTunFlapWindow / 60)) 分钟内第 \(tunFlapTeardownCount) 次因接口丢失被自动关闭，"
+                + "已停止自动重开 —— 继续反复开关会持续中断全部连接。"
+                + "通常是另一个 utun 服务（Shadowrocket / Tailscale / 公司 VPN）正在占用路由，"
+                + "请退出冲突的客户端后手动重新开启 TUN。")
+        showToast("TUN 反复掉线，已停止自动重试。请关闭其他 VPN / 代理客户端后手动重开。",
+                  kind: .error, duration: 10)
+        return true
+    }
+
+    /// Clear the breaker. Called on an explicit user toggle (a fresh decision, not
+    /// a retry) and whenever TUN has been demonstrably healthy long enough that
+    /// the previous run is no longer evidence of anything.
+    func resetTunFlapBreaker() {
+        tunFlapTeardownCount = 0
+        tunFlapWindowStart = .distantPast
+        tunFlapLastTeardown = .distantPast
+        tunFlapAbandoned = false
+    }
 
     /// Record that the kernel would not take the pinned name, and stop asking.
     func disableTunDevicePin() {
@@ -899,8 +982,7 @@ extension AppModel {
         let map = Dictionary(uniqueKeysWithValues: drift.map { ($0.resolver, $0.to) })
         let n = engine.rebindDNSResolvers(map)
         guard n > 0 else { return false }
-        engine.setTunEnabled(tunOn)      // a reload re-reads the file; keep TUN as-is
-        if tunOn { engine.setTunDevice(pinnedTunDevice) }
+        persistTunStateForReload()       // a reload re-reads the file; keep TUN as-is
 
         func rollback(_ reason: String) {
             if let b = backup { try? b.write(toFile: path, atomically: true, encoding: .utf8) }
@@ -1074,10 +1156,9 @@ extension AppModel {
             // flag before the restart removes the race entirely.
             // `forceTUNDisabled()` at the next launch keeps a stale `true` from
             // auto-enabling TUN without privileges.
-            engine.setTunEnabled(true)
             // This start reads the file, not the PATCH — the name has to be there
             // too or the restart path lands on a kernel-assigned utun.
-            engine.setTunDevice(pinnedTunDevice)
+            engine.persistTunState(enabled: true, device: pinnedTunDevice)
             let tRestart = Date()
             await engine.restart()
             logKernel("TUN 阶段：root 重启完成 +\(String(format: "%.2f", Date().timeIntervalSince(tRestart)))s")
@@ -1195,8 +1276,7 @@ extension AppModel {
                 if allowRestartFallback {
                     logKernel("TUN 首次 PATCH 未生成 utun，回退到持久化+重启路径重试…")
                     showToast("正在重启核心以启用 TUN…")
-                    engine.setTunEnabled(true)
-                    engine.setTunDevice(pinnedTunDevice)
+                    engine.persistTunState(enabled: true, device: pinnedTunDevice)
                     await engine.restart()
                     if await waitForKernelReady(maxAttempts: 18) {
                         await reconnect()
@@ -1240,6 +1320,11 @@ extension AppModel {
                 if !want && gatewayModeOn {
                     _ = await engine.setGatewayMode(enabled: false)
                     gatewayModeOn = false
+                    // The user never asked for Gateway to stop — TUN did. Remember
+                    // it so the next successful enable brings the LAN back up with
+                    // the tunnel instead of stranding every downstream client.
+                    gatewayPendingTunRestore = true
+                    logKernel("网关中枢随 TUN 一同关闭，已记录状态，TUN 重新开启后会自动恢复")
                     gatewayDevices.removeAll(keepingCapacity: false)
                     // Restore config.yaml overrides so a later config switch /
                     // Gateway re-enable doesn't read stale snapshot values.
@@ -1259,6 +1344,9 @@ extension AppModel {
                 // warm so re-enabling TUN is a PATCH, not a full root restart.
                 if want {
                     showToast("TUN 模式已开启", kind: .ok)
+                    // Gateway rides on TUN: if a teardown took it down with the
+                    // tunnel, bring it back now that the tunnel is up again.
+                    await restoreGatewayAfterTUNIfPending()
                     // Delayed acceptance: wait for the settle window to close, then
                     // prove the data plane actually answers. A utun that exists but
                     // whose fd is already stale would otherwise look healthy until
@@ -1452,8 +1540,7 @@ extension AppModel {
         // cold start brings the tunnel up during init (same race the normal
         // enable path already solved).
         logKernel("TUN 自愈阶段: 启动内核")
-        engine.setTunEnabled(true)
-        engine.setTunDevice(pinnedTunDevice)
+        engine.persistTunState(enabled: true, device: pinnedTunDevice)
         await engine.ensureRunningAsync(preferRoot: true, allowRootUpgradeRestart: true)
         let ready = await waitForKernelReady(maxAttempts: 18)
         let readyElapsed = String(format: "%.1f", Date().timeIntervalSince(t0))
@@ -1640,7 +1727,7 @@ extension AppModel {
     func patchPersistent(_ overrides: [String: Any]) async {
         guard reachable else { showToast("内核未连接，无法修改配置", kind: .error); return }
         engine.setTopLevelScalars(overrides)
-        engine.setTunEnabled(tunOn)
+        persistTunStateForReload()
 
         // The control-plane secret and listen address are bound once when the
         // REST server starts. A config reload re-applies proxies/rules/DNS to
@@ -1680,7 +1767,7 @@ extension AppModel {
         let path = engine.configFilePath
         let backup = try? String(contentsOfFile: path, encoding: .utf8)
         engine.writeProxyProviders(providers)
-        engine.setTunEnabled(tunOn)   // preserve running TUN across reload
+        persistTunStateForReload()    // preserve running TUN across reload
         if let err = await engine.validateConfig() {
             if let b = backup { try? b.write(toFile: path, atomically: true, encoding: .utf8) }
             showToast("配置无效，已回滚：\(err)", kind: .error)
@@ -1718,6 +1805,9 @@ extension AppModel {
             _ = await engine.setGatewayMode(enabled: false)
         }
         gatewayModeOn = false
+        // Stopping the core is an explicit teardown of everything — no TUN enable
+        // afterwards should silently resurrect Gateway.
+        gatewayPendingTunRestore = false
         gatewayDevices.removeAll(keepingCapacity: false)
         await restoreTunnelDNS()
         if systemProxyOn {

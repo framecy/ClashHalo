@@ -58,12 +58,21 @@ import ServiceManagement
     /// this is deliberately small.
     private static let kGatewayRepairMaxAttempts = 2
     /// Earliest time a *declaration* repair may reload again, and how many in a
-    /// row have failed to stick. Unlike the listener repair this one is never
-    /// abandoned — a profile switch clearing the overrides is both real and
-    /// fixable — but it still must not reload the kernel every minute forever
-    /// if something upstream keeps rewriting the file back.
+    /// row have failed to stick. A profile switch clearing the overrides is both
+    /// real and fixable, so this one gets a generous backoff before giving up —
+    /// but give up it must: capped at 15 minutes it would still reload the
+    /// kernel, and drop every connection with it, four times an hour forever
+    /// while something upstream keeps rewriting config.yaml back.
     private var gatewayDeclareRepairDue: Date = .distantPast
     private var gatewayDeclareRepairFailures = 0
+    /// Set once the declaration repair has given up. Cleared automatically the
+    /// moment the declaration is found intact again (someone fixed the file, a
+    /// profile switched back), so unlike a manual latch this one self-heals.
+    private var gatewayDeclareRepairAbandoned = false
+    /// How many declaration repairs may fail before giving up. Each one is a
+    /// full kernel reload; three spread over the backoff ramp is ~14 minutes of
+    /// trying, which is long enough to outlast a transient writer.
+    private static let kGatewayDeclareMaxFailures = 3
 
     // Navigation + theme
     @Published var route = "dashboard" {
@@ -123,6 +132,20 @@ import ServiceManagement
     var prevConnBytes: [String: (up: Int64, down: Int64)] = [:]
     var activeConnsSet: Set<String> = []
     var totalConnsCount = 0
+
+    /// Hard ceiling on how many `Conn` rows stay resident.
+    ///
+    /// `cachedConns` is replaced wholesale each tick, so it never grows without
+    /// bound in the literal sense — but a download / P2P burst can push several
+    /// thousand live connections, and each `Conn` carries 14 `String` fields
+    /// (~300–800 B). Keeping the whole set resident costs multiple MB per tick
+    /// of freshly-allocated strings, which is what actually fragments the heap.
+    /// The rows are sorted by rate before truncation, so what gets dropped is
+    /// always the idle tail; the *count* shown in the UI comes from
+    /// `activeConnectionsCount`, which stays exact.
+    static let maxCachedConns = 2000
+    /// Closed-connection ring is user-facing history only — same reasoning.
+    static let maxClosedConns = 200
 
     /// Per-second telemetry, deliberately **not** published on this object.
     ///
@@ -217,6 +240,40 @@ import ServiceManagement
     /// that itself restarts the kernel (and fires path-update storms) from
     /// immediately re-entering recovery on the next poll.
     var tunDataPlaneRecoveryCooldownUntil: Date = .distantPast
+    /// Circuit breaker for the *interface-missing* auto-teardown.
+    ///
+    /// Every such teardown drops every live connection (`dropAllConnectionsWhenIdle`),
+    /// so a TUN that cannot stay up turns the health check itself into the outage:
+    /// enable → utun vanishes → teardown → the user (or the path monitor) enables
+    /// again → repeat every 10–30 s. The data-plane self-heal already has a
+    /// terminal state (`fallbackCloseTUNAfterFailedRecovery`); this is the same
+    /// idea for the path that actually fires in the field.
+    ///
+    /// Counted within a rolling window: `kTunFlapWindow` seconds after the first
+    /// teardown of a run. Reaching `kTunFlapMaxTeardowns` latches
+    /// `tunFlapAbandoned`, which stops the *automatic* re-enable (the path
+    /// monitor) from feeding the loop. An explicit user toggle always clears the
+    /// latch — asking again is a decision, not a retry — and so does a TUN that
+    /// stays healthy past `kTunFlapHealthyReset`.
+    var tunFlapTeardownCount = 0
+    var tunFlapWindowStart: Date = .distantPast
+    var tunFlapLastTeardown: Date = .distantPast
+    var tunFlapAbandoned = false
+    static let kTunFlapMaxTeardowns = 3
+    static let kTunFlapWindow: TimeInterval = 600
+    static let kTunFlapHealthyReset: TimeInterval = 120
+    /// Gateway was on when TUN went down, so it must come back when TUN does.
+    ///
+    /// Gateway requires TUN, so every TUN teardown cascades Gateway off — sysctl
+    /// forwarding, the `allow-lan` / `dns.listen=0.0.0.0:53` overrides, the lot.
+    /// Nothing put it back: turning TUN off and on again (or a single automatic
+    /// interface-loss teardown) silently left every LAN client that routes
+    /// through this machine with no gateway and no DNS. The switch in the UI
+    /// went dark, but the user's *intent* did not change — this flag carries it
+    /// across the gap so the next successful TUN enable restores Gateway too.
+    ///
+    /// Cleared by an explicit "turn Gateway off", and once a restore is attempted.
+    var gatewayPendingTunRestore = false
     /// Settle window after a successful TUN enable. Bringing TUN up fires a
     /// storm of NWPathMonitor updates (utun creation, auto-route injection,
     /// system-DNS switch) whose concurrent refreshConfigs runs can transiently
@@ -244,14 +301,30 @@ import ServiceManagement
         didSet {
             guard oldValue != gatewayModeOn else { return }
             UserDefaults.standard.set(gatewayModeOn, forKey: "net.gatewayModeOn")
-            // Toggling is the user's "I have dealt with it, try again" signal —
-            // the only thing that re-arms a repair that gave up.
-            gatewayRepairAttempts = 0
-            gatewayRepairAbandoned = false
-            gatewayListenerProbeDue = .distantPast
-            gatewayDeclareRepairFailures = 0
-            gatewayDeclareRepairDue = .distantPast
+            // NOTE: re-arming the repair breakers used to live here. It cannot:
+            // this property is written by cascades, not just by the user — a TUN
+            // teardown sets it false and the follow-up restore sets it true
+            // again, so every flap silently rearmed a repair that had already
+            // given up, and "已停止自动重载" was replaced by another reload storm
+            // minutes later. Only `resetGatewayRepairBreakers()`, called from the
+            // user's own toggle, re-arms now.
         }
+    }
+
+    /// Re-arm the Gateway repair breakers. Toggling Gateway by hand is the user's
+    /// "I have dealt with it, try again" signal, and is the *only* thing that
+    /// clears a listener repair that gave up — automatic state changes (the TUN
+    /// teardown cascade and its restore) must never count as one.
+    ///
+    /// The declaration breaker also clears itself the moment the declaration is
+    /// found intact again; see `verifyGatewayConfig`.
+    func resetGatewayRepairBreakers() {
+        gatewayRepairAttempts = 0
+        gatewayRepairAbandoned = false
+        gatewayListenerProbeDue = .distantPast
+        gatewayDeclareRepairFailures = 0
+        gatewayDeclareRepairDue = .distantPast
+        gatewayDeclareRepairAbandoned = false
     }
     /// What the last route audit actually changed, for the UI to show. Set only
     /// when a repair ran, so a quiet system leaves the previous report standing
@@ -315,6 +388,11 @@ import ServiceManagement
     @Published var closedConns = 0
     var lastDownTotal: Int64 = 0
     var lastCacheFlush = Date.distantPast
+    /// Rate-limits `enforceAppMemoryGuard` — the guard is now called from every
+    /// hot path (1.5 s connections poll, 3 s gateway poll, foreground loop), and
+    /// without this it would thrash caches several times a second once RSS sits
+    /// just above the threshold.
+    var lastAppMemoryGuardAt = Date.distantPast
     var lastInterface: String? = nil
 
     // Toast — single-slot, generation-guarded (see showToast).
@@ -810,6 +888,14 @@ import ServiceManagement
                     healthDue = Date().addingTimeInterval(30)
                 }
 
+                // Foreground safety net. The other two guard sites hang off a
+                // connections snapshot, and neither fires when the window is
+                // open on a page that isn't Connections with gateway mode off —
+                // which is the common case, and exactly where RSS was observed
+                // to sit at 350 MB with nothing ever reclaiming it. The guard
+                // rate-limits itself, so running it each iteration is cheap.
+                self.enforceAppMemoryGuard()
+
                 try? await Task.sleep(nanoseconds: self.gatewayDevicesOnScreen ? 500_000_000
                                                                               : 3_000_000_000)
             }
@@ -952,6 +1038,7 @@ import ServiceManagement
             if preSleepGatewayOn && reachable {
                 logKernel("恢复网关中枢配置...")
                 engine.setTopLevelScalars(AppModel.gatewayOverrides)
+                persistTunStateForReload()
 
                 // Retry reload up to 3 times with exponential backoff
                 var restored = false
@@ -1025,7 +1112,8 @@ import ServiceManagement
                         // A genuine NIC change inside the 10 s window is therefore
                         // deferred, not lost: verifyTUNConfig re-checks on its 30 s
                         // cadence once the window closes.
-                        if (onlineChanged || ifaceMoved) && Date() >= tunStateSettleUntil {
+                        if (onlineChanged || ifaceMoved) && Date() >= tunStateSettleUntil
+                            && !tunFlapAbandoned {
                             // Manual isBusy + defer (not `withEngineBusy`) because this runs
                             // fire-and-forget inside a Task whose caller cannot await the body —
                             // `withEngineBusy`'s guard would clear before applyTUNState(true)
@@ -1211,6 +1299,18 @@ import ServiceManagement
         let dnsListen = (configs["dns"] as? [String: Any])?["listen"] as? String
         let declaresGateway = allowLan && dnsListen == "0.0.0.0:53"
 
+        // The declaration is back — whoever was overwriting config.yaml stopped,
+        // or a profile switched back. Same principle as the listener breaker:
+        // giving up means "stop reloading the kernel", not "stop looking".
+        if declaresGateway {
+            gatewayDeclareRepairFailures = 0
+            gatewayDeclareRepairDue = .distantPast
+            if gatewayDeclareRepairAbandoned {
+                gatewayDeclareRepairAbandoned = false
+                logKernel("网关配置声明已恢复，自动校验重新生效。")
+            }
+        }
+
         var listenerLive = true
         if declaresGateway, Date() >= gatewayListenerProbeDue {
             // Abandoned means "stop reloading the kernel", not "stop looking".
@@ -1233,7 +1333,8 @@ import ServiceManagement
 
         // A probe that was skipped this round says nothing; only re-enter the
         // repair when the listener was actually measured missing.
-        if !declaresGateway || (!listenerLive && !gatewayRepairAbandoned) {
+        if (!declaresGateway && !gatewayDeclareRepairAbandoned)
+            || (!listenerLive && !gatewayRepairAbandoned) {
             await repairGateway(listenerMissing: !listenerLive)
         }
 
@@ -1320,11 +1421,17 @@ import ServiceManagement
             logKernel("网关 DNS 未在 53 端口监听（配置声明为 0.0.0.0:53），正在重新应用"
                     + "（第 \(gatewayRepairAttempts)/\(Self.kGatewayRepairMaxAttempts) 次）…")
         } else {
+            if gatewayDeclareRepairAbandoned { return }
             guard Date() >= gatewayDeclareRepairDue else { return }
             logKernel("检测到网关配置丢失，正在恢复…")
         }
 
         engine.setTopLevelScalars(Self.gatewayOverrides)
+        // A repair reload re-reads config.yaml, where TUN is off unless we say
+        // otherwise — without this the Gateway repair silently killed a running
+        // tunnel, and the health check then read the missing utun as a fault of
+        // its own and tore everything down.
+        persistTunStateForReload()
         do {
             try await api.reloadConfig(path: engine.configFilePath)
             await refreshConfigs()
@@ -1342,12 +1449,28 @@ import ServiceManagement
                 gatewayDeclareRepairDue = .distantPast
             } else {
                 gatewayDeclareRepairFailures += 1
-                // 2, 4, 8 … minutes, capped. Something else owns this file;
-                // fighting it once a minute helps nobody.
-                let backoff = min(120.0 * pow(2, Double(gatewayDeclareRepairFailures - 1)), 900)
-                gatewayDeclareRepairDue = Date().addingTimeInterval(backoff)
-                logKernel("网关配置写入后未生效，\(Int(backoff / 60)) 分钟后重试"
-                        + "（配置文件可能被订阅更新或配置切换覆盖）")
+                if gatewayDeclareRepairFailures >= Self.kGatewayDeclareMaxFailures {
+                    // Backing off is not the same as stopping: capped at 15
+                    // minutes this would still reload the kernel — and drop
+                    // every connection — four times an hour, indefinitely.
+                    // Something else owns this file and retrying will not take
+                    // it back. Keep watching (`verifyGatewayConfig` clears this
+                    // the moment the declaration reappears), stop reloading.
+                    gatewayDeclareRepairAbandoned = true
+                    gatewayDeclareRepairDue = .distantPast
+                    logKernel("网关配置连续 \(gatewayDeclareRepairFailures) 次写入后仍未生效，已停止自动重载 —— "
+                            + "继续反复重载内核会持续中断网络。配置文件可能正被订阅更新或其他程序覆盖，"
+                            + "请检查后重新开关一次网关中枢。声明一旦恢复会自动解除并记录。")
+                    showToast("网关配置反复被覆盖，已停止自动修复。请检查订阅/配置后重新开关网关中枢。",
+                              kind: .error, duration: 10)
+                } else {
+                    // 2, 4, 8 … minutes, capped. Something else owns this file;
+                    // fighting it once a minute helps nobody.
+                    let backoff = min(120.0 * pow(2, Double(gatewayDeclareRepairFailures - 1)), 900)
+                    gatewayDeclareRepairDue = Date().addingTimeInterval(backoff)
+                    logKernel("网关配置写入后未生效，\(Int(backoff / 60)) 分钟后重试"
+                            + "（配置文件可能被订阅更新或配置切换覆盖）")
+                }
             }
         }
 
@@ -1402,7 +1525,9 @@ import ServiceManagement
                 tunAutoTeardownInFlight = false
             }
             logKernel("检测到 TUN 接口丢失（可能与其他 utun 服务并存导致冲突），正在自动关闭...")
-            showToast("TUN 接口异常，已自动关闭", kind: .warn)
+            if !noteTunInterfaceTeardown() {
+                showToast("TUN 接口异常，已自动关闭", kind: .warn)
+            }
             await applyTUNState(false)
             // Fallback (shared with refreshConfigs B10): physically neutralize a
             // lingering downed mihomo utun via the privilege Helper so its DNS
@@ -1416,6 +1541,13 @@ import ServiceManagement
                 }
             }
             return
+        }
+
+        // Interface present and TUN has been up a while: the previous flap run is
+        // no longer evidence of anything, so let the breaker forget it.
+        if tunFlapTeardownCount > 0,
+           Date().timeIntervalSince(tunFlapLastTeardown) > Self.kTunFlapHealthyReset {
+            resetTunFlapBreaker()
         }
 
         // Check 2: Verify DNS redirection is still active
@@ -1498,7 +1630,7 @@ import ServiceManagement
             return false
         }
         showToast("正在重载配置…")
-        engine.setTunEnabled(tunOn)   // preserve running TUN across the reload
+        persistTunStateForReload()    // preserve running TUN across the reload
         do {
             try await api.reloadConfig(path: engine.configFilePath)
             await refreshConfigs()
@@ -1551,7 +1683,7 @@ import ServiceManagement
             return true
         }
 
-        engine.setTunEnabled(tunOn)
+        persistTunStateForReload()
         do {
             try await api.reloadConfig(path: path)
             await refreshConfigs()
