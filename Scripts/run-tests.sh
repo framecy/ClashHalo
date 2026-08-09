@@ -31,6 +31,12 @@ run_one yamlscalar-tests \
   "$ROOT/Sources/Core/YamlEditor/YamlScalar.swift" \
   "$ROOT/Tests/YamlScalar/main.swift"
 
+# App 内存警卫：阈值分档与限频。钉住 350MB 必须触发——旧版 400MB 阈值
+# 在实测占用平台期上方，等于从不运行，而构建无从发现。
+run_one appmemoryguard-tests \
+  "$ROOT/Sources/Model/AppMemoryGuard.swift" \
+  "$ROOT/Tests/AppMemoryGuard/main.swift"
+
 # 共存条目归属：只认领真正新增的排除项，不得撤回用户手写条目。
 run_one coexprovenance-tests \
   "$ROOT/Sources/XPC/HelperProtocol.swift" \
