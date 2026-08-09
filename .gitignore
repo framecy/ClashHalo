@@ -44,3 +44,10 @@ build/
 .vscode/
 2026-*-ClashPow.txt
 build/
+
+# 参考文档，非发布内容
+Loon/
+*.md
+!/**/README.md
+!/**/CHANGELOG.md
+!/**/AGENTS.md
