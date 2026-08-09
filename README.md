@@ -1,8 +1,17 @@
 # ClashHalo
 
-> macOS 14+ 原生 SwiftUI 代理客户端，直接编排官方 `mihomo` (Clash.Meta) 内核。当前版本 **v1.1.16**。
+> macOS 14+ 原生 SwiftUI 代理客户端，直接编排官方 `mihomo` (Clash.Meta) 内核。当前版本 **v1.1.17**。
 
 ClashHalo 采用纯 Swift 的原生编排器架构：应用层负责界面与状态管理，独立签名的 Helper 处理特权操作，内核层直接驱动 `mihomo`。目标很明确，少一层中间件，少一层不稳定性。
+
+## 新特性 (v1.1.17)
+
+本版围绕 TUN 的稳定性与内存警卫的可验证性。**Helper 仍为 1.0.24，本版不需要重新授权。**
+
+- **TUN 持久化设备名**：`PATCH /configs` 对嵌套对象是整块替换，reload 时只写 `tun.enable` 会丢失 `tun.device`，内核重启后可能落在不同的 utun 接口——而路由表、DNS 重定向、共存推理全部基于接口名。`persistTunStateForReload()` 读取当前生效的 device 名，连同 `enable` 一起写入磁盘，使 reload 后的内核仍落在同一接口。
+- **TUN flap 熔断器**：一个无法稳定保持 UP 的 TUN 会把自愈本身变成故障——开启 → utun 消失 → 自动关闭 → 用户或路径监视器再次开启 → 重复。现按 10 分钟窗口计数，3 次后锁死自动重开，只在用户手动切换时解锁。verifyTUNConfig 的 30s 巡检同样记账。
+- **网关恢复意图**：TUN 关闭时级联关闭网关，但用户的意图没有变。`gatewayPendingTunRestore` 在 TUN 关闭时置位，下次 TUN 恢复时自动恢复网关，不再把 LAN 客户端丢在无网关/无 DNS 状态。
+- **内存警卫可测试**：`AppMemoryGuardPolicy` 提取为纯函数，覆盖阈值分档、限频、UI 可见性 24 项判定——钉住 v1.1.15 的实际故障点（350MB 必须触发）。
 
 ## 新特性 (v1.1.16)
 
@@ -13,6 +22,15 @@ ClashHalo 采用纯 Swift 的原生编排器架构：应用层负责界面与状
 - **警卫分软/硬两档**：软档只截断缓存、保留表格内容，不再把用户正在看的连接表清空一拍；内部 15s 限频，避免卡在阈值上方时反复抖动。
 - **连接热路径加 `autoreleasepool`**：每 1.5s 构造的数千个临时对象此前挂在主运行循环的池上，多个 tick 的垃圾同时存活。
 - **`cachedConns` 加 2000 条硬上限**，按速率排序后截断，丢弃的始终是空闲尾部；顶部计数仍为真实值。
+
+## 新特性 (v1.1.17)
+
+本版是 TUN 持久化与 flap 熔断器，围绕一个核心故事：TUN 的自动恢复不能自己变成新的故障源。**Helper 仍为 1.0.24，本版不需要重新授权。**
+
+- **`persistTunState`：内核重启后 TUN 落在同一 utun 接口**。`PATCH /configs` 对 `tun` 字段是整块替换，只写 `tun.enable` 会丢失 `tun.device`，内核可能重选接口——路由表、DNS 重定向、共存推理全部基于接口名，切换后各自为政。`persistTunStateForReload()` 将当前生效的 device 名连同 enable 一起写入磁盘，保持接口一致。
+- **TUN flap 熔断器**：一个无法稳定保持 UP 的 TUN 会把自愈本身变成故障——开启 → utun 消失 → 自动关闭 → 再次开启 → 重复。10 分钟内 3 次即锁死，停止自动重开，只由用户手动切换解锁。verifyTUNConfig 的 30s 巡检同样记账，避免巡检路径独立触发 flap 时熔断器形同虚设。
+- **`gatewayPendingTunRestore`：TUN 关闭后不丢网关意图**。网关依赖 TUN，TUN 级联关闭网关后，用户的意图没有变——下次 TUN 恢复时自动恢复网关，不再把 LAN 客户端丢在无网关/无 DNS 状态。
+- **`AppMemoryGuardPolicy` 提取为纯函数**：阈值分档、限频、UI 可见性三条规则可测试，覆盖 24 项判定。注意这是**测试能力**，不是行为变化——v1.1.16 的阈值逻辑不变。
 
 ## 新特性 (v1.1.14)
 
