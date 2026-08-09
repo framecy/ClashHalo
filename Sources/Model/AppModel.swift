@@ -240,6 +240,40 @@ import ServiceManagement
     /// derive tunOn to false; turning ON and every *explicit* teardown path
     /// (user toggle off, stopEngine, kernel-unreachable reconnect) are exempt.
     var tunStateSettleUntil: Date = .distantPast
+    /// Circuit breaker for the *interface-missing* auto-teardown.
+    ///
+    /// Every such teardown drops every live connection, so a TUN that cannot
+    /// stay up turns the health check itself into the outage: enable → utun
+    /// vanishes → teardown → the user (or the path monitor) enables again →
+    /// repeat every 10–30 s. The data-plane self-heal already has a terminal
+    /// state (`fallbackCloseTUNAfterFailedRecovery`); this is the same idea for
+    /// the path that actually fires in the field.
+    ///
+    /// Counted within a rolling window: `kTunFlapWindow` seconds after the first
+    /// teardown of a run. Reaching `kTunFlapMaxTeardowns` latches
+    /// `tunFlapAbandoned`, which stops the *automatic* re-enable (the path
+    /// monitor) from feeding the loop. An explicit user toggle always clears the
+    /// latch — asking again is a decision, not a retry — and so does a TUN that
+    /// stays healthy past `kTunFlapHealthyReset`.
+    var tunFlapTeardownCount = 0
+    var tunFlapWindowStart: Date = .distantPast
+    var tunFlapLastTeardown: Date = .distantPast
+    var tunFlapAbandoned = false
+    static let kTunFlapMaxTeardowns = 3
+    static let kTunFlapWindow: TimeInterval = 600
+    static let kTunFlapHealthyReset: TimeInterval = 120
+    /// Gateway was on when TUN went down, so it must come back when TUN does.
+    ///
+    /// Gateway requires TUN, so every TUN teardown cascades Gateway off — sysctl
+    /// forwarding, the `allow-lan` / `dns.listen=0.0.0.0:53` overrides, the lot.
+    /// Nothing put it back: turning TUN off and on again (or a single automatic
+    /// interface-loss teardown) silently left every LAN client that routes
+    /// through this machine with no gateway and no DNS. The switch in the UI
+    /// went dark, but the user's *intent* did not change — this flag carries it
+    /// across the gap so the next successful TUN enable restores Gateway too.
+    ///
+    /// Cleared by an explicit "turn Gateway off", and once a restore is attempted.
+    var gatewayPendingTunRestore = false
     /// Digest of the coexistence plan last *accepted* by the kernel. Lets the
     /// reconciler skip a PATCH when the peer-tunnel topology has not moved —
     /// mihomo ACKs a PATCH before deciding it can apply it, so unnecessary
@@ -267,14 +301,26 @@ import ServiceManagement
         didSet {
             guard oldValue != gatewayModeOn else { return }
             UserDefaults.standard.set(gatewayModeOn, forKey: "net.gatewayModeOn")
-            // Toggling is the user's "I have dealt with it, try again" signal —
-            // the only thing that re-arms a repair that gave up.
-            gatewayRepairAttempts = 0
-            gatewayRepairAbandoned = false
-            gatewayListenerProbeDue = .distantPast
-            gatewayDeclareRepairFailures = 0
-            gatewayDeclareRepairDue = .distantPast
+            // NOTE: re-arming the repair breakers used to live here. It cannot:
+            // this property is written by cascades, not just by the user — a TUN
+            // teardown sets it false and the follow-up restore sets it true
+            // again, so every flap silently re-armed a repair that had already
+            // given up, and "已停止自动重载" was replaced by another reload storm
+            // minutes later. Only `resetGatewayRepairBreakers()`, called from the
+            // user's own toggle, re-arms now.
         }
+    }
+
+    /// Re-arm the Gateway repair breakers. Toggling Gateway by hand is the user's
+    /// "I have dealt with it, try again" signal, and is the *only* thing that
+    /// clears a listener repair that gave up — automatic state changes (the TUN
+    /// teardown cascade and its restore) must never count as one.
+    func resetGatewayRepairBreakers() {
+        gatewayRepairAttempts = 0
+        gatewayRepairAbandoned = false
+        gatewayListenerProbeDue = .distantPast
+        gatewayDeclareRepairFailures = 0
+        gatewayDeclareRepairDue = .distantPast
     }
     /// What the last route audit actually changed, for the UI to show. Set only
     /// when a repair ran, so a quiet system leaves the previous report standing
@@ -1073,7 +1119,8 @@ import ServiceManagement
                         // A genuine NIC change inside the 10 s window is therefore
                         // deferred, not lost: verifyTUNConfig re-checks on its 30 s
                         // cadence once the window closes.
-                        if (onlineChanged || ifaceMoved) && Date() >= tunStateSettleUntil {
+                        if (onlineChanged || ifaceMoved) && Date() >= tunStateSettleUntil
+                            && !tunFlapAbandoned {
                             // Manual isBusy + defer (not `withEngineBusy`) because this runs
                             // fire-and-forget inside a Task whose caller cannot await the body —
                             // `withEngineBusy`'s guard would clear before applyTUNState(true)
@@ -1450,7 +1497,13 @@ import ServiceManagement
                 tunAutoTeardownInFlight = false
             }
             logKernel("检测到 TUN 接口丢失（可能与其他 utun 服务并存导致冲突），正在自动关闭...")
-            showToast("TUN 接口异常，已自动关闭", kind: .warn)
+            // Both teardown sites must feed the flap breaker, or a flap driven by
+            // this 30 s probe alone never counts and the loop runs forever.
+            // `noteTunInterfaceTeardown` emits its own terminal toast when it
+            // latches, so only announce the ordinary teardown here.
+            if !noteTunInterfaceTeardown() {
+                showToast("TUN 接口异常，已自动关闭", kind: .warn)
+            }
             await applyTUNState(false)
             // Fallback (shared with refreshConfigs B10): physically neutralize a
             // lingering downed mihomo utun via the privilege Helper so its DNS
@@ -1464,6 +1517,13 @@ import ServiceManagement
                 }
             }
             return
+        }
+
+        // Interface present and TUN has been up a while: the previous flap run is
+        // no longer evidence of anything, so let the breaker forget it.
+        if tunFlapTeardownCount > 0,
+           Date().timeIntervalSince(tunFlapLastTeardown) > Self.kTunFlapHealthyReset {
+            resetTunFlapBreaker()
         }
 
         // Check 2: Verify DNS redirection is still active
@@ -1546,7 +1606,7 @@ import ServiceManagement
             return false
         }
         showToast("正在重载配置…")
-        engine.setTunEnabled(tunOn)   // preserve running TUN across the reload
+        persistTunStateForReload()    // preserve running TUN *and its pinned device* across the reload
         do {
             try await api.reloadConfig(path: engine.configFilePath)
             await refreshConfigs()
@@ -1599,7 +1659,7 @@ import ServiceManagement
             return true
         }
 
-        engine.setTunEnabled(tunOn)
+        persistTunStateForReload()
         do {
             try await api.reloadConfig(path: path)
             await refreshConfigs()
