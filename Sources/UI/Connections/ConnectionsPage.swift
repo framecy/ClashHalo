@@ -382,10 +382,21 @@ struct ConnDetailCard: View {
         }
 
         let items = s.connections ?? []
-        var next: [Conn] = []
-        var bytes: [String: (up: Int64, down: Int64)] = [:]
-        var activeIDs = Set<String>()
         let hour = Calendar.current.component(.hour, from: Date())
+
+        // This is the hottest allocation path in the app: it runs every 1.5 s and
+        // builds one `Conn` (14 freshly-allocated strings) per live connection,
+        // plus a byte dictionary, an id set, the gateway aggregation and the
+        // dashboard scratch space. Without an explicit pool all of that garbage
+        // accumulates in the main run loop's autorelease pool between drains,
+        // stacking several ticks' worth of dead objects and fragmenting the heap.
+        autoreleasepool {
+        var next: [Conn] = []
+        next.reserveCapacity(items.count)
+        var bytes: [String: (up: Int64, down: Int64)] = [:]
+        bytes.reserveCapacity(items.count)
+        var activeIDs = Set<String>()
+        activeIDs.reserveCapacity(items.count)
 
         for c in items {
             activeIDs.insert(c.id)
@@ -445,23 +456,31 @@ struct ConnDetailCard: View {
 
         if !newClosed.isEmpty {
             M.cachedClosedConnections.insert(contentsOf: newClosed, at: 0)
-            if M.cachedClosedConnections.count > 200 {
-                M.cachedClosedConnections.removeLast(M.cachedClosedConnections.count - 200)
-            }
         }
         M.activeConnsSet = activeIDs
+        M.activeConnectionsCount = activeIDs.count
 
-        let sorted = next.sorted { $0.downRate + $0.upRate > $1.downRate + $1.upRate }
-        M.cachedConns = sorted
+        // Sorted by rate, then clamped: what gets dropped past the ceiling is
+        // always the idle tail. The count shown in the UI comes from
+        // `activeConnectionsCount` above, so truncation never skews it.
+        M.cachedConns = next.sorted { $0.downRate + $0.upRate > $1.downRate + $1.upRate }
+        M.clampConnectionCaches()
 
         conns = M.cachedConns
         closedConnections = M.cachedClosedConnections
-        M.activeConnectionsCount = activeIDs.count
 
         M.closedConns = max(0, M.totalConnsCount - activeIDs.count)
         M.history.flushIfNeeded()
         M.lastDownTotal = s.downloadTotal
+        }
 
+        // The 1.5 s poller is the busiest consumer of connection snapshots and
+        // used to read RSS purely for display, never acting on it. The guard is
+        // internally rate-limited, so calling it every tick is cheap.
+        if M.enforceAppMemoryGuard() {
+            conns = M.cachedConns
+            closedConnections = M.cachedClosedConnections
+        }
         M.live.appMemoryMB = Double(AppModel.residentMemoryBytes()) / 1_000_000
     }
 }
