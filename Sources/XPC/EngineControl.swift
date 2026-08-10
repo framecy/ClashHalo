@@ -43,6 +43,11 @@ import Network
     /// Injected log sink (set by AppModel) — avoids referencing AppModel here.
     var onLog: ((String) -> Void)?
 
+    /// Optional redactor for secrets that land in on-disk YAML (auth keys, …).
+    /// Applied only when the caller asks for a *display* copy; the live file
+    /// keeps the real value for the kernel. Default is identity.
+    var redactSecretsForDisplay: ((String) -> String)?
+
     private let appSupport = NSHomeDirectory() + "/Library/Application Support/ClashHalo"
     /// Config file the running mihomo reads (`mihomo -d <appSupport>` → config.yaml).
     /// Used as the source of truth for controller endpoint discovery (B1).
@@ -1559,12 +1564,115 @@ import Network
             hardenControllerConfig()   // ensure controller binds loopback + strong secret
             forceTUNDisabled()         // TUN is runtime-only — don't let a profile auto-enable it
             injectMemoryOptimization() // Apply kernel memory optimization settings
+            applyTailscaleOverlay()    // re-inject the built-in tailnet node (or strip it)
             try await api.reloadConfig(path: path)
             return (true, nil)
         } catch {
             return (false, error.localizedDescription)
         }
     }
+
+    // MARK: - Built-in tailnet node (mihomo `type: tailscale`)
+
+    /// Desired built-in tailnet node, owned by `AppModel` (which holds the user
+    /// intent and reads the auth key out of the Keychain). `nil` means the
+    /// feature is off and any previously injected node must be removed.
+    ///
+    /// This lives here rather than in the profile because the profile is
+    /// regenerated from the subscription on every switch/update, and
+    /// `PATCH /configs` cannot add proxies or rules. The node therefore has to
+    /// be re-applied to whatever YAML the profile pipeline just produced —
+    /// which is exactly what `setConfig` does, alongside the other three
+    /// runtime overrides that outrank profile content.
+    var tailscaleSettings: TailscaleSettings?
+
+    /// Warnings from the last overlay application, surfaced by the UI.
+    private(set) var tailscaleWarnings: [String] = []
+    /// True when the last application could not write the MagicDNS resolver
+    /// policy (no `dns:` block, or DNS disabled).
+    private(set) var tailscaleDNSSkipped = false
+
+    /// Rewrite the on-disk config so it matches `tailscaleSettings`.
+    /// Idempotent: strips any previous injection first, so repeated calls and
+    /// changed settings never stack.
+    @discardableResult
+    func applyTailscaleOverlay() -> Bool {
+        let path = configFilePath
+        guard let text = try? String(contentsOfFile: path, encoding: .utf8) else { return false }
+
+        let updated: String
+        if let settings = tailscaleSettings {
+            let r = TailscaleOverlay.apply(to: text, settings: settings)
+            tailscaleWarnings = r.warnings
+            tailscaleDNSSkipped = r.dnsSkipped
+            guard r.injected else {
+                onLog?("内置 Tailnet 注入失败：" + r.warnings.joined(separator: "；"))
+                return false
+            }
+            updated = r.yaml
+        } else {
+            tailscaleWarnings = []
+            tailscaleDNSSkipped = false
+            updated = TailscaleOverlay.strip(text)
+        }
+
+        guard updated != text else { return true }
+        do {
+            try updated.write(toFile: path, atomically: true, encoding: .utf8)
+            // The file now carries an auth key. It already held subscription
+            // secrets, but make the intent explicit rather than inherited.
+            try? FileManager.default.setAttributes([.posixPermissions: 0o600],
+                                                   ofItemAtPath: path)
+            return true
+        } catch {
+            onLog?("内置 Tailnet 写入配置失败：\(error.localizedDescription)")
+            return false
+        }
+    }
+
+    /// Does this kernel binary actually carry the tailscale outbound?
+    ///
+    /// Version comparison is not enough: the type is behind the
+    /// `with_gvisor && !no_tailscale` build tags, so a new-enough release built
+    /// without them parses `type: tailscale` as `unsupport proxy type`. Ask the
+    /// binary instead — `-t` on a throwaway home directory, which also keeps
+    /// the probe away from the real config and the real tsnet state.
+    func supportsTailscale() async -> Bool {
+        let bin = kernelPath
+        guard FileManager.default.fileExists(atPath: bin) else { return false }
+        return await withCheckedContinuation { (cont: CheckedContinuation<Bool, Never>) in
+            DispatchQueue.global().async {
+                let fm = FileManager.default
+                let dir = NSTemporaryDirectory() + "clashhalo-ts-probe-\(UUID().uuidString)"
+                defer { try? fm.removeItem(atPath: dir) }
+                guard (try? fm.createDirectory(atPath: dir,
+                                               withIntermediateDirectories: true)) != nil else {
+                    cont.resume(returning: false); return
+                }
+                let cfg = dir + "/config.yaml"
+                guard (try? TailscaleSupport.probeYAML().write(toFile: cfg,
+                                                               atomically: true,
+                                                               encoding: .utf8)) != nil else {
+                    cont.resume(returning: false); return
+                }
+                let p = Process()
+                p.executableURL = URL(fileURLWithPath: bin)
+                p.arguments = ["-d", dir, "-f", cfg, "-t"]
+                let pipe = Pipe(); p.standardOutput = pipe; p.standardError = pipe
+                do { try p.run() } catch { cont.resume(returning: false); return }
+                let data = pipe.fileHandleForReading.readDataToEndOfFile()
+                p.waitUntilExit()
+                let out = String(data: data, encoding: .utf8) ?? ""
+                cont.resume(returning: p.terminationStatus == 0
+                            && !TailscaleSupport.isUnsupportedOutput(out))
+            }
+        }
+    }
+
+    /// Absolute path of the tsnet state directory, for display and for reset.
+    /// Mirrors `TailscaleSettings.stateDir`, which is relative because mihomo
+    /// resolves it against this same home directory and rejects anything else.
+    var tailscaleStateDirPath: String { appSupport + "/" + TailscaleSettings.stateDir }
 
     /// Stop the running kernel: graceful REST shutdown, then helper/killall fallback.
     /// Exposed so callers (e.g. KernelManager.activate) can release bin/mihomo

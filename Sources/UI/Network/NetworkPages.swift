@@ -207,6 +207,7 @@ struct NetworkHubPage: View {
         ("TUN", "tun", "shield"),
         ("DNS", "dns", "network"),
         ("嗅探", "sniffer", "scope"),
+        ("Tailnet", "tailscale", "point.3.connected.trianglepath.dotted"),
         ("内核", "kernel", "cpu")
     ]
 
@@ -242,6 +243,7 @@ struct NetworkHubPage: View {
                 case "tun": TunPage()
                 case "dns": DnsPage()
                 case "sniffer": SnifferPage()
+                case "tailscale": TailscalePage()
                 case "kernel": KernelMgmtPage()
                 default: NetworkPage()
                 }
