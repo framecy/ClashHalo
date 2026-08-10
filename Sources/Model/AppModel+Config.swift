@@ -537,6 +537,20 @@ extension AppModel {
             Coexistence.commitProvenance(field: "route-exclude-address", injected: [])
             self.lastCoexistenceFingerprint = ""
 
+            // Built-in tailnet identity is not part of any profile — wipe it
+            // with the rest so a "清空全部" really leaves the machine inert.
+            // State dir may be root-owned under the single-identity rule; the
+            // reset helper already surfaces that without failing the wipe.
+            if self.tsEnabled {
+                self.tsEnabled = false
+                self.saveTailscalePrefs()
+                self.tsState = .disabled
+                self.tsDevices = []
+                self.tsWarnings = []
+                self.stopTailscaleLoginWatch()
+            }
+            self.resetTailscaleIdentity(silent: true)
+
             self.logKernel("已清空全部配置文件，系统代理与 TUN 已关闭，内核已停止")
             if failed.isEmpty {
                 self.showToast("已清空全部配置。导入新配置后需重新开启系统代理 / TUN", kind: .ok)

@@ -2,6 +2,74 @@
 
 本项目所有重要变更记录于此。格式参考 [Keep a Changelog](https://keepachangelog.com/),版本遵循语义化版本。
 
+## [1.2.0] - 2026-08-10
+
+### Added
+
+- **内置 Tailnet 节点**（「网络 → Tailnet」）。mihomo v1.19.25+ 自带
+  `type: tailscale` 出站（tsnet 用户态 + gVisor），与 Surge 的「应用级出站策略」
+  同构：不需要安装 Tailscale 客户端、不占系统 VPN 插槽、不导出入站服务。
+  本应用只做编排：凭证、配置注入、规则自动化、失败面暴露。**未新增任何 XPC
+  协议，`kSharedHelperVersion` 不变（1.0.24），Helper / TUN / 系统代理路径未被触碰。**
+
+- **幂等配置覆盖（`TailscaleOverlay`）**。`config.yaml` 每次切配置/更新订阅都会被
+  整体重写，而 `PATCH /configs` 加不了 proxies/rules，所以节点与规则随
+  `setConfig` 管道末端重新注入，与 `hardenControllerConfig` / `forceTUNDisabled` /
+  `injectMemoryOptimization` 并列。注入带围栏标记，可整块撤回，删除后与原文
+  逐字节相同。重大细节：mihomo 对**重复顶层 key 直接报错**，所以不能另起一份
+  `proxies:`，只能并入现有序列；而订阅 YAML 的序列项缩进 0 列/2 列都常见，
+  注入前必须先量出周围列宽，猜错即解析失败。
+
+- **交互式登录**。不填 auth-key 时，tsnet 把登录地址经 `UserLogf` 写到 mihomo
+  **info 级**日志，前缀 `[Tailscale](<节点名>)`；应用临时订阅 `/logs` 抓取并拉起
+  浏览器。关键点：tsnet **是懒启动的**（`ensureStarted` 是 `sync.Once`，只由首次
+  拨号触发），没有流量选中它就永远不会打印登录地址，所以登录流程必须主动
+  发一次拨号。
+
+- **失败面不静默**。三个内核层静默行为已被显式暴露：
+  ① `type: tailscale` 在 `with_gvisor && !no_tailscale` 构建标签后，版本号不能证明
+  存在，改用 `mihomo -t` 对一次性目录做**特征探测**；
+  ② `ts://<name>` 在配置阶段**不校验**名字，拼错只在查询时静默失败，因此节点名
+  由同一处渲染到 proxies / rules / nameserver-policy 三处；
+  ③ 指定出口节点失败时内核只 `Warnln`，静默退化为「无出口」，而「无出口」意味着
+  非 tailnet 目标直接失败且**不回退直连**。
+
+- **共存冲突只报不斗**。现有共存层对 Tailscale 的立场是「躲开」
+  （`route-exclude-address: 100.64.0.0/10` + `fake-ip-filter: +.ts.net`），与内置节点
+  方向相反。本版**不修改共存层任何代码**（系统客户端优先级不变），改为在 UI 与
+  日志里直说「100.64/10 已让给系统 Tailscale，内置节点收不到流量」。
+
+- **`tailscale-tests`（68 项）**。覆盖叠加幂等、strip 逐字节回退、序列缩进跟随、
+  规则置顶与 `no-resolve`、DNS 只在可安全修改时写入、冲突识别、登录 URL 按节点名
+  （而非按 URL 形状）匹配。
+
+- **P2 可观测**：
+  - **设备面板**：可选 API Token（Keychain，`kTailscaleAPIToken`）拉
+    `GET /api/v2/tailnet/-/devices`；直连 ephemeral session，不经系统代理。
+  - **出口节点点选**：在线设备可一键填入 exit-node（仍需「应用配置」才重载）。
+  - **延迟测试语义**：无 exit-node 的 `type: Tailscale` 节点不再走公网 URL 测速
+    （会失败且不回退直连，永久标红），改为显示「对等」哨兵值。
+  - **`tailscale-api-tests`（26 项）**：设备 JSON 解码、MagicDNS 后缀推断、
+    延迟分类门控。
+
+- **P3 规则细化 / Headscale / 网关友好**：
+  - **peer `/32` 规则**：有 API Token 时，在线设备 IPv4 自动写成精确规则（封顶 64
+    条，可关）；与 CGNAT 聚合、手工子网去重。
+  - **手工子网 CIDR**：`extraCIDRs` 持久化；`accept-routes` 只让内核收下路由，
+    这里的 CIDR 才真正把流量交给节点。拒绝 `0.0.0.0/0`。
+  - **可关 CGNAT 聚合**：Headscale 非 100.64 分配时可只留 peer/手工规则。
+  - **`exit-node-allow-lan-access`**：有出口节点时默认开启，避免网关模式 LAN
+    客户端经出口出网后回不了内网。
+  - **控制 URL 校验**：Headscale 地址必须 `http(s)://` 完整 URL，提交时规范化。
+  - overlay 回归扩至 **89 项**。
+
+### Notes
+
+- tsnet 身份目录固定为相对路径 `tailscale`（展开到数据目录）。mihomo 对
+  `state-dir` 有**路径沙箱**（`IsSafePath`，限制在 `-d` 目录或 `SAFE_PATHS` 下），
+  写沙箱外绝对路径会直接报错。该目录随「单一身份内核」规则归 root。
+- 详细设计与验证记录见 `Docs/TailscaleIntegration.md`。
+
 ## [1.1.17] - 2026-08-09
 
 TUN 持久化设备名与 flap 熔断器。Helper 仍为 **1.0.24**，本版**不需要重新授权**。

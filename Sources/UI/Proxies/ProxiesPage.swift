@@ -131,7 +131,9 @@ struct ProxiesPage: View {
                         set: { if g.selectable { M.select(group: g.id, name: $0) } }
                     ), choices: g.all.map { DSChoice($0, $0) })
                     .frame(maxWidth: .infinity)
-                    if curDelay > 0 {
+                    if curDelay == TailscaleLatency.peerOnlySentinel {
+                        Text("对等").font(.dsMono).foregroundColor(delayColor(curDelay))
+                    } else if curDelay > 0 {
                         Text("\(curDelay)ms").font(.dsMono).foregroundColor(delayColor(curDelay))
                     }
                     if busy {
@@ -169,7 +171,11 @@ struct ProxiesPage: View {
                             }
                             HStack(spacing: DS.Spacing.xs) {
                                 Text(cur).font(.dsBody).foregroundColor(DS.Palette.accent).lineLimit(1)
-                                if curDelay > 0 { Text("\(curDelay)ms").font(.dsMono).foregroundColor(delayColor(curDelay)) }
+                                if curDelay == TailscaleLatency.peerOnlySentinel {
+                                    Text("对等").font(.dsMono).foregroundColor(delayColor(curDelay))
+                                } else if curDelay > 0 {
+                                    Text("\(curDelay)ms").font(.dsMono).foregroundColor(delayColor(curDelay))
+                                }
                             }
                         }
                         Spacer(minLength: 0)
