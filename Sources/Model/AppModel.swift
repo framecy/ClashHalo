@@ -403,6 +403,31 @@ import ServiceManagement
     var lastAppMemoryGuardAt = Date.distantPast
     var lastInterface: String? = nil
 
+    // MARK: Built-in tailnet node (see AppModel+Tailscale.swift)
+
+    /// User intent, mirrored in `UserDefaults`. Like the gateway switch, this is
+    /// never inferred from config content: a leftover `type: tailscale` block in
+    /// someone's profile is not a request to join a tailnet.
+    @Published var tsEnabled = false
+    /// Everything except the auth key, which lives in the Keychain and is only
+    /// merged in when the overlay is rendered.
+    @Published var tsSettings = TailscaleSettings()
+    @Published var tsState: TailscaleSessionState = .disabled
+    /// nil = not probed yet. False = this kernel build has no tailscale outbound.
+    @Published var tsSupported: Bool?
+    /// Findings from the last overlay application plus environment conflicts.
+    @Published var tsWarnings: [String] = []
+    /// Live `/logs` subscription, open only while waiting for a login URL.
+    var tsLoginWatch: WSHandle?
+    var tsLoginDeadline: Date?
+    /// Devices from the Tailscale control-plane API (optional API token).
+    @Published var tsDevices: [TailscaleDevice] = []
+    @Published var tsDevicesLoading = false
+    @Published var tsDevicesError: String?
+    /// Rate-limit device refreshes so opening the page twice does not hammer
+    /// the API. Cleared when the token changes or the user hits refresh.
+    var tsDevicesFetchedAt: Date = .distantPast
+
     // Toast — single-slot, generation-guarded (see showToast).
     @Published var toast: ToastPayload?
     /// Cancels the previous auto-dismiss so rapid showToast calls don't wipe a newer message.
@@ -538,6 +563,11 @@ import ServiceManagement
         // co-resident proxy sharing the 198.18 fake-ip space is never taken for
         // ours (nor torn down as our residue). See `kPinnedTunDevice`.
         NetScanner.pinnedDeviceActive = pinnedTunDevice != nil
+        // Hand the engine the built-in tailnet plan *before* anything can call
+        // setConfig. A subscription auto-update we did not initiate would
+        // otherwise rewrite config.yaml without the node, silently dropping a
+        // feature the user left enabled. Pure UserDefaults + Keychain reads.
+        loadTailscalePrefs()
         mark("prelude")
         let replacedSecret = engine.ensureInstalled()
         mark("ensureInstalled")
