@@ -159,18 +159,8 @@ func maskTailscaleKey(_ s: String) -> String {
     return "\(head)…\(tail)"
 }
 
-/// One row in the tailnet device list returned by the Tailscale API
-/// (`GET /api/v2/tailnet/-/devices`). Only fields surfaced in the UI.
-struct TailscaleDevice: Identifiable, Hashable {
-    let id: String           // node ID (stable)
-    let hostname: String
-    let ips: [String]        // tailnet + subnet addresses (IPv4 only for now)
-    let online: Bool
-    let os: String
-    let expiresAt: String?   // raw ISO; formatted on demand
-    let lastSeen: String?
-    let ephemeral: Bool
-}
+// TailscaleDevice lives in TailscaleAPI.swift so the device-list decoder can
+// be regression-tested without compiling the whole Models surface.
 
 // MARK: - Config profiles (multi-config management)
 
@@ -674,8 +664,16 @@ func fmtBytes(_ b: Double) -> String {
     if b >= 1_000 { return String(format: "%.0f KB", b / 1_000) }
     return "\(Int(b)) B"
 }
-func fmtDelay(_ ms: Int) -> String { ms > 0 ? "\(ms)" : "—" }
-func delayColor(_ ms: Int) -> Color { ms <= 0 ? .secondary : ms < 100 ? DS.Palette.ok : ms < 250 ? DS.Palette.warn : DS.Palette.error }
+func fmtDelay(_ ms: Int) -> String {
+    // -2 is the peer-only tailscale sentinel (see TailscaleLatency). It is not
+    // a measured RTT and must not render as a red dash.
+    if ms == TailscaleLatency.peerOnlySentinel { return "对等" }
+    return ms > 0 ? "\(ms)" : "—"
+}
+func delayColor(_ ms: Int) -> Color {
+    if ms == TailscaleLatency.peerOnlySentinel { return DS.Palette.info }
+    return ms <= 0 ? .secondary : ms < 100 ? DS.Palette.ok : ms < 250 ? DS.Palette.warn : DS.Palette.error
+}
 func modeLabel(_ m: String) -> String { ["rule":"规则","global":"全局","direct":"直连"][m] ?? m }
 
 // MARK: - Extensions

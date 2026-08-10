@@ -37,6 +37,10 @@
 		FD83734160422E089693C6FF /* PrivilegedPrompt.swift in Sources */ = {isa = PBXBuildFile; fileRef = A15DB0EB9DCC4DF76EE089D8 /* PrivilegedPrompt.swift */; };
 		AMC1 /* AppModel+Connections.swift in Sources */ = {isa = PBXBuildFile; fileRef = AMC2 /* AppModel+Connections.swift */; };
 		AMG1 /* AppModel+Config.swift in Sources */ = {isa = PBXBuildFile; fileRef = AMG2 /* AppModel+Config.swift */; };
+		ATSN1 /* TailscaleNode.swift in Sources */ = {isa = PBXBuildFile; fileRef = BTSN1 /* TailscaleNode.swift */; };
+		ATSA1 /* TailscaleAPI.swift in Sources */ = {isa = PBXBuildFile; fileRef = BTSA1 /* TailscaleAPI.swift */; };
+		ATSM1 /* AppModel+Tailscale.swift in Sources */ = {isa = PBXBuildFile; fileRef = BTSM1 /* AppModel+Tailscale.swift */; };
+		ATSU1 /* TailscalePage.swift in Sources */ = {isa = PBXBuildFile; fileRef = BTSU1 /* TailscalePage.swift */; };
 		AMG3 /* AppMemoryGuard.swift in Sources */ = {isa = PBXBuildFile; fileRef = AMG4 /* AppMemoryGuard.swift */; };
 		AMP1 /* AppModel+Proxies.swift in Sources */ = {isa = PBXBuildFile; fileRef = AMP2 /* AppModel+Proxies.swift */; };
 		B1F3682AEF4F4C8AB5A97582 /* EngineControl.swift in Sources */ = {isa = PBXBuildFile; fileRef = 43A486CB7FAA4FBBAEBFCCE6 /* EngineControl.swift */; };
@@ -77,6 +81,10 @@
 		AABBCCDD0000000000000004 /* XPCManager.swift */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.swift; path = Sources/XPC/XPCManager.swift; sourceTree = "<group>"; };
 		AMC2 /* AppModel+Connections.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "Sources/Model/AppModel+Connections.swift"; sourceTree = SOURCE_ROOT; };
 		AMG2 /* AppModel+Config.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "Sources/Model/AppModel+Config.swift"; sourceTree = SOURCE_ROOT; };
+		BTSN1 /* TailscaleNode.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Sources/Model/TailscaleNode.swift; sourceTree = SOURCE_ROOT; };
+		BTSA1 /* TailscaleAPI.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Sources/Model/TailscaleAPI.swift; sourceTree = SOURCE_ROOT; };
+		BTSM1 /* AppModel+Tailscale.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "Sources/Model/AppModel+Tailscale.swift"; sourceTree = SOURCE_ROOT; };
+		BTSU1 /* TailscalePage.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Sources/UI/Network/TailscalePage.swift; sourceTree = SOURCE_ROOT; };
 		AMG4 /* AppMemoryGuard.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "Sources/Model/AppMemoryGuard.swift"; sourceTree = SOURCE_ROOT; };
 		AMP2 /* AppModel+Proxies.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "Sources/Model/AppModel+Proxies.swift"; sourceTree = SOURCE_ROOT; };
 		B001 /* ClashHaloApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ClashHaloApp.swift; sourceTree = "<group>"; };
@@ -135,6 +143,9 @@
 				AMC2 /* AppModel+Connections.swift */,
 				AMG4 /* AppMemoryGuard.swift */,
 				AMG2 /* AppModel+Config.swift */,
+				BTSN1 /* TailscaleNode.swift */,
+				BTSA1 /* TailscaleAPI.swift */,
+				BTSM1 /* AppModel+Tailscale.swift */,
 				9641FF3F733D4D03A5FC9B70 /* ConfigStore.swift */,
 				06A576D2F0DE48B7BA1A37D7 /* TrafficHistory.swift */,
 			);
@@ -212,6 +223,7 @@
 				8CBAE68653724149A087BBEE /* GeneralPage.swift */,
 				A15DB0EB9DCC4DF76EE089D8 /* PrivilegedPrompt.swift */,
 				A8B1C01AAFB044E986219D24 /* NetworkPages.swift */,
+				BTSU1 /* TailscalePage.swift */,
 			);
 			name = ConfigEditor;
 			path = ConfigEditor;
@@ -317,6 +329,10 @@
 				AE6635A9ACB74E5DB66892EA /* GeneralPage.swift in Sources */,
 				FD83734160422E089693C6FF /* PrivilegedPrompt.swift in Sources */,
 				BA90C1F3406546599706585F /* NetworkPages.swift in Sources */,
+				ATSN1 /* TailscaleNode.swift in Sources */,
+				ATSA1 /* TailscaleAPI.swift in Sources */,
+				ATSM1 /* AppModel+Tailscale.swift in Sources */,
+				ATSU1 /* TailscalePage.swift in Sources */,
 				A006 /* Models.swift in Sources */,
 				ACX1 /* Coexistence.swift in Sources */,
 				ACX2AAAA0000000000000002 /* CoexistenceProvenance.swift in Sources */,
@@ -356,7 +372,7 @@
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
 				CODE_SIGN_ENTITLEMENTS = ClashHalo.entitlements;
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 77;
+				CURRENT_PROJECT_VERSION = 78;
 				ENABLE_HARDENED_RUNTIME = YES;
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_FILE = Sources/Info.plist;
@@ -364,7 +380,7 @@
 					"$(inherited)",
 					"@executable_path/../Frameworks",
 				);
-				MARKETING_VERSION = 1.1.17;
+				MARKETING_VERSION = 1.2.0;
 				PRODUCT_BUNDLE_IDENTIFIER = com.clashhalo.app;
 				PRODUCT_NAME = ClashHalo;
 			};
@@ -388,7 +404,7 @@
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
 				CODE_SIGN_ENTITLEMENTS = ClashHalo.entitlements;
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 77;
+				CURRENT_PROJECT_VERSION = 78;
 				ENABLE_HARDENED_RUNTIME = YES;
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_FILE = Sources/Info.plist;
@@ -396,7 +412,7 @@
 					"$(inherited)",
 					"@executable_path/../Frameworks",
 				);
-				MARKETING_VERSION = 1.1.17;
+				MARKETING_VERSION = 1.2.0;
 				PRODUCT_BUNDLE_IDENTIFIER = com.clashhalo.app;
 				PRODUCT_NAME = ClashHalo;
 			};

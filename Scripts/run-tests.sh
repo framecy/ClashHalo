@@ -43,5 +43,19 @@ run_one coexprovenance-tests \
   "$ROOT/Sources/Model/CoexistenceProvenance.swift" \
   "$ROOT/Tests/CoexistenceProvenance/main.swift"
 
+# 内置 Tailnet 覆盖层：叠加/缩进/回退。订阅配置会把 config.yaml 整个覆盖，
+# 所以注入必须幂等；而 YAML 序列项缩进必须跟随原配置（订阅 YAML 用 0 列
+# 短杠的概率不低于 2 列），猜错就是解析失败。
+run_one tailscale-tests \
+  "$ROOT/Sources/Core/YamlEditor/YamlScalar.swift" \
+  "$ROOT/Sources/Model/TailscaleNode.swift" \
+  "$ROOT/Tests/TailscaleOverlay/main.swift"
+
+# Tailscale API 设备列表解码 + 延迟测试语义分类。
+# 对等节点（无 exit-node）不得参与公网 URL 测速，否则会被永久标红。
+run_one tailscale-api-tests \
+  "$ROOT/Sources/Model/TailscaleAPI.swift" \
+  "$ROOT/Tests/TailscaleAPI/main.swift"
+
 echo ""
 echo "全部测试通过。"

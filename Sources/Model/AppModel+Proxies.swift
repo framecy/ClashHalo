@@ -136,13 +136,30 @@ extension AppModel {
         var providerNames: [String] = []   // unique provider names to healthcheck
         var providerNodeNames: [String] = [] // which node names belong to providers
 
+        // Peer-only tailscale outbounds have no public egress: a URL delay test
+        // fails without falling back to direct, painting the chip red forever.
+        // Mark them with the peer-only sentinel and keep them out of the public
+        // probe set. Exit-node tailscale still takes the regular URL test.
+        let exitNode = tsEnabled ? tsSettings.exitNode : ""
+        var peerOnly: [String] = []
+
         for name in names {
+            if let node = nodes[name],
+               !TailscaleLatency.usesPublicURLTest(nodeType: node.type, exitNode: exitNode) {
+                peerOnly.append(name)
+                continue
+            }
             if let prov = nodeToProvider[name] {
                 providerNodeNames.append(name)
                 if !providerNames.contains(prov) { providerNames.append(prov) }
             } else {
                 directNames.append(name)
             }
+        }
+
+        for name in peerOnly {
+            nodes[name]?.delay = TailscaleLatency.peerOnlySentinel
+            testing.remove(name)
         }
 
         // Test direct proxies individually via /proxies/{name}/delay
