@@ -1,8 +1,30 @@
 # ClashHalo
 
-> macOS 14+ 原生 SwiftUI 代理客户端，直接编排官方 `mihomo` (Clash.Meta) 内核。当前版本 **v1.1.17**。
+> macOS 14+ 原生 SwiftUI 代理客户端，直接编排官方 `mihomo` (Clash.Meta) 内核。当前版本 **v1.2.0**。
 
 ClashHalo 采用纯 Swift 的原生编排器架构：应用层负责界面与状态管理，独立签名的 Helper 处理特权操作，内核层直接驱动 `mihomo`。目标很明确，少一层中间件，少一层不稳定性。
+
+## 新特性 (v1.2.0)
+
+本版引入**内置 Tailnet 节点**（「网络 → Tailnet」）。mihomo v1.19.25+ 自带
+`type: tailscale` 出站（tsnet 用户态 + gVisor），与 Surge 的「应用级出站策略」同构：
+不需要安装 Tailscale 客户端、不占系统 VPN 插槽、不导出入站服务。本应用只做编排：
+凭证、配置注入、规则自动化、失败面暴露。**未新增任何 XPC 协议，Helper 仍为
+1.0.24，本版不需要重新授权。**
+
+- **幂等配置覆盖（`TailscaleOverlay`）**：把节点与规则随 `setConfig` 管道末端注入
+  `config.yaml`（`PATCH /configs` 加不了 proxies/rules），带围栏标记可整块撤回，
+  删除后与原文逐字节相同。
+- **交互式登录**：不填 auth-key 时从 mihomo info 日志抓取 `[Tailscale](…)` 登录地址
+  并拉起浏览器；tsnet 是懒启动的，登录流程会主动发一次拨号触发。
+- **失败面不静默**：`type: tailscale` 用 `mihomo -t` 特征探测（版本号不能证明存在）；
+  `ts://<name>` 配置阶段不校验名字，三处引用由同一处渲染；指定出口节点失败只
+  `Warnln`，UI 自己核对结果。
+- **共存冲突只报不斗**：不修改共存层，直说「100.64/10 已让给系统 Tailscale」。
+- **P2 可观测**：可选 API Token 的设备面板、出口节点点选、无出口节点时延迟测试
+  显示「对等」而非永久标红。
+- **P3 规则细化 / Headscale / 网关友好**：peer `/32` 自动规则、手工子网 CIDR、
+  可关 CGNAT 聚合、`exit-node-allow-lan-access`、Headscale control URL 校验。
 
 ## 新特性 (v1.1.17)
 
