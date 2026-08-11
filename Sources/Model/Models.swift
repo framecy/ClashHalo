@@ -9,7 +9,6 @@
 
 import Foundation
 import SwiftUI
-import Security
 
 // MARK: - View models
 
@@ -95,69 +94,6 @@ struct ToastPayload: Equatable {
 // MARK: - AppModel
 
 
-
-// MARK: - Keychain Security Helper
-
-struct KeychainHelper {
-    static let service = "com.clashhalo.secrets"
-
-    @discardableResult
-    static func save(key: String, value: String) -> Bool {
-        guard let data = value.data(using: .utf8) else { return false }
-        delete(key: key)
-        let query: [String: Any] = [
-            kSecClass as String: kSecClassGenericPassword,
-            kSecAttrService as String: service,
-            kSecAttrAccount as String: key,
-            kSecValueData as String: data,
-            kSecAttrAccessible as String: kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly
-        ]
-        let status = SecItemAdd(query as CFDictionary, nil)
-        return status == errSecSuccess
-    }
-
-    static func read(key: String) -> String? {
-        let query: [String: Any] = [
-            kSecClass as String: kSecClassGenericPassword,
-            kSecAttrService as String: service,
-            kSecAttrAccount as String: key,
-            kSecReturnData as String: true,
-            kSecMatchLimit as String: kSecMatchLimitOne
-        ]
-        var dataTypeRef: AnyObject?
-        let status = SecItemCopyMatching(query as CFDictionary, &dataTypeRef)
-        guard status == errSecSuccess, let data = dataTypeRef as? Data else { return nil }
-        return String(data: data, encoding: .utf8)
-    }
-
-    @discardableResult
-    static func delete(key: String) -> Bool {
-        let query: [String: Any] = [
-            kSecClass as String: kSecClassGenericPassword,
-            kSecAttrService as String: service,
-            kSecAttrAccount as String: key
-        ]
-        let status = SecItemDelete(query as CFDictionary)
-        return status == errSecSuccess
-    }
-}
-
-// MARK: - Tailscale credential keys (Keychain account names)
-
-/// Keychain account names for Tailscale integration. Values themselves are
-/// stored via `KeychainHelper` under the existing `com.clashhalo.secrets`
-/// service — same mechanism as subscription URLs. Distinct accounts here so a
-/// subscription profile can never collide with a Tailscale auth key.
-let kTailscaleAuthKey  = "tailscale.authkey"
-let kTailscaleAPIToken = "tailscale.api.token"
-
-/// Mask a `tskey-…` string for display. `tskey-auth-xxxxxBLOWUP` → `tskey-auth-xxxxx…UP`.
-func maskTailscaleKey(_ s: String) -> String {
-    guard s.count > 10 else { return String(repeating: "•", count: s.count) }
-    let head = s.prefix(16)
-    let tail = s.suffix(2)
-    return "\(head)…\(tail)"
-}
 
 // TailscaleDevice lives in TailscaleAPI.swift so the device-list decoder can
 // be regression-tested without compiling the whole Models surface.

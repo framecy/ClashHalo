@@ -389,5 +389,94 @@ do {
            "unrelated YAML untouched")
 }
 
+// MARK: - Capability fields (v1.2.1)
+
+section("ephemeral / dialer-proxy / ip-version 只在非默认时渲染")
+do {
+    let bare = TailscaleOverlay.proxyEntry(settings())
+    expect(!bare.contains("ephemeral"), "ephemeral omitted at default false")
+    expect(!bare.contains("dialer-proxy"), "dialer-proxy omitted when empty")
+    expect(!bare.contains("ip-version"), "ip-version omitted at default")
+
+    let full = TailscaleOverlay.proxyEntry(settings {
+        $0.ephemeral = true
+        $0.dialerProxy = "香港节点"
+        $0.preferIPv6 = true
+    })
+    expect(full.contains("ephemeral: true"), "ephemeral rendered")
+    expect(full.contains("dialer-proxy: \"香港节点\""), "dialer-proxy quoted + rendered")
+    expect(full.contains("ip-version: ipv6-prefer"), "ip-version rendered")
+}
+
+// MARK: - Session log parsing
+//
+// Every literal below is copied from tailscale/tsnet/tsnet.go. They reach us at
+// info level because tsnet's `s.logf` prefers `UserLogf`, which mihomo wires to
+// `log.Infoln`. If upstream reworks these strings these tests are the tripwire.
+
+section("auth-key 被忽略（本次修复的根因）")
+do {
+    let real = "[Tailscale](Tailnet) Authkey is set; but state is Running. Ignoring authkey. Re-run with TSNET_FORCE_LOGIN=1 to force use of authkey."
+    expect(TailscaleLog.authKeyIgnored(in: real, nodeName: "Tailnet"),
+           "upstream 'Ignoring authkey' 被识别")
+    expect(!TailscaleLog.authKeyIgnored(in: real, nodeName: "Other"),
+           "别的节点的同样日志不算")
+    expect(!TailscaleLog.authKeyIgnored(in: "[Tailscale](Tailnet) hello", nodeName: "Tailnet"),
+           "普通日志不误报")
+}
+
+section("AuthLoop 退出 = 已授权")
+do {
+    let running = "[Tailscale](Tailnet) AuthLoop: state is Running; done"
+    expect(TailscaleLog.authLoopState(in: running, nodeName: "Tailnet") == "Running",
+           "提取出 state token")
+    let starting = "[Tailscale](Tailnet) AuthLoop: state is Starting; done"
+    expect(TailscaleLog.authLoopState(in: starting, nodeName: "Tailnet") == "Starting",
+           "Starting 也算已离开 NeedsLogin")
+    expect(TailscaleLog.authLoopState(in: running, nodeName: "Other") == nil,
+           "按节点名过滤")
+    let url = "[Tailscale](Tailnet) To start this tsnet server, restart with TS_AUTHKEY set, or go to: https://login.tailscale.com/a/abc"
+    expect(TailscaleLog.authLoopState(in: url, nodeName: "Tailnet") == nil,
+           "登录 URL 行不是 AuthLoop 完成")
+}
+
+section("state 目录诊断行")
+do {
+    let line = "[Tailscale](Tailnet) tsnet running state path /Users/x/Library/Application Support/ClashHalo/tailscale"
+    expect(TailscaleLog.statePath(in: line, nodeName: "Tailnet")
+           == "/Users/x/Library/Application Support/ClashHalo/tailscale",
+           "提取出完整路径（含空格）")
+    expect(TailscaleLog.statePath(in: line, nodeName: "Other") == nil, "按节点名过滤")
+}
+
+section("凭证指纹：变了就要退休旧身份")
+do {
+    let a = TailscaleIdentity.fingerprint(authKey: "tskey-auth-A", controlURL: "")
+    let b = TailscaleIdentity.fingerprint(authKey: "tskey-auth-B", controlURL: "")
+    expect(a != b, "不同 key 不同指纹")
+    expect(a == TailscaleIdentity.fingerprint(authKey: "tskey-auth-A", controlURL: ""),
+           "同一输入稳定")
+    expect(!a.contains("tskey"), "指纹不含密钥明文")
+    let headscale = TailscaleIdentity.fingerprint(authKey: "tskey-auth-A",
+                                                  controlURL: "https://hs.example.com")
+    expect(a != headscale, "探制面不同 = 不同身份（即使 key 相同）")
+    expect(TailscaleIdentity.fingerprint(authKey: "", controlURL: "") == "",
+           "无凭证时为空——浏览器登录路径不能被误退休")
+    expect(TailscaleIdentity.fingerprint(authKey: "  tskey-auth-A  ", controlURL: "") == a,
+           "前后空白不影响指纹")
+}
+
+section("会话状态：可操作性分类")
+do {
+    expect(TailscaleSessionState.needsIdentityReset(reason: "x").needsUserAction,
+           "需清除身份 = 需用户动作")
+    expect(TailscaleSessionState.needsLogin(url: "u").needsUserAction,
+           "需登录 = 需用户动作")
+    expect(!TailscaleSessionState.running.needsUserAction, "running 无需动作")
+    expect(!TailscaleSessionState.idle.needsUserAction, "idle 无需动作")
+    expect(!TailscaleSessionState.needsIdentityReset(reason: "x").isTerminalFailure,
+           "可修复的不算终态失败")
+}
+
 print("\n\(checks - failures)/\(checks) 通过")
 if failures > 0 { print("\(failures) 处失败"); exit(1) }
