@@ -61,6 +61,19 @@ struct TailscaleSettings: Equatable {
     /// mihomo `exit-node-allow-lan-access`. Default on so Gateway-mode LAN
     /// clients keep reaching the LAN when an exit node is selected.
     var exitNodeAllowLANAccess: Bool = true
+    /// Register as an ephemeral node: the control plane removes it shortly
+    /// after it goes offline instead of leaving a dead entry in the console.
+    /// Off by default — an ephemeral node loses its identity on every restart,
+    /// which is the opposite of what `state-dir` persistence is for.
+    var ephemeral: Bool = false
+    /// mihomo `dialer-proxy`: send this node's *own* traffic (control plane,
+    /// DERP relays, direct peer paths) through another outbound. Empty = direct.
+    /// Verified against the kernel source: `SystemDialer` / `SystemPacketListener`
+    /// both go through `outbound.dialer`, so one setting covers control + DERP.
+    var dialerProxy: String = ""
+    /// mihomo `ip-version: ipv6-prefer`. Does not create IPv6 connectivity by
+    /// itself — it only changes which family is preferred when both exist.
+    var preferIPv6: Bool = false
     /// Auth key, injected at render time only. Never persisted in this struct.
     var authKey: String = ""
 
@@ -226,6 +239,11 @@ enum TailscaleOverlay {
         if !s.controlURL.isEmpty { kv.append("control-url: \(quoted(s.controlURL))") }
         kv.append("udp: \(s.udp)")
         kv.append("accept-routes: \(s.acceptRoutes)")
+        // Only emit the non-default forms. A lean node block keeps the injected
+        // fence readable in a file the user is expected to inspect.
+        if s.ephemeral { kv.append("ephemeral: true") }
+        if !s.dialerProxy.isEmpty { kv.append("dialer-proxy: \(quoted(s.dialerProxy))") }
+        if s.preferIPv6 { kv.append("ip-version: ipv6-prefer") }
         if !s.exitNode.isEmpty {
             kv.append("exit-node: \(quoted(s.exitNode))")
             // Only meaningful with an exit node; omit otherwise so the kernel
@@ -603,10 +621,28 @@ enum TailscaleSessionState: Equatable {
     case idle
     case starting
     case needsLogin(url: String)
+    /// tsnet refused to use the configured auth key because the state directory
+    /// already holds an identity. Upstream (`tsnet.Server.start`) does this:
+    ///
+    ///     if st == ipn.NeedsLogin { StartLoginInteractive() }
+    ///     else if authKey != "" { logf("Authkey is set; but state is %v. Ignoring authkey.") }
+    ///
+    /// A perfectly valid key therefore does nothing, and the only cure is to
+    /// retire the stale state directory. Distinct from `.failed` because the
+    /// UI can offer exactly one button that fixes it.
+    case needsIdentityReset(reason: String)
     case running
     case failed(reason: String)
 
     var isTerminalFailure: Bool { if case .failed = self { return true }; return false }
+
+    /// True when the user has an actionable next step beyond 「再试一次」.
+    var needsUserAction: Bool {
+        switch self {
+        case .needsLogin, .needsIdentityReset: return true
+        default: return false
+        }
+    }
 }
 
 // MARK: - Log parsing
@@ -641,11 +677,68 @@ enum TailscaleLog {
         return payload
     }
 
+    /// tsnet ignored the auth key because the state directory already holds an
+    /// identity. Exact upstream string (`tsnet/tsnet.go`):
+    ///
+    ///     "Authkey is set; but state is %v. Ignoring authkey. Re-run with
+    ///      TSNET_FORCE_LOGIN=1 to force use of authkey."
+    ///
+    /// It reaches us at **info** level: tsnet's `s.logf` prefers `UserLogf`
+    /// when set, and mihomo wires `UserLogf` to `log.Infoln`. Without this
+    /// detector the symptom is 「key 没失效却加不进去」 with no visible cause.
+    static func authKeyIgnored(in payload: String, nodeName: String) -> Bool {
+        guard payload.contains(prefix(nodeName)) else { return false }
+        return payload.contains("Ignoring authkey")
+    }
+
+    /// `printAuthURLLoop` exits with `"AuthLoop: state is %v; done"` once the
+    /// backend leaves `NeedsLogin`/`NoState` — i.e. authentication succeeded.
+    /// Returns the state token (`Running`, `Starting`, …) so the UI can be
+    /// precise instead of guessing.
+    static func authLoopState(in payload: String, nodeName: String) -> String? {
+        guard payload.contains(prefix(nodeName)),
+              payload.contains("AuthLoop: state is"),
+              payload.contains("; done") else { return nil }
+        guard let r = payload.range(of: #"AuthLoop: state is (\w+); done"#,
+                                    options: .regularExpression) else { return nil }
+        let matched = String(payload[r])
+        return matched
+            .replacingOccurrences(of: "AuthLoop: state is ", with: "")
+            .replacingOccurrences(of: "; done", with: "")
+    }
+
+    /// `"tsnet running state path %s"` — the directory tsnet actually resolved,
+    /// which is the ground truth for a stale-identity diagnosis.
+    static func statePath(in payload: String, nodeName: String) -> String? {
+        guard payload.contains(prefix(nodeName)),
+              let r = payload.range(of: "tsnet running state path ") else { return nil }
+        let path = String(payload[r.upperBound...]).trimmingCharacters(in: .whitespacesAndNewlines)
+        return path.isEmpty ? nil : path
+    }
+
     static func isFromNode(_ payload: String, nodeName: String) -> Bool {
         payload.contains(prefix(nodeName))
     }
 
     private static func prefix(_ nodeName: String) -> String { "[Tailscale](\(nodeName))" }
+}
+
+// MARK: - Identity fingerprint
+
+enum TailscaleIdentity {
+
+    /// Change-detection fingerprint for the credentials that decide *which*
+    /// node this machine registers as. Never stores the key itself.
+    ///
+    /// The control URL is part of it on purpose: moving between the official
+    /// control plane and a Headscale instance is a different identity even
+    /// when the key text happens to be unchanged.
+    static func fingerprint(authKey: String, controlURL: String) -> String {
+        let key = authKey.trimmingCharacters(in: .whitespacesAndNewlines)
+        let url = controlURL.trimmingCharacters(in: .whitespacesAndNewlines)
+        if key.isEmpty && url.isEmpty { return "" }
+        return String(Sha1.hex("\(key)|\(url)").prefix(16))
+    }
 }
 
 // MARK: - Feature detection

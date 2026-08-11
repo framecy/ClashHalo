@@ -27,6 +27,7 @@
 		A002 /* ContentView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B002 /* ContentView.swift */; };
 		A004 /* DashboardView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B004 /* DashboardView.swift */; };
 		A006 /* Models.swift in Sources */ = {isa = PBXBuildFile; fileRef = B006 /* Models.swift */; };
+		KCH0 /* KeychainHelper.swift in Sources */ = {isa = PBXBuildFile; fileRef = KCH1 /* KeychainHelper.swift */; };
 		ACX1 /* Coexistence.swift in Sources */ = {isa = PBXBuildFile; fileRef = BCX1 /* Coexistence.swift */; };
 		ACX2AAAA0000000000000002 /* CoexistenceProvenance.swift in Sources */ = {isa = PBXBuildFile; fileRef = BCX2AAAA0000000000000001 /* CoexistenceProvenance.swift */; };
 		ATDP1 /* TUNDataPlaneProbe.swift in Sources */ = {isa = PBXBuildFile; fileRef = BTDP1 /* TUNDataPlaneProbe.swift */; };
@@ -91,6 +92,7 @@
 		B002 /* ContentView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ContentView.swift; sourceTree = "<group>"; };
 		B004 /* DashboardView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DashboardView.swift; sourceTree = "<group>"; };
 		B006 /* Models.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Models.swift; sourceTree = "<group>"; };
+		KCH1 /* KeychainHelper.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Sources/Model/KeychainHelper.swift; sourceTree = SOURCE_ROOT; };
 		BCX1 /* Coexistence.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Coexistence.swift; sourceTree = "<group>"; };
 		BCX2AAAA0000000000000001 /* CoexistenceProvenance.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Sources/Model/CoexistenceProvenance.swift; sourceTree = SOURCE_ROOT; };
 		BTDP1 /* TUNDataPlaneProbe.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TUNDataPlaneProbe.swift; sourceTree = "<group>"; };
@@ -135,6 +137,7 @@
 			isa = PBXGroup;
 			children = (
 				B006 /* Models.swift */,
+				KCH1 /* KeychainHelper.swift */,
 				BCX1 /* Coexistence.swift */,
 				BCX2AAAA0000000000000001 /* CoexistenceProvenance.swift */,
 				BTDP1 /* TUNDataPlaneProbe.swift */,
@@ -334,6 +337,7 @@
 				ATSM1 /* AppModel+Tailscale.swift in Sources */,
 				ATSU1 /* TailscalePage.swift in Sources */,
 				A006 /* Models.swift in Sources */,
+				KCH0 /* KeychainHelper.swift in Sources */,
 				ACX1 /* Coexistence.swift in Sources */,
 				ACX2AAAA0000000000000002 /* CoexistenceProvenance.swift in Sources */,
 				ATDP1 /* TUNDataPlaneProbe.swift in Sources */,
