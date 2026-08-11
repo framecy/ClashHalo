@@ -2,6 +2,37 @@
 
 本项目所有重要变更记录于此。格式参考 [Keep a Changelog](https://keepachangelog.com/),版本遵循语义化版本。
 
+## [Unreleased]
+
+### Fixed
+
+- **升级 / 重装后 Tailscale auth-key（以及订阅 URL）不再丢失**。根因：本应用 ad-hoc 签名
+  （`codesign -s -`，无 Team ID / 无 keychain-access-groups），`SecItemAdd` 默认把条目 ACL
+  绑到*当前*代码签名身份；下一次重签 / 换 DMG 后 `SecItemCopyMatching` 静默
+  `errSecItemNotFound`，Keychain Access 里条目还在但应用读不到。修复两层：
+  1. 写入时用 `SecAccessCreate(…, trustedApps: nil)` 开开放 ACL，任意后续二进制可读；
+  2. 在 `~/Library/Application Support/ClashHalo/secrets/` 落 `0600` base64 镜像，
+     Keychain miss 时从镜像恢复并按新身份回写。启动时对 `kTailscaleAuthKey` /
+     `kTailscaleAPIToken` 做一次 eager 迁移；订阅 URL 在 `ConfigStore.load` 的
+     `KeychainHelper.read` 路径上同样自动迁移。**已在旧 ACL 下丢失、且无镜像的 key
+     无法找回**——需用户再贴一次；此后跨升级应保留。`keychain-tests` 28 项钉住镜像恢复。
+
+- **auth-key 被 tsnet 静默忽略**。state-dir 已有身份时上游打印
+  `Ignoring authkey` 后什么都不做；现检测该日志 → `.needsIdentityReset`，UI 一键
+  「清除身份并重试」（root 属主目录改名让位，无需新 XPC）。换 key / 换 control-url
+  时按凭证指纹自动退休旧身份。
+
+- **auth-key 路径从未真正注册节点**。tsnet 懒启动，注入配置却无人拨号 → 控制面零接触。
+  启用 / 应用配置 / 冷启动（`tsEnabled`）现统一 `warmUpTailscale()` 拨号唤醒；会话监视
+  同时识别 `AuthLoop: state is …; done` 为已授权。
+
+### Added
+
+- Tailnet：`ephemeral` / `dialer-proxy` / `ip-version: ipv6-prefer`（仅非默认时写入 overlay）。
+- Tailnet：本机 tailnet 地址展示（API 设备列表或 MagicDNS 解析两条路径）。
+- 会话监视临时抬高内核 `log-level` 到 info（只 PATCH 运行时，不脏 config.yaml），结束后还原，
+  避免用户把日志调到 error/silent 后永远收不到登录 URL。
+
 ## [1.2.0] - 2026-08-10
 
 ### Added

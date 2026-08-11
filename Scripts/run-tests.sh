@@ -48,8 +48,17 @@ run_one coexprovenance-tests \
 # 短杠的概率不低于 2 列），猜错就是解析失败。
 run_one tailscale-tests \
   "$ROOT/Sources/Core/YamlEditor/YamlScalar.swift" \
+  "$ROOT/Sources/Core/Hash.swift" \
   "$ROOT/Sources/Model/TailscaleNode.swift" \
   "$ROOT/Tests/TailscaleOverlay/main.swift"
+
+# Keychain 持久化：ad-hoc 重签 / 重装后 Tailscale key 与订阅 URL 不得丢失。
+# 镜像目录 + 开放 ACL 是修复的两半；本套钉住镜像恢复路径（单元测试无法伪造
+# 第二个 code-signing identity，所以 Keychain ACL 半边靠代码审阅保证）。
+run_one keychain-tests \
+  "$ROOT/Sources/Core/Hash.swift" \
+  "$ROOT/Sources/Model/KeychainHelper.swift" \
+  "$ROOT/Tests/KeychainHelper/main.swift"
 
 # Tailscale API 设备列表解码 + 延迟测试语义分类。
 # 对等节点（无 exit-node）不得参与公网 URL 测速，否则会被永久标红。

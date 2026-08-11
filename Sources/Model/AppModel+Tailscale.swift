@@ -29,6 +29,12 @@ extension AppModel {
         static let extraCIDRs = "tailscale.extraCIDRs"
         static let exitNodeAllowLAN = "tailscale.exitNodeAllowLANAccess"
         static let autoPeerRules = "tailscale.autoPeerRules"
+        static let ephemeral = "tailscale.ephemeral"
+        static let dialerProxy = "tailscale.dialerProxy"
+        static let preferIPv6 = "tailscale.preferIPv6"
+        /// Fingerprint of the credentials the *current* on-disk tsnet identity
+        /// was registered with. Never the key itself — see `TailscaleIdentity`.
+        static let identityFingerprint = "tailscale.identityFingerprint"
     }
 
     /// When on, online device IPs from the API panel are merged into
@@ -61,6 +67,9 @@ extension AppModel {
         s.magicDNSSuffix = d.string(forKey: TSKey.magicDNS) ?? ""
         s.includeCGNATRule = d.object(forKey: TSKey.includeCGNAT) as? Bool ?? true
         s.exitNodeAllowLANAccess = d.object(forKey: TSKey.exitNodeAllowLAN) as? Bool ?? true
+        s.ephemeral = d.object(forKey: TSKey.ephemeral) as? Bool ?? false
+        s.dialerProxy = d.string(forKey: TSKey.dialerProxy) ?? ""
+        s.preferIPv6 = d.object(forKey: TSKey.preferIPv6) as? Bool ?? false
         if let arr = d.array(forKey: TSKey.extraCIDRs) as? [String] {
             s.extraCIDRs = TailscaleOverlay.normalizeCIDRs(arr)
         }
@@ -89,6 +98,9 @@ extension AppModel {
         d.set(tsSettings.includeCGNATRule, forKey: TSKey.includeCGNAT)
         d.set(tsSettings.exitNodeAllowLANAccess, forKey: TSKey.exitNodeAllowLAN)
         d.set(tsSettings.extraCIDRs, forKey: TSKey.extraCIDRs)
+        d.set(tsSettings.ephemeral, forKey: TSKey.ephemeral)
+        d.set(tsSettings.dialerProxy, forKey: TSKey.dialerProxy)
+        d.set(tsSettings.preferIPv6, forKey: TSKey.preferIPv6)
         syncTailscaleToEngine()
     }
 
@@ -120,7 +132,75 @@ extension AppModel {
         } else {
             KeychainHelper.save(key: kTailscaleAuthKey, value: trimmed)
         }
+        // A new key means a (possibly) different node or tailnet, but tsnet
+        // *ignores* the key whenever the state directory already holds an
+        // identity. Retire the old state now so the key actually gets used;
+        // otherwise the user pastes a perfectly valid key and nothing happens.
+        retireTailscaleIdentityIfCredentialsChanged()
         syncTailscaleToEngine()
+    }
+
+    // MARK: - Identity lifecycle
+
+    /// Fingerprint of the credentials the on-disk identity was created with.
+    private var tsStoredIdentityFingerprint: String {
+        get { UserDefaults.standard.string(forKey: TSKey.identityFingerprint) ?? "" }
+        set { UserDefaults.standard.set(newValue, forKey: TSKey.identityFingerprint) }
+    }
+
+    private var tsCurrentIdentityFingerprint: String {
+        TailscaleIdentity.fingerprint(authKey: tailscaleAuthKey,
+                                      controlURL: tsSettings.controlURL)
+    }
+
+    /// Retire the tsnet state directory when the credentials that produced it
+    /// have changed. No-op on first use and when nothing changed.
+    @discardableResult
+    func retireTailscaleIdentityIfCredentialsChanged() -> Bool {
+        let current = tsCurrentIdentityFingerprint
+        let stored = tsStoredIdentityFingerprint
+        // Empty current fingerprint = no auth key at all (browser-login path);
+        // that flow depends on the existing identity, so never retire on it.
+        guard !current.isEmpty, !stored.isEmpty, current != stored else {
+            tsStoredIdentityFingerprint = current
+            return false
+        }
+        let retired = retireTailscaleStateDir()
+        tsStoredIdentityFingerprint = current
+        if retired {
+            logKernel("内置 Tailnet：凭证已变更，已退休旧身份目录（新 key 才能生效）")
+        }
+        return retired
+    }
+
+    /// Move the tsnet state directory aside so the next start registers fresh.
+    ///
+    /// Deleting outright usually fails: the kernel runs as root (single-identity
+    /// rule), so `tailscale/` and its contents are root-owned and a user-mode
+    /// `removeItem` cannot unlink files *inside* it. Renaming works anyway —
+    /// POSIX only requires write+execute on the **parent** directory, which is
+    /// the user-owned Application Support folder. That is the whole trick that
+    /// makes 「清除身份」 work without adding a privileged XPC call.
+    @discardableResult
+    func retireTailscaleStateDir() -> Bool {
+        let fm = FileManager.default
+        let path = engine.tailscaleStateDirPath
+        guard fm.fileExists(atPath: path) else { return false }
+        // Best case: we own it (kernel never ran as root) — just delete.
+        if (try? fm.removeItem(atPath: path)) != nil {
+            logKernel("内置 Tailnet：已删除身份目录 \(path)")
+            return true
+        }
+        let stamp = Int(Date().timeIntervalSince1970)
+        let aside = "\(path).retired-\(stamp)"
+        do {
+            try fm.moveItem(atPath: path, toPath: aside)
+            logKernel("内置 Tailnet：身份目录归 root，已改名让位 → \(aside)")
+            return true
+        } catch {
+            logKernel("内置 Tailnet：无法退休身份目录（\(path)）：\(error.localizedDescription)")
+            return false
+        }
     }
 
     /// Control-plane API token used only for the device panel. Distinct from
@@ -189,6 +269,7 @@ extension AppModel {
                     // so the next 应用配置 / setConfig picks them up without a
                     // second round-trip through saveTailscalePrefs.
                     self.syncTailscaleToEngine()
+                    self.refreshTailscaleLocalAddress()
                     // Prefer a discovered MagicDNS suffix over the generic
                     // `ts.net` when one shows up in a device's FQDN. Do not
                     // auto-apply: that would rewrite rules without the user
@@ -304,12 +385,18 @@ extension AppModel {
                 self.refreshTailscaleEnvironmentWarnings()
                 self.refreshTailscaleDevices()
                 self.showToast(self.hasTailscaleAuthKey
-                               ? "内置 Tailnet 已启用"
+                               ? "内置 Tailnet 已启用，正在注册节点…"
                                : "内置 Tailnet 已启用，请完成浏览器登录", kind: .ok)
+                // Without this the node is only *written* to config — tsnet is
+                // lazy, so nothing would ever contact the control plane and an
+                // entirely valid auth key would look broken.
+                self.warmUpTailscale()
             } else {
                 self.stopTailscaleLoginWatch()
                 self.tsWarnings = []
                 self.tsDevices = []
+                self.tsLocalIPs = []
+                self.tsLocalDNSName = ""
                 self.showToast("内置 Tailnet 已关闭", kind: .ok)
             }
         }
@@ -337,6 +424,9 @@ extension AppModel {
             if await self.reloadWithTailscaleOverlay() {
                 self.refreshTailscaleEnvironmentWarnings()
                 self.showToast("内置 Tailnet 配置已更新", kind: .ok)
+                // A reload builds a brand-new `tsnet.Server`, which is lazy
+                // again — wake it so the new settings actually take effect.
+                self.warmUpTailscale()
             }
         }
     }
@@ -458,39 +548,130 @@ extension AppModel {
         guard !hasTailscaleAuthKey else {
             showToast("已配置 auth-key，无需浏览器登录（两种方式互斥）", kind: .warn); return
         }
+        beginTailscaleSession(openBrowserOnLogin: true, timeout: 60)
+    }
+
+    /// Bring the session up after enabling / re-applying.
+    ///
+    /// **This is what makes an auth key work at all.** tsnet is lazy —
+    /// `ensureStarted` is a `sync.Once` driven by the first dial — so injecting
+    /// a node with a valid `auth-key` and stopping there registers nothing:
+    /// the control plane is never contacted and the node never appears in the
+    /// tailnet. Something has to dial it, and nothing in the normal flow does
+    /// until the user happens to send matching traffic.
+    func warmUpTailscale() {
+        guard tsEnabled else { return }
+        beginTailscaleSession(openBrowserOnLogin: false, timeout: 45)
+    }
+
+    /// One watcher for both flows: dial the node to force `ensureStarted`, then
+    /// translate tsnet's info-level log lines into a session state.
+    ///
+    /// Every branch here corresponds to a real upstream log statement (see
+    /// `TailscaleLog`); none of it is inferred from timing.
+    private func beginTailscaleSession(openBrowserOnLogin: Bool, timeout: TimeInterval) {
         stopTailscaleLoginWatch()
         tsState = .starting
-        tsLoginDeadline = Date().addingTimeInterval(60)
+        let deadline = Date().addingTimeInterval(timeout)
+        tsLoginDeadline = deadline
+
+        // tsnet's own session lines (`UserLogf`) arrive on the kernel's
+        // *info* level. A user who has turned logging down to error/silent —
+        // a completely reasonable thing to do — silently deafens this whole
+        // watch: nothing is ever emitted for `/logs?level=info` to receive,
+        // so no branch below ever fires and "浏览器登录" never opens a
+        // browser. Raise it for the life of this watch; restored in
+        // `stopTailscaleLoginWatch()`.
+        raiseKernelLogLevelForSession()
 
         let node = tsSettings.nodeName
-        tsLoginWatch = api.stream("/logs?level=info", type: LogTick.self) { [weak self] tick in
+        let hadAuthKey = hasTailscaleAuthKey
+        let handle = api.stream("/logs?level=info", type: LogTick.self) { [weak self] tick in
             let payload = tick.payload
             Task { @MainActor in
-                guard let self, self.tsLoginWatch != nil else { return }
-                if let url = TailscaleLog.loginURL(in: payload, nodeName: node) {
-                    self.tsState = .needsLogin(url: url)
+                guard let self, self.tsLoginDeadline == deadline else { return }
+
+                // 1. The silent killer: a valid key that tsnet refuses to use
+                //    because the state directory already holds an identity.
+                if TailscaleLog.authKeyIgnored(in: payload, nodeName: node) {
                     self.stopTailscaleLoginWatch()
-                    NSWorkspace.shared.open(URL(string: url) ?? URL(fileURLWithPath: "/"))
-                    self.showToast("已打开 Tailscale 登录页面", kind: .info)
+                    self.tsState = .needsIdentityReset(
+                        reason: "本机已有旧身份，tsnet 忽略了 auth-key")
+                    self.logKernel("内置 Tailnet：\(payload)")
+                    self.showToast("auth-key 未生效：本机存有旧身份，请点「清除身份并重试」",
+                                   kind: .error)
+                    return
+                }
+
+                // 2. Authentication finished — `printAuthURLLoop` only exits
+                //    once the backend leaves NeedsLogin.
+                if let state = TailscaleLog.authLoopState(in: payload, nodeName: node) {
+                    self.stopTailscaleLoginWatch()
+                    self.tsState = .running
+                    self.logKernel("内置 Tailnet：会话已授权（state=\(state)）")
+                    self.showToast("Tailnet 会话已建立", kind: .ok)
+                    self.refreshTailscaleDevices(force: true)
+                    self.refreshTailscaleLocalAddress()
+                    return
+                }
+
+                // 3. Needs interactive login. With an auth key configured this
+                //    means the key was rejected/exhausted — say so plainly
+                //    instead of silently opening a browser.
+                if let url = TailscaleLog.loginURL(in: payload, nodeName: node) {
+                    // Deliberately do NOT stop the watch here. The login page
+                    // is completed asynchronously in the user's browser, and
+                    // its own completion (`AuthLoop: state is …; done`) lands
+                    // on this same channel seconds to minutes later — stopping
+                    // now would show the URL once and then never notice a
+                    // successful sign-in. The timeout task below already
+                    // no-ops once state has left `.starting`, so this watch
+                    // simply keeps running (and the log level stays raised)
+                    // until authLoopState fires or the user starts a fresh
+                    // session (which cancels this one first).
+                    self.tsState = .needsLogin(url: url)
                     self.logKernel("内置 Tailnet：登录地址 \(url)")
-                } else if let warn = TailscaleLog.exitNodeFailure(in: payload, nodeName: node) {
+                    if openBrowserOnLogin {
+                        NSWorkspace.shared.open(URL(string: url) ?? URL(fileURLWithPath: "/"))
+                        self.showToast("已打开 Tailscale 登录页面", kind: .info)
+                    } else if hadAuthKey {
+                        self.showToast("auth-key 被控制面拒绝（可能已过期/用尽），需浏览器登录",
+                                       kind: .warn)
+                    } else {
+                        self.showToast("需要浏览器登录，点「浏览器登录」继续", kind: .warn)
+                    }
+                    return
+                }
+
+                if let warn = TailscaleLog.exitNodeFailure(in: payload, nodeName: node) {
                     self.logKernel("内置 Tailnet：\(warn)")
                 }
             }
         }
+        tsLoginWatch = handle
 
-        // Kick tsnet awake. The delay test dials through the node, which is the
-        // only thing that runs `ensureStarted`. It is expected to fail (there is
-        // no exit node yet) — the failure is not the point, the dial is.
+        // The dial is the whole point — it is the only thing that runs
+        // `ensureStarted`. Failure is expected and irrelevant here (a
+        // peer-only tailnet has no public egress); we only need tsnet awake.
         Task { [weak self] in
             guard let self else { return }
             _ = try? await self.api.testDelay(name: node)
-            try? await Task.sleep(nanoseconds: 60 * 1_000_000_000)
+            let remaining = deadline.timeIntervalSinceNow
+            if remaining > 0 {
+                try? await Task.sleep(nanoseconds: UInt64(remaining * 1_000_000_000))
+            }
             await MainActor.run {
+                // A newer session superseded this one — leave its state alone.
+                guard self.tsLoginDeadline == deadline else { return }
                 guard case .starting = self.tsState else { return }
                 self.stopTailscaleLoginWatch()
-                self.tsState = .failed(reason: "未在 60 秒内收到登录地址")
-                self.showToast("未收到登录地址：请确认日志级别不低于 info", kind: .warn)
+                // Timing out is not proof of failure: the node may already have
+                // been authorized in an earlier run, in which case tsnet prints
+                // nothing at all. Fall back to idle rather than crying wolf.
+                self.tsState = .idle
+                self.logKernel("内置 Tailnet：\(Int(timeout)) 秒内未收到会话日志"
+                               + "（本节点可能已在更早的运行中授权过，tsnet 这次不再打印任何东西）")
+                self.refreshTailscaleLocalAddress()
             }
         }
     }
@@ -499,6 +680,39 @@ extension AppModel {
         tsLoginWatch?.cancel()
         tsLoginWatch = nil
         tsLoginDeadline = nil
+        restoreKernelLogLevelIfRaised()
+    }
+
+    /// Ensure the kernel is loud enough to actually emit tsnet's info-level
+    /// session lines, without touching the user's persisted preference.
+    ///
+    /// `PATCH /configs` applies `log-level` to the *running* kernel only —
+    /// confirmed empirically (config.yaml keeps the old value after the
+    /// patch) — so this is a cheap in-memory bump, not a reload, and never
+    /// marks the config file dirty.
+    private func raiseKernelLogLevelForSession() {
+        guard tsLogLevelToRestore == nil else { return }  // already raised
+        let quiet: Set<String> = ["silent", "error", "warning"]
+        // Read from disk, not the live `configs` dict: `configs` can still be
+        // showing a level *we* raised in a previous, not-yet-restored watch,
+        // which would make this look loud enough when the user's real
+        // preference is not. The runtime patch never touches config.yaml, so
+        // the file is always the true preference.
+        let current = (engine.readConfigFile()?["log-level"] as? String)
+            ?? (configs["log-level"] as? String) ?? "warning"
+        guard quiet.contains(current) else { return }
+        tsLogLevelToRestore = current
+        Task { [weak self] in
+            try? await self?.api.patchConfig(["log-level": "info"])
+        }
+    }
+
+    private func restoreKernelLogLevelIfRaised() {
+        guard let level = tsLogLevelToRestore else { return }
+        tsLogLevelToRestore = nil
+        Task { [weak self] in
+            try? await self?.api.patchConfig(["log-level": level])
+        }
     }
 
     /// Wake the node without the login flow — used by the UI's "测试连通" action
@@ -522,6 +736,77 @@ extension AppModel {
                                    ? "已唤醒 Tailnet 会话（未配置出口节点，URL 测试不适用）"
                                    : "Tailnet 出口不可达，请检查出口节点与授权", kind: .info)
                 }
+                self.refreshTailscaleLocalAddress()
+            }
+        }
+    }
+
+    /// Clear the stale identity and immediately retry — the one-button cure for
+    /// `.needsIdentityReset`.
+    func resetTailscaleIdentityAndRetry() {
+        guard tsEnabled else { return }
+        guard retireTailscaleStateDir() else {
+            showToast("无法清除身份目录，请查看日志", kind: .error)
+            return
+        }
+        // The identity now matches the current credentials.
+        tsStoredIdentityFingerprint = tsCurrentIdentityFingerprint
+        withEngineBusy("重建内置 Tailnet 身份") { [weak self] in
+            guard let self else { return }
+            // tsnet reads its state directory once at `Start`, so the running
+            // kernel still holds the retired identity in memory — a config
+            // reload is what forces a fresh `tsnet.Server`.
+            if await self.reloadWithTailscaleOverlay() {
+                self.showToast("已清除旧身份，正在重新注册…", kind: .info)
+                self.warmUpTailscale()
+            }
+        }
+    }
+
+    // MARK: - Local tailnet address
+
+    /// Resolve this machine's own tailnet address.
+    ///
+    /// mihomo exposes no tsnet status over REST and tsnet's info-level logs
+    /// never print the address, so there are exactly two indirect sources:
+    ///
+    ///   1. **Control-plane API** (needs the optional token) — our own node is
+    ///      just another device in the list; match it by hostname.
+    ///   2. **MagicDNS through our own node** — ask the kernel to resolve
+    ///      `<hostname>.<suffix>`; the overlay already points that suffix at
+    ///      `ts://<node>`, so the answer comes from the tailnet resolver.
+    ///      Token-free, but needs a known MagicDNS suffix.
+    func refreshTailscaleLocalAddress() {
+        guard tsEnabled else {
+            tsLocalIPs = []; tsLocalDNSName = ""; return
+        }
+        let host = TailscaleName.sanitizeHostname(tsSettings.hostname)
+
+        // Source 1 — authoritative when a token is configured.
+        if let mine = tsDevices.first(where: {
+            $0.hostname.caseInsensitiveCompare(host) == .orderedSame
+                || $0.hostname.lowercased().hasPrefix(host.lowercased() + ".")
+        }) {
+            if tsLocalIPs != mine.ips { tsLocalIPs = mine.ips }
+            if tsLocalDNSName != mine.hostname { tsLocalDNSName = mine.hostname }
+            return
+        }
+
+        // Source 2 — token-free fallback.
+        let suffix = tsSettings.magicDNSSuffix.trimmingCharacters(
+            in: CharacterSet(charactersIn: ". "))
+        guard !suffix.isEmpty else { return }
+        let fqdn = "\(host).\(suffix)"
+        Task { [weak self] in
+            guard let self else { return }
+            guard let raw = try? await self.api.dnsQuery(name: fqdn, type: "A") else { return }
+            let answers = (raw["Answer"] as? [[String: Any]]) ?? []
+            let ips = answers.compactMap { $0["data"] as? String }
+                .filter { TailscaleOverlay.isIPv4($0) }
+            guard !ips.isEmpty else { return }
+            await MainActor.run {
+                if self.tsLocalIPs != ips { self.tsLocalIPs = ips }
+                if self.tsLocalDNSName != fqdn { self.tsLocalDNSName = fqdn }
             }
         }
     }
@@ -535,25 +820,20 @@ extension AppModel {
     /// - Parameter silent: when true (wipe-all path), skip toasts — the caller
     ///   already narrates the broader operation. Failures still go to the log.
     func resetTailscaleIdentity(silent: Bool = false) {
-        let path = engine.tailscaleStateDirPath
-        guard FileManager.default.fileExists(atPath: path) else {
+        guard FileManager.default.fileExists(atPath: engine.tailscaleStateDirPath) else {
             if !silent { showToast("没有需要清除的登录状态", kind: .info) }
             return
         }
-        do {
-            try FileManager.default.removeItem(atPath: path)
+        // `retireTailscaleStateDir` falls back to a rename when the directory is
+        // root-owned, which it always is once the Helper is installed — a plain
+        // delete fails there and used to leave the user with no way out.
+        if retireTailscaleStateDir() {
+            tsStoredIdentityFingerprint = tsCurrentIdentityFingerprint
             if !silent {
-                showToast("已清除本机 Tailnet 身份，下次启用会重新登录", kind: .ok)
+                showToast("已清除本机 Tailnet 身份，下次启用会重新注册", kind: .ok)
             }
-            logKernel("内置 Tailnet：已删除 \(path)")
-        } catch {
-            // The kernel runs as root when the Helper is installed, so the state
-            // directory is root-owned — the same single-identity rule that keeps
-            // cache.db consistent. A user-mode delete cannot touch it.
-            logKernel("内置 Tailnet：清除身份失败（\(path)）：\(error.localizedDescription)")
-            if !silent {
-                showToast("清除失败（目录属主为 root）：\(error.localizedDescription)", kind: .error)
-            }
+        } else if !silent {
+            showToast("清除失败，请查看日志", kind: .error)
         }
     }
 }

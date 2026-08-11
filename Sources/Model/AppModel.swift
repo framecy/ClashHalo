@@ -420,10 +420,22 @@ import ServiceManagement
     /// Live `/logs` subscription, open only while waiting for a login URL.
     var tsLoginWatch: WSHandle?
     var tsLoginDeadline: Date?
+    /// Log level to restore once the session watch stops. Set only when
+    /// `beginTailscaleSession` had to raise the kernel's log level (the user's
+    /// own setting can be `error`/`silent`, which would otherwise swallow every
+    /// tsnet message — including the login URL — before it reaches `/logs`).
+    /// nil means the level was already loud enough and nothing needs restoring.
+    var tsLogLevelToRestore: String?
     /// Devices from the Tailscale control-plane API (optional API token).
     @Published var tsDevices: [TailscaleDevice] = []
     @Published var tsDevicesLoading = false
     @Published var tsDevicesError: String?
+    /// This machine's own tailnet addresses. mihomo exposes no tsnet status
+    /// over REST, so these are resolved indirectly — see
+    /// `refreshTailscaleLocalAddress()` for the two sources and their order.
+    @Published var tsLocalIPs: [String] = []
+    /// Full MagicDNS name of this node when known (`host.tailXXXX.ts.net`).
+    @Published var tsLocalDNSName: String = ""
     /// Rate-limit device refreshes so opening the page twice does not hammer
     /// the API. Cleared when the token changes or the user hits refresh.
     var tsDevicesFetchedAt: Date = .distantPast
@@ -563,6 +575,11 @@ import ServiceManagement
         // co-resident proxy sharing the 198.18 fake-ip space is never taken for
         // ours (nor torn down as our residue). See `kPinnedTunDevice`.
         NetScanner.pinnedDeviceActive = pinnedTunDevice != nil
+        // Re-home any secret still sitting under a pre-fix Keychain ACL
+        // (code-signing-pinned) into the open-ACL + Application Support mirror
+        // form, *before* anything depends on being able to read it after the
+        // next ad-hoc rebuild. Cheap when already migrated.
+        KeychainHelper.migrateKnownAccounts([kTailscaleAuthKey, kTailscaleAPIToken])
         // Hand the engine the built-in tailnet plan *before* anything can call
         // setConfig. A subscription auto-update we did not initiate would
         // otherwise rewrite config.yaml without the node, silently dropping a
@@ -697,6 +714,14 @@ import ServiceManagement
 
             _ = await kernelBoot.value
             mark("startup complete")
+
+            // tsnet is lazy: it only starts on the first dial. If the user had
+            // Tailscale enabled in a previous session, the proxy is in the config
+            // but the kernel is not running tsnet — nothing would ever dial it.
+            // Kick it now so the node registers with the control plane promptly.
+            if tsEnabled {
+                warmUpTailscale()
+            }
 
             startNetworkMonitor()
             installSignalHandlers()
