@@ -38,6 +38,7 @@ struct TailscalePage: View {
             if M.tsEnabled {
                 M.refreshTailscaleEnvironmentWarnings()
                 M.refreshTailscaleDevices()
+                M.refreshTailscaleLocalAddress()
             }
         }
     }
@@ -70,8 +71,58 @@ struct TailscalePage: View {
                         .frame(maxWidth: .infinity, alignment: .leading)
                         .padding(.bottom, DS.Spacing.s)
                 }
+
+                // The one-button cure for a valid key that tsnet refused to use.
+                if case .needsIdentityReset = M.tsState {
+                    HStack(alignment: .top, spacing: DS.Spacing.s) {
+                        Text("本机早前注册过另一个身份，tsnet 会直接忽略 auth-key。清除后会重新注册为新节点。")
+                            .font(.dsCaption).foregroundColor(.secondary)
+                            .fixedSize(horizontal: false, vertical: true)
+                        Spacer(minLength: 0)
+                        Button("清除身份并重试") { M.resetTailscaleIdentityAndRetry() }
+                            .dsButton(.prominent)
+                            .disabled(M.engine.isBusy)
+                    }
+                    .padding(.bottom, DS.Spacing.s)
+                }
+
+                if !M.tsLocalIPs.isEmpty || !M.tsLocalDNSName.isEmpty {
+                    localAddressRow
+                }
             }
         }
+    }
+
+    /// This machine's own tailnet address — the first thing you need in order
+    /// to reach this Mac from another device.
+    private var localAddressRow: some View {
+        HStack(alignment: .top) {
+            VStack(alignment: .leading, spacing: DS.Spacing.xs) {
+                Text("本机 Tailnet 地址").font(.dsBody)
+                if !M.tsLocalDNSName.isEmpty {
+                    Text(M.tsLocalDNSName).font(.dsMono).foregroundColor(.secondary)
+                        .textSelection(.enabled)
+                }
+            }
+            Spacer(minLength: 0)
+            VStack(alignment: .trailing, spacing: DS.Spacing.xs) {
+                ForEach(M.tsLocalIPs, id: \.self) { ip in
+                    HStack(spacing: DS.Spacing.s) {
+                        Text(ip).font(.dsMono).foregroundColor(DS.Palette.accent)
+                            .textSelection(.enabled)
+                        Button {
+                            NSPasteboard.general.clearContents()
+                            NSPasteboard.general.setString(ip, forType: .string)
+                            M.showToast("已复制 \(ip)", kind: .ok)
+                        } label: {
+                            Image(systemName: "doc.on.doc").font(.dsCaption)
+                        }
+                        .buttonStyle(.plain).foregroundColor(.secondary)
+                    }
+                }
+            }
+        }
+        .padding(.vertical, DS.Spacing.s)
     }
 
     private var stateText: String {
@@ -81,8 +132,9 @@ struct TailscalePage: View {
         case .idle: return M.hasTailscaleAuthKey
             ? "已就绪（首次连接时才会真正启动会话）"
             : "已注入，等待登录"
-        case .starting: return "正在启动会话并等待登录地址…"
+        case .starting: return "正在唤醒会话并等待控制面应答…"
         case .needsLogin(let url): return "等待浏览器授权：\(url)"
+        case .needsIdentityReset(let reason): return reason
         case .running: return "会话已连通"
         case .failed(let reason): return "失败：\(reason)"
         }
@@ -92,7 +144,7 @@ struct TailscalePage: View {
         if M.tsSupported == false { return DS.Palette.error }
         switch M.tsState {
         case .running: return DS.Palette.ok
-        case .failed: return DS.Palette.error
+        case .failed, .needsIdentityReset: return DS.Palette.error
         case .needsLogin, .starting: return DS.Palette.warn
         default: return .secondary
         }
@@ -141,6 +193,11 @@ struct TailscalePage: View {
                     get: { M.tsSettings.controlURL },
                     set: { M.tsSettings.controlURL = $0 }
                 ), placeholder: "留空即官方控制面（Headscale 填自建地址）")
+
+                tsToggleRow("临时节点 ephemeral",
+                            help: "下线后由控制面自动移除，不在后台留死条目。代价是每次重启都是新身份，IP 会变",
+                            value: Binding(get: { M.tsSettings.ephemeral },
+                                           set: { M.tsSettings.ephemeral = $0 }))
 
                 Divider().padding(.vertical, DS.Spacing.s)
 
@@ -255,6 +312,17 @@ struct TailscalePage: View {
                             help: "内核默认关闭；关掉后 tailnet 内的 UDP 全部不通",
                             value: Binding(get: { M.tsSettings.udp },
                                            set: { M.tsSettings.udp = $0 }))
+
+                tsToggleRow("优先 IPv6",
+                            help: "ip-version: ipv6-prefer。只改变双栈时的选择顺序，不会凭空造出 IPv6 连通性",
+                            value: Binding(get: { M.tsSettings.preferIPv6 },
+                                           set: { M.tsSettings.preferIPv6 = $0 }))
+
+                tsTextRow("上游代理 dialer-proxy", value: Binding(
+                    get: { M.tsSettings.dialerProxy },
+                    set: { M.tsSettings.dialerProxy = $0 }
+                ), placeholder: "留空即直连",
+                   help: "让控制面与 DERP 中继走指定的策略组/节点（填其名称）。封锁网络下有用，代价是延迟变高")
 
                 tsTextRow("出口节点", value: Binding(
                     get: { M.tsSettings.exitNode },
