@@ -335,6 +335,8 @@ public class XPCManager {
         chown root:wheel "\(helperDst).new"; \
         chmod 755 "\(helperDst).new"; \
         cp "\(tempPlist)" "\(plistDst).new"; \
+        xattr -rd com.apple.quarantine "\(plistDst).new" 2>/dev/null || true; \
+        xattr -cr "\(plistDst).new" 2>/dev/null || true; \
         chown root:wheel "\(plistDst).new"; \
         chmod 644 "\(plistDst).new"; \
         launchctl bootout system "\(legacyPlistDst)" 2>/dev/null || true; \
