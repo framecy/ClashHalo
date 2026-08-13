@@ -97,13 +97,21 @@ rm -rf "$STAGE"; mkdir -p "$STAGE"
 cp -R "$APP" "$STAGE/ClashHalo.app"
 ln -s /Applications "$STAGE/Applications"
 
-# One-click quarantine remover. Double-clicking a plain shell script from
-# Finder does NOT trigger Gatekeeper's "unidentified developer" block (that
-# check only applies to signed Mach-O binaries/.app bundles) — so this runs
-# with no prompt, unlike opening ClashHalo.app itself first. Stripping the
-# app's quarantine *before* first launch matters beyond just letting the app
-# open: XPCManager.installDaemon writes the Helper's LaunchDaemon plist at
-# install time from the running app process — if that process is still
+# One-click install + quarantine remover. Double-clicking a plain shell
+# script from Finder does NOT trigger Gatekeeper's "unidentified developer"
+# block (that check only applies to signed Mach-O binaries/.app bundles) —
+# so this runs with no prompt, unlike opening ClashHalo.app itself first.
+#
+# Must COPY to /Applications rather than xattr-ing the app in place: a UDZO
+# DMG mounts read-only, so `xattr -d` on "./ClashHalo.app" while still on the
+# mounted volume fails outright ([Errno 30] Read-only file system) — this
+# was the actual bug in the first version of this script, not a Gatekeeper
+# issue. Copying first also means the user doesn't need a separate manual
+# drag-to-Applications step afterward.
+#
+# Stripping quarantine before first launch matters beyond just letting the
+# app open: XPCManager.installDaemon writes the Helper's LaunchDaemon plist
+# at install time from the running app process — if that process is still
 # under quarantine, the freshly-written plist can inherit the flag, and
 # launchd refuses to spawn a service whose plist is quarantined (independent
 # of the app's own Gatekeeper check). Running this first avoids that failure
@@ -111,14 +119,15 @@ ln -s /Applications "$STAGE/Applications"
 cat > "$STAGE/0-重要！请先双击我.command" <<'PRECHECK'
 #!/bin/bash
 cd "$(dirname "$0")"
-APP="./ClashHalo.app"
+SRC="./ClashHalo.app"
+DST="/Applications/ClashHalo.app"
 
 echo "======================================"
 echo " ClashHalo 首次安装准备"
 echo "======================================"
 echo ""
 
-if [ ! -d "$APP" ]; then
+if [ ! -d "$SRC" ]; then
     echo "❌ 没有在同一目录下找到 ClashHalo.app"
     echo "   请确认这个文件和 ClashHalo.app 还在同一个文件夹里再运行。"
     echo ""
@@ -127,10 +136,23 @@ if [ ! -d "$APP" ]; then
     exit 1
 fi
 
-echo "正在解除 ClashHalo.app 的下载隔离标记…"
-if xattr -dr com.apple.quarantine "$APP"; then
+echo "正在安装到「应用程序」文件夹…"
+rm -rf "$DST" 2>/dev/null
+if ! cp -R "$SRC" "$DST" 2>/dev/null; then
     echo ""
-    echo "✅ 完成！现在可以把 ClashHalo 拖入「应用程序」文件夹，双击直接打开了。"
+    echo "⚠️ 复制到「应用程序」失败（可能没有写入权限）。"
+    echo "   请手动把 ClashHalo 拖入「应用程序」文件夹，再执行："
+    echo "   xattr -dr com.apple.quarantine /Applications/ClashHalo.app"
+    echo ""
+    read -n 1 -s -r -p "按任意键关闭窗口..."
+    echo ""
+    exit 1
+fi
+
+echo "正在解除下载隔离标记…"
+if xattr -dr com.apple.quarantine "$DST"; then
+    echo ""
+    echo "✅ 完成！ClashHalo 已装进「应用程序」文件夹，现在可以直接从「启动台」或「应用程序」打开了。"
     echo "   （本应用没有 Apple 付费开发者认证，跳过这一步会被系统拦截，装 TUN 特权服务时也可能失败）"
 else
     echo ""
@@ -147,9 +169,10 @@ cat > "$STAGE/使用说明.txt" <<'GUIDE'
 ClashHalo 使用说明
 ====================================
 
-【重要！第一步】
-先双击「0-重要！请先双击我.command」，再打开 ClashHalo！
-（会跳出一个终端窗口，跑完自动提示完成，不需要输密码）
+【重要！第一步，唯一需要做的事】
+直接双击「0-重要！请先双击我.command」——它会自动把 ClashHalo 装进
+「应用程序」文件夹并解除下载隔离标记，跑完就可以从「应用程序」或
+「启动台」直接打开了，不需要再手动拖拽，也不需要输密码。
 
 【关于签名（重要）】
 本应用为本地构建版本，使用 ad-hoc 临时签名（无 Apple 开发者证书）。
@@ -157,10 +180,8 @@ ClashHalo 使用说明
 因为无法验证开发者”，装 TUN 所需的后台服务也可能安装失败——这是未经
 官方认证的预期行为，下方是手动处理的备用方法。
 
-【安装】
-将 ClashHalo 拖入「应用程序」(Applications) 文件夹。
-
 【如果没有双击运行第一步，首次打开被拦截时的备用方法】
+方法零：手动把 ClashHalo 拖入「应用程序」(Applications) 文件夹。
 方法一（推荐）：在「应用程序」中右键点击 ClashHalo → 选择「打开」→
             在弹窗中再次点击「打开」。仅首次需要。
 方法二：若提示被拦截，打开「系统设置 → 隐私与安全性」，在底部找到
