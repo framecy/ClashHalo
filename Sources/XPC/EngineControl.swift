@@ -188,6 +188,13 @@ import Network
             forceTUNDisabled()   // TUN is runtime-only (root) — never auto-enable from disk
             injectMemoryOptimization()
         }
+        // Apply the tailscale overlay after all normalizers. The overlay must
+        // run here — not just in setConfig() — so that a cold start (kernel
+        // reads config.yaml directly) or a config.yaml recreated by the
+        // normalizers above includes the tailscale node when the user has it
+        // enabled. Without this, tsEnabled + warmUpTailscale() dials a node
+        // the kernel never loaded, and the feature silently does nothing.
+        applyTailscaleOverlay()
         return replacedSecret
     }
 
@@ -2047,9 +2054,27 @@ import Network
         }
     }
 
+    /// Cached file attributes for readConfigFile — avoids the full line scan
+    /// when config.yaml hasn't changed since the last call.
+    private var rcfCacheMtime: Date?
+    private var rcfCache: [String: Any]?
+
     /// Read config.yaml and return a dictionary. Used to read fields that mihomo
     /// API doesn't expose (e.g. sniffer).
     func readConfigFile() -> [String: Any]? {
+        // mtime-based cache: if the file hasn't been modified since the last
+        // successful parse, return the cached dictionary. This is called from
+        // refreshConfigs (now 60 s), liveTunBlock, and a few other paths —
+        // without the cache each call does a full line scan of a multi-KB file.
+        let fm = FileManager.default
+        if let attrs = try? fm.attributesOfItem(atPath: configFilePath),
+           let mtime = attrs[.modificationDate] as? Date {
+            if rcfCacheMtime == mtime, let cached = rcfCache {
+                return cached
+            }
+            rcfCacheMtime = mtime
+        }
+
         guard let text = try? String(contentsOfFile: configFilePath, encoding: .utf8) else { return nil }
         var result: [String: Any] = [:]
         var currentSection: String? = nil
@@ -2119,6 +2144,7 @@ import Network
             result[section] = currentDict
         }
 
+        rcfCache = result
         return result
     }
 

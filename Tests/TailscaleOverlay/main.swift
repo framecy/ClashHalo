@@ -478,5 +478,48 @@ do {
            "可修复的不算终态失败")
 }
 
+section("退休决策：清空 key 不能抹掉上次身份的记忆（回归用例）")
+do {
+    let a = TailscaleIdentity.fingerprint(authKey: "tskey-auth-A", controlURL: "")
+    let b = TailscaleIdentity.fingerprint(authKey: "tskey-auth-B", controlURL: "")
+
+    // 首次配置：没有旧基线可比，不退休，只记下这次的指纹。
+    let first = TailscaleIdentity.retirementDecision(hasAuthKey: true, current: a, stored: "")
+    expect(!first.retire, "首次使用不退休")
+    expect(first.newStored == a, "首次使用记下基线")
+
+    // 同一把 key 重复保存：指纹没变，不退休。
+    let same = TailscaleIdentity.retirementDecision(hasAuthKey: true, current: a, stored: a)
+    expect(!same.retire, "指纹未变不退休")
+
+    // 真正换 key：指纹变了，必须退休，且更新基线。
+    let changed = TailscaleIdentity.retirementDecision(hasAuthKey: true, current: b, stored: a)
+    expect(changed.retire, "指纹变化触发退休")
+    expect(changed.newStored == b, "退休后基线更新为新指纹")
+
+    // 「清除 Key」：没有 key 了（浏览器登录路径），绝不退休，也绝不碰基线——
+    // 这是本次修复的回归点：newStored 必须是 nil，不能是 "" 或任何覆盖值，
+    // 否则下一次真正换 key 时会把"首次使用"和"换 key"搞混，漏掉退休。
+    let cleared = TailscaleIdentity.retirementDecision(hasAuthKey: false, current: "", stored: a)
+    expect(!cleared.retire, "清空 key 不退休")
+    expect(cleared.newStored == nil, "清空 key 不覆盖已有基线")
+
+    // 完整场景：A 登录成功 → 清除 Key → 换成 B。基线在中途必须原样保留，
+    // 换成 B 的那一刻才能识别出"变了"并退休旧身份目录。
+    var stored = ""
+    let afterA = TailscaleIdentity.retirementDecision(hasAuthKey: true, current: a, stored: stored)
+    if let s = afterA.newStored { stored = s }
+    expect(stored == a, "登录 A 后基线是 A")
+
+    let afterClear = TailscaleIdentity.retirementDecision(hasAuthKey: false, current: "", stored: stored)
+    if let s = afterClear.newStored { stored = s }
+    expect(stored == a, "清除 Key 后基线仍是 A（没被清空 key 的空指纹冲掉）")
+
+    let afterB = TailscaleIdentity.retirementDecision(hasAuthKey: true, current: b, stored: stored)
+    expect(afterB.retire, "清除后换成 B：必须退休旧身份，否则 tsnet 会忽略 B")
+    if let s = afterB.newStored { stored = s }
+    expect(stored == b, "换成 B 后基线更新为 B")
+}
+
 print("\n\(checks - failures)/\(checks) 通过")
 if failures > 0 { print("\(failures) 处失败"); exit(1) }

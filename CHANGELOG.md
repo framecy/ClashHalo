@@ -2,9 +2,55 @@
 
 本项目所有重要变更记录于此。格式参考 [Keep a Changelog](https://keepachangelog.com/),版本遵循语义化版本。
 
-## [Unreleased]
+## [1.3.0] — 2026-08-17
 
 ### Fixed
+
+- **App 内存警卫：从 `phys_footprint` 切换为 RSS、徒劳即停手**。一次 2 小时真机监测抓到：
+  警卫在窗口内触发 **463 次**（每 15 秒一次，从启动到关闭从未消退），每次清空关闭连接历史
+  并把活动行截到 300，占用却始终纹丝不动（309→317MB）。根因是**度量口径与阈值错配**：
+  `residentMemoryBytes()` 实际返回 mach `task_vm_info.phys_footprint`（含压缩内存，
+  即 Xcode 内存计 / jetsam 口径），而 `AppMemoryGuardPolicy` 的 250MB 软限是按
+  **RSS** 数字（注释里的「健康空闲 80–150MB」）校准的——同一进程实测 `ps -o rss` 仅 87MB，
+  `phys_footprint` 却报 316MB，两者长期相差 ~230MB，于是软限永远低于本进程基线，警卫恒真。
+  这与 v1.1.15「阈值过高导致一次都不触发」正好互为镜像。修复：
+  1. **度量口径切换**：`residentMemoryBytes()` 从 `phys_footprint` 改为
+     `task_basic_info.resident_size`（BSD RSS），与 `ps -o rss` 和 Activity Monitor
+     一致——用户看到的「应用内存」数字终于与系统工具吻合（~90MB 而非 ~380MB），
+     内存警卫的阈值也终于与它比较的数字在同一口径上。
+  2. **阈值按实测 RSS 分布重新校准**：softLimit 220MB / hardLimit 320MB / interval 15s /
+     softKeepRows 300 / effectiveDrop 10MB / ineffectiveLimit 3。依据是 2 小时 589 样本的
+     真实采集——RSS 由启动 123MB 爬升至 **145.1–145.8MB 平台期并持平 90 分钟**
+     （p50 145.2 / p99 145.8 / max 145.8，无泄漏），冷启动约 90MB。关键认知是
+     **~146MB 是稳态而非峰值**，故软限取约 1.5 倍稳态（220MB）留出 ~74MB 余量；
+     若只取 150MB（仅高出 4MB），一次连接激增就会把守卫打成常态空转——等于把刚修好的
+     故障以更小幅度重演。
+  3. **健壮性加固**：改用非弃用且 64 位安全的 `MACH_TASK_BASIC_INFO`（旧
+     `TASK_BASIC_INFO` 早于 64 位时代）；`decide` 的参数与 `State` 字段由 `footprint`
+     统一更名为 `rss`（留一个叫 footprint 却装 RSS 的参数，就是下一次校准事故的种子）；
+     徒劳判定与重新武装的比较改写为在差值上进行，消除 `rss + effectiveDrop` /
+     `suspendedAt + reArmGrowth` 的整数回绕（回绕会让守卫永久空转或永不停手）；
+     并明确 `task_info` 读取失败返回 0 时按「健康」处理，绝不因读不到内存就清空
+     用户正在查看的连接表。
+  4. **徒劳检测与自我停摆**：连续 `ineffectiveLimit`(3) 次清理未能让 RSS 下降
+     `effectiveDrop`(10MB) 即暂停，形状对齐既有的网关 DNS 自愈「有上界 + 真实状态变化才
+     重新武装」；RSS 再涨 `reArmGrowth`(50MB)（即出现警卫从未回收过的新增内存，可能是真
+     泄漏）或回落到软限以下时自动恢复，退避不会掩盖真实增长。
+  5. 日志改为**只在状态转换时**输出（engaged / suspended / re-armed / recovered），
+     并在停手时给出可操作诊断——463 行同文日志本身就是故障信号。
+  6. **Keychain 迁移移出主线程**：`KeychainHelper.migrateKnownAccounts` 原在 `start()`
+     主线程同步执行，当 Keychain 中存在被旧 ad-hoc 签名锁定的条目时，
+     `SecItemCopyMatching` 弹出授权对话框——在后台/无头启动时永远等不到，
+     导致 `start()` 在 `mark("prelude")` 之前永久阻塞。症状是窗口可见但
+     `reachable=false`，无流、无轮询、仪表盘完全不刷新、内存因阻塞积压飙升到 297MB。
+     改为 `Task.detached` 后台执行——迁移结果只在下一次启动才需要。
+  7. **仪表盘数据刷新解耦**：App 内存不再寄生在内核 `/memory` WebSocket 回调里
+     （首帧 `inuse:0` 被门控拦掉导致永久冻结），改为独立 2s 定时器采样；
+     不可见时停更，恢复可见时 2s 内全量刷新（并发拉取代理/配置/连接快照）。
+  `Tests/AppMemoryGuard` 扩到 59 项（含用 2 小时 589 个真实样本回放的两条：正常负载下
+  守卫必须 **0 次**介入；即使有人把度量改回 `phys_footprint`，徒劳退避仍把 589 次评估
+  压到 3 次——两道防线彼此独立，修复不依赖单点正确），直接编译产品源码驱动完整的「停手 → 抖动不复位 →
+  真实增长重新武装 → 回落重置」循环，并钉住「清理有效时不得误判为徒劳」。
 
 - **升级 / 重装后 Tailscale auth-key（以及订阅 URL）不再丢失**。根因：本应用 ad-hoc 签名
   （`codesign -s -`，无 Team ID / 无 keychain-access-groups），`SecItemAdd` 默认把条目 ACL
