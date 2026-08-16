@@ -82,6 +82,14 @@ extension AppModel {
         // including one triggered by a subscription update we did not initiate —
         // carries the node.
         syncTailscaleToEngine()
+
+        // Check at launch whether the auth key has changed since the last run
+        // (e.g. recovered from the Keychain mirror after a reinstall, or the
+        // user swapped keys externally). If so, retire the old tsnet identity
+        // directory so tsnet does not silently ignore the new key.
+        if tsEnabled {
+            retireTailscaleIdentityIfCredentialsChanged()
+        }
     }
 
     func saveTailscalePrefs() {
@@ -154,19 +162,20 @@ extension AppModel {
     }
 
     /// Retire the tsnet state directory when the credentials that produced it
-    /// have changed. No-op on first use and when nothing changed.
+    /// have changed. No-op on first use and when nothing changed. Decision
+    /// logic lives in `TailscaleIdentity.retirementDecision` (pure, tested);
+    /// this is just the Keychain/UserDefaults/filesystem side effects.
     @discardableResult
     func retireTailscaleIdentityIfCredentialsChanged() -> Bool {
-        let current = tsCurrentIdentityFingerprint
-        let stored = tsStoredIdentityFingerprint
-        // Empty current fingerprint = no auth key at all (browser-login path);
-        // that flow depends on the existing identity, so never retire on it.
-        guard !current.isEmpty, !stored.isEmpty, current != stored else {
-            tsStoredIdentityFingerprint = current
-            return false
+        let decision = TailscaleIdentity.retirementDecision(
+            hasAuthKey: hasTailscaleAuthKey,
+            current: tsCurrentIdentityFingerprint,
+            stored: tsStoredIdentityFingerprint)
+        if let newStored = decision.newStored {
+            tsStoredIdentityFingerprint = newStored
         }
+        guard decision.retire else { return false }
         let retired = retireTailscaleStateDir()
-        tsStoredIdentityFingerprint = current
         if retired {
             logKernel("内置 Tailnet：凭证已变更，已退休旧身份目录（新 key 才能生效）")
         }
@@ -437,7 +446,7 @@ extension AppModel {
     /// Feeding the file back to itself looks odd but is the honest path: the
     /// overrides are idempotent by construction, and this keeps exactly one
     /// place that knows how a config reaches the kernel.
-    private func reloadWithTailscaleOverlay() async -> Bool {
+    func reloadWithTailscaleOverlay() async -> Bool {
         guard let text = try? String(contentsOfFile: engine.configFilePath, encoding: .utf8) else {
             showToast("读取配置失败", kind: .error)
             return false
@@ -493,6 +502,15 @@ extension AppModel {
             warnings.append("未开启 TUN：裸 TCP（如 ssh 100.x）不会进入分流，"
                             + "只有走代理端口的流量能命中 tailnet 规则")
         }
+        // The tsnet library embedded in mihomo reports its Tailscale client
+        // version to the control plane. If the version is older than what the
+        // console expects, the console shows "version too low" and refuses
+        // certain operations (e.g. editing the node IP). This is a kernel-level
+        // limitation — ClashHalo cannot fix it, only surface it.
+        warnings.append("内置节点使用 mihomo 内嵌的 tsnet 库，Tailscale 控制面可能提示"
+                        + "「版本过低」并拒绝编辑 IP。请使用 hostname + MagicDNS 名称访问本节点，"
+                        + "或升级到更新的 mihomo 内核版本")
+
         tsWarnings = warnings
     }
 

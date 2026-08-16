@@ -234,6 +234,16 @@ private struct SafeDecoder: @unchecked Sendable {
         return handle
     }
 
+    /// Raw-Data WebSocket stream — lets the caller fingerprint the payload before
+    /// decoding, so an unchanged snapshot (mihomo pushes the full list on every
+    /// WS message, not just on change) can be skipped without paying for JSON
+    /// decode of thousands of connection objects.
+    func streamRaw(_ path: String, onValue: @escaping @Sendable (Data) -> Void) -> WSHandle {
+        let handle = WSHandle()
+        connectStreamRaw(path, handle: handle, onValue: onValue)
+        return handle
+    }
+
     private func connectStream<T: Decodable>(_ path: String, type: T.Type, handle: WSHandle, onValue: @escaping @Sendable (T) -> Void) {
         guard let url = wsURL(path) else { return }
         let task = session.webSocketTask(with: url)
@@ -268,6 +278,41 @@ private struct SafeDecoder: @unchecked Sendable {
                     guard !handle.cancelled else { return }
                     guard self.reachable else { return }
                     self.connectStream(path, type: T.self, handle: handle, onValue: onValue)
+                }
+            }
+        }
+    }
+
+    private func connectStreamRaw(_ path: String, handle: WSHandle, onValue: @escaping @Sendable (Data) -> Void) {
+        guard let url = wsURL(path) else { return }
+        let task = session.webSocketTask(with: url)
+        handle.task = task
+        task.resume()
+        receiveLoopRaw(task: task, path: path, handle: handle, onValue: onValue)
+    }
+
+    private nonisolated func receiveLoopRaw(task: URLSessionWebSocketTask, path: String, handle: WSHandle, onValue: @escaping @Sendable (Data) -> Void) {
+        task.receive { [weak self] result in
+            guard let self, !handle.cancelled else { return }
+            switch result {
+            case .success(let msg):
+                autoreleasepool {
+                    switch msg {
+                    case .string(let s):
+                        if let d = s.data(using: .utf8) { onValue(d) }
+                    case .data(let d):
+                        onValue(d)
+                    @unknown default:
+                        break
+                    }
+                }
+                self.receiveLoopRaw(task: task, path: path, handle: handle, onValue: onValue)
+            case .failure:
+                Task { @MainActor in
+                    try? await Task.sleep(nanoseconds: 2_000_000_000)
+                    guard !handle.cancelled else { return }
+                    guard self.reachable else { return }
+                    self.connectStreamRaw(path, handle: handle, onValue: onValue)
                 }
             }
         }

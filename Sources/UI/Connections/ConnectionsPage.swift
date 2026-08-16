@@ -599,178 +599,195 @@ struct ConnDetailCard: View {
     }()
 }
 
+
 @MainActor final class ConnectionsViewModel: ObservableObject {
     @Published var conns: [Conn] = []
     @Published var closedConnections: [Conn] = []
 
-    private var pollTimer: Timer?
+    private var wsHandle: WSHandle?
+    private var fallbackTimer: Timer?
     private let api = MihomoClient.shared
     private let M = AppModel.shared
+
+    /// Fingerprint of the last decoded payload — when mihomo pushes the same
+    /// snapshot twice (common on WS, which fires on state-change not on a
+    /// fixed cadence), the second message is identical bytes. Skip the full
+    /// decode of thousands of connection objects entirely.
+    private var lastPayloadFingerprint: UInt64 = 0
+
+    /// Previous-frame Conn by id — used for incremental diff so we don't
+    /// rebuild 14 strings per connection when only the byte counters changed.
+    private var prevConnById: [String: Conn] = [:]
 
     func start() {
         guard api.reachable else { return }
 
         M.isConnectionsPageActive = true
 
-        // HTTP polling instead of WebSocket — avoids kernel pushing full-payload
-        // JSON every 1s which causes severe memory churn under high connection count.
-        // Poll at 1.5s gives near-realtime UX while halving allocation frequency.
-        pollTimer = Timer.scheduledTimer(withTimeInterval: 1.5, repeats: true) { [weak self] _ in
-            Task { @MainActor [weak self] in
-                await self?.poll()
-            }
+        // WebSocket with raw-Data delivery + payload fingerprinting + incremental
+        // diff. The old HTTP poll at 1.5 s decoded a full snapshot of ~14 String
+        // fields × N connections every tick, regardless of whether anything
+        // changed. The WS fires only on state-change; when it does fire with
+        // identical bytes we skip the decode entirely.
+        //
+        // A 5 s fallback poll covers WS edge cases (mihomo not pushing after a
+        // reconnect, missed messages) — cheap, and guarantees the table never
+        // goes stale.
+        startWebSocket()
+        fallbackTimer = Timer.scheduledTimer(withTimeInterval: 5.0, repeats: true) { [weak self] _ in
+            Task { @MainActor [weak self] in await self?.fallbackPoll() }
         }
-        // Immediate first fetch
-        Task { await poll() }
     }
 
     func stop() {
-        pollTimer?.invalidate()
-        pollTimer = nil
+        wsHandle?.cancel()
+        wsHandle = nil
+        fallbackTimer?.invalidate()
+        fallbackTimer = nil
 
         M.isConnectionsPageActive = false
 
         // Completely reclaim memory arrays when not on this page
         conns.removeAll(keepingCapacity: false)
         closedConnections.removeAll(keepingCapacity: false)
+        prevConnById.removeAll(keepingCapacity: false)
+        lastPayloadFingerprint = 0
     }
 
-    private func poll() async {
+    private func startWebSocket() {
+        wsHandle?.cancel()
+        wsHandle = api.streamRaw("/connections") { [weak self] data in
+            Task { @MainActor [weak self] in
+                self?.onConnectionsData(data)
+            }
+        }
+    }
+
+    private func fallbackPoll() async {
         guard api.reachable else { return }
         do {
             let s = try await api.fetchConnectionsSnapshot()
+            // Bypass the fingerprint path — HTTP GET always returns fresh data,
+            // so decode and process directly.
             onConnections(s)
         } catch {
-            // Network transient — skip this tick
+            // Network transient — WS will pick up
+        }
+    }
+
+    private func onConnectionsData(_ data: Data) {
+        // Payload fingerprint: if the bytes are identical to the last message,
+        // skip the decode entirely — no JSONDecoder, no Conn allocation, no diff.
+        let fingerprint = Self.fingerprint(of: data)
+        if fingerprint == lastPayloadFingerprint && !conns.isEmpty { return }
+        lastPayloadFingerprint = fingerprint
+
+        // Decode inside an autoreleasepool so JSONDecoder's temporaries drain
+        // immediately instead of stacking on the main run loop's pool.
+        autoreleasepool {
+            guard let s = try? JSONDecoder().decode(ConnectionsSnapshot.self, from: data) else { return }
+            onConnections(s)
         }
     }
 
     private func onConnections(_ s: ConnectionsSnapshot) {
-        M.uploadTotal = s.uploadTotal
-        M.downloadTotal = s.downloadTotal
-
-        if let m = s.memory, m > 0 {
-            M.live.memory = m
-            // Core Memory Guard
-            if m > 512 * 1024 * 1024 && Date().timeIntervalSince(M.lastCacheFlush) > 1800 {
-                M.lastCacheFlush = Date()
-                M.clearAllCache()
-                M.logKernel("核心内存占用过高 (\(m / 1_000_000)MB)，已自动清空 DNS 与 Fake‑IP 缓存")
-            }
-        }
+        // Delegate the heavy shared work (byte diff, history, gateway, dashboard,
+        // memory guard) to the single canonical path. This eliminates the
+        // duplicate processing that used to run here AND in recordHistoryOnly.
+        M.recordHistoryOnly(from: s)
 
         let items = s.connections ?? []
 
-        // The hottest allocation path in the app: it runs every 1.5 s and builds
-        // one `Conn` (14 freshly-allocated strings) per live connection, plus a
-        // byte dictionary, an id set, the gateway aggregation and the dashboard
-        // scratch space. Without an explicit pool all of that garbage sits in the
-        // main run loop's autorelease pool between drains, stacking several
-        // ticks' worth of dead objects and fragmenting the heap.
         autoreleasepool {
-        var next: [Conn] = []
-        next.reserveCapacity(items.count)
-        var bytes: [String: (up: Int64, down: Int64)] = [:]
-        bytes.reserveCapacity(items.count)
-        var activeIDs = Set<String>(minimumCapacity: items.count)
-        let hour = Calendar.current.component(.hour, from: Date())
-        // Accumulated, then written once — this page polls every 1.5 s, so it is
-        // the hottest caller of all. See `TrafficHistory.recordBatch`.
-        var tickDirect = 0.0, tickProxy = 0.0, tickReject = 0.0, tickDown = 0.0
+            // Build a lookup of the previous frame so we can reuse the
+            // expensive string transforms (chain join, rule concat) that
+            // don't change for a given connection.
+            if prevConnById.isEmpty {
+                for c in M.cachedConns { prevConnById[c.id] = c }
+            }
 
-        for c in items {
-            activeIDs.insert(c.id)
-            if !M.activeConnsSet.contains(c.id) { M.totalConnsCount += 1 }
-            let prev = M.prevConnBytes[c.id]
-            let upRate = prev.map { max(0, c.upload - $0.up) } ?? 0
-            let downRate = prev.map { max(0, c.download - $0.down) } ?? 0
-            bytes[c.id] = (c.upload, c.download)
+            var next: [Conn] = []
+            next.reserveCapacity(items.count)
+            var activeIDs = Set<String>(minimumCapacity: items.count)
 
-            let delta = Double(upRate + downRate)
-            if delta > 0 {
-                if c.chains.first == "DIRECT" || c.chains.contains("DIRECT") {
-                    tickDirect += delta
-                } else if c.chains.first == "REJECT" || c.chains.contains("REJECT") {
-                    tickReject += delta
-                } else {
-                    tickProxy += delta
+            for c in items {
+                activeIDs.insert(c.id)
+                let prev = M.prevConnBytes[c.id]
+                let upRate = prev.map { max(0, c.upload - $0.up) } ?? 0
+                let downRate = prev.map { max(0, c.download - $0.down) } ?? 0
+
+                // Reuse string transforms from the previous frame when the
+                // connection is not new — chains/rule rarely change for a
+                // live connection, so this saves 3 string allocations per row.
+                let prevConn = prevConnById[c.id]
+                let conn = Conn(
+                    id: c.id,
+                    host: c.metadata.host?.isEmpty == false ? c.metadata.host! : (c.metadata.destinationIP ?? "?"),
+                    dstIP: c.metadata.destinationIP ?? "?",
+                    srcIP: c.metadata.sourceIP ?? "?",
+                    port: c.metadata.destinationPort ?? "",
+                    network: c.metadata.network == "tcp" ? "TCP" : c.metadata.network.uppercased(),
+                    process: c.metadata.process ?? "—",
+                    processPath: c.metadata.processPath ?? "—",
+                    chain: prevConn?.chain ?? c.chains.reversed().joined(separator: " → "),
+                    group: c.chains.last ?? "?",
+                    node: c.chains.first ?? "?",
+                    rule: prevConn?.rule ?? (c.rulePayload.isEmpty ? c.rule : "\(c.rule),\(c.rulePayload)"),
+                    ruleType: c.rule,
+                    up: c.upload, down: c.download,
+                    upRate: upRate, downRate: downRate,
+                    start: c.start
+                )
+                next.append(conn)
+            }
+
+            // Detect closed connections
+            var newClosed = [Conn]()
+            for conn in M.cachedConns {
+                if !activeIDs.contains(conn.id) {
+                    var closedConn = conn
+                    closedConn.upRate = 0
+                    closedConn.downRate = 0
+                    newClosed.append(closedConn)
                 }
-                tickDown += Double(downRate)
             }
 
-            let conn = Conn(
-                id: c.id,
-                host: c.metadata.host?.isEmpty == false ? c.metadata.host! : (c.metadata.destinationIP ?? "?"),
-                dstIP: c.metadata.destinationIP ?? "?",
-                srcIP: c.metadata.sourceIP ?? "?",
-                port: c.metadata.destinationPort ?? "",
-                network: c.metadata.network.uppercased(),
-                process: c.metadata.process ?? "—",
-                processPath: c.metadata.processPath ?? "—",
-                chain: c.chains.reversed().joined(separator: " → "),
-                group: c.chains.last ?? "?",
-                node: c.chains.first ?? "?",
-                rule: c.rulePayload.isEmpty ? c.rule : "\(c.rule),\(c.rulePayload)",
-                ruleType: c.rule,
-                up: c.upload, down: c.download,
-                upRate: upRate, downRate: downRate,
-                start: c.start
-            )
-            next.append(conn)
-        }
-        M.history.recordBatch(direct: tickDirect, proxy: tickProxy, reject: tickReject,
-                              down: tickDown, hour: hour)
-        // Gateway aggregation must run before prevConnBytes is overwritten.
-        if M.gatewayModeOn {
-            M.updateGatewayDevices(from: items)
-        }
-
-        M.prevConnBytes = bytes
-
-        // Compute dashboard stats from raw items before conversion
-        if M.route == "dashboard" || M.route == "connections" {
-            let next = AppModel.computeDashRaw(items)
-            if next != M.dash { M.dash = next }
-        }
-
-        // Detect closed connections
-        var newClosed = [Conn]()
-        for conn in M.cachedConns {
-            if !activeIDs.contains(conn.id) {
-                var closedConn = conn
-                closedConn.upRate = 0
-                closedConn.downRate = 0
-                newClosed.append(closedConn)
+            if !newClosed.isEmpty {
+                M.cachedClosedConnections.insert(contentsOf: newClosed, at: 0)
             }
-        }
 
-        if !newClosed.isEmpty {
-            M.cachedClosedConnections.insert(contentsOf: newClosed, at: 0)
-        }
-        M.activeConnsSet = activeIDs
-        M.activeConnectionsCount = activeIDs.count
+            // Sorted by rate, then clamped
+            M.cachedConns = next.sorted { $0.downRate + $0.upRate > $1.downRate + $1.upRate }
+            M.clampConnectionCaches()
 
-        // Sorted by rate, then clamped: what falls past the ceiling is always the
-        // idle tail. The count shown in the UI comes from `activeConnectionsCount`
-        // above, so truncation never skews it.
-        M.cachedConns = next.sorted { $0.downRate + $0.upRate > $1.downRate + $1.upRate }
-        M.clampConnectionCaches()
+            // Update prevConnById for the next frame
+            prevConnById.removeAll(keepingCapacity: true)
+            for c in M.cachedConns { prevConnById[c.id] = c }
 
-        conns = M.cachedConns
-        closedConnections = M.cachedClosedConnections
-
-        M.closedConns = max(0, M.totalConnsCount - activeIDs.count)
-        M.history.flushIfNeeded()
-        M.lastDownTotal = s.downloadTotal
-        }
-
-        // This 1.5 s poller is the busiest consumer of connection snapshots and
-        // used to read RSS purely for display, never acting on it. The guard
-        // rate-limits itself, so calling it every tick is cheap.
-        if M.enforceAppMemoryGuard() {
             conns = M.cachedConns
             closedConnections = M.cachedClosedConnections
         }
-        M.live.appMemoryMB = Double(AppModel.residentMemoryBytes()) / 1_000_000
+
+        // App memory has its own sampler on AppModel; writing it here as well
+        // would bypass the change short-circuit and republish `live` on every
+        // 1.5 s connections tick.
+    }
+
+    /// Cheap non-cryptographic fingerprint — byte count XOR'd with a rolling
+    /// hash of the first/last 256 bytes. Sufficient to detect identical
+    /// payloads without hashing the entire (potentially 200KB+) JSON.
+    private static func fingerprint(of data: Data) -> UInt64 {
+        var hash: UInt64 = UInt64(data.count)
+        let prefix = min(256, data.count)
+        for i in 0..<prefix {
+            hash = hash &* 31 &+ UInt64(data[data.startIndex + i])
+        }
+        if data.count > 256 {
+            let suffixStart = data.count - min(256, data.count - 256)
+            for i in suffixStart..<data.count {
+                hash = hash &* 31 &+ UInt64(data[data.startIndex + i])
+            }
+        }
+        return hash
     }
 }
