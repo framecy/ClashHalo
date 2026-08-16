@@ -45,6 +45,9 @@ build/
 2026-*-ClashPow.txt
 build/
 
+# 监测脚本与采集数据（非 App 源码）
+monitor_4h/
+
 # 参考文档，非发布内容
 Loon/
 *.md

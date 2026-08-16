@@ -79,26 +79,25 @@ struct KeychainHelper {
     }
 
     static func read(key: String) -> String? {
+        // File mirror first. The mirror is not tied to code-signing identity
+        // and never blocks, so checking it before touching the Keychain avoids
+        // the authorization-dialog stall that happens when the Keychain item
+        // is ACL-locked to a *previous* ad-hoc signing identity.
+        if let mirrored = readMirror(account: key), !mirrored.isEmpty {
+            // Best-effort: re-seed the Keychain under the current identity in
+            // the background so the next read *might* hit the fast path. This
+            // is fire-and-forget; the mirror already has the value.
+            let k = key, v = mirrored
+            Task.detached(priority: .utility) { _ = save(key: k, value: v) }
+            return mirrored
+        }
+        // No mirror — the Keychain is the only source. This can block if the
+        // item is ACL-locked, but at this point there is no alternative.
         if let value = readKeychainItem(account: key) {
-            // First successful read after upgrading from the pre-fix helper:
-            // there is no mirror yet, and the Keychain row still carries the
-            // default ACL pinned to the *old* code-signing identity. Re-save
-            // once so the open ACL + mirror both land before the next rebuild
-            // makes the old row unreadable. Subsequent reads see the mirror
-            // and skip the rewrite.
-            if !mirrorExists(account: key) {
-                _ = save(key: key, value: value)
-            }
+            _ = save(key: key, value: value)   // establish the mirror
             return value
         }
-        // Keychain miss — typical after ad-hoc re-sign / DMG reinstall. Pull
-        // from the durable mirror and re-seed Keychain under *this* identity
-        // so subsequent reads hit the fast path again.
-        guard let mirrored = readMirror(account: key), !mirrored.isEmpty else {
-            return nil
-        }
-        _ = save(key: key, value: mirrored)
-        return mirrored
+        return nil
     }
 
     @discardableResult
@@ -111,8 +110,8 @@ struct KeychainHelper {
     /// Eagerly re-persist well-known accounts so the open ACL + mirror land
     /// *before* the next rebuild, even if nothing in this session would have
     /// called `read` on them (e.g. Tailnet disabled, so the auth key is never
-    /// pulled into the overlay). Safe to call every launch — a present mirror
-    /// short-circuits the rewrite inside `read`.
+    /// pulled into the overlay). Safe to call every launch — `read` checks the
+    /// mirror first and only touches the Keychain when the mirror is missing.
     static func migrateKnownAccounts(_ accounts: [String]) {
         for account in accounts where !account.isEmpty {
             _ = read(key: account)
@@ -122,13 +121,20 @@ struct KeychainHelper {
     // MARK: Keychain primitives
 
     private static func readKeychainItem(account: String) -> String? {
-        let query: [String: Any] = [
+        var query: [String: Any] = [
             kSecClass as String: kSecClassGenericPassword,
             kSecAttrService as String: service,
             kSecAttrAccount as String: account,
             kSecReturnData as String: true,
             kSecMatchLimit as String: kSecMatchLimitOne
         ]
+        // Suppress the authorization dialog. When a Keychain item is ACL-locked
+        // to a previous ad-hoc signing identity, SecItemCopyMatching shows an
+        // authorization panel that blocks forever in a headless launch. Telling
+        // the framework not to interact turns that into a clean errSecItemNotFound
+        // / errSecInteractionNotAllowed, which we treat as "item not available" —
+        // the caller falls through to the file mirror or returns nil.
+        query[kSecUseAuthenticationUI as String] = kSecUseAuthenticationUIFail
         var dataTypeRef: AnyObject?
         let status = SecItemCopyMatching(query as CFDictionary, &dataTypeRef)
         guard status == errSecSuccess, let data = dataTypeRef as? Data else { return nil }

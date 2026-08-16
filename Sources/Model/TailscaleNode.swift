@@ -739,6 +739,34 @@ enum TailscaleIdentity {
         if key.isEmpty && url.isEmpty { return "" }
         return String(Sha1.hex("\(key)|\(url)").prefix(16))
     }
+
+    /// Pure decision for whether the on-disk tsnet identity should be retired,
+    /// given the current credential state. Side-effecting callers (Keychain
+    /// reads, `UserDefaults`, actually renaming the state directory) live in
+    /// `AppModel.retireTailscaleIdentityIfCredentialsChanged` — this is just
+    /// the branch table, kept pure and separate so it can be unit tested.
+    ///
+    /// `newStored`: what the caller should persist as the new baseline, or
+    /// `nil` to leave the existing baseline untouched.
+    ///
+    /// The `hasAuthKey == false` branch is the one that used to be wrong: no
+    /// key configured is the browser-login path, which depends on whatever
+    /// identity is already on disk. It must never retire, and — just as
+    /// important — must never overwrite the stored baseline either. Doing so
+    /// (keying off `current.isEmpty` instead of `hasAuthKey`) erased the last
+    /// known-good fingerprint on a plain "清除 Key" click, so the *next* real
+    /// key paste looked like a first-ever use and skipped retiring the stale
+    /// state directory — silently reproducing the "auth-key ignored" bug this
+    /// mechanism exists to prevent.
+    static func retirementDecision(
+        hasAuthKey: Bool, current: String, stored: String
+    ) -> (retire: Bool, newStored: String?) {
+        guard hasAuthKey else { return (false, nil) }
+        guard !stored.isEmpty, current != stored else {
+            return (false, current)
+        }
+        return (true, current)
+    }
 }
 
 // MARK: - Feature detection
