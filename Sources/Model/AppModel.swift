@@ -170,7 +170,7 @@ import ServiceManagement
     func logKernel(_ msg: String) {
         let line = "[\(Self.logDF.string(from: Date()))] \(msg)"
         kernelLogs.append(line)
-        if kernelLogs.count > 100 { kernelLogs.removeFirst() }
+        if kernelLogs.count > 100 { kernelLogs.removeFirst(kernelLogs.count - 100) }
         print("KernelLog: \(msg)")
         Self.appendAppLog(line)
     }
@@ -396,11 +396,14 @@ import ServiceManagement
     @Published var closedConns = 0
     var lastDownTotal: Int64 = 0
     var lastCacheFlush = Date.distantPast
-    /// Rate-limits `enforceAppMemoryGuard`. The guard is now called from every
-    /// hot path (1.5 s connections poll, 3 s gateway poll, foreground loop), and
-    /// without this it would thrash the caches several times a second once RSS
-    /// settles just above the threshold.
-    var lastAppMemoryGuardAt = Date.distantPast
+    /// Bookkeeping for `enforceAppMemoryGuard`: rate limiting plus the
+    /// give-up/re-arm cycle. The guard is called from every hot path (1.5 s
+    /// connections poll, 3 s gateway poll, foreground loop), so without the
+    /// rate limit it would thrash the caches several times a second once the
+    /// footprint settles just above the threshold — and without the futility
+    /// tracking it would keep doing that forever when the memory is not in
+    /// those caches at all. See `AppMemoryGuardPolicy`.
+    var appMemoryGuardState = AppMemoryGuardPolicy.State()
     var lastInterface: String? = nil
 
     // MARK: Built-in tailnet node (see AppModel+Tailscale.swift)
@@ -471,6 +474,18 @@ import ServiceManagement
     private var logWS: WSHandle?
     private var memWS: WSHandle?
     private var pollTask: Task<Void, Never>?
+    /// Samples this process' own RSS on a fixed cadence, independent of every
+    /// network stream. App memory is a local `task_info()` read — coupling it
+    /// to mihomo's `/memory` WebSocket (as the previous build did) meant the
+    /// dashboard froze whenever the kernel was idle, reconnecting, or pushing
+    /// its opening `{"inuse":0}` placeholder frame.
+    private var appMemTimer: Timer?
+    /// Tracks the previous UI-visible state so `reconcileActiveStreams()` can
+    /// tell a genuine hidden→visible transition (refresh everything now) from
+    /// the many other reasons it runs while already visible (route change,
+    /// reconnect, connections-page toggle) — those must not each fire a full
+    /// refresh burst.
+    private var wasUIActive = false
     private var reconnectTask: Task<Void, Never>?
     private var bgTickCount = 0
 
@@ -577,9 +592,18 @@ import ServiceManagement
         NetScanner.pinnedDeviceActive = pinnedTunDevice != nil
         // Re-home any secret still sitting under a pre-fix Keychain ACL
         // (code-signing-pinned) into the open-ACL + Application Support mirror
-        // form, *before* anything depends on being able to read it after the
-        // next ad-hoc rebuild. Cheap when already migrated.
-        KeychainHelper.migrateKnownAccounts([kTailscaleAuthKey, kTailscaleAPIToken])
+        // form. This used to run synchronously on the main thread, which blocked
+        // startup indefinitely when the Keychain showed an authorization dialog
+        // for an item locked to a *previous* ad-hoc signing identity — the
+        // dialog can never be answered in a headless or background launch, so
+        // `SecItemCopyMatching` hung and the entire app stalled before
+        // `mark("prelude")`, leaving the window visible but `reachable=false`, no
+        // streams, no polling, and a frozen dashboard. Moved off the main thread:
+        // the result (re-saved secrets) is only needed on the *next* launch.
+        let migrationAccounts = [kTailscaleAuthKey, kTailscaleAPIToken]
+        Task.detached(priority: .utility) {
+            KeychainHelper.migrateKnownAccounts(migrationAccounts)
+        }
         // Hand the engine the built-in tailnet plan *before* anything can call
         // setConfig. A subscription auto-update we did not initiate would
         // otherwise rewrite config.yaml without the node, silently dropping a
@@ -720,6 +744,17 @@ import ServiceManagement
             // but the kernel is not running tsnet — nothing would ever dial it.
             // Kick it now so the node registers with the control plane promptly.
             if tsEnabled {
+                // ensureInstalled() wrote the overlay to config.yaml, but a
+                // warm-started kernel is still running the old config from
+                // before this launch. Check whether the kernel actually has
+                // the node; if not, reload so warmUpTailscale's dial reaches
+                // a proxy that exists.
+                let proxies = try? await api.fetchProxies()
+                let hasNode = proxies?.proxies.keys.contains(tsSettings.nodeName) ?? false
+                if !hasNode {
+                    logKernel("内置 Tailnet：内核缺少节点，正在重载配置…")
+                    _ = await reloadWithTailscaleOverlay()
+                }
                 warmUpTailscale()
             }
 
@@ -828,16 +863,37 @@ import ServiceManagement
             if memWS == nil {
                 memWS = api.stream("/memory", type: MemoryTick.self) { [weak self] m in
                     Task { @MainActor in
-                        if m.inuse > 0 {
-                            self?.live.memory = m.inuse
-                            self?.live.appMemoryMB = Double(Self.residentMemoryBytes()) / 1_000_000
-                        }
+                        // Kernel memory only. App memory used to be updated here
+                        // too, which quietly froze the dashboard: mihomo's
+                        // /memory stream opens with a placeholder {"inuse":0}
+                        // frame and keeps reporting 0 while the kernel is idle,
+                        // so the `inuse > 0` gate below also suppressed the
+                        // app-side reading — a local task_info() call that has
+                        // nothing to do with the kernel. Two independent
+                        // sources, now updated independently; app memory has
+                        // its own timer in `startAppMemorySampling()`.
+                        if m.inuse > 0 { self?.live.memory = m.inuse }
                     }
                 }
             }
+            startAppMemorySampling()
             startPolling()
-            Task {
-                await refreshProxies()
+
+            // Coming back from hidden: everything on screen is as stale as the
+            // time spent hidden, so refresh once immediately instead of making
+            // the user look at the pre-hide snapshot until the next tick.
+            // Edge-triggered — `reconcileActiveStreams()` also runs on route
+            // changes and reconnects, and a full refresh on every one of those
+            // would be a burst of redundant requests.
+            let resuming = !wasUIActive
+            wasUIActive = true
+            Task { [weak self] in
+                guard let self else { return }
+                if resuming {
+                    await self.refreshVisibleData()
+                } else {
+                    await self.refreshProxies()
+                }
             }
         } else {
             trafficWS?.cancel()
@@ -846,6 +902,10 @@ import ServiceManagement
             memWS = nil
             pollTask?.cancel()
             pollTask = nil
+            // No UI on screen: nothing reads `live.appMemoryMB`, so stop
+            // sampling rather than keep a 2 s timer alive in the background.
+            stopAppMemorySampling()
+            wasUIActive = false
         }
 
         pollTimer?.invalidate()
@@ -895,6 +955,87 @@ import ServiceManagement
         trafficWS?.cancel(); trafficWS = nil
         pollTimer?.invalidate(); pollTimer = nil
         pollTask?.cancel(); pollTask = nil
+        stopAppMemorySampling()
+    }
+
+    // MARK: - Resume refresh
+
+    /// Refresh everything the visible UI shows, right now.
+    ///
+    /// Called on a hidden→visible transition. While hidden, the traffic and
+    /// memory streams are torn down and the connections poll is stopped, so on
+    /// return every readout is as stale as the time spent hidden. Waiting for
+    /// the normal cadence would leave the user looking at the pre-hide snapshot
+    /// for up to a full poll interval; the requests below are the same ones the
+    /// poll loop makes, just pulled forward.
+    ///
+    /// The fetches run concurrently because they are independent and this sits
+    /// directly between the user and a visibly stale window — serially they
+    /// would add up to roughly the sum of their latencies instead of the max.
+    func refreshVisibleData() async {
+        // The app-memory sampler is already (re)started by
+        // `reconcileActiveStreams()` before this runs, and it takes its first
+        // reading synchronously — so the most prominent number on the
+        // dashboard is correct before any of the network work below begins.
+
+        async let proxies: Void = refreshProxies()
+        async let configs: Void = refreshConfigs()
+        async let snapshot: ConnectionsSnapshot? = {
+            try? await api.fetchConnectionsSnapshot()
+        }()
+
+        _ = await proxies
+        _ = await configs
+        if let s = await snapshot {
+            recordHistoryOnly(from: s)
+            if gatewayModeOn, let items = s.connections {
+                updateGatewayDevices(from: items)
+            }
+        }
+    }
+
+    // MARK: - App memory sampling
+
+    /// How often the app's own RSS is resampled while any UI is on screen.
+    ///
+    /// `task_info()` is a local syscall costing microseconds and no network,
+    /// so this is far cheaper than the connection polling it sits alongside;
+    /// 2 s keeps the readout visibly live without being a busy loop.
+    static let appMemorySampleInterval: TimeInterval = 2
+
+    /// Start (or restart) the independent app-memory sampler.
+    ///
+    /// Idempotent: callers may invoke it on every visibility change without
+    /// stacking timers.
+    func startAppMemorySampling() {
+        appMemTimer?.invalidate()
+        // Sample immediately so the dashboard shows a real number on the first
+        // frame instead of 0 until the first interval elapses.
+        sampleAppMemory()
+        appMemTimer = Timer.scheduledTimer(withTimeInterval: Self.appMemorySampleInterval,
+                                           repeats: true) { [weak self] _ in
+            Task { @MainActor in self?.sampleAppMemory() }
+        }
+    }
+
+    func stopAppMemorySampling() {
+        appMemTimer?.invalidate()
+        appMemTimer = nil
+    }
+
+    /// One RSS reading, pushed to the UI only when it actually changed.
+    ///
+    /// The equality short-circuit matters: `live` is `@Published`, and RSS is
+    /// flat for long stretches, so writing an identical value every 2 s would
+    /// invalidate every view observing `live` for nothing.
+    private func sampleAppMemory() {
+        let mb = Double(Self.residentMemoryBytes()) / 1_000_000
+        // Round to the precision the UI actually renders ("%.0f MB") so that
+        // sub-megabyte jitter does not trigger a redraw per tick.
+        let rounded = (mb * 10).rounded() / 10
+        if abs(live.appMemoryMB - rounded) >= 0.05 {
+            live.appMemoryMB = rounded
+        }
     }
 
     /// True when a gateway client list is actually being looked at, which is the
@@ -913,13 +1054,19 @@ import ServiceManagement
             // have meant three times as many kernel reloads from the gateway
             // repair path, i.e. paying for a smoother readout with dropped
             // connections. Each job keeps its own wall-clock cadence instead.
-            var configDue = Date.distantPast          // fire immediately
+            var configDue = Date.distantPast          // fire immediately (initial sync)
             var healthDue = Date().addingTimeInterval(30)
             var gatewayDue = Date.distantPast
             while let self, !Task.isCancelled, self.reachable, self.isMainWindowVisible || self.isMenuBarVisible {
+                // Config is now event-driven: every patchConfig / reloadConfig
+                // call already invokes refreshConfigs(). The 12 s poll was
+                // picking up kernel-internal changes (geo-auto-update, etc.)
+                // at a heavy cost (HTTP + JSONSerialization + NSDictionary.isEqual
+                // + readConfigFile line scan). Demote to a 60 s slow fallback
+                // that only catches changes the app did not initiate itself.
                 if Date() >= configDue {
                     await self.refreshConfigs()       // heavy: HTTP + yaml merge + TUN probe
-                    configDue = Date().addingTimeInterval(12)
+                    configDue = Date().addingTimeInterval(60)
                 }
 
                 // Gateway device list is driven by /connections snapshots. The

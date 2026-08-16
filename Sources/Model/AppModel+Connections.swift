@@ -133,10 +133,9 @@ extension AppModel {
         closedConns = max(0, totalConnsCount - activeConnectionsCount)
         history.flushIfNeeded()
         lastDownTotal = s.downloadTotal
-        // 仅在窗口可见时更新内存显示（避免后台轮询触发 task_info 系统调用）
-        if needDetailedStats {
-            live.appMemoryMB = Double(Self.residentMemoryBytes()) / 1_000_000
-        }
+        // App memory is sampled by its own timer (`startAppMemorySampling()`),
+        // not here: tying it to a connections snapshot meant it only refreshed
+        // on pages that request detailed stats, leaving the dashboard stale.
     }
 
     // MARK: - App memory guard
@@ -145,13 +144,14 @@ extension AppModel {
     /// tested without a kernel or a window — see `Tests/AppMemoryGuard`.
     static let appMemoryGuardPolicy = AppMemoryGuardPolicy()
 
-    /// Trim local connection caches when this process' RSS gets high.
+    /// Trim local connection caches when this process' memory footprint gets high.
     ///
     /// Called from **every** snapshot consumer — `recordHistoryOnly`, the
     /// Connections page view model, and the foreground poll loop. It previously
     /// lived only inside `recordHistoryOnly`, which the Connections page (the
     /// most allocation-heavy path in the app, polling at 1.5 s) bypasses
-    /// entirely; that page read RSS purely to display it and never acted on it.
+    /// entirely; that page read the footprint purely to display it and never
+    /// acted on it.
     ///
     /// Two tiers, because a blanket `removeAll` while the user is looking at the
     /// connections table blanks the table for a tick:
@@ -161,19 +161,40 @@ extension AppModel {
     ///  * **hard**, or UI not visible — release everything, including the
     ///    diffing bookkeeping, since nothing on screen can go blank.
     ///
-    /// Rate-limited internally, so hot callers can invoke it every tick.
+    /// Rate-limited internally, so hot callers can invoke it every tick, and
+    /// **self-suspending**: if the caches it can shed are not where the memory
+    /// actually is, repeating the same work every 15 s forever helps nobody, so
+    /// the policy gives up after a few ineffective attempts and only re-arms on
+    /// genuine new growth. Logging follows transitions, not actions — a 2-hour
+    /// capture of the previous build produced 463 identical lines.
     @discardableResult
     func enforceAppMemoryGuard() -> Bool {
         let now = Date()
-        let appRSS = Self.residentMemoryBytes()
-        let action = Self.appMemoryGuardPolicy.decide(
-            rss: appRSS,
+        let rss = Self.residentMemoryBytes()
+        let decision = Self.appMemoryGuardPolicy.decide(
+            rss: rss,
             uiVisible: isMainWindowVisible || isMenuBarVisible,
             now: now,
-            lastRun: lastAppMemoryGuardAt
+            state: &appMemoryGuardState
         )
 
-        switch action {
+        let mb = rss / 1_000_000
+        switch decision.transition {
+        case .none:
+            break
+        case .engaged:
+            logKernel("App 内存偏高 (RSS \(mb)MB)，开始缩减连接缓存")
+        case let .suspended(afterActions):
+            logKernel("App 内存缩减无效：连续 \(afterActions) 次清理后 RSS 仍为 \(mb)MB，已暂停自动缩减"
+                + " —— 继续每 \(Int(Self.appMemoryGuardPolicy.interval)) 秒清空缓存不会降低占用，只会反复丢弃界面数据。"
+                + " 占用再增长 \(Self.appMemoryGuardPolicy.reArmGrowth / 1_000_000)MB 时会自动恢复缩减。")
+        case .reArmed:
+            logKernel("App 内存较暂停时显著增长 (RSS \(mb)MB)，恢复缩减连接缓存")
+        case .recovered:
+            logKernel("App RSS 已回落至 \(mb)MB，恢复正常")
+        }
+
+        switch decision.action {
         case .skip:
             return false
 
@@ -184,6 +205,7 @@ extension AppModel {
                 prevConnBytes.removeAll(keepingCapacity: false)
                 activeConnsSet.removeAll(keepingCapacity: false)
             }
+            return true
 
         case let .soft(keepRows):
             // `cachedConns` is already sorted by rate by its producer, so a
@@ -193,13 +215,8 @@ extension AppModel {
             if cachedConns.count > keepRows {
                 cachedConns = Array(cachedConns.prefix(keepRows))
             }
+            return true
         }
-
-        lastAppMemoryGuardAt = now
-        let freed: Bool
-        if case .hard = action { freed = true } else { freed = false }
-        logKernel("App 内存占用过高 (\(appRSS / 1_000_000)MB)，已\(freed ? "释放" : "缩减")缓存")
-        return true
     }
 
     /// Clamp `cachedConns` / `cachedClosedConnections` to their ceilings.
@@ -375,16 +392,40 @@ extension AppModel {
         return d
     }
 
-    /// Resident set size of this process (bytes) via mach task_info.
+    /// This process' **resident set size** (RSS) in bytes, via Mach
+    /// `mach_task_basic_info.resident_size` — the same number `ps -o rss`
+    /// reports.
+    ///
+    /// This was previously `task_vm_info.phys_footprint`, which also counts
+    /// compressed memory and runs ~170–200 MB above RSS on this process. That
+    /// mismatch made the v1.1.16 memory guard spin: the threshold (250 MB) was
+    /// calibrated against RSS ("healthy idle 80–150 MB") but compared against
+    /// `phys_footprint` (which read 309–317 MB at idle), so the guard fired
+    /// every 15 s for 2 hours without ever bringing the number down — 463
+    /// actions in one field capture, none of them effective, because the bulk
+    /// of `phys_footprint` is compressed pages the guard cannot shed.
+    ///
+    /// Switching to RSS means the number the guard sees and the number the
+    /// user sees in Activity Monitor are the same — and both reflect memory
+    /// the guard's cache-trimming can actually affect.
+    /// Uses `MACH_TASK_BASIC_INFO` rather than the older `TASK_BASIC_INFO`:
+    /// the legacy flavour predates 64-bit and Apple documents the `mach_`
+    /// variant as its replacement. Both report identical values here, so this
+    /// costs nothing and removes a future-SDK hazard.
+    ///
+    /// Returning 0 on failure is deliberate and safe: `AppMemoryGuardPolicy`
+    /// treats anything at or below `softLimit` as healthy, so a failed read
+    /// makes the guard do nothing rather than wrongly wipe the caches the user
+    /// is looking at.
     static func residentMemoryBytes() -> UInt64 {
-        var info = task_vm_info_data_t()
-        var count = mach_msg_type_number_t(MemoryLayout<task_vm_info>.size / MemoryLayout<integer_t>.size)
+        var info = mach_task_basic_info_data_t()
+        var count = mach_msg_type_number_t(MemoryLayout<mach_task_basic_info>.size / MemoryLayout<natural_t>.size)
         let kr = withUnsafeMutablePointer(to: &info) {
             $0.withMemoryRebound(to: integer_t.self, capacity: Int(count)) {
-                task_info(mach_task_self_, task_flavor_t(TASK_VM_INFO), $0, &count)
+                task_info(mach_task_self_, task_flavor_t(MACH_TASK_BASIC_INFO), $0, &count)
             }
         }
-        return kr == KERN_SUCCESS ? UInt64(info.phys_footprint) : 0
+        return kr == KERN_SUCCESS ? UInt64(info.resident_size) : 0
     }
 
     func closeAllConnections() {

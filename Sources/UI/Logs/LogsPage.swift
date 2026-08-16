@@ -192,7 +192,7 @@ struct LogsPage: View {
         logBuffer.removeAll(keepingCapacity: true)
 
         if logs.count > 300 {
-            logs = Array(logs.suffix(300))
+            logs.removeFirst(logs.count - 300)
         }
     }
 }
