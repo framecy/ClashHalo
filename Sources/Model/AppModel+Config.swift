@@ -626,9 +626,22 @@ extension AppModel {
                 // had to flip "允许局域网" by hand or open full Gateway. Runs
                 // *after* the proxy is live + toast shown — it needs a config
                 // patch + refresh and shouldn't delay the visible toggle result.
+                //
+                // DNS: Without TUN's dns-hijack, the system resolves domains
+                // via its own DNS (usually the router, which is GFW-polluted).
+                // Google/youtube/Github domains resolve to wrong IPs and the
+                // proxy connects to a dead endpoint — "开启了系统代理后无法访问
+                // Google". Route DNS through mihomo (listening on 127.0.0.1:53)
+                // so DoH nameservers resolve correctly and rules match by host.
                 if on {
+                    await self.ensureProxyDNS()
                     await self.ensureAllowLanForSharing()
                 } else {
+                    // Restore system DNS to what it was before proxy mode took
+                    // over (DHCP / user config). Without this the system keeps
+                    // pointing at 127.0.0.1:53 which is only alive while mihomo
+                    // runs — a later kernel stop would black-hole all DNS.
+                    await self.restoreProxyDNS()
                     // Nothing routes through the kernel any more — release the
                     // connections still pinned to it so traffic re-dials direct.
                     await self.dropAllConnectionsWhenIdle()
@@ -677,7 +690,78 @@ extension AppModel {
         }
     }
 
-    /// Drop every connection the kernel still holds once no forwarding face is
+    /// Set system DNS to 127.0.0.1 so domain resolution goes through mihomo's
+    /// DNS listener (127.0.0.1:53) instead of the router / ISP DNS. Without TUN's
+    /// dns-hijack, the system resolves domains via its own DNS server, which is
+    /// typically GFW-polluted (e.g. www.google.com → 157.240.7.20). This makes
+    /// proxy-routed domains like Google/GitHub unreachable even though the proxy
+    /// itself works fine for direct domains (Baidu).
+    ///
+    /// Idempotent: saves the pre-existing DNS once (shared with TUN DNS restore)
+    /// so a manual user setting is restored later. Only runs when TUN is OFF —
+    /// TUN mode already hijacks DNS via dns-hijack and setting 127.0.0.1 here
+    /// would conflict with the TUN fake-ip gateway redirect.
+    func ensureProxyDNS() async {
+        guard !tunOn else { return }
+
+        // Ensure mihomo DNS listens on port 53 so the system resolver
+        // (set to 127.0.0.1 below) can reach it. The default config uses
+        // 127.0.0.1:1053 which is unreachable from port 53. Without this,
+        // setting system DNS to 127.0.0.1 would black-hole all DNS queries.
+        await ensureMihomoDNSPort53()
+
+        let d = UserDefaults.standard
+        // Use the same key as enableTunnelDNS so the two flows don't fight
+        // over which one "owns" the DNS redirect. Whichever set it last is
+        // responsible for restoring it.
+        if !d.bool(forKey: Self.kDNSOverriddenKey) {
+            let original = await EngineControl.currentSystemDNS()
+            let snapshot = original.isEmpty ? "Empty" : original.joined(separator: ",")
+            d.set(snapshot, forKey: Self.kDNSSavedKey)
+            d.set(true, forKey: Self.kDNSOverriddenKey)
+        }
+        let ok = await EngineControl.applySystemDNS(["127.0.0.1"])
+        if !ok {
+            logKernel("系统代理 DNS 重定向写入失败（127.0.0.1），域名可能被 GFW 污染")
+        }
+    }
+
+    /// Ensure mihomo's DNS listener is on 127.0.0.1:53 so system DNS
+    /// (set to 127.0.0.1 by ensureProxyDNS) can reach it. Reads config.yaml,
+    /// patches dns.listen if needed, and triggers a kernel reload.
+    /// Idempotent — no-op if already on :53.
+    private func ensureMihomoDNSPort53() async {
+        guard let disk = engine.readConfigFile(),
+              let dns = disk["dns"] as? [String: Any],
+              let listen = dns["listen"] as? String else { return }
+        if listen == "127.0.0.1:53" { return }
+
+        logKernel("系统代理需要 DNS 监听 53 端口，当前为 \(listen)，正在修改并重载内核…")
+        // Patch config.yaml: change dns.listen to 127.0.0.1:53
+        engine.setTopLevelScalars(["dns": ["listen": "127.0.0.1:53"]])
+        noteConfigContentChanged()
+        // Reload so mihomo re-reads the file and binds 53
+        let cfgPath = engine.configFilePath
+        do {
+            try await api.reloadConfig(path: cfgPath)
+            logKernel("内核配置已重载（DNS 监听端口切换）")
+        } catch {
+            logKernel("内核重载失败：\(error.localizedDescription)")
+        }
+        // Re-sync after reload
+        await refreshConfigs()
+        logKernel("mihomo DNS 已切换到 127.0.0.1:53")
+    }
+
+    /// Restore system DNS saved before proxy mode took over. Idempotent — safe
+    /// to call from every teardown path. Only restores if TUN is OFF (TUN's
+    /// restoreTunnelDNS handles its own teardown).
+    func restoreProxyDNS() async {
+        guard !tunOn else { return }
+        await restoreTunnelDNS()
+    }
+
+        /// Drop every connection the kernel still holds once no forwarding face is
     /// active. Turning TUN / the system proxy off only changes where *new*
     /// traffic goes: sockets already established through mihomo stay alive and
     /// keep carrying data through a kernel that is no longer supposed to be in
