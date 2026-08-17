@@ -702,7 +702,9 @@ extension AppModel {
     /// TUN mode already hijacks DNS via dns-hijack and setting 127.0.0.1 here
     /// would conflict with the TUN fake-ip gateway redirect.
     func ensureProxyDNS() async {
-        guard !tunOn else { return }
+        let tunOnBefore = tunOn
+        logKernel("ensureProxyDNS: tunOn=\(tunOnBefore) reachable=\(reachable)")
+        guard !tunOnBefore else { return }
 
         // Ensure mihomo DNS listens on port 53 so the system resolver
         // (set to 127.0.0.1 below) can reach it. The default config uses
@@ -710,6 +712,15 @@ extension AppModel {
         // setting system DNS to 127.0.0.1 would black-hole all DNS queries.
         await ensureMihomoDNSPort53()
 
+        // reload inside ensureMihomoDNSPort53 may have changed tunOn (the
+        // kernel re-reads config.tun.enable). Re-check and skip DNS redirect
+        // if TUN came back up — TUN's dns-hijack already handles DNS.
+        if tunOn {
+            logKernel("ensureProxyDNS: TUN 在 reload 后变为开启，跳过系统 DNS 设置")
+            return
+        }
+
+        logKernel("ensureProxyDNS: 正在设置系统 DNS 为 127.0.0.1")
         let d = UserDefaults.standard
         // Use the same key as enableTunnelDNS so the two flows don't fight
         // over which one "owns" the DNS redirect. Whichever set it last is
@@ -721,7 +732,9 @@ extension AppModel {
             d.set(true, forKey: Self.kDNSOverriddenKey)
         }
         let ok = await EngineControl.applySystemDNS(["127.0.0.1"])
-        if !ok {
+        if ok {
+            logKernel("系统代理 DNS 已设为 127.0.0.1（经 mihomo DoH 解析，防 GFW 污染）")
+        } else {
             logKernel("系统代理 DNS 重定向写入失败（127.0.0.1），域名可能被 GFW 污染")
         }
     }
@@ -737,8 +750,16 @@ extension AppModel {
         if listen == "127.0.0.1:53" { return }
 
         logKernel("系统代理需要 DNS 监听 53 端口，当前为 \(listen)，正在修改并重载内核…")
-        // Patch config.yaml: change dns.listen to 127.0.0.1:53
-        engine.setTopLevelScalars(["dns": ["listen": "127.0.0.1:53"]])
+        // Patch config.yaml: change dns.listen to 127.0.0.1:53.
+        // Also force tun.enable=false so the reload does NOT re-create the
+        // TUN interface — the user explicitly turned TUN off, and a reload
+        // that reads tun.enable=true from the file would bring it back up,
+        // which then makes the !tunOn guard in ensureProxyDNS skip the DNS
+        // redirect (leaving the system on the polluted router DNS).
+        engine.setTopLevelScalars([
+            "dns": ["listen": "127.0.0.1:53"],
+            "tun": ["enable": false]
+        ])
         noteConfigContentChanged()
         // Reload so mihomo re-reads the file and binds 53
         let cfgPath = engine.configFilePath
