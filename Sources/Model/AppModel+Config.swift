@@ -365,7 +365,22 @@ extension AppModel {
                     // by writing tunOn directly / clearing the window first.
                     logKernel("TUN 稳定期内忽略瞬时状态抖动（reachable=\(reachable) enable=\(configEnabled) root=\(engine.runningAsRoot) iface=\(hasInterface)）")
                 } else {
+                    let wasOn = tunOn
                     tunOn = shouldBeOn
+                    // TUN just went from on→off: restore system DNS immediately.
+                    // Without this, the system keeps pointing at 198.18.0.0
+                    // (the TUN fake-ip gateway) which only answers while the
+                    // tunnel is up — a downed utun black-holes all DNS,
+                    // breaking every app including the proxy itself.
+                    // This is the single source of truth for tunOn derivation,
+                    // so every path (user toggle, auto-teardown, config drift)
+                    // is covered in one place.
+                    if wasOn && !shouldBeOn {
+                        let dnsRedirected = UserDefaults.standard.bool(forKey: Self.kDNSOverriddenKey)
+                        if dnsRedirected {
+                            await restoreTunnelDNS()
+                        }
+                    }
                 }
             }
         }
@@ -1809,6 +1824,17 @@ extension AppModel {
                     showToast("TUN 模式已关闭", kind: .ok)
                 }
                 if !want {
+                    // TUN is now off — restore system DNS before anything else.
+                    // The TUN fake-ip gateway (198.18.0.0) only answers while
+                    // the tunnel is up; a downed utun black-holes all DNS.
+                    // refreshConfigs also does this on the tunOn transition, but
+                    // calling it here too is a belt-and-suspenders guarantee:
+                    // if refreshConfigs short-circuits (inflight task, stale
+                    // cache) the user is still left with working DNS.
+                    let dnsRedirected = UserDefaults.standard.bool(forKey: Self.kDNSOverriddenKey)
+                    if dnsRedirected {
+                        await restoreTunnelDNS()
+                    }
                     // Kernel stays warm, but nothing should be flowing through it
                     // any more — release connections still pinned to the tunnel.
                     await dropAllConnectionsWhenIdle()
