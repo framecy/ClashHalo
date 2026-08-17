@@ -2,7 +2,7 @@
 
 本文件给后续 AI 编码代理使用。进入本仓库后，先读本文件，再按需读 `README.md`、`CHANGELOG.md` 和相关源码。
 
-当前主干：`main`，产品版本 **v1.1.16**（`MARKETING_VERSION`），Helper **1.0.24**（`kSharedHelperVersion`：对端路由拒绝规则 + 孤儿路由回收 + 自有路由记账持久化；相对 1.0.23 及更早需强制升级）。打包时 `make.sh` 自增 `CURRENT_PROJECT_VERSION`。
+当前主干：`main`，产品版本 **v1.3.0**（`MARKETING_VERSION`），Helper **1.0.24**（`kSharedHelperVersion`：对端路由拒绝规则 + 孤儿路由回收 + 自有路由记账持久化；相对 1.0.23 及更早需强制升级）。打包时 `make.sh` 自增 `CURRENT_PROJECT_VERSION`。
 
 ## 项目概览
 
@@ -95,7 +95,7 @@ bash make.sh
 - Progress：表单用 `.small`；密集 chrome 用 `.mini` + `DS.Progress.miniScale`
 - 前台轮询分层：`refreshConfigs` 约 12s；网关设备 `/connections` 3s；连接页 1.5s；后台 30s；**禁止** DnsPage 等再起独立连接轮询
 - 高频 `@Published` 写入前做等值短路（`mode` / `tunOn` / totals / `gatewayDevices` / `dash`）
-- **App 内存警卫唯一入口是 `enforceAppMemoryGuard()`**（`AppModel+Connections.swift`）：软档 250MB / 硬档 400MB，内部 15s 限频。**新增任何连接快照消费方都必须调它**——v1.1.16 之前连接页（最密集的 1.5s 路径）就是因为只读 RSS 显示、不调警卫而完全失守。禁止再写第二份内联阈值判断
+- **App 内存警卫唯一入口是 `enforceAppMemoryGuard()`**（`AppModel+Connections.swift`）：软档 220MB / 硬档 320MB（RSS 口径，按 2h 实测 146MB 稳态平台校准），内部 15s 限频，徒劳退避（连续 3 次无效即暂停）。**新增任何连接快照消费方都必须调它**。禁止再写第二份内联阈值判断
 - 连接热路径（`onConnections` / `recordHistoryOnly` / `fetchConnectionsSnapshot` 解码）必须包 `autoreleasepool`；`cachedConns` 走 `clampConnectionCaches()` 上限，截断前先按速率排序且 `activeConnectionsCount` 先赋值（计数不受截断影响）
 - 流量 sparkline series 仅在 `route == dashboard` 或菜单栏可见时追加；默认 `trafficRefreshInterval = 2s`
 - **内核下载/检查必须直连**：`KernelManager` 使用 `connectionProxyDictionary = [:]` 的 ephemeral session，禁止经系统代理访问 GitHub
@@ -175,15 +175,25 @@ bash make.sh
 改版本时一起核对：
 
 - `ClashHalo.xcodeproj`：`MARKETING_VERSION` / `CURRENT_PROJECT_VERSION`
+- `Sources/Info.plist`：`CFBundleShortVersionString` 和 `CFBundleVersion` 必须使用 `$(MARKETING_VERSION)` / `$(CURRENT_PROJECT_VERSION)` 变量，**禁止硬编码版本号**——增量构建时 Xcode 不会重新处理 Info.plist，硬编码值会覆盖 build settings 导致打包产物版本号与源码不一致
 - `Sources/XPC/HelperProtocol.swift`：`kSharedHelperVersion`（仅在 Helper 协议/行为需要强制升级时 bump）
 - `Helper-Info.plist`：`CFBundleVersion`
-- `CHANGELOG.md`、`README.md`（README 版本号可能滞后，改发版时同步）
+- `CHANGELOG.md`、`README.md`、`AGENTS.md`（版本号必须同步）
 
 打包：
 
-- `make.sh`：本地真实打包主路径
+- `make.sh`：本地真实打包主路径。**打包后 `make.sh` 会自动验证 App 内部版本号**：读取打包产物的 `CFBundleShortVersionString` / `CFBundleVersion` 与 `pbxproj` 中的 `MARKETING_VERSION` / `CURRENT_PROJECT_VERSION` 比对，不一致则 `exit 1` 并提示 clean build。**不要跳过这个检查**
 - `Scripts/package.sh` / `Scripts/notarize.sh`：外部证书与环境变量
 - `make-dmg.sh`：DMG 外观脚本，依赖 `.dmg-temp` 与 Finder/AppleScript
+
+### 发布检查清单
+
+发布到 GitHub Release 前，**必须**逐项验证：
+
+1. App 内部版本号：`/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' <App>/Contents/Info.plist` 必须与 `MARKETING_VERSION` 一致
+2. DMG 内嵌的 App：`hdiutil attach <DMG> && /usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' /Volumes/ClashHalo*/ClashHalo.app/Contents/Info.plist` 必须与 Release 标签一致
+3. DMG 文件名中的版本号必须与 App 内部版本号一致
+4. `make.sh` 输出末尾必须显示 `Version: x.y.z (N) ✓`，不得有 `❌ VERSION MISMATCH`
 
 ## 安全与隐私
 
