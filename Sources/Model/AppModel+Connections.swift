@@ -185,8 +185,7 @@ extension AppModel {
         case .engaged:
             logKernel("App 内存偏高 (RSS \(mb)MB)，开始缩减连接缓存")
         case let .suspended(afterActions):
-            logKernel("App 内存缩减无效：连续 \(afterActions) 次清理后 RSS 仍为 \(mb)MB，已暂停自动缩减"
-                + " —— 继续每 \(Int(Self.appMemoryGuardPolicy.interval)) 秒清空缓存不会降低占用，只会反复丢弃界面数据。"
+            logKernel("App 内存缩减无效：连续 \(afterActions) 次清理后 RSS 仍为 \(mb)MB，已暂停自动缩减（不再清空缓存）."
                 + " 占用再增长 \(Self.appMemoryGuardPolicy.reArmGrowth / 1_000_000)MB 时会自动恢复缩减。")
         case .reArmed:
             logKernel("App 内存较暂停时显著增长 (RSS \(mb)MB)，恢复缩减连接缓存")

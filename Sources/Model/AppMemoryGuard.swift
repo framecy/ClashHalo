@@ -45,19 +45,23 @@ struct AppMemoryGuardPolicy {
     /// 90 minutes** (p50 145.2, p99 145.8, max 145.8 — a flat line, no leak).
     /// A fresh launch sits near 90 MB.
     ///
-    /// So ~146 MB is this app's *steady state*, not its peak. The soft limit
-    /// must clear that plateau by a wide margin or the guard trips during
-    /// perfectly normal operation — which is the same failure the
-    /// `phys_footprint` mix-up caused, merely at a smaller amplitude. 220 MB
-    /// is ~1.5× the plateau, leaving ~74 MB of headroom for connection spikes
-    /// and long sessions while still catching genuine runaway growth.
-    var softLimit: UInt64 = 220 * 1_000_000
+    /// So ~146 MB is this app's *steady state* with no system proxy, not its
+    /// peak. With system proxy on and active connections flowing, RSS
+    /// legitimately reaches 220–235 MB — that is not a leak, it is the cost
+    /// of rendering live connection data. The soft limit must clear that
+    /// *active-use* ceiling, not just the idle plateau, or the guard trips
+    /// during perfectly normal proxy operation — which is the same failure
+    /// the `phys_footprint` mix-up caused, merely at a smaller amplitude.
+    /// 260 MB is ~1.8× the idle plateau and ~1.1× the active-use ceiling,
+    /// leaving headroom for connection spikes while still catching genuine
+    /// runaway growth.
+    var softLimit: UInt64 = 260 * 1_000_000
     /// At or above this, release everything regardless of what is on screen.
     ///
-    /// ~2.2× the measured plateau: at this point something is genuinely wrong,
+    /// ~2.6× the measured idle plateau: at this point something is genuinely wrong,
     /// and dropping the diffing bookkeeping (one blank tick of rates) is a
     /// cheaper price than continued growth.
-    var hardLimit: UInt64 = 320 * 1_000_000
+    var hardLimit: UInt64 = 380 * 1_000_000
     /// Minimum spacing between two actions. The guard is called from paths that
     /// tick at 1.5 s / 3 s; without this it would thrash caches several times a
     /// second whenever the footprint settles just above `softLimit`.

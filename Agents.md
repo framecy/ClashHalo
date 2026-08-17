@@ -95,7 +95,7 @@ bash make.sh
 - Progress：表单用 `.small`；密集 chrome 用 `.mini` + `DS.Progress.miniScale`
 - 前台轮询分层：`refreshConfigs` 约 12s；网关设备 `/connections` 3s；连接页 1.5s；后台 30s；**禁止** DnsPage 等再起独立连接轮询
 - 高频 `@Published` 写入前做等值短路（`mode` / `tunOn` / totals / `gatewayDevices` / `dash`）
-- **App 内存警卫唯一入口是 `enforceAppMemoryGuard()`**（`AppModel+Connections.swift`）：软档 220MB / 硬档 320MB（RSS 口径，按 2h 实测 146MB 稳态平台校准），内部 15s 限频，徒劳退避（连续 3 次无效即暂停）。**新增任何连接快照消费方都必须调它**。禁止再写第二份内联阈值判断
+- **App 内存警卫唯一入口是 `enforceAppMemoryGuard()`**（`AppModel+Connections.swift`）：软档 260MB / 硬档 380MB（RSS 口径，按实测 146MB 空载稳态 + 235MB 系统代理峰值校准），内部 15s 限频，徒劳退避（连续 3 次无效即暂停）。**新增任何连接快照消费方都必须调它**。禁止再写第二份内联阈值判断
 - 连接热路径（`onConnections` / `recordHistoryOnly` / `fetchConnectionsSnapshot` 解码）必须包 `autoreleasepool`；`cachedConns` 走 `clampConnectionCaches()` 上限，截断前先按速率排序且 `activeConnectionsCount` 先赋值（计数不受截断影响）
 - 流量 sparkline series 仅在 `route == dashboard` 或菜单栏可见时追加；默认 `trafficRefreshInterval = 2s`
 - **内核下载/检查必须直连**：`KernelManager` 使用 `connectionProxyDictionary = [:]` 的 ephemeral session，禁止经系统代理访问 GitHub
