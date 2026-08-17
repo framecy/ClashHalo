@@ -322,11 +322,13 @@ section("阈值必须与 RSS 口径相称（钉住实测分布，不是拍脑袋
 // 下列数字来自 2 小时 589 样本的真实采集（monitor_4h/logs/metrics.csv）：
 //   启动 123MB → 爬升至平台期 145.1–145.8MB → 后 90 分钟持平（p50 145.2 / p99 145.8 / max 145.8）
 //   冷启动约 90MB；同期 phys_footprint 报 316–384MB。
-// 关键认知：~146MB 是**稳态**而非峰值，阈值必须显著高于它，否则常态即触发。
+// 关键认知：~146MB 是空载**稳态**而非峰值，阈值必须显著高于它，否则常态即触发。
+// 开启系统代理后活跃连接涌入，RSS 合法地达到 220–235MB——这是正常使用，不是泄漏。
 let measuredFreshLaunchRSS: UInt64 = 90 * MB
-let measuredPlateauRSS: UInt64 = 146 * MB
+let measuredPlateauRSS: UInt64 = 146 * MB       // 空载稳态（无系统代理）
+let measuredActiveUseRSS: UInt64 = 235 * MB     // 系统代理 + 活跃连接峰值
 let measuredFootprint: UInt64 = 316 * MB
-/// 稳态之上至少要留这么多余量，否则一次连接激增就把守卫打成常态空转。
+/// 软阈值必须高于活跃使用峰值，否则开代理时守卫立刻空转。
 let requiredHeadroom: UInt64 = 50 * MB
 
 expect(policy.softLimit > measuredFreshLaunchRSS,
@@ -334,6 +336,9 @@ expect(policy.softLimit > measuredFreshLaunchRSS,
 expect(policy.softLimit > measuredPlateauRSS + requiredHeadroom,
        "软阈值（\(policy.softLimit / MB)MB）必须高于实测稳态平台（\(measuredPlateauRSS / MB)MB）+ " +
        "\(requiredHeadroom / MB)MB 余量 —— 只高出几 MB 等于把空转以更小幅度重演一遍")
+expect(policy.softLimit > measuredActiveUseRSS,
+       "软阈值（\(policy.softLimit / MB)MB）必须高于系统代理活跃使用峰值（\(measuredActiveUseRSS / MB)MB），" +
+       "否则开代理时守卫立刻触发空转——与 phys_footprint 事件同构")
 expect(policy.hardLimit > measuredPlateauRSS * 2,
        "硬阈值（\(policy.hardLimit / MB)MB）高于稳态平台的两倍（\(measuredPlateauRSS * 2 / MB)MB），" +
        "只有真正失控才整体释放")
