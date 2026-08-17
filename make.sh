@@ -20,6 +20,9 @@ swiftc \
 echo "      Helper compiled and Info.plist embedded."
 
 echo "[2/4] Building GUI (xcodebuild Release, sign later)…"
+# Clean build when MARKETING_VERSION changed: incremental builds reuse cached
+# Info.plist and the bundled CFBundleShortVersionString goes stale.
+# Toggle the line below if you need a fast incremental build for testing.
 xcodebuild -project "$ROOT/ClashHalo.xcodeproj" -scheme ClashHalo \
     -configuration Release -derivedDataPath "$BUILD/dd" \
     -destination 'platform=macOS,arch=arm64' \
@@ -231,3 +234,14 @@ if [ -s "$APP/Contents/MacOS/mihomo" ]; then
 else
     echo "Kernel: NONE bundled — app will download on first run"
 fi
+
+# --- Version verification (fail-fast: catches stale Info.plist from incremental builds) ---
+BUNDLED_VER=$(/usr/libexec/PlistBuddy -c "Print :CFBundleShortVersionString" "$APP/Contents/Info.plist" 2>/dev/null || echo "?")
+BUNDLED_BUILD=$(/usr/libexec/PlistBuddy -c "Print :CFBundleVersion" "$APP/Contents/Info.plist" 2>/dev/null || echo "?")
+if [ "$BUNDLED_VER" != "$VERSION" ] || [ "$BUNDLED_BUILD" != "$NEW_BUILD" ]; then
+    echo ""
+    echo "❌ VERSION MISMATCH! pbxproj=$VERSION ($NEW_BUILD) but Info.plist=$BUNDLED_VER ($BUNDLED_BUILD)"
+    echo "   Stale incremental build — run with clean: rm -rf \"$BUILD/dd\" && bash make.sh"
+    exit 1
+fi
+echo "Version: $BUNDLED_VER ($BUNDLED_BUILD) ✓"
