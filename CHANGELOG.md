@@ -6,6 +6,13 @@
 
 ### Fixed
 
+- **Zashboard 面板无法登录 mihomo 内核**：`openZashboard()` 此前打开外部
+  `https://board.zash.run.place/` 并在 URL hash 里填充 host/port/secret。
+  但该页面是 HTTPS，而 mihomo controller 是 HTTP/WS——浏览器的混合内容策略
+  (Mixed Content) 阻止 HTTPS 页面访问 HTTP 端点，用户填什么地址端口密码都
+  连不上。改为优先打开 mihomo 内置的 HTTP 面板
+  `http://127.0.0.1:9090/ui/zashboard/#/?hostname=...`（纯 HTTP 无混合内容
+  问题），只有在 URL 构造失败时才回退外部 URL。同时 secret 做 URL encoding。
 - **系统代理开关静默失败（假成功）**：`setSystemProxyFallback` 的 shell 脚本用
   `networksetup ... || true` 逐条吞掉失败，循环体内命令即便**全部失败**，
   `while read` 管道循环仍以 `exit 0` 收尾——上层因此把假成功当真，日志打出
