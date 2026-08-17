@@ -6,6 +6,14 @@
 
 ### Fixed
 
+- **系统代理模式下无法访问被 GFW DNS 污染的域名（Google/GitHub 等）**：
+  TUN 模式下 `dns-hijack: any:53` 拦截所有 DNS 查询到 mihomo，用 DoH
+  解析不被污染。但系统代理模式（无 TUN）下 DNS 查询直接走系统 DNS（路由器/
+  ISP），被 GFW 污染（如 `www.google.com → 157.240.7.20`），导致代理连接
+  到错误 IP 超时。开启系统代理时现在自动：(1) 确保 mihomo DNS 监听
+  `127.0.0.1:53`（从 `1053` 切换并 reload）；(2) 设置系统 DNS 为
+  `127.0.0.1`，所有 DNS 查询经 mihomo DoH 解析。关闭系统代理时恢复
+  原 DNS。
 - **系统代理开关虚假"XPC 超时"日志**：`callSystemProxy` 的 15 秒超时
   timer 在**每次调用后**无条件触发日志，即使调用已在 4 秒时成功完成。
   `finish(nil)` 因为 `done=true` 是 no-op（不降级），但
