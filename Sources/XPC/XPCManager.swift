@@ -136,11 +136,16 @@ public class XPCManager {
             }) as? HelperProtocol else { finish(nil); return }
             proxy.setSystemProxy(enabled: enabled, port: port) { ok in finish(ok) }
             DispatchQueue.global().asyncAfter(deadline: .now() + timeout) { [weak self] in
-                // Timeout is otherwise completely silent: no errorHandler fires
-                // (the connection is still nominally alive, just slow/stuck), so
-                // without this the caller falls through to the shell fallback
-                // with zero trace of what happened — "系统代理已开启" can then
-                // be logged from a path that never touched the Helper at all.
+                // Only log+fall back if the call hasn't completed yet. Without
+                // this guard, the timer fires 15s after *every* call regardless
+                // of whether it succeeded in 4s — the continuation is already
+                // resumed (done=true) so finish(nil) is a no-op, but the log
+                // still prints "XPC 超时" and misleads the user into thinking
+                // the Helper was unreachable when it actually worked fine.
+                lock.lock()
+                let alreadyDone = done
+                lock.unlock()
+                if alreadyDone { return }
                 self?.onLog?("setSystemProxy XPC 超时（\(Int(timeout))s 无响应），回退到本地 networksetup")
                 finish(nil)
             }
