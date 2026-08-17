@@ -1916,21 +1916,44 @@ import ServiceManagement
         NSWorkspace.shared.open(URL(fileURLWithPath: dir))
     }
 
-    /// Open the external Zashboard panel in the default browser, pre-filled with
+    /// Open the Zashboard panel in the default browser, pre-filled with
     /// the running kernel's controller host/port/secret and the current system
     /// appearance. Shared by the dashboard button and the menu-bar entry so the
     /// URL-building logic has one home. No-op with a toast if the kernel isn't up
     /// (the controller endpoint would be meaningless).
+    ///
+    /// Prefers the **built-in** panel served by mihomo at
+    /// `http://<host>:<port>/ui/zashboard/` — this is pure HTTP on loopback,
+    /// so there is no mixed-content issue. The external panel
+    /// (`https://board.zash.run.place`) is HTTPS; a page served over HTTPS
+    /// cannot fetch `ws://` or `http://` endpoints without the browser
+    /// blocking them as mixed content, which is why “修改地址端口和密码都无法
+    /// 登录进 mihomo 内核” — the fields were correct, the browser just refused
+    /// to use them. Falls back to the external URL only if URL construction fails.
     func openZashboard() {
         guard reachable else { showToast("内核未运行，无法打开 Zashboard", kind: .warn); return }
         let host = api.host
         let port = String(api.port)
-        let secret = api.secret
+        let secret = api.secret.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? ""
         let isDark = NSApp.effectiveAppearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua
+        let theme = isDark ? "dark" : "light"
+
+        // Build the hash fragment that zashboard reads to auto-fill the login.
+        // zashboard parses location.hash for hostname/port/secret/https.
+        let hash = "#/?hostname=\(host)&port=\(port)&secret=\(secret)&https=false&theme=\(theme)"
+
+        // Try the built-in panel first (pure HTTP, no mixed content).
+        let builtInURL = "http://\(host):\(port)/ui/zashboard/" + hash
+        if let url = URL(string: builtInURL) {
+            NSWorkspace.shared.open(url)
+            return
+        }
+
+        // Fallback: external panel (may have mixed-content limitations).
         var base = zashboardURL.trimmingCharacters(in: .whitespacesAndNewlines)
         if !base.hasSuffix("/") && !base.hasSuffix("index.html") { base += "/" }
-        let urlString = base + "#/?hostname=\(host)&port=\(port)&secret=\(secret)&https=false&theme=\(isDark ? "dark" : "light")"
-        if let url = URL(string: urlString) { NSWorkspace.shared.open(url) }
+        let extURL = base + hash
+        if let url = URL(string: extURL) { NSWorkspace.shared.open(url) }
     }
 
     /// Register/unregister the app as a login item via `SMAppService`.
