@@ -6,6 +6,13 @@
 
 ### Fixed
 
+- **系统代理开关虚假"XPC 超时"日志**：`callSystemProxy` 的 15 秒超时
+  timer 在**每次调用后**无条件触发日志，即使调用已在 4 秒时成功完成。
+  `finish(nil)` 因为 `done=true` 是 no-op（不降级），但
+  `onLog?("setSystemProxy XPC 超时...")` 仍被打印，误导用户以为
+  Helper 不可达。timer 回调现在先检查 `done` 标志，已完成则直接
+  return，不再打印虚假超时。实测：XPC 调用实际 4 秒完成，
+  但 15 秒后日志仍出现"超时"——这正是用户看到的问题。
 - **Zashboard 面板无法登录 mihomo 内核**：`openZashboard()` 此前打开外部
   `https://board.zash.run.place/` 并在 URL hash 里填充 host/port/secret。
   但该页面是 HTTPS，而 mihomo controller 是 HTTP/WS——浏览器的混合内容策略
