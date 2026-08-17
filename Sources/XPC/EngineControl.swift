@@ -1994,26 +1994,44 @@ import Network
             let bypass = kProxyBypassDomains
                 .map { "'\($0.replacingOccurrences(of: "'", with: "'\\''"))'" }
                 .joined(separator: " ")
+            // Failure tracking, not `|| true`: a bare `cmd || true` per line
+            // makes the loop exit 0 regardless of how many networksetup calls
+            // actually failed -- this fallback then silently reported success
+            // while doing nothing, and the caller logged "系统代理已开启" even
+            // though scutil --proxy never changed. Use a for-loop (not
+            // a piped while-read) so the failure counter lives in the same
+            // shell as the final exit -- a piped "while read" runs in a
+            // subshell and any variable set inside it is invisible afterward.
             shell = """
-            networksetup -listallnetworkservices | tail -n +2 | while read -r svc; do
+            applied=0
+            IFS=$'\\n'
+            for svc in $(networksetup -listallnetworkservices | tail -n +2); do
                 [[ "$svc" == \\** ]] && continue
-                networksetup -setwebproxy "$svc" 127.0.0.1 \(port) 2>/dev/null || true
-                networksetup -setsecurewebproxy "$svc" 127.0.0.1 \(port) 2>/dev/null || true
-                networksetup -setsocksfirewallproxy "$svc" 127.0.0.1 \(port) 2>/dev/null || true
-                networksetup -setproxybypassdomains "$svc" \(bypass) 2>/dev/null || true
-                networksetup -setwebproxystate "$svc" on 2>/dev/null || true
-                networksetup -setsecurewebproxystate "$svc" on 2>/dev/null || true
-                networksetup -setsocksfirewallproxystate "$svc" on 2>/dev/null || true
+                svc_ok=1
+                networksetup -setwebproxy "$svc" 127.0.0.1 \(port) 2>/dev/null || svc_ok=0
+                networksetup -setsecurewebproxy "$svc" 127.0.0.1 \(port) 2>/dev/null || svc_ok=0
+                networksetup -setsocksfirewallproxy "$svc" 127.0.0.1 \(port) 2>/dev/null || svc_ok=0
+                networksetup -setproxybypassdomains "$svc" \(bypass) 2>/dev/null || svc_ok=0
+                networksetup -setwebproxystate "$svc" on 2>/dev/null || svc_ok=0
+                networksetup -setsecurewebproxystate "$svc" on 2>/dev/null || svc_ok=0
+                networksetup -setsocksfirewallproxystate "$svc" on 2>/dev/null || svc_ok=0
+                if [ "$svc_ok" = 1 ]; then applied=$((applied+1)); fi
             done
+            [ "$applied" -gt 0 ]
             """
         } else {
             shell = """
-            networksetup -listallnetworkservices | tail -n +2 | while read -r svc; do
+            applied=0
+            IFS=$'\\n'
+            for svc in $(networksetup -listallnetworkservices | tail -n +2); do
                 [[ "$svc" == \\** ]] && continue
-                networksetup -setwebproxystate "$svc" off 2>/dev/null || true
-                networksetup -setsecurewebproxystate "$svc" off 2>/dev/null || true
-                networksetup -setsocksfirewallproxystate "$svc" off 2>/dev/null || true
+                svc_ok=1
+                networksetup -setwebproxystate "$svc" off 2>/dev/null || svc_ok=0
+                networksetup -setsecurewebproxystate "$svc" off 2>/dev/null || svc_ok=0
+                networksetup -setsocksfirewallproxystate "$svc" off 2>/dev/null || svc_ok=0
+                if [ "$svc_ok" = 1 ]; then applied=$((applied+1)); fi
             done
+            [ "$applied" -gt 0 ]
             """
         }
         
@@ -2041,13 +2059,28 @@ import Network
                 let p = Process()
                 p.executableURL = URL(fileURLWithPath: "/bin/sh")
                 p.arguments = ["-c", shell]
+                let errPipe = Pipe()
                 p.standardOutput = Pipe()
-                p.standardError = Pipe()
+                p.standardError = errPipe
                 do {
                     try p.run()
                     p.waitUntilExit()
-                    cont.resume(returning: p.terminationStatus == 0)
+                    let ok = p.terminationStatus == 0
+                    if !ok {
+                        // The caller (setSystemProxyFallback) has no other
+                        // visibility into *why* every networksetup call
+                        // failed — surface the raw stderr once so a report
+                        // like "system proxy silently does nothing" is
+                        // diagnosable from app.log instead of requiring a
+                        // repro session.
+                        let errData = errPipe.fileHandleForReading.readDataToEndOfFile()
+                        let errText = String(data: errData, encoding: .utf8)?
+                            .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+                        NSLog("[ClashHalo] runLocalShell failed (exit \(p.terminationStatus)): \(errText)")
+                    }
+                    cont.resume(returning: ok)
                 } catch {
+                    NSLog("[ClashHalo] runLocalShell spawn failed: \(error)")
                     cont.resume(returning: false)
                 }
             }
