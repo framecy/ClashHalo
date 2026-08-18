@@ -6,6 +6,18 @@
 
 ### Fixed
 
+- **关闭 TUN 后断网（DNS 黑洞）**：
+  关闭 TUN 时 `applyTUNState(false)` 和 `refreshConfigs` 都没有调
+  `restoreTunnelDNS()`，系统 DNS 仍指向 `198.18.0.0`（TUN fake-ip 网关）。
+  但 TUN 接口已 down，DNS 查询无应答，所有应用断网。现在在
+  `refreshConfigs` 的 tunOn `true→false` 转换处和 `applyTUNState` 的
+  `!want` 成功路径都加了 `restoreTunnelDNS()` 调用。
+- **仪表盘卡片全 0 / 不刷新**：
+  `reachable` 属性没有 `didSet`，内核从不可达恢复为可达时不会触发
+  `reconcileActiveStreams()`，导致 traffic/memory WebSocket 在窗口可见时
+  仍未启动。`/memory` 流的 `inuse > 0` 门控也导致 `live.memory` 在内核
+  空闲时永久停在旧值。修复：`reachable` 加 `didSet` 触发流重建；
+  移除 `inuse > 0` 门控（0 也是有效值）。
 - **系统代理模式下无法访问被 GFW DNS 污染的域名（Google/GitHub 等）**：
   TUN 模式下 `dns-hijack: any:53` 拦截所有 DNS 查询到 mihomo，用 DoH
   解析不被污染。但系统代理模式（无 TUN）下 DNS 查询直接走系统 DNS（路由器/
