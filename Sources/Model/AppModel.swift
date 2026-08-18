@@ -87,7 +87,18 @@ import ServiceManagement
         }
     }
     // Connection status
-    @Published var reachable = false
+    @Published var reachable = false {
+        didSet {
+            // reachable transition must reconcile streams: the window can be
+            // visible while the kernel is briefly unreachable (restart,
+            // sleep). When reachable flips back to true, streams must restart
+            // — without this, traffic/memory WebSockets stay nil after a
+            // reconnect that completes while the window is already visible,
+            // and the dashboard shows all-zero cards until a manual route
+            // change or window visibility toggle.
+            if oldValue != reachable { reconcileActiveStreams() }
+        }
+    }
     @Published var version = "?"
     @Published var mode = "rule"          // rule / global / direct
     @Published var uploadTotal: Int64 = 0
@@ -872,7 +883,10 @@ import ServiceManagement
                         // nothing to do with the kernel. Two independent
                         // sources, now updated independently; app memory has
                         // its own timer in `startAppMemorySampling()`.
-                        if m.inuse > 0 { self?.live.memory = m.inuse }
+                        // Always update — 0 is a valid reading (kernel idle).
+                        // The old gate left live.memory stuck at its last
+                        // value forever when the kernel went idle.
+                        self?.live.memory = m.inuse
                     }
                 }
             }
