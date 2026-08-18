@@ -1071,6 +1071,11 @@ import ServiceManagement
             var configDue = Date.distantPast          // fire immediately (initial sync)
             var healthDue = Date().addingTimeInterval(30)
             var gatewayDue = Date.distantPast
+            // Dashboard data (totals, hosts, rules, nodes, distribution) is driven
+            // by /connections snapshots. Without this poll, dashboard cards stay
+            // frozen at their initial value — the old code only polled /connections
+            // for gateway mode, leaving non-gateway users with all-zero cards.
+            var dashDue = Date.distantPast
             while let self, !Task.isCancelled, self.reachable, self.isMainWindowVisible || self.isMenuBarVisible {
                 // Config is now event-driven: every patchConfig / reloadConfig
                 // call already invokes refreshConfigs(). The 12 s poll was
@@ -1096,6 +1101,23 @@ import ServiceManagement
                         // Transient API blip — skip this tick.
                     }
                     gatewayDue = Date().addingTimeInterval(self.gatewayDevicesOnScreen ? 1 : 3)
+                }
+
+                // Dashboard data poll: fetch /connections to update totals,
+                // top hosts/rules/nodes, distribution, and active connection count.
+                // Skip when the Connections page is active (it has its own 1.5s
+                // poller) or when gateway mode already polls /connections above.
+                if !self.isConnectionsPageActive, !self.gatewayModeOn, Date() >= dashDue {
+                    do {
+                        let snapshot = try await self.api.fetchConnectionsSnapshot()
+                        self.recordHistoryOnly(from: snapshot)
+                    } catch {
+                        // Transient API blip — skip this tick.
+                    }
+                    // 3s cadence matches the original foreground spec; the
+                    // snapshot is lightweight (no per-connection row conversion
+                    // when not on the Connections page).
+                    dashDue = Date().addingTimeInterval(3)
                 }
 
                 if Date() >= healthDue {
