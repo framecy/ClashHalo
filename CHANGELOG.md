@@ -6,6 +6,12 @@
 
 ### Fixed
 
+- **仪表盘卡片全 0 / 不刷新（根因：前台无连接轮询）**：
+  `startPolling` 循环中只在 gateway 模式下才轮询 `/connections`，
+  非 gateway 模式窗口持续可见时 dashboard 数据（总上传/下载、连接数、
+  访问目标、策略组排名、高频规则、热门域名、热门节点、流量分布）
+  永远停在初始值。新增 3 秒 dashboard 数据轮询，跳过连接页（有自己的
+  1.5s 轮询器）和 gateway 模式（已有轮询）。
 - **关闭 TUN 后断网（DNS 黑洞）**：
   关闭 TUN 时 `applyTUNState(false)` 和 `refreshConfigs` 都没有调
   `restoreTunnelDNS()`，系统 DNS 仍指向 `198.18.0.0`（TUN fake-ip 网关）。
