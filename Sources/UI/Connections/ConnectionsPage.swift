@@ -77,6 +77,18 @@ struct ConnectionsPage: View {
                 }
                 .dsSearchFieldChrome(maxWidth: 280)
 
+                // Capability boundary: in system-proxy mode the stats below
+                // only cover traffic that actually entered mihomo. Apps that
+                // ignore proxy settings, UDP/QUIC and bypass-list hosts stay
+                // direct and invisible here — say so exactly when that mode
+                // is active, instead of letting a "smaller than expected"
+                // number read as a broken counter.
+                if M.systemProxyOn && !M.tunOn {
+                    Text("仅统计进入 mihomo 的连接")
+                        .font(.dsCaption).foregroundColor(.secondary)
+                        .help("系统代理模式下，不遵守代理设置的应用、UDP/QUIC 与绕过列表流量不经过内核，不计入本页统计。开启 TUN 可获得更完整的接管与统计。")
+                }
+
                 Spacer(minLength: 0)
 
                 Text("\(filteredRows.count) 匹配").font(.dsBody).foregroundColor(.secondary)

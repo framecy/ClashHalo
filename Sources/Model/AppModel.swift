@@ -29,6 +29,32 @@ import ServiceManagement
     @Published var upSeries: [Double] = Array(repeating: 0, count: 120)
 }
 
+/// Structured coverage view of the system proxy (P1 状态模型).
+///
+/// `systemProxyOn` remains the *effective* view (merged SCDynamicStore:
+/// HTTP+HTTPS+SOCKS of the primary service) that every toggle binds to. This
+/// carries what that merged view cannot express — which target network
+/// services actually carry the proxy. It is refreshed at apply time (toggle /
+/// restore acceptance); `syncSystemProxyState` resets it to `.off` whenever
+/// the effective view says off, and leaves stale coverage detail in place
+/// while on (per-service detail is only re-derived on the next apply).
+struct SystemProxyStatus: Equatable {
+    enum Mode: Equatable {
+        /// Off (or nothing of ours landed).
+        case off
+        /// On and every target service carries HTTP+HTTPS+SOCKS.
+        case active
+        /// Effectively on, but at least one target service stayed direct —
+        /// traffic on that uplink bypasses mihomo.
+        case partial
+    }
+    var mode: Mode = .off
+    /// Target services at the last acceptance check.
+    var targetServices: [String] = []
+    /// Services that failed to take the proxy at the last acceptance check.
+    var failedServices: [String] = []
+}
+
 @MainActor final class AppModel: ObservableObject {
     static let shared = AppModel()
     let api = MihomoClient.shared
@@ -216,6 +242,8 @@ import ServiceManagement
 
     // Master switches
     @Published var systemProxyOn = false
+    /// Coverage detail behind `systemProxyOn` — see `SystemProxyStatus`.
+    @Published var systemProxyStatus = SystemProxyStatus()
     @Published var tunOn = false
     var staticRoutesInjected = false
     /// In-flight guard so the B10 auto-teardown (config says TUN on but interface
@@ -804,10 +832,14 @@ import ServiceManagement
             // Just came online
             if !engine.isBusy {
                 if proxyAutoDisabled {
-                    _ = await engine.setSystemProxy(enabled: true, port: proxyPort)
-                    systemProxyOn = true
                     proxyAutoDisabled = false
-                    showToast("网络恢复，已自动恢复系统代理", kind: .ok)
+                    // Unified restore entry: port-liveness gate + write +
+                    // SCDynamicStore verification (partial coverage is
+                    // reported, never silently treated as restored).
+                    let restored = await restoreSystemProxy(reason: "网络恢复")
+                    showToast(restored ? "网络恢复，已自动恢复系统代理"
+                                       : "网络恢复，但系统代理恢复不完整，请检查设置",
+                              kind: restored ? .ok : .warn)
                 }
             }
         }
@@ -1269,11 +1301,9 @@ import ServiceManagement
             // Restore system proxy if it was active before sleep
             if preSleepSystemProxyOn && !systemProxyOn {
                 logKernel("恢复系统代理...")
-                let ok = await engine.setSystemProxy(enabled: true, port: proxyPort)
-                if ok {
-                    systemProxyOn = true
-                    logKernel("系统代理已恢复")
-                }
+                // Unified restore: verified against the mixed-port listener and
+                // SCDynamicStore — partial coverage no longer flips the toggle.
+                _ = await restoreSystemProxy(reason: "睡眠唤醒")
             }
 
             // Restore Gateway config overrides if it was active before sleep.
@@ -1330,11 +1360,10 @@ import ServiceManagement
                     // Restore system proxy if it was auto-disabled by the offline handler
                     if proxyAutoDisabled && !systemProxyOn {
                         proxyAutoDisabled = false
-                        let ok = await engine.setSystemProxy(enabled: true, port: proxyPort)
-                        if ok {
-                            systemProxyOn = true
-                            showToast("网络恢复，已自动恢复系统代理", kind: .ok)
-                        }
+                        let restored = await restoreSystemProxy(reason: "网络恢复")
+                        showToast(restored ? "网络恢复，已自动恢复系统代理"
+                                           : "网络恢复，但系统代理恢复不完整",
+                                  kind: restored ? .ok : .warn)
                     }
                     // If TUN is supposed to be on, ensure it's healthy and interface is pinned
                     if tunOn && !engine.isBusy {
@@ -1421,12 +1450,41 @@ import ServiceManagement
         // Read the effective macOS proxy state (no root) so the toggle matches
         // reality on launch / reconnect. GUI-side inline of the helper's
         // readCurrentState — ProxyManager is only in the Helper target.
-        guard let dict = SCDynamicStoreCopyProxies(nil) as? [String: Any] else { return }
-        let httpOn = dict[kCFNetworkProxiesHTTPEnable as String] as? Int == 1
-        let httpHost = dict[kCFNetworkProxiesHTTPProxy as String] as? String
-        let httpPort = dict[kCFNetworkProxiesHTTPPort as String] as? Int
-
-        systemProxyOn = httpOn && httpHost == "127.0.0.1" && httpPort == proxyPort
+        //
+        // Strict triple-protocol check: the legacy read only looked at HTTP,
+        // which let "any one protocol up" mask "HTTPS+SOCKS still off" — the
+        // toggle said ON while half the traffic silently direct-connected.
+        // Require HTTP + HTTPS + SOCKS to all point at this Mac's mixed-port.
+        guard let dict = SCDynamicStoreCopyProxies(nil) as? [String: Any] else {
+            systemProxyOn = false
+            return
+        }
+        let port = proxyPort
+        func enabled(_ key: String) -> Bool { (dict[key] as? Int) == 1 }
+        func hostIsOurs(_ key: String) -> Bool {
+            (dict[key] as? String) == "127.0.0.1"
+        }
+        func portMatches(_ key: String) -> Bool {
+            (dict[key] as? Int) == port
+        }
+        let httpOk  = enabled(kCFNetworkProxiesHTTPEnable as String)
+            && hostIsOurs(kCFNetworkProxiesHTTPProxy as String)
+            && portMatches(kCFNetworkProxiesHTTPPort as String)
+        let httpsOk = enabled(kCFNetworkProxiesHTTPSEnable as String)
+            && hostIsOurs(kCFNetworkProxiesHTTPSProxy as String)
+            && portMatches(kCFNetworkProxiesHTTPSPort as String)
+        let socksOk = enabled(kCFNetworkProxiesSOCKSEnable as String)
+            && hostIsOurs(kCFNetworkProxiesSOCKSProxy as String)
+            && portMatches(kCFNetworkProxiesSOCKSPort as String)
+        systemProxyOn = httpOk && httpsOk && socksOk
+        // Maintain the structured coverage status. The merged view cannot see
+        // per-service state, so while ON we keep the detail from the last
+        // acceptance check; while OFF there is nothing to describe.
+        if systemProxyOn {
+            if systemProxyStatus.mode == .off { systemProxyStatus.mode = .active }
+        } else {
+            systemProxyStatus = SystemProxyStatus()
+        }
 
         // If our system proxy is active but the bypass domains are stale (missing
         // LAN private ranges, e.g. upgraded from a build that only wrote
@@ -1487,7 +1545,28 @@ import ServiceManagement
                 let out = String(data: data, encoding: .utf8) ?? ""
                 return Set(out.split(separator: "\n").map { String($0).trimmingCharacters(in: .whitespaces) })
             }
-            let svcs = services()
+            // Only reconcile services that actually carry our proxy. The old
+            // probe spanned *every* enabled service and then wrote the full
+            // bypass list to all of them — while the proxy write itself only
+            // targets the active subset. That mismatch rewrote bypass state on
+            // services that never proxied through us. A service counts as
+            // "ours" when its HTTP proxy is enabled and points at loopback;
+            // the port is not compared because a config switch may have moved
+            // it since the proxy was enabled.
+            func carriesOurProxy(of svc: String) -> Bool {
+                let p = Process()
+                p.executableURL = URL(fileURLWithPath: "/usr/sbin/networksetup")
+                p.arguments = ["-getwebproxy", svc]
+                let pipe = Pipe(); p.standardOutput = pipe; p.standardError = Pipe()
+                guard (try? p.run()) != nil else { return false }
+                let data = pipe.fileHandleForReading.readDataToEndOfFile()
+                p.waitUntilExit()
+                let out = String(data: data, encoding: .utf8) ?? ""
+                let parsed = ProxyServicePlan.parseGetProxyOutput(out)
+                return parsed.enabled && parsed.host == "127.0.0.1"
+            }
+            let svcs = services().filter { carriesOurProxy(of: $0) }
+            guard !svcs.isEmpty else { return }
             let required = kProxyBypassDomains
             let missing = svcs.contains { svc in
                 let cur = currentBypass(of: svc)

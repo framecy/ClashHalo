@@ -508,6 +508,19 @@ struct MenuBarPanel: View {
                                 guard newValue != M.tunOn else { return }
                                 M.toggleTUN()
                             }))
+                // Partial-coverage surfacing: the toggle reads on, but some
+                // target network services stayed direct at the last
+                // acceptance check (SystemProxyStatus). Traffic on those
+                // uplinks bypasses mihomo even though the switch says on.
+                if M.systemProxyStatus.mode == .partial {
+                    let failed = M.systemProxyStatus.failedServices
+                    Text(failed.isEmpty
+                         ? "部分网络服务未配置代理（详情见内核日志）"
+                         : "部分网络服务未配置代理：\(failed.joined(separator: "、"))")
+                        .font(.dsCaption)
+                        .foregroundColor(.secondary)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                }
             }
 
             // Proxy card: mode · per-group node selectors · live rate · test
