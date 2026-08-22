@@ -4,7 +4,14 @@ import Foundation
 /// Shared by both the Helper binary (compiled via make.sh) and the main app
 /// (Xcode target) since both include this file — prevents the two-location
 /// version drift that caused infinite upgrade loops.
-public let kSharedHelperVersion = "1.0.24"
+///
+/// 1.0.27: client-death cleanup scopes its loopback-proxy reality check to the
+/// port the helper last wrote, so quitting ClashHalo no longer wipes a
+/// co-resident proxy app's system-proxy settings. 1.0.26: cleanup re-checks
+/// session takeover before its destructive steps (quit/relaunch race).
+/// 1.0.25: system-proxy rework (shared ProxyServicePlan, branch-order fix, no
+/// 2-service cap, full-success-only Bool).
+public let kSharedHelperVersion = "1.0.27"
 
 /// The utun name mihomo is asked to take, instead of accepting whatever index
 /// the kernel hands out. Shared with the Helper so it can tell a route our own
@@ -423,6 +430,240 @@ public let kProxyBypassDomains: [String] = {
     list += ["*.tailscale.com", "100.100.100.100"]
     return list
 }()
+
+// MARK: - System-proxy service plan (shared by Helper, GUI fallback, tests)
+
+/// Three-way result of applying system-proxy settings. The legacy single-Bool
+/// contract (`anyOK == true`) let one successful service mask silent failure on
+/// every other active service, so the toggle reported "on" while half the
+/// uplinks stayed direct. Both the Helper (XPC path) and the GUI fallback now
+/// classify into full / partial / failed; only `.full` may be surfaced as
+/// success — partial coverage must reach the user as a warning.
+public enum SystemProxyApplyOutcome: Equatable {
+    /// Every targeted service was configured successfully.
+    case full
+    /// Some services landed, others did not (ok / failed service names).
+    case partial(ok: [String], failed: [String])
+    /// Nothing was configured (or no target services were found).
+    case failed
+
+    /// Legacy Bool mapping: full only. This is what crosses the XPC wire and
+    /// what callers may treat as "the system proxy is on".
+    public var isSuccess: Bool {
+        if case .full = self { return true }
+        return false
+    }
+}
+
+/// Single source of truth for *which* network services the system proxy should
+/// be written to, and how `-get*proxy` readback parses. Compiled into the
+/// Helper (ProxyManager), the GUI (EngineControl fallback + verification) and
+/// the regression tests, so the three can never drift back into the
+/// helper-vs-fallback inconsistency where the Helper configured the active
+/// service set while the fallback wrote every enabled service.
+public enum ProxyServicePlan {
+
+    /// VPN / virtual client services we never touch: configuring them inflates
+    /// the networksetup loop, often fails, and a proxy pointing into another
+    /// tunnel's userspace helper is wrong anyway.
+    public static let skipSubstrings = [
+        "shadowrocket", "wireguard", "tailscale", "zerotier", "oray",
+        "utun", "vpn", "ipsec", "l2tp", "pptp", "cisco", "openvpn",
+        "clash", "surge", "quantumult", "v2ray"
+    ]
+
+    public static func isSkippableService(_ name: String) -> Bool {
+        let lower = name.lowercased()
+        return skipSubstrings.contains { lower.contains($0) }
+    }
+
+    /// Parse `networksetup -listnetworkserviceorder` output into
+    /// (service, device) pairs.
+    ///
+    /// Output shape:
+    /// ```
+    /// (1) Wi-Fi
+    /// (Hardware Port: Wi-Fi, Device: en0)
+    ///
+    /// (*) Bluetooth PAN          ← disabled services show (*) — no name
+    /// (Hardware Port: Bluetooth PAN, Device: en3)
+    /// ```
+    /// The hardware-port line is itself "("-prefixed, so it must be matched
+    /// BEFORE the generic "(N) name" service line. The reverse order made the
+    /// hardware branch unreachable (the service branch consumed every line),
+    /// `currentService` never paired with a device, and service selection
+    /// silently degraded to the full enabled list — the root cause behind
+    /// "proxy toggle says on, browser still direct".
+    public static func serviceDevicePairs(orderOutput: String) -> [(service: String, device: String)] {
+        var pairs: [(service: String, device: String)] = []
+        var currentService: String? = nil
+        for line in orderOutput.split(separator: "\n") {
+            let s = String(line).trimmingCharacters(in: .whitespaces)
+            if s.isEmpty { continue }
+            if s.hasPrefix("(Hardware Port:") {
+                defer { currentService = nil }
+                guard let svc = currentService, !svc.isEmpty else { continue }
+                guard let devRange = s.range(of: "Device:"),
+                      let endBracket = s.lastIndex(of: ")"),
+                      devRange.upperBound < endBracket else { continue }
+                let dev = s[devRange.upperBound..<endBracket]
+                    .trimmingCharacters(in: .whitespacesAndNewlines)
+                if !dev.isEmpty { pairs.append((service: svc, device: dev)) }
+                continue
+            }
+            if s.hasPrefix("(") {
+                if let closeIdx = s.firstIndex(of: ")") {
+                    // "(*) Name" is a *disabled* service — the ordinal slot
+                    // holds the asterisk instead of an index. It can never be
+                    // a proxy target, so drop it before the name is captured.
+                    let ordinal = s[s.index(after: s.startIndex)..<closeIdx]
+                        .trimmingCharacters(in: .whitespaces)
+                    if ordinal == "*" { currentService = nil }
+                    else {
+                        let name = s[s.index(after: closeIdx)...]
+                            .trimmingCharacters(in: .whitespaces)
+                        currentService = name.isEmpty ? nil : name
+                    }
+                }
+            }
+        }
+        return pairs
+    }
+
+    /// Parse `networksetup -listallnetworkservices` output into enabled
+    /// service names (drops the header line and `*`-disabled entries).
+    public static func enabledServices(listOutput: String) -> [String] {
+        listOutput.split(separator: "\n").compactMap { line -> String? in
+            let s = String(line)
+            if s.hasPrefix("An asterisk") { return nil }
+            if s.hasPrefix("*") { return nil }
+            let t = s.trimmingCharacters(in: .whitespaces)
+            return t.isEmpty ? nil : t
+        }
+    }
+
+    /// Parse `networksetup -getwebproxy`-style readback into its three fields.
+    /// Shared by the GUI coverage verification so "did it really land" reads
+    /// the same bytes the Helper wrote.
+    public static func parseGetProxyOutput(_ output: String) -> (enabled: Bool, host: String?, port: Int?) {
+        var enabled = false, host: String? = nil, port: Int? = nil
+        for line in output.split(separator: "\n") {
+            let t = line.trimmingCharacters(in: .whitespaces)
+            if t.hasPrefix("Enabled:") { enabled = t.hasSuffix("Yes") }
+            if t.hasPrefix("Server:") {
+                host = t.dropFirst("Server:".count).trimmingCharacters(in: .whitespaces)
+            }
+            if t.hasPrefix("Port:") {
+                port = Int(t.dropFirst("Port:".count).trimmingCharacters(in: .whitespaces))
+            }
+        }
+        return (enabled, host, port)
+    }
+
+    /// The unified target list: non-virtual *active* services (device has a
+    /// live IPv4), falling back to non-virtual enabled services when activity
+    /// probing yields nothing, Wi-Fi/Ethernet ordered first. No count cap —
+    /// capping at 2 is what left Ethernet / USB-LAN uplinks uncovered while
+    /// the GUI fallback wrote all services (the two paths diverged).
+    public static func targetServices(orderOutput: String?,
+                                      listOutput: String?,
+                                      deviceActive: (String) -> Bool) -> [String] {
+        var seen = Set<String>()
+        var services = serviceDevicePairs(orderOutput: orderOutput ?? "")
+            .filter { deviceActive($0.device) }
+            .map { $0.service }
+            .filter { !isSkippableService($0) }
+            .filter { seen.insert($0).inserted }
+        if services.isEmpty {
+            seen.removeAll()
+            services = enabledServices(listOutput: listOutput ?? "")
+                .filter { !isSkippableService($0) }
+                .filter { seen.insert($0).inserted }
+        }
+        // Prefer Wi-Fi / Ethernet first — that's what users mean by "system proxy".
+        let preferred = services.filter {
+            let l = $0.lowercased()
+            return l.contains("wi-fi") || l.contains("wifi") || l.contains("ethernet") || l.contains("以太网")
+        }
+        return preferred.isEmpty ? services : preferred + services.filter { !preferred.contains($0) }
+    }
+
+    /// Fold per-service results into the shared three-way outcome.
+    public static func classify(succeeded: [String], failed: [String]) -> SystemProxyApplyOutcome {
+        if !succeeded.isEmpty && failed.isEmpty { return .full }
+        if succeeded.isEmpty { return .failed }
+        return .partial(ok: succeeded, failed: failed)
+    }
+
+    // MARK: live probes (fork networksetup / ifconfig; used by Helper *and* GUI)
+
+    /// 5 s cap per probe: read-only, but networksetup can stall behind the
+    /// configd lock and callers (XPC reply, main-actor fallback) have budgets.
+    private static let probeTimeout: TimeInterval = 5.0
+
+    private static func runProbe(_ bin: String, _ args: [String]) -> String? {
+        let p = Process()
+        p.executableURL = URL(fileURLWithPath: bin)
+        p.arguments = args
+        let pipe = Pipe(); p.standardOutput = pipe; p.standardError = Pipe()
+        let timer = DispatchSource.makeTimerSource(queue: DispatchQueue.global())
+        timer.schedule(deadline: .now() + probeTimeout)
+        timer.setEventHandler { if p.isRunning { p.terminate() } }
+        do {
+            try p.run()
+            timer.resume()
+            let data = pipe.fileHandleForReading.readDataToEndOfFile()
+            p.waitUntilExit()
+            timer.cancel()
+            return String(data: data, encoding: .utf8)
+        } catch {
+            timer.cancel()
+            return nil
+        }
+    }
+
+    /// True when `ifconfig <dev>` reports an active link or an IPv4 address.
+    public static func deviceIsActive(_ device: String) -> Bool {
+        guard !device.isEmpty else { return false }
+        guard let out = runProbe("/sbin/ifconfig", [device]) else { return false }
+        return out.contains("status: active") || out.contains("inet ")
+    }
+
+    /// Target services for *this* machine right now (same list the Helper and
+    /// the GUI fallback configure; the GUI coverage check reuses it too).
+    /// Cached ~15 s: enumeration forks networksetup twice plus ifconfig per
+    /// service (~0.3–0.7 s real-world), and a single toggle off→on needs it
+    /// from both the Helper write and the GUI acceptance path — service
+    /// topology does not change on that timescale. `forceFresh` bypasses the
+    /// cache for diagnostic reads (coverage verification after a suspicious
+    /// write wants the live list, not a possibly-stale one).
+    private static let targetCacheTTL: TimeInterval = 15
+    private static var cacheLock = NSLock()
+    private static var cachedTargets: (at: Date, services: [String]) = (.distantPast, [])
+
+    @discardableResult
+    public static func liveTargetServices(forceFresh: Bool = false) -> [String] {
+        cacheLock.lock()
+        if !forceFresh, Date().timeIntervalSince(cachedTargets.at) < targetCacheTTL {
+            cacheLock.unlock()
+            return cachedTargets.services
+        }
+        cacheLock.unlock()
+        let services = liveTargetServicesUncached()
+        cacheLock.lock()
+        cachedTargets = (Date(), services)
+        cacheLock.unlock()
+        return services
+    }
+
+    private static func liveTargetServicesUncached() -> [String] {
+        targetServices(
+            orderOutput: runProbe("/usr/sbin/networksetup", ["-listnetworkserviceorder"]),
+            listOutput: runProbe("/usr/sbin/networksetup", ["-listallnetworkservices"]),
+            deviceActive: deviceIsActive
+        )
+    }
+}
 
 @objc(HelperProtocol)
 public protocol HelperProtocol {

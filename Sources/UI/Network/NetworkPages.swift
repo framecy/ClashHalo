@@ -19,7 +19,7 @@ struct NetworkPage: View {
                             NumRow("Redir 端口", key: "redir-port", persistent: true)
                             NumRow("TProxy 端口", key: "tproxy-port", persistent: true)
                         }
-                        Text("端口设为 0 即禁用。建议绝大多数应用使用混合端口（兼容 HTTP 与 SOCKS5）。")
+                        Text("端口设为 0 即禁用。建议绝大多数应用使用混合端口（兼容 HTTP 与 SOCKS5）。系统代理仅接管遵守系统代理设置的应用流量（UDP/QUIC 与绕过列表不经过内核），需要完整接管请开启 TUN。")
                             .font(.dsBody).foregroundColor(.secondary).padding(.top, DS.Spacing.s)
                     }
                     Card(title: "全局网络", icon: "globe") {
@@ -701,8 +701,10 @@ struct KernelCard: View {
                                 if ready {
                                     await M.reapplyTUN(wasOn: wasTUN)
                                     if wasProxy {
-                                        _ = await M.engine.setSystemProxy(enabled: true, port: port)
-                                        M.systemProxyOn = true
+                                        // Unified restore: port-liveness gate +
+                                        // verified write — never an optimistic
+                                        // `systemProxyOn = true`.
+                                        _ = await M.restoreSystemProxy(reason: "内核重启")
                                     }
                                     M.showToast("内核已重启", kind: .ok)
                                 } else {

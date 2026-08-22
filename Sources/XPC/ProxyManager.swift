@@ -6,24 +6,20 @@ public class ProxyManager {
         NSLog("[ClashHalo Helper ProxyManager] %@", msg)
     }
 
-    /// Set/clear the macOS system proxy via `networksetup`.
-    ///
-    /// Performance notes (XPC budget): the GUI's `callSystemProxy` used to time
-    /// out at 5s while this method walked *every* enabled service (Wi-Fi +
-    /// Ethernet + USB LAN + Thunderbolt + VPN clients like Shadowrocket) with
-    /// 7 serial `networksetup` forks each — 40–50 spawns easily exceeded the
-    /// client timeout and surfaced as "Couldn't communicate with a helper
-    /// application" even though the helper was healthy. We now:
-    /// 1. Prefer only real active physical-ish services (skip VPN/virtual names)
-    /// 2. Cap at a small number of services (primary uplink is enough)
-    /// 3. Use a shorter per-command timeout
-    public static func setSystemProxy(enabled: Bool, port: Int) -> Bool {
-        let services = preferredProxyServices()
+    /// Apply system-proxy settings to every non-virtual currently-active
+    /// service (shared `ProxyServicePlan` selection), reporting a per-service
+    /// outcome. This is the authoritative entry point — the legacy
+    /// `setSystemProxy(enabled:port:) -> Bool` wrapper maps `.full` → true so a
+    /// partial result is never reported up-stack as success.
+    @discardableResult
+    public static func setSystemProxyDetailed(enabled: Bool, port: Int) -> SystemProxyApplyOutcome {
+        let services = ProxyServicePlan.liveTargetServices()
         guard !services.isEmpty else {
             log("setSystemProxy: no network services")
-            return false
+            return .failed
         }
-        var anyOK = false
+        var okList: [String] = []
+        var failedList: [String] = []
         for svc in services {
             let ok: Bool
             if enabled {
@@ -48,91 +44,29 @@ public class ProxyManager {
                     && run(["-setsocksfirewallproxystate", svc, "off"])
             }
             if ok {
-                anyOK = true
+                okList.append(svc)
             } else {
+                failedList.append(svc)
                 log("setSystemProxy(\(enabled)) failed for service: \(svc)")
             }
         }
-        log("setSystemProxy(enabled: \(enabled), port: \(port)) services=\(services) anyOK=\(anyOK)")
-        return anyOK
+        let outcome = ProxyServicePlan.classify(succeeded: okList, failed: failedList)
+        log("setSystemProxy(enabled: \(enabled), port: \(port)) ok=\(okList) failed=\(failedList)")
+        return outcome
     }
 
-    /// Services we should actually configure for system proxy.
-    /// Prefer active physical links; never touch VPN/virtual client services
-    /// (Shadowrocket, WireGuard UIs, etc.) which inflate the networksetup loop
-    /// and often fail or hang.
-    private static func preferredProxyServices() -> [String] {
-        let skipSubstrings = [
-            "shadowrocket", "wireguard", "tailscale", "zerotier", "oray",
-            "utun", "vpn", "ipsec", "l2tp", "pptp", "cisco", "openvpn",
-            "clash", "surge", "quantumult", "v2ray"
-        ]
-        func isSkippable(_ name: String) -> Bool {
-            let lower = name.lowercased()
-            return skipSubstrings.contains { lower.contains($0) }
-        }
-
-        var services = activeNetworkServices().filter { !isSkippable($0) }
-        if services.isEmpty {
-            services = enabledNetworkServices().filter { !isSkippable($0) }
-        }
-        // Prefer Wi-Fi / Ethernet first — that's what users mean by "system proxy".
-        let preferred = services.filter {
-            let l = $0.lowercased()
-            return l.contains("wi-fi") || l.contains("wifi") || l.contains("ethernet") || l.contains("以太网")
-        }
-        let ordered = preferred.isEmpty ? services : preferred + services.filter { !preferred.contains($0) }
-        // Cap: configuring more than 2 services is almost never useful and blows the XPC budget.
-        return Array(ordered.prefix(2))
+    /// Legacy XPC-facing Bool wrapper. Only full success maps to true; partial
+    /// and failure both return false, so callers stop marking the system proxy
+    /// "on" when only one of several target services actually got configured.
+    public static func setSystemProxy(enabled: Bool, port: Int) -> Bool {
+        setSystemProxyDetailed(enabled: enabled, port: port).isSuccess
     }
 
-    /// Filter services to only target the actually active network interfaces
-    private static func activeNetworkServices() -> [String] {
-        guard let listOut = runOutput(["-listnetworkserviceorder"]) else { return [] }
-        var activeServices: [String] = []
-        var currentService: String? = nil
-        for line in listOut.split(separator: "\n") {
-            let s = String(line).trimmingCharacters(in: .whitespaces)
-            if s.hasPrefix("(") {
-                if let firstIdx = s.firstIndex(of: ")") {
-                    let start = s.index(after: firstIdx)
-                    currentService = s[start...].trimmingCharacters(in: .whitespaces)
-                }
-            } else if s.hasPrefix("(Hardware Port:") {
-                if let devRange = s.range(of: "Device:"),
-                   let endBracket = s.firstIndex(of: ")") {
-                    let devStart = devRange.upperBound
-                    let dev = s[devStart..<endBracket].trimmingCharacters(in: .whitespacesAndNewlines)
-                    if !dev.isEmpty && isInterfaceActive(dev) {
-                        if let svc = currentService {
-                            activeServices.append(svc)
-                        }
-                    }
-                }
-            }
-        }
-        if activeServices.isEmpty {
-            return enabledNetworkServices()
-        }
-        return activeServices
-    }
-
-    private static func isInterfaceActive(_ iface: String) -> Bool {
-        guard !iface.isEmpty else { return false }
-        guard let out = runOutput("/sbin/ifconfig", [iface]) else { return false }
-        return out.contains("status: active") || out.contains("inet ")
-    }
-
-    /// All enabled network services (skips the header line and `*`-disabled ones).
+    /// All enabled network services, via the shared parser. DNS restore paths
+    /// (unlike proxy writes) deliberately span every enabled service.
     private static func enabledNetworkServices() -> [String] {
         guard let out = runOutput(["-listallnetworkservices"]) else { return [] }
-        return out.split(separator: "\n").compactMap { line -> String? in
-            let s = String(line)
-            if s.hasPrefix("An asterisk") { return nil }   // header
-            if s.hasPrefix("*") { return nil }             // disabled service
-            let t = s.trimmingCharacters(in: .whitespaces)
-            return t.isEmpty ? nil : t
-        }
+        return ProxyServicePlan.enabledServices(listOutput: out)
     }
 
     /// Per-command timeout. Keep well under the GUI XPC budget (15s for proxy).
@@ -257,20 +191,23 @@ public class ProxyManager {
     /// in-memory session flags are lost whenever the helper itself restarts
     /// (e.g. right after its own upgrade), and without this a force-quit then
     /// left a stale 127.0.0.1 proxy pointing at a dead kernel — total blackout.
-    public static func anyServiceProxiesToLoopback() -> Bool {
+    ///
+    /// - Parameter port: When set, only a proxy pointing at THAT port counts as
+    ///   ours — the helper passes the port it last wrote. The unscoped match
+    ///   (any loopback proxy) would also wipe a *co-resident* proxy app's
+    ///   settings (Surge/ClashX on their own port) when only our client died:
+    ///   the same unasserted-ownership class as the fake-ip DNS incident. The
+    ///   unscoped form remains as the fallback for a helper that restarted and
+    ///   forgot the port — in that amnesiac state the blackout guarantee wins.
+    public static func anyServiceProxiesToLoopback(port: Int? = nil) -> Bool {
         for svc in enabledNetworkServices() {
             for cmd in ["-getwebproxy", "-getsecurewebproxy", "-getsocksfirewallproxy"] {
                 guard let out = runOutput([cmd, svc]) else { continue }
-                var enabled = false, loopback = false
-                for line in out.split(separator: "\n") {
-                    let t = line.trimmingCharacters(in: .whitespaces)
-                    if t.hasPrefix("Enabled:") { enabled = t.hasSuffix("Yes") }
-                    if t.hasPrefix("Server:") {
-                        let host = t.dropFirst("Server:".count).trimmingCharacters(in: .whitespaces)
-                        loopback = (host == "127.0.0.1" || host == "::1" || host == "localhost")
-                    }
-                }
-                if enabled && loopback { return true }
+                let parsed = ProxyServicePlan.parseGetProxyOutput(out)
+                let loopback = parsed.host == "127.0.0.1" || parsed.host == "::1"
+                    || parsed.host == "localhost"
+                let portMatches = port.map { $0 == parsed.port } ?? true
+                if parsed.enabled && loopback && portMatches { return true }
             }
         }
         return false
