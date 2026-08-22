@@ -428,7 +428,11 @@ extension AppModel {
         // Keep system DNS in sync with the real TUN state. This is the single
         // point where tunOn is derived from reality, so it also recovers the
         // correct DNS after an app restart (TUN survived → keep redirect; TUN
-        // died → restore). Both calls are idempotent and only act on a transition.
+        // died → restore). Both calls are idempotent and only act on a
+        // transition. TUN is the SOLE owner of the system-DNS redirect:
+        // proxy-mode never sets it (fake-ip answers black-hole direct apps,
+        // see ensureProxyDNS), so a set key here is always TUN's to withdraw —
+        // including in the mixed flow "TUN off while proxy still on".
         let dnsRedirected = UserDefaults.standard.bool(forKey: Self.kDNSOverriddenKey)
         if tunOn && !dnsRedirected {
             await enableTunnelDNS()
@@ -508,15 +512,50 @@ extension AppModel {
         }
         // Re-read: a restart can land on a profile with a different mixed-port.
         let restorePort = proxyPort
-        if await engine.setSystemProxy(enabled: true, port: restorePort) {
-            systemProxyOn = true
-            logKernel("\(reason)：已恢复系统代理 (port \(restorePort))")
-        } else {
-            syncSystemProxyState()
-            logKernel("\(reason)：系统代理恢复失败")
-            showToast("系统代理恢复失败，请重新开启", kind: .error)
+        if await restoreSystemProxy(reason: reason, port: restorePort) {
+            return result
         }
+        showToast("系统代理恢复失败，请重新开启", kind: .error)
         return result
+    }
+
+    /// Single restore entry point for lifecycle interruptions (wake, network
+    /// recovery, kernel restart / version switch). Every caller used to run
+    /// `setSystemProxy(true)` and then optimistically flip `systemProxyOn`;
+    /// they converge here so the acceptance contract is written once:
+    ///
+    ///   1. the mixed-port must actually be listening — macOS has no
+    ///      direct-connect fallback for a configured proxy, so restoring in
+    ///      front of a dead port recreates the blackout the suspend bracket
+    ///      exists to prevent;
+    ///   2. the write must land (Helper or fallback, full-success only — a
+    ///      partial service set is reported, not swallowed);
+    ///   3. reality is re-read from SCDynamicStore before the toggle may
+    ///      show on.
+    ///
+    /// Returns true only when the system proxy is verified on afterwards.
+    @discardableResult
+    func restoreSystemProxy(reason: String, port overridePort: Int? = nil) async -> Bool {
+        let port = overridePort ?? proxyPort
+        guard await EngineControl.isLocalPortListening(port) else {
+            logKernel("\(reason)：mixed-port \(port) 未监听，系统代理保持关闭（避免断网）")
+            syncSystemProxyState()
+            return false
+        }
+        let ok = await engine.setSystemProxy(enabled: true, port: port)
+        // Verify the actual system state instead of trusting the Bool — partial
+        // service coverage must not leave the toggle optimistic.
+        syncSystemProxyState()
+        if systemProxyOn {
+            logKernel("\(reason)：已恢复系统代理 (port \(port))\(ok ? "" : "，部分服务未确认写入")")
+            if !ok {
+                systemProxyStatus.mode = .partial
+                showToast("系统代理恢复不完整，请重新开启", kind: .warn)
+            }
+            return true
+        }
+        logKernel("\(reason)：系统代理恢复失败 (write=\(ok))")
+        return false
     }
 
     /// Delete every profile and leave the machine in a clean, inert state.
@@ -592,6 +631,24 @@ extension AppModel {
         // Hold isBusy for the full path (start kernel + set proxy) so TUN /
         // engine / rule reload cannot interleave mid-flight.
         withEngineBusy(on ? "正在开启系统代理…" : "正在关闭系统代理…") {
+            // One TCP probe serves both the stale-`reachable` check here and
+            // the acceptance gate below. A stale `reachable` (kernel died
+            // after the last successful probe) must not skip the start block
+            // — observed live: the boot kernel fell to a helper quit/relaunch
+            // race and seven consecutive toggles dead-ended at the port gate
+            // without ever attempting a kernel restart. Port dead → re-probe
+            // the controller and let a failed probe clear `reachable`.
+            var portProbe: Bool? = nil
+            if on && self.reachable {
+                portProbe = await EngineControl.isLocalPortListening(port)
+                if portProbe == false {
+                    await self.api.probe(timeout: 2.0)
+                    self.reachable = self.api.reachable
+                    if !self.reachable {
+                        self.logKernel("系统代理开启：内核实际未运行（状态过期），正在重新启动…")
+                    }
+                }
+            }
             if on && !self.reachable {
                 self.showToast("正在启动核心以开启系统代理…")
                 // Start as root when the helper is available so the kernel keeps a
@@ -615,26 +672,71 @@ extension AppModel {
                 // pointing macOS at the wrong one is a silent blackout.
                 await self.refreshConfigs()
                 port = self.proxyPort
+                // A fresh kernel may bind a different mixed-port — the earlier
+                // probe result no longer applies.
+                portProbe = nil
+            }
+
+            // Acceptance gate: macOS has no direct-connect fallback for a
+            // configured proxy — pointing the system at a mixed-port nothing
+            // is listening on is a full blackout, so verify the listener
+            // before writing anything. Reuses the probe from the stale-check
+            // when the kernel did not restart in between.
+            if on {
+                let listening: Bool
+                if let probed = portProbe {
+                    listening = probed
+                } else {
+                    listening = await EngineControl.isLocalPortListening(port)
+                }
+                guard listening else {
+                    self.logKernel("系统代理开启中止：mixed-port \(port) 未监听")
+                    self.showToast("混合端口 \(port) 未监听，已取消开启系统代理（避免断网）", kind: .error)
+                    return
+                }
             }
 
             let ok = await self.engine.setSystemProxy(enabled: on, port: port)
             if ok {
-                // Prefer SCDynamicStore reality. Store can lag a beat after
-                // networksetup — if it still disagrees with the write we just
-                // did, trust the write so the switch doesn't stick off while
-                // toast says "已开启".
+                // Verify against SCDynamicStore — the Bool from engine covers
+                // the write path, not "HTTP+HTTPS+SOCKS all landed".
                 self.syncSystemProxyState()
-                if self.systemProxyOn != on {
-                    self.systemProxyOn = on
+                if on {
+                    if self.systemProxyOn {
+                        // Fast path — two independent confirmations: the helper
+                        // reported a full write (partial maps to false) and the
+                        // merged SCDynamicStore triple check agrees. The
+                        // per-service readback (a second enumeration + 3 forks
+                        // per service, ~0.5–1 s) is a *diagnostic* that names
+                        // stragglers, not the gate — it only runs below, when
+                        // these two checks disagree or the write was not full.
+                        self.systemProxyStatus = SystemProxyStatus(mode: .active)
+                        self.showToast("系统代理已开启", kind: .ok)
+                    } else {
+                        // Full write but the merged view disagrees — diagnose
+                        // per service and name whichever uplinks stayed direct.
+                        let coverage = await EngineControl.verifySystemProxyCoverage(port: port)
+                        self.systemProxyStatus = SystemProxyStatus(
+                            mode: .partial,
+                            targetServices: coverage.targets,
+                            failedServices: coverage.missing)
+                        let detail = coverage.missing.isEmpty
+                            ? "" : "（未配置：\(coverage.missing.joined(separator: "、"))）"
+                        self.logKernel("系统代理开启但状态复核不完整，部分服务可能未配置成功\(detail)")
+                        self.showToast("系统代理开启不完整，建议重新开启", kind: .warn)
+                    }
+                } else {
+                    // Turning off: SCDynamicStore may lag a beat; the user
+                    // asked to stop, so accept the write.
+                    self.systemProxyOn = false
+                    self.systemProxyStatus = SystemProxyStatus()
+                    if !self.tunOn && self.reachable {
+                        self.showToast("系统代理已关闭（内核仍在运行，可在侧栏停止）", kind: .ok)
+                    } else {
+                        self.showToast("系统代理已关闭", kind: .ok)
+                    }
                 }
                 self.logKernel(on ? "系统代理已开启 (port \(port))" : "系统代理已关闭")
-                if on {
-                    self.showToast("系统代理已开启", kind: .ok)
-                } else if !self.tunOn && self.reachable {
-                    self.showToast("系统代理已关闭（内核仍在运行，可在侧栏停止）", kind: .ok)
-                } else {
-                    self.showToast("系统代理已关闭", kind: .ok)
-                }
 
                 // LAN clients that point HTTP/SOCKS at this Mac need allow-lan.
                 // Gateway mode also sets it; system-proxy-only users previously
@@ -663,13 +765,34 @@ extension AppModel {
                 }
             } else {
                 self.syncSystemProxyState()
-                self.logKernel("系统代理设置失败 (want=\(on), port=\(port))")
-                await self.api.probe()
-                if self.api.reachable {
-                    self.showToast("系统代理设置失败", kind: .error)
+                if on && self.systemProxyOn {
+                    // Partial coverage: the primary service landed (effective
+                    // on) while other target services failed — the case the
+                    // legacy anyOK contract collapsed into plain success and
+                    // the full-only contract would collapse into plain
+                    // failure. Name the stragglers instead.
+                    let coverage = await EngineControl.verifySystemProxyCoverage(port: port)
+                    self.systemProxyStatus = SystemProxyStatus(
+                        mode: .partial,
+                        targetServices: coverage.targets,
+                        failedServices: coverage.missing)
+                    let list = coverage.missing.isEmpty ? "未知服务" : coverage.missing.joined(separator: "、")
+                    self.logKernel("系统代理部分服务配置失败：\(list) (port=\(port))")
+                    self.showToast("系统代理开启不完整：\(list)", kind: .warn)
+                    // The primary service is live — it carries proxied traffic,
+                    // so the DNS redirect / allow-lan follow-ups matter exactly
+                    // as they do for a full landing.
+                    await self.ensureProxyDNS()
+                    await self.ensureAllowLanForSharing()
                 } else {
-                    // Kernel is down too — say so instead of failing silently.
-                    self.showToast("系统代理设置失败（内核未运行）", kind: .error)
+                    self.logKernel("系统代理设置失败 (want=\(on), port=\(port))")
+                    await self.api.probe()
+                    if self.api.reachable {
+                        self.showToast("系统代理设置失败", kind: .error)
+                    } else {
+                        // Kernel is down too — say so instead of failing silently.
+                        self.showToast("系统代理设置失败（内核未运行）", kind: .error)
+                    }
                 }
             }
         }
@@ -721,17 +844,63 @@ extension AppModel {
         logKernel("ensureProxyDNS: tunOn=\(tunOnBefore) reachable=\(reachable)")
         guard !tunOnBefore else { return }
 
+        // The system-DNS redirect is only safe when the 127.0.0.1 resolver
+        // answers with REAL IPs. In fake-ip mode (the default) every answer is
+        // an unroutable 198.18.x.x address: apps that honor the system proxy
+        // still work (mihomo reverse-maps fake IPs on inbound), but apps that
+        // DON'T honor it resolve to a fake IP and connect directly — with no
+        // TUN there is no route for 198.18.0.0/15 and those apps black-hole
+        // completely (verified live: direct connect to a fake IP times out,
+        // same host via proxy returns 200). This redirect used to be reverted
+        // within ~12 s by the DNS-ownership bug, which masked the breakage;
+        // once the redirect persisted it surfaced. Domain-based unpolluted
+        // routing for proxied apps is already covered by mihomo's sniffer
+        // (parse-pure-ip). TUN remains the one legitimate owner of a system
+        // DNS redirect — with the tunnel up, 198.18.0.0/15 is routed and
+        // fake-ip is by design.
+        let mode = (engine.readConfigFile()?["dns"] as? [String: Any])?["enhanced-mode"] as? String
+            ?? "fake-ip"
+        if mode != "redir-host" {
+            logKernel("ensureProxyDNS: enhanced-mode=\(mode)，跳过系统 DNS 重定向（fake-ip 应答会让不走代理的应用断网；域名防污染由 sniffer 承担）")
+            // Self-heal: a redirect left by an older build (or a TUN session
+            // whose teardown raced) must not survive in proxy-only mode —
+            // with the tunnel gone, fake-ip answers black-hole direct apps.
+            if UserDefaults.standard.bool(forKey: Self.kDNSOverriddenKey) {
+                logKernel("ensureProxyDNS: 检测到残留的 DNS 重定向，正在回退…")
+                await restoreProxyDNS()
+            }
+            return
+        }
+
         // Ensure mihomo DNS listens on port 53 so the system resolver
         // (set to 127.0.0.1 below) can reach it. The default config uses
         // 127.0.0.1:1053 which is unreachable from port 53. Without this,
         // setting system DNS to 127.0.0.1 would black-hole all DNS queries.
-        await ensureMihomoDNSPort53()
+        //
+        // P2 transaction: the system DNS override below is only committed
+        // once the listener is (1) configured on 127.0.0.1:53, (2) verified
+        // to actually answer a query. Writing 127.0.0.1 into the system
+        // resolvers in front of a listener that failed to reload or bind
+        // black-holes every lookup on the Mac — strictly worse than the GFW
+        // pollution this redirect exists to fix. On any failure the original
+        // DNS stays untouched (the snapshot is only taken after the checks
+        // pass), which is the rollback.
+        guard await ensureMihomoDNSPort53() else {
+            logKernel("ensureProxyDNS: mihomo DNS 监听 127.0.0.1:53 未确认（重载失败或缺 dns.listen），跳过系统 DNS 重定向，保持原 DNS")
+            return
+        }
 
         // reload inside ensureMihomoDNSPort53 may have changed tunOn (the
         // kernel re-reads config.tun.enable). Re-check and skip DNS redirect
         // if TUN came back up — TUN's dns-hijack already handles DNS.
         if tunOn {
             logKernel("ensureProxyDNS: TUN 在 reload 后变为开启，跳过系统 DNS 设置")
+            return
+        }
+
+        guard await probeLocalDNS53() else {
+            logKernel("ensureProxyDNS: 127.0.0.1:53 探测无应答，保持系统 DNS 不变（避免解析黑洞）")
+            showToast("DNS 经内核转发未验证，系统 DNS 保持不变", kind: .warn)
             return
         }
 
@@ -757,12 +926,15 @@ extension AppModel {
     /// Ensure mihomo's DNS listener is on 127.0.0.1:53 so system DNS
     /// (set to 127.0.0.1 by ensureProxyDNS) can reach it. Reads config.yaml,
     /// patches dns.listen if needed, and triggers a kernel reload.
-    /// Idempotent — no-op if already on :53.
-    private func ensureMihomoDNSPort53() async {
+    /// Idempotent — no-op if already on :53. Returns false when the listener
+    /// cannot be confirmed on 53 (no dns.listen in config, or reload failed),
+    /// which callers must treat as "do not touch system DNS".
+    @discardableResult
+    private func ensureMihomoDNSPort53() async -> Bool {
         guard let disk = engine.readConfigFile(),
               let dns = disk["dns"] as? [String: Any],
-              let listen = dns["listen"] as? String else { return }
-        if listen == "127.0.0.1:53" { return }
+              let listen = dns["listen"] as? String else { return false }
+        if listen == "127.0.0.1:53" { return true }
 
         logKernel("系统代理需要 DNS 监听 53 端口，当前为 \(listen)，正在修改并重载内核…")
         // Patch config.yaml: change dns.listen to 127.0.0.1:53.
@@ -783,10 +955,73 @@ extension AppModel {
             logKernel("内核配置已重载（DNS 监听端口切换）")
         } catch {
             logKernel("内核重载失败：\(error.localizedDescription)")
+            return false
         }
         // Re-sync after reload
         await refreshConfigs()
         logKernel("mihomo DNS 已切换到 127.0.0.1:53")
+        return true
+    }
+
+    /// One-shot UDP DNS round-trip to 127.0.0.1:53 — the live-listener half of
+    /// the P2 proxy-DNS transaction. Reuses the TUN data-plane probe's wire
+    /// format: any format-valid reply (NXDOMAIN/SERVFAIL included) proves a
+    /// listener is answering; silence means the reload never bound the port
+    /// and the system DNS must not be redirected.
+    ///
+    /// Retried rather than lengthened: mihomo rebinds the DNS listener
+    /// asynchronously after the reload reply, and a UDP datagram sent before
+    /// the bind is simply dropped — a single longer wait cannot recover a
+    /// packet that was already lost (observed live: reload ok in ~0.5 s,
+    /// one-shot probe fired ~1.5 s later got silence, listener answered
+    /// queries moments after). Three short rounds bound the total (~6 s worst)
+    /// while the healthy path still returns instantly.
+    private func probeLocalDNS53() async -> Bool {
+        for attempt in 1...3 {
+            if await probeLocalDNS53Once() {
+                if attempt > 1 {
+                    logKernel("ensureProxyDNS: 127.0.0.1:53 第 \(attempt) 次探测才应答（重载后监听重建较慢）")
+                }
+                return true
+            }
+            if attempt < 3 {
+                try? await Task.sleep(nanoseconds: 1_000_000_000)
+            }
+        }
+        return false
+    }
+
+    private func probeLocalDNS53Once() async -> Bool {
+        await Task.detached(priority: .utility) { () -> Bool in
+            let probe = DNSProbe(txID: UInt16.random(in: 0x0101...0xfffe))
+            let query = probe.query(host: "probe.proxy.local")
+            var addr = sockaddr_in()
+            addr.sin_family = sa_family_t(AF_INET)
+            addr.sin_port = in_port_t(53).bigEndian
+            addr.sin_addr = in_addr(s_addr: inet_addr("127.0.0.1"))
+            let fd = socket(AF_INET, SOCK_DGRAM, 0)
+            guard fd >= 0 else { return false }
+            defer { close(fd) }
+            var tv = timeval(tv_sec: 1, tv_usec: 500_000)
+            setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &tv, socklen_t(MemoryLayout<timeval>.size))
+            let sent = query.withUnsafeBytes { raw -> Int in
+                withUnsafePointer(to: &addr) { aptr -> Int in
+                    aptr.withMemoryRebound(to: sockaddr.self, capacity: 1) { sa in
+                        sendto(fd, raw.baseAddress, query.count, 0, sa, socklen_t(MemoryLayout<sockaddr_in>.size))
+                    }
+                }
+            }
+            guard sent == query.count else { return false }
+            var buf = [UInt8](repeating: 0, count: 512)
+            let n = withUnsafeMutablePointer(to: &addr) { aptr -> Int in
+                aptr.withMemoryRebound(to: sockaddr.self, capacity: 1) { sa in
+                    var len = socklen_t(MemoryLayout<sockaddr_in>.size)
+                    return recvfrom(fd, &buf, buf.count, 0, sa, &len)
+                }
+            }
+            guard n >= 12 else { return false }
+            return probe.validate(response: Data(buf[0..<n])) == .valid
+        }.value
     }
 
     /// Restore system DNS saved before proxy mode took over. Idempotent — safe
@@ -2146,6 +2381,18 @@ extension AppModel {
     /// at the original value, so later teardowns "restored" a redirect that
     /// never happened and health checks believed the redirect was live.
     func enableTunnelDNS() async {
+        // Invariant asserted AT THE WRITE POINT, not just at callers: the
+        // redirect target is the TUN fake-ip gateway, which only answers while
+        // the tunnel interface exists. Upstream gates (refreshConfigs' tunOn
+        // derivation, applyTUNState's post-PATCH wait) can race or regress —
+        // a redirect written without the interface is a whole-system DNS
+        // blackhole, the exact failure class the proxy-mode incident belonged
+        // to (an unasserted premise at a system-state write that a fixed bug
+        // elsewhere then activated). Cheap to check: 1.5 s TTL cache.
+        guard await NetScanner.mihomoTunInterface() != nil else {
+            logKernel("TUN DNS 重定向跳过：fake-ip 网关接口不存在（此时写入 198.18.0.1 即全网解析黑洞），待接口就绪后由对账重试")
+            return
+        }
         let gateway = tunnelDNSAddress()
         let d = UserDefaults.standard
         let wasOverridden = d.bool(forKey: Self.kDNSOverriddenKey)

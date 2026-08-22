@@ -1975,71 +1975,142 @@ import Network
         return await Self.setSystemProxyFallback(enabled: enabled, port: port)
     }
 
-    /// Set/clear the macOS system HTTP/HTTPS/SOCKS proxy via service loop fallback.
-    static func setSystemProxyFallback(enabled: Bool, port: Int) async -> Bool {
-        let shell: String
-        if enabled {
-            // Bypass domains: the single-source `kProxyBypassDomains` (RFC1918 +
-            // link-local + CGNAT + Tailscale control plane) so this fallback stays
-            // in lockstep with the XPC path and the GUI reconcile — no duplicated
-            // list to drift. See ProxyManager.setSystemProxy for the rationale.
-            //
-            // Each entry is single-quoted. Entries like `*.local` and
-            // `*.tailscale.com` are shell globs; left bare they expand against the
-            // process CWD and `networksetup` receives whatever files happen to
-            // match (or nothing), silently writing a mangled bypass list. The
-            // Helper and GUI reconcile paths pass argv arrays and never hit this;
-            // only this string-built fallback needs the quotes. Single-quote
-            // escaping follows POSIX (`'` → `'\''`).
-            let bypass = kProxyBypassDomains
-                .map { "'\($0.replacingOccurrences(of: "'", with: "'\\''"))'" }
-                .joined(separator: " ")
-            // Failure tracking, not `|| true`: a bare `cmd || true` per line
-            // makes the loop exit 0 regardless of how many networksetup calls
-            // actually failed -- this fallback then silently reported success
-            // while doing nothing, and the caller logged "系统代理已开启" even
-            // though scutil --proxy never changed. Use a for-loop (not
-            // a piped while-read) so the failure counter lives in the same
-            // shell as the final exit -- a piped "while read" runs in a
-            // subshell and any variable set inside it is invisible afterward.
-            shell = """
-            applied=0
-            IFS=$'\\n'
-            for svc in $(networksetup -listallnetworkservices | tail -n +2); do
-                [[ "$svc" == \\** ]] && continue
-                svc_ok=1
-                networksetup -setwebproxy "$svc" 127.0.0.1 \(port) 2>/dev/null || svc_ok=0
-                networksetup -setsecurewebproxy "$svc" 127.0.0.1 \(port) 2>/dev/null || svc_ok=0
-                networksetup -setsocksfirewallproxy "$svc" 127.0.0.1 \(port) 2>/dev/null || svc_ok=0
-                networksetup -setproxybypassdomains "$svc" \(bypass) 2>/dev/null || svc_ok=0
-                networksetup -setwebproxystate "$svc" on 2>/dev/null || svc_ok=0
-                networksetup -setsecurewebproxystate "$svc" on 2>/dev/null || svc_ok=0
-                networksetup -setsocksfirewallproxystate "$svc" on 2>/dev/null || svc_ok=0
-                if [ "$svc_ok" = 1 ]; then applied=$((applied+1)); fi
-            done
-            [ "$applied" -gt 0 ]
-            """
-        } else {
-            shell = """
-            applied=0
-            IFS=$'\\n'
-            for svc in $(networksetup -listallnetworkservices | tail -n +2); do
-                [[ "$svc" == \\** ]] && continue
-                svc_ok=1
-                networksetup -setwebproxystate "$svc" off 2>/dev/null || svc_ok=0
-                networksetup -setsecurewebproxystate "$svc" off 2>/dev/null || svc_ok=0
-                networksetup -setsocksfirewallproxystate "$svc" off 2>/dev/null || svc_ok=0
-                if [ "$svc_ok" = 1 ]; then applied=$((applied+1)); fi
-            done
-            [ "$applied" -gt 0 ]
-            """
+    // MARK: - System proxy: GUI-side application (Helper-free fallback + acceptance)
+
+    /// Non-blocking `networksetup` argv runner. EngineControl is @MainActor, so
+    /// every fork hops to a background queue; the per-command cap matches the
+    /// Helper's ProxyManager budget.
+    private static func runNetworkSetup(_ args: [String], timeout: TimeInterval = 1.2) async -> Bool {
+        await withCheckedContinuation { cont in
+            DispatchQueue.global(qos: .userInitiated).async {
+                let p = Process()
+                p.executableURL = URL(fileURLWithPath: "/usr/sbin/networksetup")
+                p.arguments = args
+                p.standardOutput = Pipe(); p.standardError = Pipe()
+                let timer = DispatchSource.makeTimerSource(queue: DispatchQueue.global())
+                timer.schedule(deadline: .now() + timeout)
+                timer.setEventHandler { if p.isRunning { p.terminate() } }
+                do {
+                    try p.run()
+                    timer.resume()
+                    p.waitUntilExit()
+                    timer.cancel()
+                    cont.resume(returning: p.terminationStatus == 0)
+                } catch {
+                    timer.cancel()
+                    cont.resume(returning: false)
+                }
+            }
         }
-        
-        // Try running locally without admin prompt first
-        if await runLocalShell(shell) {
+    }
+
+    /// Output variant for readback probes (`-get*proxy`).
+    private static func runNetworkSetupOutput(_ args: [String], timeout: TimeInterval = 2.0) async -> String? {
+        await withCheckedContinuation { cont in
+            DispatchQueue.global(qos: .userInitiated).async {
+                let p = Process()
+                p.executableURL = URL(fileURLWithPath: "/usr/sbin/networksetup")
+                p.arguments = args
+                let pipe = Pipe(); p.standardOutput = pipe; p.standardError = Pipe()
+                let timer = DispatchSource.makeTimerSource(queue: DispatchQueue.global())
+                timer.schedule(deadline: .now() + timeout)
+                timer.setEventHandler { if p.isRunning { p.terminate() } }
+                do {
+                    try p.run()
+                    timer.resume()
+                    let data = pipe.fileHandleForReading.readDataToEndOfFile()
+                    p.waitUntilExit()
+                    timer.cancel()
+                    cont.resume(returning: String(data: data, encoding: .utf8))
+                } catch {
+                    timer.cancel()
+                    cont.resume(returning: nil)
+                }
+            }
+        }
+    }
+
+    /// The exact service list the Helper would configure (shared
+    /// `ProxyServicePlan`), resolved off the main actor — enumeration forks
+    /// networksetup + ifconfig per service. `forceFresh` bypasses the plan's
+    /// short cache (diagnostic coverage reads want the live list).
+    static func targetProxyServices(forceFresh: Bool = false) async -> [String] {
+        await withCheckedContinuation { cont in
+            DispatchQueue.global(qos: .userInitiated).async {
+                cont.resume(returning: ProxyServicePlan.liveTargetServices(forceFresh: forceFresh))
+            }
+        }
+    }
+
+    /// Apply per-service with the same argv sequence and three-state
+    /// acceptance as the Helper's ProxyManager (shared classify). Only `.full`
+    /// counts as success, so a partially-written service set surfaces as
+    /// `.partial` instead of silently reporting "on".
+    @discardableResult
+    static func applySystemProxyLocally(services: [String], enabled: Bool, port: Int) async -> SystemProxyApplyOutcome {
+        guard !services.isEmpty else { return .failed }
+        // `await` cannot chain through `&&` — run each command in order and
+        // stop the sequence at the first failure for the service.
+        func applyAll(_ commands: [[String]]) async -> Bool {
+            for cmd in commands {
+                if !(await runNetworkSetup(cmd)) { return false }
+            }
             return true
         }
-        
+        var okList: [String] = []
+        var failedList: [String] = []
+        for svc in services {
+            let ok: Bool
+            if enabled {
+                // Bypass domains: the single-source `kProxyBypassDomains`
+                // (RFC1918 + link-local + CGNAT + Tailscale control plane), argv
+                // form — the shell-quoting pitfalls only exist in the string
+                // built for the admin escalation below.
+                //
+                // `-*proxy` writes host/port but does not reliably flip the
+                // enable bit on every macOS build — always follow with
+                // `-*proxystate on` (mirrors the Helper).
+                ok = await applyAll([
+                    ["-setwebproxy", svc, "127.0.0.1", "\(port)"],
+                    ["-setsecurewebproxy", svc, "127.0.0.1", "\(port)"],
+                    ["-setsocksfirewallproxy", svc, "127.0.0.1", "\(port)"],
+                    ["-setproxybypassdomains", svc] + kProxyBypassDomains,
+                    ["-setwebproxystate", svc, "on"],
+                    ["-setsecurewebproxystate", svc, "on"],
+                    ["-setsocksfirewallproxystate", svc, "on"],
+                ])
+            } else {
+                ok = await applyAll([
+                    ["-setwebproxystate", svc, "off"],
+                    ["-setsecurewebproxystate", svc, "off"],
+                    ["-setsocksfirewallproxystate", svc, "off"],
+                ])
+            }
+            if ok { okList.append(svc) } else { failedList.append(svc) }
+        }
+        return ProxyServicePlan.classify(succeeded: okList, failed: failedList)
+    }
+
+    /// Set/clear the macOS system HTTP/HTTPS/SOCKS proxy without the Helper.
+    ///
+    /// P0 unification: this fallback used to walk *every* enabled service
+    /// while the Helper configured the active non-virtual subset — the same
+    /// user action wrote a different footprint depending on Helper
+    /// availability. Both sides now share `ProxyServicePlan` selection and the
+    /// full/partial/failed classification; local per-service writes run as the
+    /// app user, with a single admin-escalation retry over the same service
+    /// list when they fail (non-admin account).
+    static func setSystemProxyFallback(enabled: Bool, port: Int) async -> Bool {
+        let services = await targetProxyServices()
+        guard !services.isEmpty else {
+            NSLog("[ClashHalo] setSystemProxyFallback: no target network services")
+            return false
+        }
+        let outcome = await applySystemProxyLocally(services: services, enabled: enabled, port: port)
+        if outcome.isSuccess { return true }
+
+        // Admin escalation retry: same services, full-success shell exit.
+        let shell = adminShell(services: services, enabled: enabled, port: port)
         let escaped = shell.replacingOccurrences(of: "\\", with: "\\\\").replacingOccurrences(of: "\"", with: "\\\"")
         let script = "do shell script \"\(escaped)\" with administrator privileges"
         return await withCheckedContinuation { cont in
@@ -2053,36 +2124,111 @@ import Network
         }
     }
 
-    private static func runLocalShell(_ shell: String) async -> Bool {
-        await withCheckedContinuation { cont in
-            DispatchQueue.global().async {
-                let p = Process()
-                p.executableURL = URL(fileURLWithPath: "/bin/sh")
-                p.arguments = ["-c", shell]
-                let errPipe = Pipe()
-                p.standardOutput = Pipe()
-                p.standardError = errPipe
-                do {
-                    try p.run()
-                    p.waitUntilExit()
-                    let ok = p.terminationStatus == 0
-                    if !ok {
-                        // The caller (setSystemProxyFallback) has no other
-                        // visibility into *why* every networksetup call
-                        // failed — surface the raw stderr once so a report
-                        // like "system proxy silently does nothing" is
-                        // diagnosable from app.log instead of requiring a
-                        // repro session.
-                        let errData = errPipe.fileHandleForReading.readDataToEndOfFile()
-                        let errText = String(data: errData, encoding: .utf8)?
-                            .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-                        NSLog("[ClashHalo] runLocalShell failed (exit \(p.terminationStatus)): \(errText)")
-                    }
-                    cont.resume(returning: ok)
-                } catch {
-                    NSLog("[ClashHalo] runLocalShell spawn failed: \(error)")
-                    cont.resume(returning: false)
+    /// The admin-escalation script. Embedded service list and bypass entries
+    /// are single-quoted (POSIX `'` → `'\''`) — bare `*.local` / `*.tailscale.com`
+    /// are shell globs that would expand against the CWD and hand networksetup
+    /// a mangled bypass list. Exit is full-success only: `applied == total`, so
+    /// a partial admin pass still reports failure up-stack.
+    private static func adminShell(services: [String], enabled: Bool, port: Int) -> String {
+        func sh(_ s: String) -> String { "'\(s.replacingOccurrences(of: "'", with: "'\\''"))'" }
+        let svcList = services.map(sh).joined(separator: " ")
+        if enabled {
+            let bypass = kProxyBypassDomains.map(sh).joined(separator: " ")
+            return """
+            applied=0; total=0
+            for svc in \(svcList); do
+                total=$((total+1))
+                svc_ok=1
+                networksetup -setwebproxy "$svc" 127.0.0.1 \(port) 2>/dev/null || svc_ok=0
+                networksetup -setsecurewebproxy "$svc" 127.0.0.1 \(port) 2>/dev/null || svc_ok=0
+                networksetup -setsocksfirewallproxy "$svc" 127.0.0.1 \(port) 2>/dev/null || svc_ok=0
+                networksetup -setproxybypassdomains "$svc" \(bypass) 2>/dev/null || svc_ok=0
+                networksetup -setwebproxystate "$svc" on 2>/dev/null || svc_ok=0
+                networksetup -setsecurewebproxystate "$svc" on 2>/dev/null || svc_ok=0
+                networksetup -setsocksfirewallproxystate "$svc" on 2>/dev/null || svc_ok=0
+                if [ "$svc_ok" = 1 ]; then applied=$((applied+1)); fi
+            done
+            [ "$applied" -eq "$total" ]
+            """
+        }
+        return """
+        applied=0; total=0
+        for svc in \(svcList); do
+            total=$((total+1))
+            svc_ok=1
+            networksetup -setwebproxystate "$svc" off 2>/dev/null || svc_ok=0
+            networksetup -setsecurewebproxystate "$svc" off 2>/dev/null || svc_ok=0
+            networksetup -setsocksfirewallproxystate "$svc" off 2>/dev/null || svc_ok=0
+            if [ "$svc_ok" = 1 ]; then applied=$((applied+1)); fi
+        done
+        [ "$applied" -eq "$total" ]
+        """
+    }
+
+    /// Post-apply acceptance readback: for every target service, confirm
+    /// HTTP/HTTPS/SOCKS are each enabled, pointing at 127.0.0.1 and at the
+    /// mixed-port we just wrote. The merged SCDynamicStore view
+    /// (`syncSystemProxyState`) only reflects the primary service — this is
+    /// the per-service check that names *which* uplink stayed direct.
+    static func verifySystemProxyCoverage(port: Int) async -> (targets: [String], configured: [String], missing: [String]) {
+        // Fresh enumeration: this is the diagnostic path (only reached when the
+        // write Bool and the merged SCDynamicStore check disagree), so it must
+        // not inherit the write path's cache.
+        let services = await targetProxyServices(forceFresh: true)
+        var configured: [String] = []
+        var missing: [String] = []
+        for svc in services {
+            var svcOK = true
+            for cmd in ["-getwebproxy", "-getsecurewebproxy", "-getsocksfirewallproxy"] {
+                guard let out = await runNetworkSetupOutput([cmd, svc]) else { svcOK = false; break }
+                let parsed = ProxyServicePlan.parseGetProxyOutput(out)
+                if !parsed.enabled || parsed.host != "127.0.0.1" || parsed.port != port {
+                    svcOK = false
+                    break
                 }
+            }
+            if svcOK { configured.append(svc) } else { missing.append(svc) }
+        }
+        return (services, configured, missing)
+    }
+
+    /// TCP-connect probe to 127.0.0.1:<port> — the acceptance gate before the
+    /// system proxy may point macOS at the mixed-port. macOS does not fall
+    /// back to direct when a configured proxy port is dead, so enabling (or
+    /// restoring) the proxy in front of a port nothing is listening on is a
+    /// full blackout, which is exactly what the suspend/restore brackets exist
+    /// to prevent.
+    ///
+    /// Non-blocking connect + `poll`: a blocking `connect()` is not bounded by
+    /// `SO_SNDTIMEO` on macOS, and this gate sits on the MainActor toggle
+    /// path — the wait must be structurally capped, not best-effort.
+    static func isLocalPortListening(_ port: Int, timeout: TimeInterval = 1.5) async -> Bool {
+        guard port > 0 else { return false }
+        return await withCheckedContinuation { cont in
+            DispatchQueue.global(qos: .userInitiated).async {
+                var addr = sockaddr_in()
+                addr.sin_family = sa_family_t(AF_INET)
+                addr.sin_port = in_port_t(port).bigEndian
+                addr.sin_addr = in_addr(s_addr: inet_addr("127.0.0.1"))
+                let fd = socket(AF_INET, SOCK_STREAM, 0)
+                guard fd >= 0 else { cont.resume(returning: false); return }
+                defer { close(fd) }
+                let flags = fcntl(fd, F_GETFL, 0)
+                _ = fcntl(fd, F_SETFL, flags | O_NONBLOCK)
+                let rc = withUnsafePointer(to: &addr) {
+                    $0.withMemoryRebound(to: sockaddr.self, capacity: 1) {
+                        connect(fd, $0, socklen_t(MemoryLayout<sockaddr_in>.size))
+                    }
+                }
+                if rc == 0 { cont.resume(returning: true); return }
+                guard errno == EINPROGRESS else { cont.resume(returning: false); return }
+                var pfd = pollfd(fd: fd, events: Int16(POLLOUT), revents: 0)
+                let polled = poll(&pfd, 1, Int32(timeout * 1000))
+                guard polled > 0 else { cont.resume(returning: false); return }
+                var soError: Int32 = 0
+                var len = socklen_t(MemoryLayout<Int32>.size)
+                getsockopt(fd, SOL_SOCKET, SO_ERROR, &soError, &len)
+                cont.resume(returning: soError == 0)
             }
         }
     }

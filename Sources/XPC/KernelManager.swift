@@ -233,8 +233,10 @@ final class KernelManager: ObservableObject {
             // Best-effort relaunch of whatever is still in bin/ (may be missing).
             await EngineControl.shared.launch()
             if wasProxyOn {
-                _ = await EngineControl.shared.setSystemProxy(enabled: true, port: port)
-                await MainActor.run { AppModel.shared.systemProxyOn = true }
+                // Unified restore: the port-liveness gate replaces the blind
+                // re-enable — a relaunched-but-not-yet-listening kernel must
+                // not get the system proxy pointed at it.
+                _ = await AppModel.shared.restoreSystemProxy(reason: "内核切换回退", port: port)
             }
             return false
         }
@@ -264,11 +266,9 @@ final class KernelManager: ObservableObject {
         // Restore system proxy only if the kernel is actually listening again.
         if wasProxyOn {
             if ready {
-                _ = await EngineControl.shared.setSystemProxy(enabled: true, port: port)
-                await MainActor.run {
-                    AppModel.shared.systemProxyOn = true
-                    AppModel.shared.logKernel("内核切换：已恢复系统代理")
-                }
+                // Unified restore: mixed-port liveness gate + write +
+                // SCDynamicStore verification in one place.
+                _ = await AppModel.shared.restoreSystemProxy(reason: "内核切换", port: port)
             } else {
                 await MainActor.run {
                     AppModel.shared.showToast("内核启动超时，系统代理未恢复（避免断网）", kind: .warn)
