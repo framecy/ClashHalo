@@ -119,6 +119,11 @@ class Helper: NSObject, HelperProtocol {
     fileprivate static var stateMihomoStarted = false
     fileprivate static var stateProxyOn = false
     fileprivate static var stateGatewayOn = false
+    /// Mixed-port of the last proxy this helper wrote (0 = forgotten, e.g.
+    /// after a helper restart). Client-death cleanup uses it to scope the
+    /// reality check to OUR proxy: the unscoped any-loopback match would also
+    /// wipe a co-resident proxy app's settings when only our client died.
+    fileprivate static var stateLastProxyPort = 0
     fileprivate static let stateLock = NSLock()
 
     fileprivate static func setState(_ apply: (inout Bool, inout Bool, inout Bool) -> Void) {
@@ -146,6 +151,9 @@ class Helper: NSObject, HelperProtocol {
         // Track intent even on partial failure: some services may have been
         // configured before an error, so a later cleanup disable is the safe state.
         Self.setState { _, proxyOn, _ in proxyOn = enabled }
+        Self.stateLock.lock()
+        Self.stateLastProxyPort = port
+        Self.stateLock.unlock()
         if enabled { Self.armWatchForCurrentClient() }
         reply(ok)
     }
@@ -770,7 +778,18 @@ class HelperDelegate: NSObject, NSXPCListenerDelegate {
         // root mihomo. So each destructive step is additionally gated on an
         // observable fact that can only be true if we (or a dead local proxy)
         // caused it — never on user-owned configuration.
-        let loopbackProxyLive = ProxyManager.anyServiceProxiesToLoopback()
+        Helper.stateLock.lock()
+        let rememberedPort = Helper.stateLastProxyPort
+        Helper.stateLock.unlock()
+        // Port-scoped reality check: a loopback proxy is "ours to clear" only
+        // when it points at the port we last wrote. The unscoped any-loopback
+        // match would also wipe a co-resident proxy app's settings (Surge /
+        // ClashX on their own port) when only OUR client died — the same
+        // unasserted-ownership class as the fake-ip DNS incident. Unscoped
+        // remains only as the amnesiac fallback (helper restarted, forgot the
+        // port), where the anti-blackout guarantee takes priority.
+        let loopbackProxyLive = ProxyManager.anyServiceProxiesToLoopback(
+            port: rememberedPort > 0 ? rememberedPort : nil)
         let orphanRootKernel = isRootMihomoRunning()
         let cleanProxy = hadProxy || loopbackProxyLive
         let cleanKernel = hadMihomo || orphanRootKernel
@@ -779,6 +798,21 @@ class HelperDelegate: NSObject, NSXPCListenerDelegate {
             log("handleClientExit for pid \(pid): no helper-owned state — nothing to clean")
             return
         }
+
+        // Re-check takeover *after* the reality probes above: those fork
+        // networksetup per service plus pgrep and take hundreds of ms — a
+        // window in which a replacement app can connect. Observed live: a
+        // quit+relaunch cycle lost the 2 s grace by 0.2 s (dead pid's cleanup
+        // passed Guard 2 at 12:40:07.6; the relaunched app's first XPC landed
+        // 12:40:07.8), and the killall safety net below then reaped the new
+        // client's freshly-spawned root kernel ~2 s after it came up. Any
+        // connection, or a recent *live* different client, at this point owns
+        // the state the steps below would destroy — stand down entirely.
+        guard !newerSessionOwnsState(deadPid: pid) else {
+            log("handleClientExit for pid \(pid): newer session appeared during cleanup — stand down")
+            return
+        }
+
         log("handleClientExit for pid \(pid): cleaning (mihomo=\(hadMihomo)/orphanRoot=\(orphanRootKernel) proxy=\(hadProxy)/loopbackLive=\(loopbackProxyLive) gateway=\(hadGateway))")
 
         // 1. Stop mihomo process first (fast, reliable, and does not depend on system configuration locks)

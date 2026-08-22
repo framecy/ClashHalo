@@ -66,5 +66,13 @@ run_one tailscale-api-tests \
   "$ROOT/Sources/Model/TailscaleAPI.swift" \
   "$ROOT/Tests/TailscaleAPI/main.swift"
 
+# 系统代理子系统：服务/设备配对解析（分支顺序回归）、目标服务选择
+# （活性过滤 + 虚拟服务排除 + 无 2 服务上限 + 回退）、三态结果分类、
+# -get*proxy 读回解析、bypass 单一来源网段。生产源码即 Helper 与 GUI
+# fallback 共用的 ProxyServicePlan（HelperProtocol.swift）。
+run_one systemproxy-tests \
+  "$ROOT/Sources/XPC/HelperProtocol.swift" \
+  "$ROOT/Tests/SystemProxy/main.swift"
+
 echo ""
 echo "全部测试通过。"

@@ -2,7 +2,7 @@
 
 本文件给后续 AI 编码代理使用。进入本仓库后，先读本文件，再按需读 `README.md`、`CHANGELOG.md` 和相关源码。
 
-当前主干：`main`，产品版本 **v1.3.0**（`MARKETING_VERSION`），Helper **1.0.24**（`kSharedHelperVersion`：对端路由拒绝规则 + 孤儿路由回收 + 自有路由记账持久化；相对 1.0.23 及更早需强制升级）。打包时 `make.sh` 自增 `CURRENT_PROJECT_VERSION`。
+当前主干：`main`，产品版本 **v1.3.1**（`MARKETING_VERSION`），Helper **1.0.27**（`kSharedHelperVersion`：客户端死亡清理按「本 Helper 最后写入的端口」限定 loopback 代理回收，不再误清共存代理应用；1.0.26 为破坏性步骤前重查会话接管；1.0.25 为系统代理共享服务选择/分支顺序/全成功语义；相对 1.0.24 及更早需强制升级）。打包时 `make.sh` 自增 `CURRENT_PROJECT_VERSION`。
 
 ## 项目概览
 
@@ -127,6 +127,8 @@ bash make.sh
 - `mihomo` 签名不要随意 hardened runtime；会影响 TUN/utun
 - TUN 是运行时能力：启动时强制 `tun.enable: false`，只应通过 UI/Helper 流程开启
 - **网关开关是用户意图**（`UserDefaults` 镜像 `net.gatewayModeOn`），禁止从 config 残留签名推断开启；开关关时清理残留 `dns.listen: 0.0.0.0:53`
+- **系统 DNS 重定向的唯一属主是 TUN**：代理模式禁止把系统 DNS 指向 mihomo——fake-ip 应答会把不走代理的应用解析到不可路由的 198.18.x 假地址直接断网（`ensureProxyDNS` 在 fake-ip 下跳过并自愈残留）；代理模式域名防污染由 sniffer（parse-pure-ip）承担
+- **系统级网络状态的写点必须自证安全前提**：写 DNS/系统代理/路由/转发前，在写入函数内部断言使该写入成立的事实（fake-ip 网关接口存在、目标端口在监听、状态属主归我），不要只依赖上游调用方的门——门会回归。同理，修复「被下游 bug 掩盖的机制」时必须先审它的设计意图在放行后是否本身有害（归属修复让 fake-ip DNS 重定向驻留进而断网即此类）；全局状态尽量单一属主（如系统 DNS 重定向只归 TUN、bypass 只归 `kProxyBypassDomains`）
 - Helper 版本唯一来源是 `kSharedHelperVersion`（`HelperProtocol.swift`），并同步 `Helper-Info.plist` 的 `CFBundleVersion`。需要强制升级旧 Helper 时才 bump
 - 系统代理 bypass 唯一来源是 `kProxyBypassDomains`（约 86 条：localhost/mDNS/RFC1918/link-local/CGNAT）。Helper、本地 fallback、`reconcileProxyBypassIfNeeded`、网络拓扑视图都只引用它
 - bypass 自愈在 GUI 进程本地写 `networksetup`，不要再经可能过时的 Helper 覆盖
