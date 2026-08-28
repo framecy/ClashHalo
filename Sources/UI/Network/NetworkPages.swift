@@ -299,7 +299,10 @@ struct NumRow: View {
     private var configValue: String { intStr(M.configs[key]) }
     private func intStr(_ v: Any?) -> String { if let i = v as? Int { return "\(i)" }; if let d = v as? Double { return "\(Int(d))" }; return "0" }
     private func commit() {
-        let n = Int(text) ?? 0
+        // These rows carry ports: non-numeric input ("789o", a cleared field)
+        // must not silently commit as 0 — that would land in config.yaml and
+        // reload. Leave the edit on screen (hasChanges stays true) instead.
+        guard let n = Int(text) else { return }
         hasChanges = false
         Task { if persistent { await M.patchPersistent([key: n]) } else { await M.patch([key: n]) } }
     }

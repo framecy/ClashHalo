@@ -48,25 +48,51 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // One-shot: the first caller proceeds, subsequent callers return immediately
         guard _cleanupOnce.wait(timeout: .now()) == .success else { return }
 
+        // 0. Flush traffic history (best effort). save() is throttled to a 5 s
+        //    cadence, so quitting right after activity would otherwise lose the
+        //    last batch; it touches no network state, so it must not reorder or
+        //    delay the steps below. On the main thread (willTerminate) run it
+        //    synchronously — a semaphore wait there would block the very actor
+        //    the Task needs, stalling quit by the full timeout. From the signal
+        //    handler's background queue, hop via MainActor with a bounded wait.
+        if Thread.isMainThread {
+            MainActor.assumeIsolated {
+                AppModel.shared.history.save()
+            }
+        } else {
+            let historyFlush = DispatchSemaphore(value: 0)
+            Task { @MainActor in
+                AppModel.shared.history.save()
+                historyFlush.signal()
+            }
+            _ = historyFlush.wait(timeout: .now() + 1)
+        }
+
         // 1. System proxy OFF (privileged, fresh connection).
         _ = callHelperSync { helper, done in
             helper.setSystemProxy(enabled: false, port: 0) { _ in done() }
         }
 
         // 2. Restore system DNS if TUN had redirected it into the (now dying)
-        //    tunnel — otherwise all DNS black-holes after quit.
+        //    tunnel — otherwise all DNS black-holes after quit. Targets the
+        //    service recorded at redirect time (N9), falling back to default.
         let d = UserDefaults.standard
         if d.bool(forKey: AppModel.kDNSOverriddenKey) {
             let saved = (d.string(forKey: AppModel.kDNSSavedKey) ?? "")
                 .split(separator: ",").map(String.init)
+            let svc = d.string(forKey: AppModel.kDNSServiceKey) ?? ""
             let sema = DispatchSemaphore(value: 0)
             Task {
-                await EngineControl.applySystemDNS(saved)
+                var ok = await EngineControl.applySystemDNS(saved, service: svc.isEmpty ? nil : svc)
+                if !ok, !svc.isEmpty {
+                    ok = await EngineControl.applySystemDNS(saved)
+                }
                 sema.signal()
             }
             _ = sema.wait(timeout: .now() + 2)
             d.set(false, forKey: AppModel.kDNSOverriddenKey)
             d.removeObject(forKey: AppModel.kDNSSavedKey)
+            d.removeObject(forKey: AppModel.kDNSServiceKey)
         }
 
         // 3. Stop the kernel: helper first (only it can signal a root-owned

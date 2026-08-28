@@ -78,6 +78,12 @@ import Network
         // B3/B4: isRoot now means "helper installed AND reachable", verified by an
         // actual XPC handshake — not merely the plist existing on disk.
         Task { @MainActor in
+            // While an engine operation is in flight, isRoot is owned by that
+            // flow (it installs/upgrades the helper and re-verifies); a tick
+            // landing mid-flow must not flip it from underneath — a transient
+            // handshake failure here used to cost an extra admin prompt during
+            // TUN enable. The flow's own completion paths re-sync the flags.
+            guard !isBusy else { return }
             let active = await XPCManager.shared.verifyConnectivity()
             if isRoot != active { isRoot = active }
 
@@ -156,6 +162,9 @@ import Network
             log-level: info
             external-controller: 127.0.0.1:9092
             secret: clashhalo
+            external-ui: ui
+            external-ui-name: zashboard
+            external-ui-url: https://github.com/Zephyruso/zashboard/releases/latest/download/dist.zip
             dns:
               enable: true
               enhanced-mode: fake-ip
@@ -163,7 +172,7 @@ import Network
                 - 119.29.29.29
                 - 223.5.5.5
             """
-            try? initial.write(toFile: configPath, atomically: true, encoding: .utf8)
+            writeConfig(initial, to: configPath)
         }
 
         // Bundled geodata setup
@@ -173,6 +182,21 @@ import Network
                 if !fm.fileExists(atPath: dst) {
                     try? fm.copyItem(atPath: g.path, toPath: dst)
                 }
+            }
+        }
+
+        // Panel: seed the kernel's external-ui dir with the bundled zashboard
+        // dist so http://127.0.0.1:<port>/ui/zashboard/ works from the very
+        // first launch — offline, without waiting for the kernel to download
+        // external-ui-url. Kernel-side downloads only fill the dir when it is
+        // missing, so this stays compatible with that mechanism. (The app-side
+        // probe in openZashboard covers Debug builds where no dist is bundled.)
+        if let src = Bundle.main.url(forResource: "zashboard", withExtension: nil, subdirectory: "Panels"),
+           fm.fileExists(atPath: src.path) {
+            let dst = appSupport + "/ui/zashboard"
+            if !fm.fileExists(atPath: dst) {
+                try? fm.createDirectory(atPath: appSupport + "/ui", withIntermediateDirectories: true)
+                try? fm.copyItem(atPath: src.path, toPath: dst)
             }
         }
 
@@ -287,7 +311,7 @@ import Network
             }
         }
         if changed {
-            try? lines.joined(separator: "\n").write(toFile: path, atomically: true, encoding: .utf8)
+            writeConfig(lines.joined(separator: "\n"), to: path)
         }
     }
 
@@ -357,7 +381,7 @@ import Network
             changed = true
         }
         if changed {
-            try? lines.joined(separator: "\n").write(toFile: path, atomically: true, encoding: .utf8)
+            writeConfig(lines.joined(separator: "\n"), to: path)
         }
     }
 
@@ -407,7 +431,7 @@ import Network
             changed += 1
         }
         guard changed > 0 else { return 0 }
-        try? out.write(toFile: path, atomically: true, encoding: .utf8)
+        writeConfig(out, to: path)
         return changed
     }
 
@@ -449,7 +473,7 @@ import Network
                 if !found { lines.insert("\(key): \(val)", at: 0) }
             }
         }
-        try? lines.joined(separator: "\n").write(toFile: path, atomically: true, encoding: .utf8)
+        writeConfig(lines.joined(separator: "\n"), to: path)
     }
 
     private func setNestedScalars(parent: String, kv: [String: Any], in lines: inout [String]) {
@@ -711,7 +735,7 @@ import Network
             j -= 1
         }
 
-        try? lines.joined(separator: "\n").write(toFile: configFilePath, atomically: true, encoding: .utf8)
+        writeConfig(lines.joined(separator: "\n"), to: configFilePath)
         return true
     }
 
@@ -885,9 +909,15 @@ import Network
         }.value
     }
 
-    /// Read the system DNS servers for the default service.
-    nonisolated static func currentSystemDNS() async -> [String] {
-        guard let svc = await defaultNetworkService() else { return [] }
+    /// Read the system DNS servers for the default service (or an explicit one).
+    nonisolated static func currentSystemDNS(service: String? = nil) async -> [String] {
+        let svc: String?
+        if let service, !service.isEmpty {
+            svc = service
+        } else {
+            svc = await defaultNetworkService()
+        }
+        guard let svc else { return [] }
         return await Task.detached(priority: .userInitiated) {
             let p = Process()
             p.executableURL = URL(fileURLWithPath: "/usr/sbin/networksetup")
@@ -903,10 +933,20 @@ import Network
         }.value
     }
 
-    /// Set the system DNS servers for the default service.
+    /// Set the system DNS servers for the default service, or for an explicit
+    /// `service` recorded at redirect time (N9: the default service can change
+    /// between enable and restore — Wi-Fi ↔ Ethernet — and restoring into the
+    /// new default leaves the old service's redirect stranded and pollutes the
+    /// new one with the old server list).
     @discardableResult
-    nonisolated static func applySystemDNS(_ servers: [String]) async -> Bool {
-        guard let svc = await defaultNetworkService() else { return false }
+    nonisolated static func applySystemDNS(_ servers: [String], service: String? = nil) async -> Bool {
+        let svc: String?
+        if let service, !service.isEmpty {
+            svc = service
+        } else {
+            svc = await defaultNetworkService()
+        }
+        guard let svc else { return false }
         return await Task.detached(priority: .userInitiated) {
             let p = Process()
             p.executableURL = URL(fileURLWithPath: "/usr/sbin/networksetup")
@@ -950,7 +990,7 @@ import Network
             }
         }
         if changed {
-            try? lines.joined(separator: "\n").write(toFile: path, atomically: true, encoding: .utf8)
+            writeConfig(lines.joined(separator: "\n"), to: path)
         }
     }
 
@@ -1003,7 +1043,7 @@ import Network
         if !hasSecret { lines.insert("secret: \(Self.randomSecret())", at: 0); changed = true }
 
         if changed {
-            try? lines.joined(separator: "\n").write(toFile: path, atomically: true, encoding: .utf8)
+            writeConfig(lines.joined(separator: "\n"), to: path)
         }
         return replacedSecret
     }
@@ -1082,7 +1122,7 @@ import Network
             }
         }
         if changed {
-            try? lines.joined(separator: "\n").write(toFile: path, atomically: true, encoding: .utf8)
+            writeConfig(lines.joined(separator: "\n"), to: path)
         }
     }
 
@@ -1567,7 +1607,7 @@ import Network
     func setConfig(_ yaml: String) async -> (ok: Bool, error: String?) {
         let path = configFilePath
         do {
-            try yaml.write(toFile: path, atomically: true, encoding: .utf8)
+            writeConfig(yaml, to: path)
             hardenControllerConfig()   // ensure controller binds loopback + strong secret
             forceTUNDisabled()         // TUN is runtime-only — don't let a profile auto-enable it
             injectMemoryOptimization() // Apply kernel memory optimization settings
@@ -1625,11 +1665,9 @@ import Network
 
         guard updated != text else { return true }
         do {
-            try updated.write(toFile: path, atomically: true, encoding: .utf8)
-            // The file now carries an auth key. It already held subscription
-            // secrets, but make the intent explicit rather than inherited.
-            try? FileManager.default.setAttributes([.posixPermissions: 0o600],
-                                                   ofItemAtPath: path)
+            // writeConfig enforces atomic + 0600 (the file now carries an
+            // auth key; it already held subscription secrets).
+            writeConfig(updated, to: path)
             return true
         } catch {
             onLog?("内置 Tailnet 写入配置失败：\(error.localizedDescription)")
@@ -2237,6 +2275,16 @@ import Network
     /// when config.yaml hasn't changed since the last call.
     private var rcfCacheMtime: Date?
     private var rcfCache: [String: Any]?
+
+    /// Single choke point for every config.yaml write: atomic replace + 0600.
+    /// The file carries the built-in tailnet node's auth-key in plain text when
+    /// that feature is enabled, so the 0600 promise must hold for every writer
+    /// (setTopLevelScalars, setTunEnabled, hardenControllerConfig, setConfig…),
+    /// not just applyTailscaleOverlay which used to chmod alone.
+    private func writeConfig(_ text: String, to path: String) {
+        try? text.write(toFile: path, atomically: true, encoding: .utf8)
+        try? FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: path)
+    }
 
     /// Read config.yaml and return a dictionary. Used to read fields that mihomo
     /// API doesn't expose (e.g. sniffer).

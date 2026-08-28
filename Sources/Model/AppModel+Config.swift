@@ -1970,6 +1970,12 @@ extension AppModel {
                         }
                     }
                     if tunOn {
+                        // The restart brought a utun up, which moves the default
+                        // interface — arm the settle window exactly like the
+                        // PATCH success path does, or the imminent NWPathMonitor
+                        // storm would hit an expired window and rebuild the
+                        // tunnel a second time, dropping every live connection.
+                        tunStateSettleUntil = Date().addingTimeInterval(10)
                         // Restart path brought the tunnel up outside the PATCH
                         // success latch below — commit the staged fingerprint now
                         // so reconcile does not re-push the same plan, and so a
@@ -2359,6 +2365,9 @@ extension AppModel {
 
     static let kDNSOverriddenKey = "tun.dns.overridden"
     static let kDNSSavedKey = "tun.dns.saved"
+    /// N9: the network service the redirect was written to, so restore targets
+    /// the same service even if the system default changed in between.
+    static let kDNSServiceKey = "tun.dns.service"
 
     /// The TUN gateway to use as the system resolver. Prefers the live config's
     /// `tun.inet4-address` gateway; falls back to mihomo's default fake-ip gateway.
@@ -2396,19 +2405,24 @@ extension AppModel {
         let gateway = tunnelDNSAddress()
         let d = UserDefaults.standard
         let wasOverridden = d.bool(forKey: Self.kDNSOverriddenKey)
+        // N9: pin the network service the redirect is written to. Restoring
+        // into whatever the default is *later* would strand the old service's
+        // redirect and pollute the new default with the old server list.
+        let service = await EngineControl.defaultNetworkService()
         var snapshot: String? = nil
         if !wasOverridden {
-            let original = await EngineControl.currentSystemDNS()
+            let original = await EngineControl.currentSystemDNS(service: service)
             // Use sentinel value "Empty" if system DNS is unconfigured (common on fresh macOS)
             snapshot = original.isEmpty ? "Empty" : original.joined(separator: ",")
         }
-        let ok = await EngineControl.applySystemDNS([gateway])
+        let ok = await EngineControl.applySystemDNS([gateway], service: service)
         guard ok else {
             logKernel("TUN DNS 重定向写入失败，保持原状态待下次巡检重试")
             return
         }
         if !wasOverridden, let snapshot {
             d.set(snapshot, forKey: Self.kDNSSavedKey)
+            d.set(service ?? "", forKey: Self.kDNSServiceKey)
             d.set(true, forKey: Self.kDNSOverriddenKey)
         }
     }
@@ -2423,13 +2437,21 @@ extension AppModel {
         let savedString = d.string(forKey: Self.kDNSSavedKey) ?? ""
         // Handle sentinel "Empty" by clearing DNS (networksetup needs "Empty" literal)
         let saved = savedString == "Empty" ? ["Empty"] : savedString.split(separator: ",").map(String.init)
-        let ok = await EngineControl.applySystemDNS(saved)
+        // N9: restore into the service we redirected at enable time, falling
+        // back to the current default when that service is gone.
+        let pinnedService = d.string(forKey: Self.kDNSServiceKey) ?? ""
+        var ok = await EngineControl.applySystemDNS(saved, service: pinnedService.isEmpty ? nil : pinnedService)
+        if !ok, !pinnedService.isEmpty {
+            logKernel("TUN DNS 恢复：原服务 \(pinnedService) 不可用，回退当前默认服务")
+            ok = await EngineControl.applySystemDNS(saved)
+        }
         guard ok else {
             logKernel("TUN DNS 恢复写入失败，保留重定向标记待重试")
             return
         }
         d.set(false, forKey: Self.kDNSOverriddenKey)
         d.removeObject(forKey: Self.kDNSSavedKey)
+        d.removeObject(forKey: Self.kDNSServiceKey)
     }
 
     /// Deep-merge config overrides into the running config via the engine
@@ -2455,6 +2477,10 @@ extension AppModel {
             await api.probe(timeout: 0.5)
             if api.reachable {
                 showToast("内核拒绝了该配置修改", kind: .error)
+                // Optimistic UI writers (NToggle…) already rendered the value
+                // the kernel refused — resync from runtime truth so the
+                // rejected value doesn't linger until some unrelated refresh.
+                await refreshConfigs()
             } else {
                 reachable = false
                 showToast("内核已断开，配置写入失败", kind: .error)
@@ -2511,6 +2537,11 @@ extension AppModel {
             noteConfigContentChanged()
             showToast("配置已更新", kind: .ok)
         } catch {
+            // The file was already rewritten before the reload attempt; the
+            // kernel kept its previous runtime config. Resync the UI from
+            // runtime truth so optimistic form writes don't linger on a value
+            // the kernel never took.
+            await refreshConfigs()
             showToast("更新失败：\(error.localizedDescription)", kind: .error)
         }
     }
@@ -2652,6 +2683,6 @@ extension AppModel {
     // mihomo does NOT expose rules in /configs nor accept rule edits via PATCH;
     // rules are read from the dedicated /rules endpoint, editing is via profile YAML.
     func refreshRules() async {
-        if let r = try? await api.fetchRules() { rules = r.rules }
+        if let r = try? await api.fetchRules(), rules != r.rules { rules = r.rules }
     }
 }
