@@ -109,7 +109,10 @@ struct YAMLPreview: Equatable {
             return copy
         }
         if let data = try? JSONEncoder().encode(sanitized) {
-            try? data.write(to: URL(fileURLWithPath: manifestPath))
+            // Atomic — this is the only non-YAML state file in the app, and a
+            // torn manifest makes load() silently rebuild a single "默认配置"
+            // profile from config.yaml, orphaning every profiles/<id>.yaml.
+            try? data.write(to: URL(fileURLWithPath: manifestPath), options: [.atomic])
         }
     }
 
@@ -274,6 +277,9 @@ struct YAMLPreview: Equatable {
     func commit(_ id: String) -> String? {
         let text = content(id); guard !text.isEmpty else { return nil }
         try? text.write(toFile: configPath, atomically: true, encoding: .utf8)
+        // config.yaml may carry the tailnet auth-key in plain text — keep the
+        // 0600 promise on this writer too (EngineControl covers its own).
+        try? FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: configPath)
         activeID = id
         if let i = profiles.firstIndex(where: { $0.id == id }) {
             // Mark Pending until `markApplied` confirms the kernel reload

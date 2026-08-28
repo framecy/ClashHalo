@@ -152,17 +152,46 @@ public class ProxyManager {
     /// fake-ip gateway (198.18.x / 198.19.x). Client-death cleanup uses this
     /// instead of the blanket `restoreDNS()` so a user's custom DNS — or the
     /// saved DNS the GUI already restored during a normal quit — is never
+    /// True when something still accepts TCP connections on 127.0.0.1:53 —
+    /// a local resolver (mihomo's redir-host listener, or the user's own
+    /// AdGuard / dnsmasq) is alive. On loopback connect() answers instantly,
+    /// so no timeout handling is needed; inconclusive errors count as alive —
+    /// we never clobber a resolver we cannot prove is dead.
+    private static func isLoopbackDNSLive() -> Bool {
+        var addr = sockaddr_in()
+        addr.sin_family = sa_family_t(AF_INET)
+        addr.sin_len = UInt8(MemoryLayout<sockaddr_in>.size)
+        addr.sin_port = UInt16(53).bigEndian
+        addr.sin_addr = in_addr(s_addr: INADDR_LOOPBACK.bigEndian)
+        let fd = socket(AF_INET, SOCK_STREAM, 0)
+        guard fd >= 0 else { return true }
+        defer { close(fd) }
+        let r = withUnsafePointer(to: &addr) {
+            $0.withMemoryRebound(to: sockaddr.self, capacity: 1) { sa in
+                connect(fd, sa, socklen_t(MemoryLayout<sockaddr_in>.size))
+            }
+        }
+        if r == 0 { return true }
+        switch errno {
+        case ECONNREFUSED, EHOSTUNREACH, ENETUNREACH, EADDRNOTAVAIL: return false
+        default: return true
+        }
+    }
+
     /// clobbered back to "Empty" when the tunnel redirect wasn't even active.
     @discardableResult
     public static func restoreDNSIfTunnelPinned() -> Bool {
         var anyOK = false
         for svc in enabledNetworkServices() {
             guard let out = runOutput(["-getdnsservers", svc]) else { continue }
-            let pinned = out.split(separator: "\n").contains {
-                let t = $0.trimmingCharacters(in: .whitespaces)
-                return t.hasPrefix("198.18.") || t.hasPrefix("198.19.")
-            }
-            guard pinned else { continue }
+            let entries = out.split(separator: "\n").map { $0.trimmingCharacters(in: .whitespaces) }
+            let tunnelPinned = entries.contains { $0.hasPrefix("198.18.") || $0.hasPrefix("198.19.") }
+            // 1.0.28: a bare `127.0.0.1` entry is the redir-host mode's
+            // fingerprint (system DNS → mihomo's port-53 listener). Reset it
+            // only when NOTHING listens on 127.0.0.1:53 anymore — a user-run
+            // loopback resolver keeps the port bound and must be left alone.
+            let loopbackDead = entries.contains { $0 == "127.0.0.1" } && !isLoopbackDNSLive()
+            guard tunnelPinned || loopbackDead else { continue }
             var ok = run(["-setdnsservers", svc, "Empty"])
             if !ok { ok = run(["-setdnsservers", svc, "223.5.5.5"]) }
             log("restoreDNSIfTunnelPinned: \(svc) was tunnel-pinned, reset \(ok ? "ok" : "FAILED")")

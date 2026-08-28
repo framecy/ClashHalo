@@ -162,13 +162,27 @@ extension AppModel {
             testing.remove(name)
         }
 
-        // Test direct proxies individually via /proxies/{name}/delay
-        for name in directNames {
-            Task {
-                if let d = try? await api.testDelay(name: name) {
-                    nodes[name]?.delay = d
+        // Test direct proxies individually via /proxies/{name}/delay, bounded
+        // to 16 in flight — a 200-node subscription used to fire one Task per
+        // node, hammering the kernel with simultaneous delay probes.
+        Task { [weak self] in
+            guard let self else { return }
+            await withTaskGroup(of: Void.self) { group in
+                var inflight = 0
+                for name in directNames {
+                    if inflight >= 16 {
+                        await group.next()
+                        inflight -= 1
+                    }
+                    inflight += 1
+                    group.addTask { @MainActor [weak self] in
+                        guard let self else { return }
+                        if let d = try? await self.api.testDelay(name: name) {
+                            self.nodes[name]?.delay = d
+                        }
+                        self.testing.remove(name)
+                    }
                 }
-                testing.remove(name)
             }
         }
 
