@@ -2,7 +2,7 @@
 
 本文件给后续 AI 编码代理使用。进入本仓库后，先读本文件，再按需读 `README.md`、`CHANGELOG.md` 和相关源码。
 
-当前主干：`main`，产品版本 **v1.3.1**（`MARKETING_VERSION`），Helper **1.0.27**（`kSharedHelperVersion`：客户端死亡清理按「本 Helper 最后写入的端口」限定 loopback 代理回收，不再误清共存代理应用；1.0.26 为破坏性步骤前重查会话接管；1.0.25 为系统代理共享服务选择/分支顺序/全成功语义；相对 1.0.24 及更早需强制升级）。打包时 `make.sh` 自增 `CURRENT_PROJECT_VERSION`。
+当前主干：`main`，产品版本 **v1.3.1**（`MARKETING_VERSION`），Helper **1.0.28**（`kSharedHelperVersion`：客户端死亡清理同时识别已死的 redir-host DNS 重定向——系统 DNS 为 `127.0.0.1` 且 53 端口无监听才重置，保护用户自建回环 resolver；1.0.27 为按「本 Helper 最后写入的端口」限定 loopback 代理回收，不误清共存代理应用；1.0.26 为破坏性步骤前重查会话接管；1.0.25 为系统代理共享服务选择/分支顺序/全成功语义；相对 1.0.24 及更早需强制升级）。打包时 `make.sh` 自增 `CURRENT_PROJECT_VERSION`。
 
 ## 项目概览
 
@@ -93,9 +93,9 @@ bash make.sh
 - 主窗口 toast 在 detail overlay；菜单栏顶栏副标题行复用 `AppModel.toast`（主窗口不可见时仍可见）
 - `engine.isBusy` 必须可感知：主开关 Toggle busy 时 disabled；不要只靠 toast 解释
 - Progress：表单用 `.small`；密集 chrome 用 `.mini` + `DS.Progress.miniScale`
-- 前台轮询分层：`refreshConfigs` 约 12s；网关设备 `/connections` 3s；连接页 1.5s；后台 30s；**禁止** DnsPage 等再起独立连接轮询
-- 高频 `@Published` 写入前做等值短路（`mode` / `tunOn` / totals / `gatewayDevices` / `dash`）
-- **App 内存警卫唯一入口是 `enforceAppMemoryGuard()`**（`AppModel+Connections.swift`）：软档 260MB / 硬档 380MB（RSS 口径，按实测 146MB 空载稳态 + 235MB 系统代理峰值校准），内部 15s 限频，徒劳退避（连续 3 次无效即暂停）。**新增任何连接快照消费方都必须调它**。禁止再写第二份内联阈值判断
+- 前台轮询分层：`refreshConfigs` 事件驱动 + 60s 慢兜底；网关设备 `/connections` 3s（网关设备列表在屏时 1s）；连接页 WebSocket + 5s 兜底 Timer；后台 30s；**禁止** DnsPage 等再起独立连接轮询
+- 高频 `@Published` 写入前做等值短路（`mode` / `tunOn` / totals / `gatewayDevices` / `dash` / `activeConnectionsCount` / `closedConns` / `rules` / `version`）
+- **App 内存警卫唯一入口是 `enforceAppMemoryGuard()`**（`AppModel+Connections.swift`）：软档 260MB / 硬档 380MB（RSS 口径，按实测 146MB 空载稳态 + 235MB 系统代理峰值校准），内部 15s 限频，徒劳退避（连续 3 次无效即暂停），启动 30s 宽限窗（突发期只观察不裁剪，启动完成时打 RSS 采样日志）。**新增任何连接快照消费方都必须调它**。禁止再写第二份内联阈值判断
 - 连接热路径（`onConnections` / `recordHistoryOnly` / `fetchConnectionsSnapshot` 解码）必须包 `autoreleasepool`；`cachedConns` 走 `clampConnectionCaches()` 上限，截断前先按速率排序且 `activeConnectionsCount` 先赋值（计数不受截断影响）
 - 流量 sparkline series 仅在 `route == dashboard` 或菜单栏可见时追加；默认 `trafficRefreshInterval = 2s`
 - **内核下载/检查必须直连**：`KernelManager` 使用 `connectionProxyDictionary = [:]` 的 ephemeral session，禁止经系统代理访问 GitHub
