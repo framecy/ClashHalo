@@ -92,23 +92,31 @@ struct SystemProxyStatus: Equatable {
     private var gatewayDeclareRepairFailures = 0
 
     // Navigation + theme
+    // didSet guards: same-value @Published writes still fire didSet, and every
+    // reconcile run rebuilds pollTask with fire-immediately dues (a heavy
+    // refreshConfigs burst). Route clicks, window focus and menu-bar toggles
+    // must not each pay that cost.
     @Published var route = "dashboard" {
         didSet {
+            guard route != oldValue else { return }
             reconcileActiveStreams()
         }
     }
     @Published var isMainWindowVisible = false {
         didSet {
+            guard isMainWindowVisible != oldValue else { return }
             reconcileActiveStreams()
         }
     }
     @Published var isMenuBarVisible = false {
         didSet {
+            guard isMenuBarVisible != oldValue else { return }
             reconcileActiveStreams()
         }
     }
     @Published var isConnectionsPageActive = false {
         didSet {
+            guard isConnectionsPageActive != oldValue else { return }
             reconcileActiveStreams()
         }
     }
@@ -443,6 +451,11 @@ struct SystemProxyStatus: Equatable {
     /// tracking it would keep doing that forever when the memory is not in
     /// those caches at all. See `AppMemoryGuardPolicy`.
     var appMemoryGuardState = AppMemoryGuardPolicy.State()
+    /// Startup grace for the memory guard: the first half-minute carries a
+    /// launch burst (config load, first full snapshots, TUN bring-up) that
+    /// transiently crosses the soft tier and decays on its own — observed
+    /// 383 MB at +15 s → 197 MB steady. Trimming then is futile work.
+    let launchedAt = Date()
     var lastInterface: String? = nil
 
     // MARK: Built-in tailnet node (see AppModel+Tailscale.swift)
@@ -777,6 +790,11 @@ struct SystemProxyStatus: Equatable {
 
             _ = await kernelBoot.value
             mark("startup complete")
+            // RSS sample at the end of the boot sequence — the launch burst
+            // (config load + first snapshots + TUN bring-up) peaks around here,
+            // and the guard's 30 s grace window (see enforceAppMemoryGuard)
+            // deliberately does not act during it.
+            logKernel(String(format: "启动完成：App RSS %.0f MB", Double(Self.residentMemoryBytes()) / 1_000_000))
 
             // tsnet is lazy: it only starts on the first dial. If the user had
             // Tailscale enabled in a previous session, the proxy is in the config
@@ -826,7 +844,7 @@ struct SystemProxyStatus: Equatable {
             await api.probe()
         }
         reachable = api.reachable
-        version = api.version
+        if version != api.version { version = api.version }
         
         if reachable && !wasReachable {
             // Just came online
@@ -845,12 +863,20 @@ struct SystemProxyStatus: Equatable {
         }
 
         guard reachable else {
-            // Core unreachable — TUN/Gateway can't be active, so clear the
-            // switches to keep the UI consistent (tunOn is normally driven by
+            // Core unreachable — TUN can't be active, so clear the switch to
+            // keep the UI consistent (tunOn is normally driven by
             // refreshConfigs, which won't run while disconnected, leaving the
-            // toggles stuck "on").
+            // toggle stuck "on").
             tunOn = false
-            gatewayModeOn = false
+            // gatewayModeOn is the user's intent — the toggle is persisted to
+            // UserDefaults via didSet (AGENTS: never inferred from config).
+            // Clearing it here would (a) rewrite the persisted intent on every
+            // transient kernel outage and (b) let refreshConfigs' residual
+            // cleanup strip the gateway config, leaving the switch
+            // unrecoverable without a manual re-toggle. TUN's intent is
+            // re-derived from config; the gateway's actual state is
+            // reconciled by verifyGatewayConfig on the 30 s health tick once
+            // the core is reachable again.
             gatewayDevices.removeAll(keepingCapacity: false)
 
             // Only auto-disable proxy/DNS if the kernel WAS reachable and just crashed,
@@ -999,6 +1025,11 @@ struct SystemProxyStatus: Equatable {
 
     private func stopStreams() {
         trafficWS?.cancel(); trafficWS = nil
+        // memWS must drain here too. It is rebuilt only when nil (reconcile's
+        // activeUI branch), so a stale non-nil handle after an unreachable
+        // window would leave the /memory stream dead until the window is
+        // hidden and reshown.
+        memWS?.cancel(); memWS = nil
         pollTimer?.invalidate(); pollTimer = nil
         pollTask?.cancel(); pollTask = nil
         stopAppMemorySampling()
@@ -1286,10 +1317,18 @@ struct SystemProxyStatus: Equatable {
             // Reconnect and restore state
             await reconnect()
 
-            // Restore TUN if it was active before sleep
+            // Restore TUN if it was active before sleep. applyTUNState's
+            // contract is "caller owns engine.isBusy" — this path used to call
+            // it bare, racing a user toggle into two concurrent enable flows.
             if preSleepTunOn && !tunOn {
-                logKernel("恢复 TUN 模式...")
-                await applyTUNState(true)
+                if engine.isBusy {
+                    logKernel("唤醒恢复：TUN 开关操作进行中，跳过（30s 巡检会对账）")
+                } else {
+                    logKernel("恢复 TUN 模式...")
+                    engine.isBusy = true
+                    defer { engine.isBusy = false }
+                    await applyTUNState(true)
+                }
             }
             // Sleep/wake can re-mount utun under mihomo the same way a topology
             // change does. Accept the restored TUN with a delayed data-plane probe
@@ -1367,6 +1406,17 @@ struct SystemProxyStatus: Equatable {
                     }
                     // If TUN is supposed to be on, ensure it's healthy and interface is pinned
                     if tunOn && !engine.isBusy {
+                        // Reserve the busy slot synchronously: the rebuild decision
+                        // needs `await defaultInterface()` below, and a check that
+                        // far from the set let two path-update tasks race into two
+                        // concurrent applyTUNState flows. Manual isBusy + defer (not
+                        // `withEngineBusy`) because this runs fire-and-forget inside
+                        // a Task whose caller cannot await the body, and a Task
+                        // cancellation mid-await would otherwise leak isBusy=true
+                        // forever and block all later toggles (see the analogous
+                        // teardown pattern in verifyTUNConfig / refreshConfigs B10).
+                        engine.isBusy = true
+                        defer { engine.isBusy = false }
                         let currentIface = await EngineControl.defaultInterface()
                         let ifaceMoved = currentIface != nil && currentIface != lastInterface
                         // Recorded unconditionally, so a value left stale by the
@@ -1388,14 +1438,6 @@ struct SystemProxyStatus: Equatable {
                         // cadence once the window closes.
                         if (onlineChanged || ifaceMoved) && Date() >= tunStateSettleUntil
                             && !tunFlapAbandoned {
-                            // Manual isBusy + defer (not `withEngineBusy`) because this runs
-                            // fire-and-forget inside a Task whose caller cannot await the body —
-                            // `withEngineBusy`'s guard would clear before applyTUNState(true)
-                            // truly completes, and a Task cancellation mid-await would otherwise
-                            // leak isBusy=true forever and block all later toggles (see the
-                            // analogous teardown pattern in verifyTUNConfig / refreshConfigs B10).
-                            engine.isBusy = true
-                            defer { engine.isBusy = false }
                             await applyTUNState(true)
                         } else {
                             // No NIC change, but a peer tunnel may have connected,
@@ -1736,7 +1778,18 @@ struct SystemProxyStatus: Equatable {
             logKernel("检测到网关配置丢失，正在恢复…")
         }
 
-        engine.setTopLevelScalars(Self.gatewayOverrides)
+        // Re-declare through the access-control reconcile (same as
+        // applyGatewayMode): a profile switch drops skip-auth-prefixes along
+        // with the overrides, and a bare re-declare left forwarded clients
+        // locked out by `authentication`. Feeding the current auth array back
+        // in makes the reconcile re-derive the LAN skip prefixes.
+        var repairOverrides = Self.gatewayOverrides
+        if let auth = configs["authentication"] as? [Any], !auth.isEmpty {
+            repairOverrides["authentication"] = auth
+        }
+        let (repairPatch, _, repairWarnings) = reconcileAccessControlWithGateway(repairOverrides)
+        for w in repairWarnings { logKernel("网关自愈：\(w)") }
+        engine.setTopLevelScalars(repairPatch)
         do {
             try await api.reloadConfig(path: engine.configFilePath)
             await refreshConfigs()
@@ -2057,18 +2110,33 @@ struct SystemProxyStatus: Equatable {
         // zashboard parses location.hash for hostname/port/secret/https.
         let hash = "#/?hostname=\(host)&port=\(port)&secret=\(secret)&https=false&theme=\(theme)"
 
-        // Try the built-in panel first (pure HTTP, no mixed content).
-        let builtInURL = "http://\(host):\(port)/ui/zashboard/" + hash
-        if let url = URL(string: builtInURL) {
-            NSWorkspace.shared.open(url)
-            return
-        }
+        // Try the built-in panel first (pure HTTP, no mixed content). The dist
+        // is only served when config.yaml declares external-ui AND the bundle
+        // actually carries it — neither is guaranteed (fresh factory configs,
+        // Debug builds) — so probe before opening and fall back to the external
+        // panel instead of landing the user on a 404 tab.
+        let builtInBase = "http://\(host):\(port)/ui/zashboard/"
+        Task { @MainActor in
+            var builtInUsable = false
+            if let probe = URL(string: builtInBase) {
+                var req = URLRequest(url: probe)
+                req.timeoutInterval = 1.5
+                req.httpMethod = "HEAD"
+                if let (_, resp) = try? await URLSession.shared.data(for: req) {
+                    builtInUsable = (resp as? HTTPURLResponse)?.statusCode == 200
+                }
+            }
+            if builtInUsable, let url = URL(string: builtInBase + hash) {
+                NSWorkspace.shared.open(url)
+                return
+            }
+            logKernel("内置面板不可用，回退外部面板")
 
-        // Fallback: external panel (may have mixed-content limitations).
-        var base = zashboardURL.trimmingCharacters(in: .whitespacesAndNewlines)
-        if !base.hasSuffix("/") && !base.hasSuffix("index.html") { base += "/" }
-        let extURL = base + hash
-        if let url = URL(string: extURL) { NSWorkspace.shared.open(url) }
+            // Fallback: external panel (may have mixed-content limitations).
+            var base = zashboardURL.trimmingCharacters(in: .whitespacesAndNewlines)
+            if !base.hasSuffix("/") && !base.hasSuffix("index.html") { base += "/" }
+            if let url = URL(string: base + hash) { NSWorkspace.shared.open(url) }
+        }
     }
 
     /// Register/unregister the app as a login item via `SMAppService`.
@@ -2249,6 +2317,15 @@ final class AppUpdater: ObservableObject {
 
     /// Download the update package using custom delegate for dynamic progress reports
     func downloadUpdate() async -> URL? {
+        // Reentrancy guard: a second concurrent call would overwrite
+        // `downloadContinuation`, and the first delegate callback would then
+        // drain the *second* continuation with the first task's result while
+        // leaking the first. The update button is disabled while downloading,
+        // but the model must hold the line itself.
+        guard !isDownloading else {
+            onLog?("已有下载进行中，忽略本次下载请求")
+            return nil
+        }
         guard let downloadURLString = downloadURL,
               let url = URL(string: downloadURLString) else {
             onLog?("下载失败：无效的下载链接")
@@ -2277,16 +2354,23 @@ final class AppUpdater: ObservableObject {
                 },
                 onComplete: { [weak self] result in
                     Task { @MainActor in
+                        // Single resume ownership: drain the stored handle
+                        // instead of resuming the captured `cont` directly.
+                        // Otherwise a task.cancel() landing after
+                        // cancelDownload() already resumed would resume the
+                        // same continuation a second time (the delegate's own
+                        // isCompleted lock cannot see that path).
+                        guard let self, let cont = self.downloadContinuation else { return }
+                        self.downloadContinuation = nil
                         switch result {
                         case .success(let dest):
-                            self?.downloadProgress = 1.0
-                            self?.onLog?("下载完成：\(dest.path)")
+                            self.downloadProgress = 1.0
+                            self.onLog?("下载完成：\(dest.path)")
                             cont.resume(returning: dest)
                         case .failure(let error):
-                            self?.onLog?("下载失败：\(error.localizedDescription)")
+                            self.onLog?("下载失败：\(error.localizedDescription)")
                             cont.resume(returning: nil)
                         }
-                        self?.downloadContinuation = nil
                     }
                 }
             )

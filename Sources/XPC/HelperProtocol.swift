@@ -5,13 +5,16 @@ import Foundation
 /// (Xcode target) since both include this file — prevents the two-location
 /// version drift that caused infinite upgrade loops.
 ///
+/// 1.0.28: client-death cleanup also recognizes a dead redir-host DNS
+/// redirect — system DNS set to `127.0.0.1` with nothing listening on port 53
+/// — instead of leaving every domain lookup black-holed until the app relaunches.
 /// 1.0.27: client-death cleanup scopes its loopback-proxy reality check to the
 /// port the helper last wrote, so quitting ClashHalo no longer wipes a
 /// co-resident proxy app's system-proxy settings. 1.0.26: cleanup re-checks
 /// session takeover before its destructive steps (quit/relaunch race).
 /// 1.0.25: system-proxy rework (shared ProxyServicePlan, branch-order fix, no
 /// 2-service cap, full-success-only Bool).
-public let kSharedHelperVersion = "1.0.27"
+public let kSharedHelperVersion = "1.0.28"
 
 /// The utun name mihomo is asked to take, instead of accepting whatever index
 /// the kernel hands out. Shared with the Helper so it can tell a route our own

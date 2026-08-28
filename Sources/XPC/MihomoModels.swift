@@ -46,7 +46,7 @@ struct DelayHistory: Decodable {
 }
 
 struct RulesPayload: Decodable { let rules: [RuleEntry] }
-struct RuleEntry: Decodable { let type: String; let payload: String; let proxy: String; let size: Int? }
+struct RuleEntry: Decodable, Equatable { let type: String; let payload: String; let proxy: String; let size: Int? }
 
 struct ProvidersPayload: Decodable { let providers: [String: ProviderEntry] }
 struct ProviderEntry: Decodable {

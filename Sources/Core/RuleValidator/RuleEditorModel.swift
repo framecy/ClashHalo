@@ -34,6 +34,9 @@ public final class RuleEditorModel: ObservableObject {
             }
             let newYaml = try YamlRuleASTEngine.injectRules(nodes, into: originalYaml)
             try newYaml.write(toFile: targetFilePath, atomically: true, encoding: .utf8)
+            // The target is the live config.yaml, which carries the tailnet
+            // auth-key in plain text — keep the 0600 promise across writers.
+            try? FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: targetFilePath)
             return true
         } catch {
             self.errorMessage = "保存失败：\\(error.localizedDescription)"

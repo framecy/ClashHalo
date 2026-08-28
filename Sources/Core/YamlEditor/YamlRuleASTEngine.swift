@@ -35,10 +35,11 @@ public final class YamlRuleASTEngine {
         guard cleaned.hasPrefix("-") else { return nil }
         
         var content = cleaned.dropFirst().trimmingCharacters(in: .whitespaces)
-        // Strip inline YAML comments if present
-        if let hashRange = content.range(of: "#") {
-            content = String(content[..<hashRange.lowerBound]).trimmingCharacters(in: .whitespaces)
-        }
+        // YAML semantics via YamlScalar: a `#` starts a comment only after
+        // whitespace and never inside a quoted scalar — so `a.example.com#v2`
+        // is data. The old first-`#` cut silently deleted any rule whose value
+        // contained `#` the moment the editor saved.
+        content = YamlScalar.stripInlineComment(content)
         let parts = content.split(separator: ",").map { $0.trimmingCharacters(in: .whitespaces) }
         guard parts.count >= 2 else { return nil } // 至少 TYPE,ACTION (MATCH)
         
@@ -74,17 +75,25 @@ public final class YamlRuleASTEngine {
         let lines = yaml.components(separatedBy: .newlines)
         var rules: [RuleNode] = []
         var inRulesBlock = false
+        var inFence = false
         var sortIndex = 0
-        
+
         for line in lines {
             let trimmed = line.trimmingCharacters(in: .whitespaces)
+            // App-managed fenced regions (Tailscale overlay) are opaque to the
+            // editor: never parsed into user nodes, so saving can neither
+            // reorder nor re-serialize them.
+            if trimmed == TailscaleOverlay.fenceBegin { inFence = true; continue }
+            if trimmed == TailscaleOverlay.fenceEnd { inFence = false; continue }
+            if inFence { continue }
+
             let isTopLevelKey = !line.hasPrefix(" ") && !line.hasPrefix("\t") && !trimmed.isEmpty && !trimmed.hasPrefix("-") && !trimmed.hasPrefix("#")
-            
+
             if isTopLevelKey {
                 inRulesBlock = line.hasPrefix("rules:")
                 continue
             }
-            
+
             if inRulesBlock {
                 if let node = parseLine(line) {
                     var n = node
@@ -101,19 +110,36 @@ public final class YamlRuleASTEngine {
     public static func injectRules(_ nodes: [RuleNode], into yaml: String) throws -> String {
         let lines = yaml.components(separatedBy: .newlines)
         var newLines: [String] = []
-        
+
         var inRulesBlock = false
+        var inFence = false
         var rulesInjected = false
-        
+
         for line in lines {
             let trimmed = line.trimmingCharacters(in: .whitespaces)
+
+            // Fenced overlay regions inside the rules block must survive
+            // editing verbatim — dropping them (the old behavior) broke the
+            // overlay's strip∘apply idempotence and left injected rules
+            // duplicated and unremovable. Outside the rules block the generic
+            // pass-through below already keeps them.
+            if trimmed == TailscaleOverlay.fenceBegin || trimmed == TailscaleOverlay.fenceEnd {
+                inFence = (trimmed == TailscaleOverlay.fenceBegin)
+                if inRulesBlock { newLines.append(line) }
+                continue
+            }
+            if inFence {
+                if inRulesBlock { newLines.append(line) }
+                continue
+            }
+
             let isTopLevelKey = !line.hasPrefix(" ") && !line.hasPrefix("\t") && !trimmed.isEmpty && !trimmed.hasPrefix("-") && !trimmed.hasPrefix("#")
-            
+
             if isTopLevelKey {
                 if line.hasPrefix("rules:") {
                     inRulesBlock = true
                     newLines.append(line)
-                    
+
                     // 立刻注入新的规则
                     let sortedNodes = nodes.sorted { $0.sort < $1.sort }
                     for node in sortedNodes {
@@ -125,12 +151,13 @@ public final class YamlRuleASTEngine {
                     inRulesBlock = false
                 }
             }
-            
+
             // 如果不在 rules 块内，保留原样
             if !inRulesBlock {
                 newLines.append(line)
             }
-            // 如果在 rules 块内，丢弃原来的子行（因为我们已经注入了新规则）
+            // 如果在 rules 块内，丢弃原来的子行（我们已经按节点列表重新序列化；
+            // fence 区已在上方原样保留）
         }
         
         // 如果原文件没有 rules: 块，则在末尾追加

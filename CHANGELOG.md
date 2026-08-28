@@ -2,6 +2,63 @@
 
 本项目所有重要变更记录于此。格式参考 [Keep a Changelog](https://keepachangelog.com/),版本遵循语义化版本。
 
+## [Unreleased] - 2026-08-29
+
+依据三轮全库架构审查（`Docs/ArchitectureReview-20260828*.md`）与优化计划（`Docs/OptimizationPlan-20260829.md`）落实。
+
+### Fixed
+
+- **规则编辑器引擎（三缺陷同源）**：`parseLine` 不再在任意 `#` 处截断（值含
+  `#` 的规则旧版在编辑器里消失、保存即从 config.yaml 物理删除；现按 YAML
+  语义仅空白前导 `#` 视为注释）；`injectRules` 原样保留 rules 块内的
+  fence 区（旧版丢弃注释行打断 Tailscale overlay 的 strip∘apply 幂等，
+  导致重复注入且「关闭功能」清不干净）；新增 `Tests/YamlRuleEngine`
+  （15 项）钉住。
+- **规则保存双路径**：连接页右键规则编辑改走事务式 `applyRuleEditorSave`
+  （备份 + 重载 + 失败回滚），与规则页同契约；旧直写路径无校验无回滚。
+- **config.yaml 0600 承诺覆盖全部写者**：EngineControl 11 处写点收敛到
+  `writeConfig`（原子 + 0600）；RuleEditorModel.save / ConfigStore.commit
+  补 chmod。含 auth-key 明文的文件不再因某次其他写者落盘而放宽权限。
+- **内核断连不再抹掉网关用户意图**：`reconnect` unreachable 分支不再清
+  `gatewayModeOn`（其 didSet 持久化 UserDefaults，且残留清理会把网关
+  配置洗掉导致不可恢复）；TUN 照旧清理（由 refreshConfigs 重推导）。
+- **`stopStreams` 漏 cancel `memWS`**：内核断开一次后 /memory 流永久死亡，
+  恢复后不重建（表现为仪表盘内存卡退化）。
+- **AppUpdater 取消下载双重 resume**：delegate 完成路径统一 drain 存储
+  continuation；`downloadUpdate` 补重入守卫（并发第二次调用曾会错配
+  resume 并泄漏第一个 continuation）。
+- **manifest.json / traffic-history.json 原子写**：crash 撕裂曾导致订阅
+  清单静默重建（孤儿 profile）与 60 天流量统计全丢；退出时补 history flush。
+- **NToggle / NumRow**：内核拒绝 PATCH 后乐观值回灌内核真值；端口行非数字
+  输入不再静默提交 0。
+- **网关 declare 自愈走访问控制调和**：配置切换后自愈不再丢
+  `skip-auth-prefixes`（LAN 转发客户端不再被 authentication 锁死）。
+- **UI 表单失败回灌**：`patch` / `patchPersistent` 失败后 `refreshConfigs`
+  从内核真值回填，乐观写不再无限期存续。
+
+### Changed
+
+- **Helper 1.0.27 → 1.0.28**（需强制升级）：客户端死亡清理识别已死的
+  redir-host DNS 重定向（系统 DNS 为 `127.0.0.1` 且 53 端口无监听才重置，
+  用户自建回环 resolver 因端口仍监听而受保护），crash 后不再残留全网解析黑洞。
+- **TUN 并发加固**：唤醒恢复路径补 `isBusy` 持锁；网络变化处理器的检查-置位
+  收敛为同步占位（消除两路并发 `applyTUNState` 的窗口）；重启回退成功路径
+  补 settle 窗口布防（阻断二次重建风暴复活点）；`pollStatus` 在 `isBusy`
+  期间不再翻转 `isRoot`。
+- **DNS 重定向按服务身份快照/恢复**（N9）：网卡切换后旧服务的重定向不再
+  残留、新服务不再被写入旧服务器列表。
+- **内置 Zashboard 接线**：工厂配置写 `external-ui` 三键；`ensureInstalled`
+  把内置 dist 种子化到内核 `ui/` 目录（离线开箱即用）；`openZashboard`
+  探测内置面板可达性，失败自动回退外置面板（旧版默认 404 无回退）。
+- **前台轮询去重**：`route`/窗口可见性等 didSet 增加同值守卫（每次点路由
+  /聚焦窗口不再重建 pollTask 并立即全量刷新）；`activeConnectionsCount` /
+  `closedConns` / `rules` / `version` 补等值短路（快照 tick 不再全树失效）。
+
+### Performance
+
+- 内存警卫增加 30s 启动宽限窗（启动突发期只观察不裁剪，启动完成打 RSS 采样日志）。
+- 代理测速并发上限 16（原为每节点一个 Task 的无界并发）。
+
 ## [1.3.1] - 2026-08-22
 
 ### Changed

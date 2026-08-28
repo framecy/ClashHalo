@@ -31,6 +31,17 @@ run_one yamlscalar-tests \
   "$ROOT/Sources/Core/YamlEditor/YamlScalar.swift" \
   "$ROOT/Tests/YamlScalar/main.swift"
 
+# 规则编辑器引擎：值内 `#` 是数据而非注释（旧版截断导致保存即删规则），
+# fence 区（overlay 托管）在提取与注入中原样保留（旧版丢弃注释行打断
+# Tailscale strip∘apply 幂等，Part 2 F1）。
+run_one yamlruleengine-tests \
+  "$ROOT/Sources/Model/RuleNode.swift" \
+  "$ROOT/Sources/Core/YamlEditor/YamlScalar.swift" \
+  "$ROOT/Sources/Core/Hash.swift" \
+  "$ROOT/Sources/Model/TailscaleNode.swift" \
+  "$ROOT/Sources/Core/YamlEditor/YamlRuleASTEngine.swift" \
+  "$ROOT/Tests/YamlRuleEngine/main.swift"
+
 # App 内存警卫：阈值分档与限频。钉住 350MB 必须触发——旧版 400MB 阈值
 # 在实测占用平台期上方，等于从不运行，而构建无从发现。
 run_one appmemoryguard-tests \

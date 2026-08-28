@@ -78,7 +78,11 @@ import SwiftUI
         // prune older than 60 days before saving
         let cutoff = Calendar.current.date(byAdding: .day, value: -60, to: Date())!
         days = days.filter { (Self.dayDF.date(from: $0.key) ?? .distantPast) >= cutoff }
-        if let data = try? JSONEncoder().encode(days) { try? data.write(to: URL(fileURLWithPath: path)) }
+        // Atomic: a torn file makes load() silently drop the whole 60-day
+        // history (decode failure → empty start), so never write in place.
+        if let data = try? JSONEncoder().encode(days) {
+            try? data.write(to: URL(fileURLWithPath: path), options: [.atomic])
+        }
     }
 
     // Aggregates for the dashboard

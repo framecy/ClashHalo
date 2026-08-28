@@ -104,7 +104,11 @@ extension AppModel {
             }
 
             activeConnsSet = activeIDs
-            activeConnectionsCount = activeIDs.count
+            // Equal-value @Published writes still publish and invalidate the
+            // whole view tree every snapshot tick; gate the hot counters.
+            if activeConnectionsCount != activeIDs.count {
+                activeConnectionsCount = activeIDs.count
+            }
 
             if route == "dashboard" || route == "connections" {
                 let next = Self.computeDashRaw(items)
@@ -114,7 +118,9 @@ extension AppModel {
             // Background idle: only sync basic count + gateway devices (cheap).
             // Gateway aggregation stays on so the Network page isn't empty after
             // the window was backgrounded and reopened.
-            activeConnectionsCount = items.count
+            if activeConnectionsCount != items.count {
+                activeConnectionsCount = items.count
+            }
             if gatewayModeOn {
                 updateGatewayDevices(from: items)
                 // Keep prevConnBytes for the next rate delta; only drop the
@@ -130,7 +136,8 @@ extension AppModel {
         }
         }
 
-        closedConns = max(0, totalConnsCount - activeConnectionsCount)
+        let closed = max(0, totalConnsCount - activeConnectionsCount)
+        if closedConns != closed { closedConns = closed }
         history.flushIfNeeded()
         lastDownTotal = s.downloadTotal
         // App memory is sampled by its own timer (`startAppMemorySampling()`),
@@ -169,6 +176,10 @@ extension AppModel {
     /// capture of the previous build produced 463 identical lines.
     @discardableResult
     func enforceAppMemoryGuard() -> Bool {
+        // Startup grace window: the launch burst transiently crosses the soft
+        // tier and decays on its own — trimming during it is futile work and
+        // noise (observed 383 MB at +15 s → 197 MB steady).
+        if Date().timeIntervalSince(launchedAt) < 30 { return false }
         let now = Date()
         let rss = Self.residentMemoryBytes()
         let decision = Self.appMemoryGuardPolicy.decide(

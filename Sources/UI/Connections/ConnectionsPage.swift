@@ -220,9 +220,13 @@ struct ConnectionsPage: View {
                     ruleModel.addNode(newNode)
                 }
 
-                if ruleModel.save() {
-                    M.reloadActiveConfig()
-                    M.closeConnection(id: ctx.conn.id)
+                // Transactional path (backup + reload + rollback on failure) —
+                // the previous direct `ruleModel.save()` + reload had no
+                // validation and no rollback, diverging from RulesPage.
+                M.applyRuleEditorSave(save: { ruleModel.save() }) { ok in
+                    if ok {
+                        M.closeConnection(id: ctx.conn.id)
+                    }
                 }
             }
         }
