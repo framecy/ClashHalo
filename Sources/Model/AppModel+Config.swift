@@ -1330,11 +1330,142 @@ extension AppModel {
                     "endpoint-independent-nat", "include-package", "exclude-package"] {
             if let v = live[key] { body[key] = v }
         }
+        // TUN v6 显式接管（TUNIPv6Health）：物理 v6 断供（RA 停发/路由缺失/
+        // 探测不可达）时，把全球单播 v6 整段排除出 auto-route——v6 失败发生在
+        // 内核层、应用毫秒级回退 IPv4，而不是进隧道后被 DIRECT 拨号放大成
+        // 应用层长超时（2026-08-29 mini-pro 事件：微信发图 3h 1400 次失败）。
+        // 仅 enable 时需要；disable 的 PATCH 没有路由可排除。TUN 是否接管 v6
+        // 是随内核版本/环境漂移的隐式行为，必须由应用显式拥有。
+        if enable, tunIPv6Gate.dead {
+            var excludes = (body["route-exclude-address"] as? [Any]) ?? []
+            if !excludes.contains(where: { "\($0)" == TUNIPv6Health.ipv6GlobalUnicastExclude }) {
+                excludes.append(TUNIPv6Health.ipv6GlobalUnicastExclude)
+            }
+            body["route-exclude-address"] = excludes
+        }
         // Ask for our own name rather than accepting the next free index. Only on
         // enable — a disable PATCH has no device to name.
         if enable, let dev = pinnedTunDevice { body["device"] = dev }
         for (k, v) in extra { body[k] = v }
         return body
+    }
+
+    // MARK: - TUN IPv6 接管闸门（采样与推进）
+
+    /// 采样并推进 IPv6 健康闸门；状态翻转且 TUN 在开时重新下发 tun PATCH，
+    /// 让 `tunPatchBody` 按当前 dead 标志增删 `2000::/3` 排除项。
+    /// 调用点：`applyTUNState`（构造 PATCH 前，`applyPatch: false`）、30s
+    /// 巡检 healthDue、唤醒恢复。路径风暴期间不做（有 fork 开销）。
+    func refreshTUNIPv6Gate(applyPatch: Bool = true) async {
+        let snapshot = await Self.collectIPv6HealthSnapshot()
+        var gate = tunIPv6Gate
+        let transition = gate.observe(healthy: TUNIPv6Health.isHealthy(snapshot))
+        tunIPv6Gate = gate
+        switch transition {
+        case .none:
+            return
+        case .wentAlive:
+            logKernel("IPv6 上行恢复（物理路由 + 全球地址 + 主动探测均健康），解除 2000::/3 排除，v6 分流交还规则表")
+        case .wentDead:
+            logKernel("IPv6 上行断供（RA 停发/路由缺失/探测不可达），v6 排除出 TUN auto-route：v6 失败发生在内核层，应用毫秒级回退 IPv4")
+        }
+        guard applyPatch, tunOn, reachable, !engine.isBusy else { return }
+        engine.isBusy = true
+        defer { engine.isBusy = false }
+        let ok = await engine.patchConfig(["tun": tunPatchBody(enable: true)])
+        if ok { logKernel("TUN 路由表已按 IPv6 健康状态重新下发") }
+    }
+
+    /// 三路采样：物理口 v6 默认路由、未过期全球地址、公共 v6 DNS 的 UDP 可达性。
+    static func collectIPv6HealthSnapshot() async -> TUNIPv6Health.Snapshot {
+        async let probe = probeIPv6UDP()
+        let (hasRoute, iface) = await physicalV6DefaultRoute()
+        var hasAddr = false
+        if let iface {
+            hasAddr = await ifaceHasFreshGlobalV6(iface)
+        }
+        return TUNIPv6Health.Snapshot(
+            hasV6DefaultRouteOnPhysical: hasRoute,
+            hasFreshGlobalV6Address: hasAddr,
+            probeReachable: await probe
+        )
+    }
+
+    /// 经物理口（非 utun/lo0）的 IPv6 默认路由。返回 (存在, 接口名)。
+    private static func physicalV6DefaultRoute() async -> (Bool, String?) {
+        await Task.detached(priority: .utility) {
+            let p = Process()
+            p.executableURL = URL(fileURLWithPath: "/usr/sbin/netstat")
+            p.arguments = ["-rn", "-f", "inet6"]
+            let pipe = Pipe(); p.standardOutput = pipe; p.standardError = Pipe()
+            do { try p.run() } catch { return (false, nil) }
+            let data = pipe.fileHandleForReading.readDataToEndOfFile()
+            p.waitUntilExit()
+            guard let out = String(data: data, encoding: .utf8) else { return (false, nil) }
+            for line in out.split(separator: "\n") {
+                let cols = line.split(whereSeparator: { $0 == " " || $0 == "\t" })
+                guard cols.count >= 4, cols[0] == "default" else { continue }
+                let iface = String(cols[cols.count - 1])
+                if !iface.hasPrefix("utun") && iface != "lo0" {
+                    return (true, iface)
+                }
+            }
+            return (false, nil)
+        }.value
+    }
+
+    /// 接口上是否存在未 deprecated 的 2000::/3 全球单播地址。
+    private static func ifaceHasFreshGlobalV6(_ iface: String) async -> Bool {
+        await Task.detached(priority: .utility) {
+            let p = Process()
+            p.executableURL = URL(fileURLWithPath: "/sbin/ifconfig")
+            p.arguments = [iface]
+            let pipe = Pipe(); p.standardOutput = pipe; p.standardError = Pipe()
+            do { try p.run() } catch { return false }
+            let data = pipe.fileHandleForReading.readDataToEndOfFile()
+            p.waitUntilExit()
+            guard let out = String(data: data, encoding: .utf8) else { return false }
+            for line in out.split(separator: "\n") {
+                let t = line.trimmingCharacters(in: .whitespaces)
+                guard t.hasPrefix("inet6 ") else { continue }
+                let addr = t.split(separator: " ").dropFirst().first.map(String.init) ?? ""
+                guard let first = addr.first else { continue }
+                // 2000::/3：首 nibble 为 2 或 3 的全球单播
+                guard first == "2" || first == "3" else { continue }
+                if !t.contains("deprecated") && !t.contains("tentative") { return true }
+            }
+            return false
+        }.value
+    }
+
+    /// 主动探测：对公共 v6 DNS 的 UDP connect——UDP connect 只校验路由可用性，
+    /// 不发包、不阻塞；两上游串联（阿里 → Cloudflare），全不可达才算死。
+    /// nil = 探测本身不可用（socket 失败等），降级为只信被动判定。
+    private static func probeIPv6UDP() async -> Bool? {
+        await Task.detached(priority: .utility) {
+            for host in ["2400:3200::1", "2606:4700:4700::1111"] {
+                var addr = sockaddr_in6()
+                addr.sin6_family = sa_family_t(AF_INET6)
+                addr.sin6_port = UInt16(53).bigEndian
+                guard inet_pton(AF_INET6, host, &addr.sin6_addr) == 1 else { continue }
+                let fd = socket(AF_INET6, SOCK_DGRAM, 0)
+                guard fd >= 0 else { return nil }
+                let r = withUnsafePointer(to: &addr) {
+                    $0.withMemoryRebound(to: sockaddr.self, capacity: 1) { sa in
+                        connect(fd, sa, socklen_t(MemoryLayout<sockaddr_in6>.size))
+                    }
+                }
+                close(fd)
+                if r == 0 { return true }
+                switch errno {
+                case ENETUNREACH, EHOSTUNREACH, EADDRNOTAVAIL, ENETDOWN:
+                    continue   // 该上游不可达，试下一个
+                default:
+                    return nil
+                }
+            }
+            return false
+        }.value
     }
 
     /// The utun name to request, or nil once this kernel has proven it will not
@@ -1680,6 +1811,12 @@ extension AppModel {
             // refreshConfigs gates tunOn on `reachable`. Without reconnect here
             // reachable stays false → false "开启失败" even when root+utun are OK.
             await reconnect()
+        }
+
+        // 构造 PATCH 前采样 IPv6 健康闸门（不在此处重下发 PATCH——本函数
+        // 随后必然 PATCH tun；仅推进状态，tunPatchBody 按最新标志增删排除项）。
+        if want {
+            await refreshTUNIPv6Gate(applyPatch: false)
         }
 
         var tunOverrideMap = tunPatchBody(enable: want)
