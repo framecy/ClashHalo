@@ -249,6 +249,7 @@ private struct SafeDecoder: @unchecked Sendable {
         let task = session.webSocketTask(with: url)
         handle.task = task
         task.resume()
+        handle.armHeartbeat()
         receiveLoop(task: task, path: path, type: T.self, handle: handle, onValue: onValue)
     }
 
@@ -288,6 +289,7 @@ private struct SafeDecoder: @unchecked Sendable {
         let task = session.webSocketTask(with: url)
         handle.task = task
         task.resume()
+        handle.armHeartbeat()
         receiveLoopRaw(task: task, path: path, handle: handle, onValue: onValue)
     }
 
@@ -321,6 +323,38 @@ private struct SafeDecoder: @unchecked Sendable {
 
 final class WSHandle: @unchecked Sendable {
     var task: URLSessionWebSocketTask?
-    var cancelled = false
-    func cancel() { cancelled = true; task?.cancel(with: .goingAway, reason: nil) }
+    var cancelled = false {
+        didSet { if cancelled { pingTimer?.invalidate(); pingTimer = nil } }
+    }
+    /// Heartbeat (D3): `URLSessionWebSocketTask.receive` has no timeout, so a
+    /// half-open connection after sleep/wake neither delivers messages nor
+    /// fails — the stream goes silently stale with no reconnect. A periodic
+    /// ping turns "connection dead" into a send failure → task cancel → the
+    /// normal failure/reconnect path. Created on the main runloop (stream()
+    /// is only called from MainActor); drained by cancel().
+    var pingTimer: Timer?
+    private let pingInterval: TimeInterval = 20
+
+    func armHeartbeat() {
+        pingTimer?.invalidate()
+        let t = Timer.scheduledTimer(withTimeInterval: pingInterval, repeats: true) { [weak self] _ in
+            guard let self, !self.cancelled, let task = self.task else { return }
+            task.sendPing { [weak self] error in
+                guard let self, !self.cancelled else { return }
+                if error != nil {
+                    // Dead connection: cancel so the pending receive fails and
+                    // the standard reconnect logic takes over.
+                    self.pingTimer?.invalidate()
+                    task.cancel(with: .goingAway, reason: nil)
+                }
+            }
+        }
+        pingTimer = t
+    }
+
+    func cancel() {
+        cancelled = true
+        pingTimer?.invalidate(); pingTimer = nil
+        task?.cancel(with: .goingAway, reason: nil)
+    }
 }
