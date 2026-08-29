@@ -6,6 +6,19 @@
 
 依据三轮全库架构审查（`Docs/ArchitectureReview-20260828*.md`）与优化计划（`Docs/OptimizationPlan-20260829.md`）落实。
 
+### Added
+
+- **TUN IPv6 接管闸门**（`Sources/Model/TUNIPv6Health.swift` + `tunPatchBody`
+  门控）：物理 v6 断供（RA 停发/路由缺失/公共 v6 DNS 探测不可达）时自动把
+  `2000::/3` 排除出 TUN auto-route——v6 失败发生在内核层、应用毫秒级回退
+  IPv4，不再进隧道后被 DIRECT 拨号放大成应用层长超时（2026-08-29 mini-pro
+  事件：微信发图 3h 1400 次 `no route to host`）；恢复健康后自动解除。三路
+  采样（物理口 v6 默认路由 / 未过期全球地址 / 主动探测）+ 滞回状态机
+  （未证实健康即按断供处理），挂点：applyTUNState 前置 / 30s 巡检 / 唤醒。
+  `Tests/TUNIPv6Health` 20 项回归。
+- **WebSocket 心跳（20s ping）**：半开连接从「静默停滞、永不重连」变为
+  走标准失败重连路径（睡眠唤醒后的 /traffic /memory /logs /connections 流）。
+
 ### Fixed
 
 - **规则编辑器引擎（三缺陷同源）**：`parseLine` 不再在任意 `#` 处截断（值含
@@ -53,6 +66,13 @@
 - **前台轮询去重**：`route`/窗口可见性等 didSet 增加同值守卫（每次点路由
   /聚焦窗口不再重建 pollTask 并立即全量刷新）；`activeConnectionsCount` /
   `closedConns` / `rules` / `version` 补等值短路（快照 tick 不再全树失效）。
+- **网关巡检单飞闸**（N10）：三个触发点（前台 30s / 后台 2min / 网络变化）
+  并发不再各自 reload 掉全部连接。
+- **NList/NText 表单回灌与失焦提交对齐**（N12/N14）：配置在页面挂载期间
+  变更后不再用陈旧快照整列表覆盖；文本框失焦即提交（与 NumRow/TextRow
+  同一心智模型）。
+- 移除零调用的 `ProxyManager.restoreDNS()`（N13，携带「Empty 失败→写
+  223.5.5.5」危险回退语义的死代码）。
 
 ### Performance
 
