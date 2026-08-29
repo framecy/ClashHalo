@@ -2,9 +2,9 @@
 
 本项目所有重要变更记录于此。格式参考 [Keep a Changelog](https://keepachangelog.com/),版本遵循语义化版本。
 
-## [Unreleased] - 2026-08-29
+## [1.3.2] - 2026-08-29
 
-依据三轮全库架构审查（`Docs/ArchitectureReview-20260828*.md`）与优化计划（`Docs/OptimizationPlan-20260829.md`）落实。
+依据全库架构审查与优化计划落实（内部资料，不含于本仓库）。
 
 ### Added
 
