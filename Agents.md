@@ -2,7 +2,7 @@
 
 本文件给后续 AI 编码代理使用。进入本仓库后，先读本文件，再按需读 `README.md`、`CHANGELOG.md` 和相关源码。
 
-当前主干：`main`，产品版本 **v1.3.1**（`MARKETING_VERSION`），Helper **1.0.28**（`kSharedHelperVersion`：客户端死亡清理同时识别已死的 redir-host DNS 重定向——系统 DNS 为 `127.0.0.1` 且 53 端口无监听才重置，保护用户自建回环 resolver；1.0.27 为按「本 Helper 最后写入的端口」限定 loopback 代理回收，不误清共存代理应用；1.0.26 为破坏性步骤前重查会话接管；1.0.25 为系统代理共享服务选择/分支顺序/全成功语义；相对 1.0.24 及更早需强制升级）。打包时 `make.sh` 自增 `CURRENT_PROJECT_VERSION`。
+当前主干：`main`，产品版本 **v1.3.2**（`MARKETING_VERSION`），Helper **1.0.28**（`kSharedHelperVersion`：客户端死亡清理同时识别已死的 redir-host DNS 重定向——系统 DNS 为 `127.0.0.1` 且 53 端口无监听才重置，保护用户自建回环 resolver；1.0.27 为按「本 Helper 最后写入的端口」限定 loopback 代理回收，不误清共存代理应用；1.0.26 为破坏性步骤前重查会话接管；1.0.25 为系统代理共享服务选择/分支顺序/全成功语义；相对 1.0.24 及更早需强制升级）。打包时 `make.sh` 自增 `CURRENT_PROJECT_VERSION`。
 
 ## 项目概览
 
