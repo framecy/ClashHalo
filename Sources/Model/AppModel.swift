@@ -260,6 +260,11 @@ struct SystemProxyStatus: Equatable {
     /// happens once that teardown lands and refreshConfigs reconciles `tunOn`.
     /// Internal (not `private`) so the `AppModel+Config` extension can access it.
     var tunAutoTeardownInFlight = false
+    /// TUN IPv6 接管闸门（`TUNIPv6Health.Gate`，纯逻辑状态机）：未证实健康
+    /// 即按断供处理，`tunPatchBody` 据此增删 `2000::/3` 排除项。运行时状态，
+    /// 不落盘；由 30s 巡检 / 唤醒 / applyTUNState 前置采样推进。setter 故意
+    /// internal：唯一推进点是 AppModel+Config 的 `refreshTUNIPv6Gate`。
+    internal(set) var tunIPv6Gate = TUNIPv6Health.Gate()
     /// True while a TUN *data-plane* self-heal is mid-flight (probe-confirmed
     /// dead fd → full process rebuild). Distinct from `tunAutoTeardownInFlight`
     /// (which tears TUN *off* when the interface is gone) because recovery keeps
@@ -393,6 +398,10 @@ struct SystemProxyStatus: Equatable {
     /// still in progress — which is exactly what `refreshConfigs` did, from a
     /// call `applyGatewayMode` makes itself.
     var gatewayApplyInFlight = false
+    /// N10: single-flight gate for `verifyGatewayConfig` — its three triggers
+    /// (foreground 30s tick, background 2min tick, network change) can overlap,
+    /// and each overlapping run reloads the kernel (dropping every connection).
+    var gatewayVerifyInFlight = false
 
     /// Snapshot of allow-lan / bind-address / dns.listen before Gateway mode
     /// overrode them, used to restore config.yaml when Gateway is disabled.
@@ -1189,6 +1198,9 @@ struct SystemProxyStatus: Equatable {
                     }
                     if self.tunOn {
                         await self.verifyTUNConfig()
+                        // IPv6 上行健康闸门（断供→2000::/3 排除；翻转时重下发
+                        // tun PATCH）。放在 tunOn 分支内：TUN 关闭时排除项无意义。
+                        await self.refreshTUNIPv6Gate()
                         // Cheap and independent of the coexistence fingerprint —
                         // see `auditAndRepairPeerRoutes` for why the fingerprint
                         // cannot catch an auto-route hijack.
@@ -1336,6 +1348,9 @@ struct SystemProxyStatus: Equatable {
             if preSleepTunOn || tunOn {
                 scheduleTUNDataPlaneProbe(reason: "睡眠唤醒", delay: 3.0)
             }
+            // 唤醒是 IPv6 断供的高发时刻（RA 重发需要时间）——立即采样一次，
+            // 保证 TUN v6 接管闸门在唤醒后的首个 TUN PATCH 前就是新鲜的。
+            await refreshTUNIPv6Gate()
 
             // Restore system proxy if it was active before sleep
             if preSleepSystemProxyOn && !systemProxyOn {
@@ -1648,6 +1663,12 @@ struct SystemProxyStatus: Equatable {
         // those reloads sees a config or a listener that is legitimately absent
         // for another second — then "repairs" it with another full reload.
         guard !gatewayApplyInFlight else { return }
+        // N10: three independent triggers (30s foreground tick, 2min background
+        // tick, network change) can overlap — single-flight the whole audit so
+        // overlapping runs don't each reload the kernel and drop connections.
+        guard !gatewayVerifyInFlight else { return }
+        gatewayVerifyInFlight = true
+        defer { gatewayVerifyInFlight = false }
 
         // Two independent questions, because two independent things break.
         //

@@ -560,6 +560,8 @@ struct NText: View {
         self.label = label; self.parent = parent; self.sub = sub; self.placeholder = placeholder; self.persistent = persistent
     }
     @State private var text = ""
+    @FocusState private var isFocused: Bool
+    private var configValue: String { (nestedDict(M, parent)[sub] as? String) ?? "" }
     var body: some View {
         HStack {
             Text(label).font(.dsBody); Spacer()
@@ -567,18 +569,29 @@ struct NText: View {
                 .inputStyle()
                 .font(.dsMono)
                 .multilineTextAlignment(.trailing)
-                .onSubmit {
-                    Task {
-                        if persistent {
-                            await M.patchPersistent([parent: [sub: text]])
-                        } else {
-                            await M.patch([parent: [sub: text]])
-                        }
-                    }
+                .focused($isFocused)
+                .onSubmit { commit() }
+                // N14: commit on blur too — same mental model as NumRow/TextRow;
+                // a value typed then abandoned by clicking elsewhere is now kept
+                // instead of silently dropped.
+                .onChange(of: isFocused) { _, focused in
+                    if !focused && text != configValue { commit() }
                 }
+                // Resync when the config changes under us (other entry point,
+                // slow refresh) so a stale draft doesn't get committed later.
+                .onChange(of: configValue) { _, newValue in text = newValue }
                 .frame(width: DS.Layout.fieldTrailing, alignment: .trailing)
         }.padding(.vertical, DS.Spacing.s)
-        .onAppear { text = (nestedDict(M, parent)[sub] as? String) ?? "" }
+        .onAppear { text = configValue }
+    }
+    private func commit() {
+        Task {
+            if persistent {
+                await M.patchPersistent([parent: [sub: text]])
+            } else {
+                await M.patch([parent: [sub: text]])
+            }
+        }
     }
 }
 
@@ -613,6 +626,13 @@ struct NList: View {
             }
         }.padding(.vertical, DS.Spacing.s)
         .onAppear { items = (nestedDict(M, parent)[sub] as? [Any])?.map { "\($0)" } ?? [] }
+        // N12: resync from config when it changes under us (profile switch,
+        // subscription update) — the items snapshot is otherwise stale, and the
+        // next add/remove would commit the whole stale list over the new config.
+        .onChange(of: configItems) { _, newValue in items = newValue }
+    }
+    private var configItems: [String] {
+        (nestedDict(M, parent)[sub] as? [Any])?.map { "\($0)" } ?? []
     }
     private func commit() {
         Task {

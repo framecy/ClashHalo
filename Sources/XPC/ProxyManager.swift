@@ -130,23 +130,11 @@ public class ProxyManager {
         }
     }
 
-    /// Restore DNS settings for all active services to "Empty" (DHCP auto) or a fallback resolver (223.5.5.5).
-    @discardableResult
-    public static func restoreDNS() -> Bool {
-        let services = enabledNetworkServices()
-        guard !services.isEmpty else { return false }
-        var anyOK = false
-        for svc in services {
-            // First attempt: restore to DHCP default (Empty)
-            var ok = run(["-setdnsservers", svc, "Empty"])
-            if !ok {
-                // Fallback attempt: if Empty fails, use a public resolver like 223.5.5.5
-                ok = run(["-setdnsservers", svc, "223.5.5.5"])
-            }
-            if ok { anyOK = true }
-        }
-        return anyOK
-    }
+    // `restoreDNS()` (blanket "Empty over every active service, fallback to a
+    // hardcoded 223.5.5.5") was removed on 2026-08-29: it had zero callers and
+    // its fallback semantics clobber a user's own custom DNS. Death cleanup
+    // uses `restoreDNSIfTunnelPinned()`; GUI teardown uses EngineControl's
+    // applySystemDNS with the snapshot/restore state machine.
 
     /// Restore DNS only for services whose resolver is pinned at the mihomo
     /// fake-ip gateway (198.18.x / 198.19.x). Client-death cleanup uses this

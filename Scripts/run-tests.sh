@@ -26,6 +26,12 @@ run_one tundataplane-tests \
   "$ROOT/Sources/Model/TUNDataPlaneProbe.swift" \
   "$ROOT/Tests/TUNDataPlaneProbe/main.swift"
 
+# TUN IPv6 接管闸门：保守缺省 + 滞回。物理 v6 断供时 TUN 不得吸走公网
+# v6（mini-pro 事件：微信自带 HTTPDNS 拿真实 v6，3h 1400 次 no route to host）。
+run_one tunipv6health-tests \
+  "$ROOT/Sources/Model/TUNIPv6Health.swift" \
+  "$ROOT/Tests/TUNIPv6Health/main.swift"
+
 # YAML 标量：行尾注释剥离，且不得破坏 nameserver 的 #接口/#策略组 绑定。
 run_one yamlscalar-tests \
   "$ROOT/Sources/Core/YamlEditor/YamlScalar.swift" \
