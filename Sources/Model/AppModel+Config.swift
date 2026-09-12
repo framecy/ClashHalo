@@ -1312,24 +1312,36 @@ extension AppModel {
     ///     config onto a different stack.
     ///
     /// Fields are therefore sourced from the kernel first and config.yaml second
-    /// (`liveTunBlock`), never from a literal, and only truly kernel-derived
-    /// values (`file-descriptor`, `inet4-address`, `gso-max-size`, `recvmsgx`)
-    /// are left out — echoing those back is not ours to do.
+    /// (`liveTunBlock`), with literals only as last-resort defaults for keys
+    /// neither source carries; only truly kernel-derived values
+    /// (`file-descriptor`, `inet4-address`) are left out — echoing those
+    /// back is not ours to do.
+    ///
+    /// One field deserves special handling: mihomo marshals `recvmsgx` with
+    /// `omitempty` on a plain bool, so `/configs` hides it when disabled and
+    /// a reported `true` may be the v1.19.30 default rather than user intent.
+    /// The disk value therefore wins when present — an explicit `false` must
+    /// survive every PATCH (replace semantics would otherwise resurrect the
+    /// default), exactly like the incident-driven watchdog assumes when it
+    /// rebuilds devices through `tunPatchBody`.
     func tunPatchBody(enable: Bool, extra: [String: Any] = [:]) -> [String: Any] {
         let live = liveTunBlock()
+        let disk = (engine.readConfigFile()?["tun"] as? [String: Any]) ?? [:]
         var body: [String: Any] = [
             "enable": enable,
-            "stack": live["stack"] ?? "gvisor",
-            "auto-route": live["auto-route"] ?? true,
-            "auto-detect-interface": live["auto-detect-interface"] ?? true
+            "stack": live["stack"] ?? disk["stack"] ?? "system",
+            "auto-route": live["auto-route"] ?? disk["auto-route"] ?? true,
+            "auto-detect-interface": live["auto-detect-interface"] ?? disk["auto-detect-interface"] ?? true
         ]
         // Restate the user-owned fields that would otherwise be dropped by the
         // replace semantics. Only when actually present — inventing a key the
         // config never had would be its own kind of surprise.
         for key in ["dns-hijack", "route-exclude-address", "mtu", "strict-route",
-                    "endpoint-independent-nat", "include-package", "exclude-package"] {
-            if let v = live[key] { body[key] = v }
+                    "endpoint-independent-nat", "include-package", "exclude-package",
+                    "gso-max-size", "rx-queue-size", "tx-queue-size"] {
+            if let v = live[key] ?? disk[key] { body[key] = v }
         }
+        if let v = disk["recvmsgx"] ?? live["recvmsgx"] { body["recvmsgx"] = v }
         // TUN v6 显式接管（TUNIPv6Health）：物理 v6 断供（RA 停发/路由缺失/
         // 探测不可达）时，把全球单播 v6 整段排除出 auto-route——v6 失败发生在
         // 内核层、应用毫秒级回退 IPv4，而不是进隧道后被 DIRECT 拨号放大成
@@ -2302,6 +2314,79 @@ extension AppModel {
             guard !Task.isCancelled else { return }
             await self.runTUNDataPlaneProbe(reason: reason)
         }
+    }
+
+    /// Kernel log-storm watchdog — runs on the verifyTUNConfig (30 s) cadence.
+    ///
+    /// Why this exists when the data-plane probe already does: the 2026-09-12
+    /// incident burned 1.3 cores at ~118k CSW/s with zero traffic and ~18MB/s
+    /// of `batch read packet: bad file descriptor` spam, while *every*
+    /// existing health signal stayed green — the control API answered in 22ms,
+    /// fake-ip DNS round-tripped, the route table was correct. A read loop
+    /// pinned to an fd that died at device creation keeps serving traffic
+    /// through its healthy neighbours, so packet-level probes cannot see it;
+    /// the log sink it is hammering is the one signal it cannot fake.
+    ///
+    /// Escalation ladder (each rung = one detection window; remedies in order
+    /// of cost, both measured during the incident):
+    ///   1. in-place device rebuild (tun enable false→true) — this is what
+    ///      actually healed the machine;
+    ///   2. full-process rebuild via the proven data-plane recovery path;
+    ///   3. stop acting, point at the log. A remedy that does not land must
+    ///      never become a restart loop.
+    func observeKernelLogStorm() async {
+        guard kernelLogStormTrips < 3, !tunDataPlaneRecoveryInFlight,
+              !engine.isBusy, !tunAutoTeardownInFlight else { return }
+        let bytes = engine.kernelLogBytes()
+        let now = Date()
+        defer { kernelLogBytesLastSample = bytes; kernelLogSampleAt = now }
+        guard let last = kernelLogSampleAt, kernelLogBytesLastSample >= 0 else { return }
+        let elapsed = now.timeIntervalSince(last)
+        guard elapsed >= 10 else { return }
+        let rate = Double(bytes - kernelLogBytesLastSample) / elapsed
+        // 300KB/s sustained is orders of magnitude above anything normal
+        // operation writes (idle: ~0; busy info-level: KB/min), and far below
+        // the observed storm. Negative deltas (helper/user spawn caps truncate
+        // the sinks on a fresh kernel) simply do not trip.
+        guard rate > 300_000 else { return }
+        kernelLogStormTrips += 1
+        let human = "\(Int(rate / 1024))KB/s"
+        switch kernelLogStormTrips {
+        case 1:
+            logKernel("检测到内核日志风暴（\(human)）：批量读 fd 已半死（数据面探测不可见），原地翻转 tun enable 重建设备")
+            showToast("检测到内核异常空转，正在自动重建 TUN 设备…", kind: .warn)
+            await rebuildTUNDeviceInPlace()
+        case 2:
+            logKernel("设备重建后日志风暴仍复现（\(human)）：升级为整进程重建")
+            showToast("内核异常仍在，正在整进程重建…", kind: .warn)
+            await performTUNDataPlaneRecovery(gateway: tunnelDNSAddress())
+        default:
+            logKernel("内核日志风暴连续第 \(kernelLogStormTrips) 次（\(human)）——已停止自动处置，请检查 /Library/Logs/ClashHalo/mihomo-root.log")
+            showToast("内核持续写入错误日志，请查看内核日志", kind: .error)
+        }
+    }
+
+    /// In-place TUN device rebuild: disable then re-enable the running
+    /// kernel's tun block, forcing mihomo to close and recreate the utun
+    /// device and restart its read loops — without touching the process, and
+    /// while `tunOn` intent and route/DNS ownership flags stay as they are.
+    /// The whole-file `recvmsgx`/`stack` user intent survives because every
+    /// body goes through `tunPatchBody`'s full restatement.
+    ///
+    /// The window where the utun is gone fires NWPath updates that the
+    /// interface-missing auto-teardown would read as loss and cascade
+    /// `applyTUNState(false)` behind our back — hold `engine.isBusy` for the
+    /// flip (manual + defer per the auto-teardown convention; `withEngineBusy`
+    /// is fire-and-forget and would release before the re-enable lands) and
+    /// open a settle window so refreshConfigs cannot derive tunOn false.
+    private func rebuildTUNDeviceInPlace() async {
+        engine.isBusy = true
+        tunStateSettleUntil = Date().addingTimeInterval(60)
+        defer { engine.isBusy = false }
+        _ = await engine.patchConfig(["tun": tunPatchBody(enable: false)])
+        try? await Task.sleep(nanoseconds: 1_500_000_000)
+        _ = await engine.patchConfig(["tun": tunPatchBody(enable: true)])
+        NetScanner.invalidateTunCache()
     }
 
     /// One probe cycle. On threshold failure, escalates to at most one recovery.
