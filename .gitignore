@@ -54,3 +54,6 @@ Loon/
 !/**/README.md
 !/**/CHANGELOG.md
 !/**/AGENTS.md
+
+# 本地回归测试套件（开发工具，不入库）
+Tests/
