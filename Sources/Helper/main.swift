@@ -75,15 +75,21 @@ private func isClashExecutablePath(_ path: String) -> Bool {
            p.contains("/clashpow.app/contents/macos/")
 }
 
-/// Only permit launching a binary at the canonical ClashHalo kernel path.
-/// Current console user as "uid:gid" via /dev/console ownership — the same
-/// source `networksetup`-style tooling trusts. nil when nobody is logged in
+/// The console user's uid plus their canonical ClashHalo data directory,
+/// built from the passwd database — never from an XPC client's path.
+/// The uid comes from /dev/console ownership (the same source
+/// `networksetup`-style tooling trusts); nil when nobody is logged in
 /// (root-owned console at boot), in which case there is nothing to repair to.
-func consoleOwnerId() -> String? {
+func consoleRepairTarget() -> (uid: uid_t, dir: String)? {
     var st = stat()
-    guard stat("/dev/console", &st) == 0, st.st_uid != 0 else { return nil }
-    return "\(st.st_uid):\(st.st_gid)"
+    guard stat("/dev/console", &st) == 0, st.st_uid != 0,
+          let pw = getpwuid(st.st_uid) else { return nil }
+    let home = String(cString: pw.pointee.pw_dir)
+    guard home.hasPrefix("/") else { return nil }
+    return (st.st_uid, home + "/Library/Application Support/ClashHalo")
 }
+
+/// Only permit launching a binary at the canonical ClashHalo kernel path.
 
 func isAllowedKernelPath(_ path: String) -> Bool {
     let std = (path as NSString).standardizingPath
@@ -216,22 +222,45 @@ class Helper: NSObject, HelperProtocol {
 
         // Ownership repair (mihomo incident 2026-09-12, defect 5.2): a root
         // session leaves cache.db / providers/ / ruleset/ / ui/ owned by root,
-        // so the next boot's user-mode kernel — started whenever the app comes
-        // up before this helper is reachable — dies on permission denied and
+        // so the next user-mode kernel — started whenever the app comes up
+        // before this helper is reachable — dies on permission denied and
         // silently loses store-selected / GEO updates. Root ignores ownership,
         // so returning the tree to the console user before every root spawn
-        // keeps both identities working from one owner set. No-op when the
-        // console owner already is that user; skipped entirely before any
-        // user is logged in (uid 0 has nothing to repair to).
-        if homeDir.hasSuffix("/Library/Application Support/ClashHalo"),
-           let owner = consoleOwnerId() {
-            let fix = Process()
-            fix.executableURL = URL(fileURLWithPath: "/usr/sbin/chown")
-            fix.arguments = ["-R", owner, homeDir]
-            fix.standardOutput = Pipe(); fix.standardError = Pipe()
-            try? fix.run(); fix.waitUntilExit()
-            if fix.terminationStatus != 0 {
-                log("startMihomo: chown \(owner) \(homeDir) status \(fix.terminationStatus)")
+        // keeps both identities working from one owner set.
+        //
+        // This is a root chown primitive driven by an XPC-reachable argument
+        // and client authorization here is deliberately loose, so the repair
+        // never touches the caller's path string beyond validating it: the
+        // target is rebuilt from the passwd database and the request must
+        // match it exactly. Mid-path `..`, intermediate symlinks and the fast
+        // user-switch case (A running in background while B holds the
+        // console — repairing A's tree to B would hand over A's data) all
+        // fail the equality and are skipped with a log line. Owner only,
+        // never group: /dev/console's gid is no authority on the tree's
+        // group semantics. A stat first: correct owner (the overwhelmingly
+        // common case) skips the recursive walk entirely, keeping the
+        // critical section far from the GUI's 8s XPC timeout.
+        if let target = consoleRepairTarget() {
+            let requested = (homeDir as NSString).standardizingPath
+            if requested == target.dir, !homeDir.contains("..") {
+                var dst = stat()
+                if stat(target.dir, &dst) == 0, dst.st_uid != target.uid {
+                    let fix = Process()
+                    fix.executableURL = URL(fileURLWithPath: "/usr/sbin/chown")
+                    fix.arguments = ["-R", String(target.uid), target.dir]
+                    let errPipe = Pipe()
+                    fix.standardOutput = Pipe(); fix.standardError = errPipe
+                    try? fix.run(); fix.waitUntilExit()
+                    if fix.terminationStatus != 0 {
+                        let tail = String(data: errPipe.fileHandleForReading
+                            .readDataToEndOfFile().prefix(512), encoding: .utf8) ?? ""
+                        log("startMihomo: chown \(target.uid) \(target.dir) status \(fix.terminationStatus) \(tail)")
+                    } else {
+                        log("startMihomo: repaired data-dir ownership to uid \(target.uid)")
+                    }
+                }
+            } else if homeDir.hasSuffix("/Library/Application Support/ClashHalo") {
+                log("startMihomo: ownership repair skipped — requested dir is not the console user's own (session switch or unexpected path)")
             }
         }
 
@@ -249,9 +278,10 @@ class Helper: NSObject, HelperProtocol {
         FileManager.default.createFile(atPath: logFile, contents: nil)
         if let handle = try? FileHandle(forWritingTo: URL(fileURLWithPath: logFile)) {
             // Hard size cap: the 2026-09-12 incident burned 63 GB in one hour
-            // of `batch read packet` error spam. The app watchdog escalates to
-            // a rebuild (which lands here) when a long session starts storming;
-            // every fresh spawn at least starts from a bounded file.
+            // of `batch read packet` error spam. This is a cap AT SPAWN, not a
+            // rolling cap — in-session storms are the app watchdog's stop-loss
+            // (whose rebuild lands back here); every fresh spawn at least
+            // starts from a bounded file.
             let logBytes = ((try? FileManager.default.attributesOfItem(atPath: logFile))?[.size] as? Int64) ?? 0
             if logBytes > 50 * 1024 * 1024 {
                 try? handle.truncate(atOffset: 0)
