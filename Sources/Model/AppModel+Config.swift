@@ -2316,7 +2316,10 @@ extension AppModel {
         }
     }
 
-    /// Kernel log-storm watchdog — runs on the verifyTUNConfig (30 s) cadence.
+    /// Kernel log-storm watchdog — runs on the verifyTUNConfig cadence
+    /// (30 s foreground; background only every 4th tick, so worst-case
+    /// detection is a few minutes — still two orders of magnitude below
+    /// the 63 GB/h the incident burned).
     ///
     /// Why this exists when the data-plane probe already does: the 2026-09-12
     /// incident burned 1.3 cores at ~118k CSW/s with zero traffic and ~18MB/s
@@ -2385,8 +2388,31 @@ extension AppModel {
         defer { engine.isBusy = false }
         _ = await engine.patchConfig(["tun": tunPatchBody(enable: false)])
         try? await Task.sleep(nanoseconds: 1_500_000_000)
-        _ = await engine.patchConfig(["tun": tunPatchBody(enable: true)])
-        NetScanner.invalidateTunCache()
+        // A cancelled task makes every URLSession await below fail, which —
+        // combined with a dropped re-enable — strands the kernel at tun OFF
+        // while the system DNS still points at a fake-ip gateway whose utun
+        // is gone: a whole-machine blackhole that is WORSE than the storm we
+        // set out to heal, and invisible to this watchdog (the dead fd died
+        // with the device, so the log stops growing and nothing re-trips).
+        // Never leave the flip half-done: an unconfirmed enable escalates to
+        // the full-process rebuild on the spot. (Do not write this as
+        // `!Task.isCancelled && await …` — autoclosure `&&` does not support
+        // concurrency, same constraint noted in performTUNDataPlaneRecovery.)
+        var revived = false
+        if !Task.isCancelled {
+            revived = await engine.patchConfig(["tun": tunPatchBody(enable: true)])
+        }
+        if revived {
+            NetScanner.invalidateTunCache()
+            return
+        }
+        logKernel("TUN 原地重建：重新启用未确认，立即升级整进程重建（不得停在半关状态）")
+        tunStateSettleUntil = .distantPast
+        engine.isBusy = false   // recovery's entry guard demands an idle
+        // engine; same MainActor segment, so the guard+flag inside it engage
+        // atomically behind this line — no window for a user toggle to claim
+        // the lock in between.
+        await performTUNDataPlaneRecovery(gateway: tunnelDNSAddress())
     }
 
     /// One probe cycle. On threshold failure, escalates to at most one recovery.
@@ -2445,6 +2471,13 @@ extension AppModel {
     /// At most one recovery per anomaly; on secondary probe failure after the
     /// rebuild, TUN is closed and the system returns to direct connectivity.
     private func performTUNDataPlaneRecovery(gateway: String) async {
+        // A lagging probe cycle can arrive here while the watchdog's flip
+        // holds isBusy; both paths reset the flag via their own defer, and the
+        // flip's would release recovery's lock mid-restart. Foreign holders
+        // bounce (the next window re-derives the need); the watchdog's
+        // escalation path calls in from a synchronously-released section and
+        // always passes.
+        guard !engine.isBusy else { return }
         guard !tunDataPlaneRecoveryInFlight else { return }
         tunDataPlaneRecoveryInFlight = true
         engine.isBusy = true

@@ -20,9 +20,11 @@
   `recvmsgx` 因 mihomo `omitempty` 在 false 时不回显 `/configs`，故磁盘显式值
   优先于内核回显。冷启动 stack fallback 字面量 `"gvisor"` → `"system"`。
 - **Helper 1.0.28 → 1.0.29（需升级安装）**：root 启动内核前把数据目录属主
-  修复回 console 用户（root 会话残留的 root 属主 cache.db/providers/ruleset
-  会让下次开机 Helper 就绪前的用户态启动必然失败一次）；root 与用户两侧
-  内核日志各加 50MB 启动尺寸闸（错误循环不再吃磁盘）。
+  修复回 console 用户——目标路径由 passwd 数据库锚定、客户端传入路径必须逐字
+  相等（拒绝 `..`、符号链接锚点、快速切换用户时的跨用户误修），属主已正确直接
+  跳过递归；root 内核日志超 50MB 启动截断。
+- **用户内核日志加 50MB 启动尺寸闸**（App 侧 EngineControl，随 App 分发）：
+  闸只作用于启动时刻，会话内风暴由看门狗止损——两者联合兜底 63GB 事故复发。
 
 ## [1.3.2] - 2026-08-29
 
