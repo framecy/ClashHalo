@@ -315,6 +315,20 @@ import Network
         }
     }
 
+    /// Combined size of both kernel stdout/stderr sinks. The log-storm
+    /// watchdog samples this on a fixed cadence and reacts to the growth
+    /// rate — an error loop inside the kernel is the one symptom that cannot
+    /// be faked by a healthy-looking control API or route table.
+    func kernelLogBytes() -> Int64 {
+        var total: Int64 = 0
+        for path in ["/Library/Logs/ClashHalo/mihomo-root.log", appSupport + "/mihomo-user.log"] {
+            if let size = try? FileManager.default.attributesOfItem(atPath: path)[.size] as? Int64 {
+                total += size
+            }
+        }
+        return total
+    }
+
     /// Persist the runtime TUN state ahead of anything that makes the kernel
     /// re-read `config.yaml` — a reload (`PUT /configs?force=true`) or a restart.
     ///
@@ -1312,6 +1326,10 @@ import Network
         let kernelLog = appSupport + "/mihomo-user.log"
         FileManager.default.createFile(atPath: kernelLog, contents: nil)
         if let handle = try? FileHandle(forWritingTo: URL(fileURLWithPath: kernelLog)) {
+            // Same size cap the helper applies to the root sink: an error loop
+            // inside the kernel must never eat the disk between launches.
+            let logBytes = ((try? FileManager.default.attributesOfItem(atPath: kernelLog))?[.size] as? Int64) ?? 0
+            if logBytes > 50 * 1024 * 1024 { try? handle.truncate(atOffset: 0) }
             process.standardOutput = handle
             process.standardError = handle
         }
