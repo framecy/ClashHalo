@@ -33,28 +33,24 @@ import Security
 struct KeychainHelper {
     static let service = "com.clashhalo.secrets"
 
+    /// Serializes every keychain-item mutation (and the mirror write that
+    /// precedes it). Callers arrive from MainActor and background stores
+    /// alike; without this, a re-seed and a user save could interleave their
+    /// delete/add pairs and last-writer-wins on a per-syscall basis.
+    private static let storeLock = NSLock()
+
+    /// Add (after deleting any stale item) the keychain entry for `account`.
+    /// Caller holds `storeLock`. Dialog-free by construction: delete never
+    /// prompts, and both add paths carry explicit ACL / protection attributes.
     @discardableResult
-    static func save(key: String, value: String) -> Bool {
-        guard let data = value.data(using: .utf8) else { return false }
-        // Always refresh the mirror first so a Keychain ACL failure still leaves
-        // a recoverable copy. Mirror write is best-effort and never blocks the
-        // Keychain path.
-        writeMirror(account: key, value: value)
-
-        // Delete any prior item (possibly locked to an old code-signing
-        // identity we can no longer read) so SecItemAdd cannot collide.
-        deleteKeychainItem(account: key)
-
-        // Prefer an open ACL so the next ad-hoc re-sign can still read the
-        // item. `kSecAttrAccess` and `kSecAttrAccessible` are mutually
-        // exclusive — never set both on the same add. Fall back to the
-        // protection-class-only form if SecAccessCreate is unavailable.
+    private static func writeKeychainItem(account: String, data: Data) -> Bool {
+        deleteKeychainItem(account: account)
         var status = errSecParam
-        if let access = openAccess(descriptor: "ClashHalo secret \(key)") {
+        if let access = openAccess(descriptor: "ClashHalo secret \(account)") {
             let query: [String: Any] = [
                 kSecClass as String: kSecClassGenericPassword,
                 kSecAttrService as String: service,
-                kSecAttrAccount as String: key,
+                kSecAttrAccount as String: account,
                 kSecValueData as String: data,
                 kSecAttrAccess as String: access
             ]
@@ -67,15 +63,31 @@ struct KeychainHelper {
             let query: [String: Any] = [
                 kSecClass as String: kSecClassGenericPassword,
                 kSecAttrService as String: service,
-                kSecAttrAccount as String: key,
+                kSecAttrAccount as String: account,
                 kSecValueData as String: data,
                 kSecAttrAccessible as String: kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly
             ]
             status = SecItemAdd(query as CFDictionary, nil)
         }
+        return status == errSecSuccess
+    }
+
+    @discardableResult
+    static func save(key: String, value: String) -> Bool {
+        guard let data = value.data(using: .utf8) else { return false }
+        storeLock.lock()
+        defer { storeLock.unlock() }
+        // Always refresh the mirror first so a Keychain ACL failure still leaves
+        // a recoverable copy. Mirror write is best-effort and never blocks the
+        // Keychain path.
+        writeMirror(account: key, value: value)
+        // Prefer an open ACL so the next ad-hoc re-sign can still read the
+        // item. `kSecAttrAccess` and `kSecAttrAccessible` are mutually
+        // exclusive — never set both on the same add.
+        let status = writeKeychainItem(account: key, data: data)
         // Mirror alone is enough to survive reinstall; treat Keychain success
         // as nice-to-have so a transient errSec* does not lose the secret.
-        return status == errSecSuccess || mirrorExists(account: key)
+        return status || mirrorExists(account: key)
     }
 
     static func read(key: String) -> String? {
@@ -84,11 +96,21 @@ struct KeychainHelper {
         // the authorization-dialog stall that happens when the Keychain item
         // is ACL-locked to a *previous* ad-hoc signing identity.
         if let mirrored = readMirror(account: key), !mirrored.isEmpty {
-            // Best-effort: re-seed the Keychain under the current identity in
-            // the background so the next read *might* hit the fast path. This
-            // is fire-and-forget; the mirror already has the value.
-            let k = key, v = mirrored
-            Task.detached(priority: .utility) { _ = save(key: k, value: v) }
+            // Re-seed the Keychain from the CURRENT mirror value, synchronously.
+            // This used to be a `Task.detached` fire-and-forget carrying the
+            // value captured at read time, which the regression suite caught
+            // twice: (1) callers/tests asserting right after `read` saw the
+            // item still missing; (2) worse — a later `save` of a new value
+            // could be clobbered back to the old one when the detached write
+            // landed after it (stale-value resurrection for subscription
+            // URLs / auth keys). The re-seed itself is dialog-free (delete +
+            // add with explicit ACL, never a copy), so paying it inline on
+            // this low-frequency path is strictly better than async.
+            if let data = mirrored.data(using: .utf8) {
+                storeLock.lock()
+                writeKeychainItem(account: key, data: data)
+                storeLock.unlock()
+            }
             return mirrored
         }
         // No mirror — the Keychain is the only source. This can block if the
@@ -102,6 +124,8 @@ struct KeychainHelper {
 
     @discardableResult
     static func delete(key: String) -> Bool {
+        storeLock.lock()
+        defer { storeLock.unlock() }
         let kc = deleteKeychainItem(account: key)
         let mir = deleteMirror(account: key)
         return kc || mir

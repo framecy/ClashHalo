@@ -2,6 +2,17 @@
 
 本项目所有重要变更记录于此。格式参考 [Keep a Changelog](https://keepachangelog.com/),版本遵循语义化版本。
 
+## [Unreleased]
+
+### Fixed
+
+- **KeychainHelper 重播竞态（订阅 URL / Tailscale key 旧值复活）**：`read()`
+  命中镜像后的 Keychain 重播原是 `Task.detached` fire-and-forget，携带读取瞬间
+  的旧值晚于随后的 `save` 落盘会把镜像与 Keychain 覆盖回旧值；且同步调用方
+  断言「读完即写入」必然踩空。改为**持锁同步重播当前镜像值**，`save/delete`
+  同一把锁串行化全部密钥条目写入。回归验证：连跑 8 轮 28/28 全绿（修复前
+  4/4 轮失败）。
+
 ## [1.3.3] - 2026-09-12
 
 ### Added
