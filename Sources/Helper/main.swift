@@ -76,6 +76,15 @@ private func isClashExecutablePath(_ path: String) -> Bool {
 }
 
 /// Only permit launching a binary at the canonical ClashHalo kernel path.
+/// Current console user as "uid:gid" via /dev/console ownership — the same
+/// source `networksetup`-style tooling trusts. nil when nobody is logged in
+/// (root-owned console at boot), in which case there is nothing to repair to.
+func consoleOwnerId() -> String? {
+    var st = stat()
+    guard stat("/dev/console", &st) == 0, st.st_uid != 0 else { return nil }
+    return "\(st.st_uid):\(st.st_gid)"
+}
+
 func isAllowedKernelPath(_ path: String) -> Bool {
     let std = (path as NSString).standardizingPath
     guard !std.contains(".."),
@@ -205,6 +214,27 @@ class Helper: NSObject, HelperProtocol {
             }
         }
 
+        // Ownership repair (mihomo incident 2026-09-12, defect 5.2): a root
+        // session leaves cache.db / providers/ / ruleset/ / ui/ owned by root,
+        // so the next boot's user-mode kernel — started whenever the app comes
+        // up before this helper is reachable — dies on permission denied and
+        // silently loses store-selected / GEO updates. Root ignores ownership,
+        // so returning the tree to the console user before every root spawn
+        // keeps both identities working from one owner set. No-op when the
+        // console owner already is that user; skipped entirely before any
+        // user is logged in (uid 0 has nothing to repair to).
+        if homeDir.hasSuffix("/Library/Application Support/ClashHalo"),
+           let owner = consoleOwnerId() {
+            let fix = Process()
+            fix.executableURL = URL(fileURLWithPath: "/usr/sbin/chown")
+            fix.arguments = ["-R", owner, homeDir]
+            fix.standardOutput = Pipe(); fix.standardError = Pipe()
+            try? fix.run(); fix.waitUntilExit()
+            if fix.terminationStatus != 0 {
+                log("startMihomo: chown \(owner) \(homeDir) status \(fix.terminationStatus)")
+            }
+        }
+
         let process = Process()
         process.executableURL = URL(fileURLWithPath: binPath)
         process.arguments = ["-d", homeDir]
@@ -218,6 +248,15 @@ class Helper: NSObject, HelperProtocol {
         let logFile = "\(logDir)/mihomo-root.log"
         FileManager.default.createFile(atPath: logFile, contents: nil)
         if let handle = try? FileHandle(forWritingTo: URL(fileURLWithPath: logFile)) {
+            // Hard size cap: the 2026-09-12 incident burned 63 GB in one hour
+            // of `batch read packet` error spam. The app watchdog escalates to
+            // a rebuild (which lands here) when a long session starts storming;
+            // every fresh spawn at least starts from a bounded file.
+            let logBytes = ((try? FileManager.default.attributesOfItem(atPath: logFile))?[.size] as? Int64) ?? 0
+            if logBytes > 50 * 1024 * 1024 {
+                try? handle.truncate(atOffset: 0)
+                log("startMihomo: mihomo-root.log over cap, truncated")
+            }
             process.standardOutput = handle
             process.standardError = handle
         }

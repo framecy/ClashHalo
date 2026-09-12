@@ -2,6 +2,28 @@
 
 本项目所有重要变更记录于此。格式参考 [Keep a Changelog](https://keepachangelog.com/),版本遵循语义化版本。
 
+## [Unreleased]
+
+### Added
+
+- **内核日志风暴看门狗**（`observeKernelLogStorm`，挂 30s TUN 巡检）：以内核
+  日志增速（>300KB/s 持续一个采样窗口）检测「批量读 fd 半死空转」——
+  2026-09-12 现场此类故障下控制 API、路由表、数据面探测全绿，而 CPU 满载、
+  错误日志一小时写 63GB。处置阶梯：①原地翻转 tun enable 重建设备（实测
+  治愈手段）→ ②整进程重建（复用数据面自愈链路）→ ③停止自动处置只报告，
+  防重启循环。
+
+### Fixed
+
+- **`tunPatchBody` 漏重述 `gso-max-size` / `recvmsgx` / `rx-queue-size` /
+  `tx-queue-size`**：PATCH 整块替换语义下这些字段会被打回内核默认值；
+  `recvmsgx` 因 mihomo `omitempty` 在 false 时不回显 `/configs`，故磁盘显式值
+  优先于内核回显。冷启动 stack fallback 字面量 `"gvisor"` → `"system"`。
+- **Helper 1.0.28 → 1.0.29（需升级安装）**：root 启动内核前把数据目录属主
+  修复回 console 用户（root 会话残留的 root 属主 cache.db/providers/ruleset
+  会让下次开机 Helper 就绪前的用户态启动必然失败一次）；root 与用户两侧
+  内核日志各加 50MB 启动尺寸闸（错误循环不再吃磁盘）。
+
 ## [1.3.2] - 2026-08-29
 
 依据全库架构审查与优化计划落实（内部资料，不含于本仓库）。

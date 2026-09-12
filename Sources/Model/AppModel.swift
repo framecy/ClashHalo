@@ -283,6 +283,20 @@ struct SystemProxyStatus: Equatable {
     /// that itself restarts the kernel (and fires path-update storms) from
     /// immediately re-entering recovery on the next poll.
     var tunDataPlaneRecoveryCooldownUntil: Date = .distantPast
+    /// Kernel log-storm watchdog state (mihomo incident 2026-09-12: the
+    /// batch-read loop was pinned to an fd that died at device creation on
+    /// macOS 27 beta — EBADF-spun at ~118k CSW/s, 1.3 cores with zero
+    /// traffic, 18MB/s of `batch read packet` lines, 63 GB in an hour —
+    /// while the control API, the route table AND the data-plane probe all
+    /// stayed green: the healthy paths served every packet-level check.
+    /// Log growth is the one signal an error loop cannot hide behind.
+    /// Sampled on the verifyTUNConfig cadence; see `observeKernelLogStorm`.
+    var kernelLogBytesLastSample: Int64 = -1
+    var kernelLogSampleAt: Date?
+    /// Trips per app session (escalation ladder in `observeKernelLogStorm`):
+    /// 1 = in-place device rebuild, 2 = full-process rebuild, ≥3 = report only.
+    /// A remedy that does not land must never become a restart loop.
+    var kernelLogStormTrips = 0
     /// Settle window after a successful TUN enable. Bringing TUN up fires a
     /// storm of NWPathMonitor updates (utun creation, auto-route injection,
     /// system-DNS switch) whose concurrent refreshConfigs runs can transiently
@@ -1939,6 +1953,12 @@ struct SystemProxyStatus: Equatable {
         // gateway is the only check that actually exercises the data plane.
         // Topology change alone never restarts: normal detach/attach is common.
         scheduleTUNDataPlaneProbe(reason: "巡检")
+
+        // Check 5: kernel log-storm watchdog. A broken in-kernel loop can burn
+        // cores and fill the disk while every packet-level check stays green
+        // (2026-09-12: v1.19.30 recvmsgx EBADF spin, 63GB log in an hour).
+        // Gated on reachable — the storm hammers a *live* kernel's log sink.
+        await observeKernelLogStorm()
     }
 
     // MARK: Menu-bar app preferences
