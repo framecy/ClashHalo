@@ -2,7 +2,7 @@
 
 本项目所有重要变更记录于此。格式参考 [Keep a Changelog](https://keepachangelog.com/),版本遵循语义化版本。
 
-## [Unreleased]
+## [1.3.3] - 2026-09-12
 
 ### Added
 
