@@ -6,10 +6,14 @@ import Foundation
 /// version drift that caused infinite upgrade loops.
 ///
 /// 1.0.29: before every root mihomo spawn, repair the data-directory owner to
-/// the console user (a root session's cache.db / providers / ruleset used to
-/// poison the next boot's user-mode start — "one guaranteed failure per boot")
-/// and truncate the root kernel log past a hard 50 MB cap (an in-kernel error
-/// loop wrote 63 GB in an hour on 2026-09-12).
+/// the console user — anchored to the passwd-derived canonical path (the
+/// client's path string must match it exactly; `..`, symlink anchors and
+/// fast-user-switch cross-owner requests are skipped) so this root chown
+/// primitive cannot be pointed at other users' data. A root session's
+/// cache.db / providers / ruleset used to poison the next user-mode start —
+/// "one guaranteed failure per boot". Plus a 50 MB cap-at-spawn truncation
+/// on the root kernel log (an in-kernel error loop wrote 63 GB in an hour on
+/// 2026-09-12; in-session storms are the app watchdog's stop-loss).
 /// 1.0.28: client-death cleanup also recognizes a dead redir-host DNS
 /// redirect — system DNS set to `127.0.0.1` with nothing listening on port 53
 /// — instead of leaving every domain lookup black-holed until the app relaunches.
