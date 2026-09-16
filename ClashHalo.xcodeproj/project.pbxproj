@@ -32,6 +32,7 @@
 		ACX2AAAA0000000000000002 /* CoexistenceProvenance.swift in Sources */ = {isa = PBXBuildFile; fileRef = BCX2AAAA0000000000000001 /* CoexistenceProvenance.swift */; };
 		ATDP1 /* TUNDataPlaneProbe.swift in Sources */ = {isa = PBXBuildFile; fileRef = BTDP1 /* TUNDataPlaneProbe.swift */; };
 		AV6H1 /* TUNIPv6Health.swift in Sources */ = {isa = PBXBuildFile; fileRef = BV6H1 /* TUNIPv6Health.swift */; };
+		ATLS1 /* TUNLoopSentinel.swift in Sources */ = {isa = PBXBuildFile; fileRef = BTLS1 /* TUNLoopSentinel.swift */; };
 		A015 /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = B015 /* Assets.xcassets */; };
 		AABBCCDD0000000000000001 /* HelperProtocol.swift in Sources */ = {isa = PBXBuildFile; fileRef = AABBCCDD0000000000000002 /* HelperProtocol.swift */; };
 		AABBCCDD0000000000000003 /* XPCManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = AABBCCDD0000000000000004 /* XPCManager.swift */; };
@@ -98,6 +99,7 @@
 		BCX2AAAA0000000000000001 /* CoexistenceProvenance.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Sources/Model/CoexistenceProvenance.swift; sourceTree = SOURCE_ROOT; };
 		BTDP1 /* TUNDataPlaneProbe.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TUNDataPlaneProbe.swift; sourceTree = "<group>"; };
 		BV6H1 /* TUNIPv6Health.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TUNIPv6Health.swift; sourceTree = "<group>"; };
+		BTLS1 /* TUNLoopSentinel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TUNLoopSentinel.swift; sourceTree = "<group>"; };
 		B015 /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
 		BF9832249132493A9E51C30C /* ProxiesPage.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Sources/UI/Proxies/ProxiesPage.swift; sourceTree = SOURCE_ROOT; };
 		C6DEDA31B7B33D5919A12DEB /* RuleEditorModel.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = RuleEditorModel.swift; path = Sources/Core/RuleValidator/RuleEditorModel.swift; sourceTree = "<group>"; };
@@ -144,6 +146,7 @@
 				BCX2AAAA0000000000000001 /* CoexistenceProvenance.swift */,
 				BTDP1 /* TUNDataPlaneProbe.swift */,
 				BV6H1 /* TUNIPv6Health.swift */,
+				BTLS1 /* TUNLoopSentinel.swift */,
 				A7EFEC0FDBC0406AA6A9D774 /* AppModel.swift */,
 				AMP2 /* AppModel+Proxies.swift */,
 				AMC2 /* AppModel+Connections.swift */,
@@ -345,6 +348,7 @@
 				ACX2AAAA0000000000000002 /* CoexistenceProvenance.swift in Sources */,
 				ATDP1 /* TUNDataPlaneProbe.swift in Sources */,
 				AV6H1 /* TUNIPv6Health.swift in Sources */,
+				ATLS1 /* TUNLoopSentinel.swift in Sources */,
 				AMP1 /* AppModel+Proxies.swift in Sources */,
 				AMC1 /* AppModel+Connections.swift in Sources */,
 				AMG1 /* AppModel+Config.swift in Sources */,
@@ -380,7 +384,7 @@
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
 				CODE_SIGN_ENTITLEMENTS = ClashHalo.entitlements;
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 118;
+				CURRENT_PROJECT_VERSION = 119;
 				ENABLE_HARDENED_RUNTIME = YES;
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_FILE = Sources/Info.plist;
@@ -388,7 +392,7 @@
 					"$(inherited)",
 					"@executable_path/../Frameworks",
 				);
-				MARKETING_VERSION = 1.3.3;
+				MARKETING_VERSION = 1.3.4;
 				PRODUCT_BUNDLE_IDENTIFIER = com.clashhalo.app;
 				PRODUCT_NAME = ClashHalo;
 			};
@@ -412,7 +416,7 @@
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
 				CODE_SIGN_ENTITLEMENTS = ClashHalo.entitlements;
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 118;
+				CURRENT_PROJECT_VERSION = 119;
 				ENABLE_HARDENED_RUNTIME = YES;
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_FILE = Sources/Info.plist;
@@ -420,7 +424,7 @@
 					"$(inherited)",
 					"@executable_path/../Frameworks",
 				);
-				MARKETING_VERSION = 1.3.3;
+				MARKETING_VERSION = 1.3.4;
 				PRODUCT_BUNDLE_IDENTIFIER = com.clashhalo.app;
 				PRODUCT_NAME = ClashHalo;
 			};

@@ -53,6 +53,9 @@ extension AppModel {
         // pool until the next `await`, so at a 3 s cadence several ticks' worth of
         // garbage stays live at once. Draining per tick is what keeps the
         // footprint flat instead of sawtoothing upward.
+        // Drained after the pool closes (route forensics forks `route -n
+        // get`) — at most one trip per snapshot tick, see `handleTUNLoopTrip`.
+        var loopTrip: TUNLoopTrip?
         autoreleasepool {
         if needDetailedStats {
             var bytes: [String: (up: Int64, down: Int64)] = [:]
@@ -70,6 +73,18 @@ extension AppModel {
                 let upRate = prev.map { max(0, c.upload - $0.up) } ?? 0
                 let downRate = prev.map { max(0, c.download - $0.down) } ?? 0
                 bytes[c.id] = (c.upload, c.download)
+
+                // TUN self-loop sentinel. Cheap pre-gate first (only rows that
+                // added ≥ one chunk of downlink touch the watch dictionary at
+                // all); the sentinel re-checks the full fingerprint internally.
+                // See `TUNLoopSentinel` for why this shape is impossible in
+                // real traffic.
+                if loopTrip == nil, downRate >= tunLoopSentinel.minTickDownBytes {
+                    loopTrip = tunLoopSentinel.observe(
+                        id: c.id, chains: c.chains,
+                        host: c.metadata.host ?? "", destinationIP: c.metadata.destinationIP ?? "",
+                        tickDownBytes: downRate, totalUploadBytes: c.upload)
+                }
 
                 // attribute this connection's byte delta to its category → history
                 let delta = Double(upRate + downRate)
@@ -104,6 +119,9 @@ extension AppModel {
             }
 
             activeConnsSet = activeIDs
+            // Watches for connections that vanished from the snapshot must go
+            // too — a loop that dies between ticks has nothing left to watch.
+            tunLoopSentinel.reap(excluding: activeIDs)
             // Equal-value @Published writes still publish and invalidate the
             // whole view tree every snapshot tick; gate the hot counters.
             if activeConnectionsCount != activeIDs.count {
@@ -140,6 +158,12 @@ extension AppModel {
         if closedConns != closed { closedConns = closed }
         history.flushIfNeeded()
         lastDownTotal = s.downloadTotal
+        // Outside the autoreleasepool: route forensics forks `/sbin/route`.
+        // The handler is self-guarded (`tunLoopTripInFlight`) and at most one
+        // trip can be in flight, so this hop cannot stack up.
+        if let trip = loopTrip {
+            Task { @MainActor in await self.handleTUNLoopTrip(trip) }
+        }
         // App memory is sampled by its own timer (`startAppMemorySampling()`),
         // not here: tying it to a connections snapshot meant it only refreshed
         // on pages that request detailed stats, leaving the dashboard stale.

@@ -283,6 +283,26 @@ struct SystemProxyStatus: Equatable {
     /// that itself restarts the kernel (and fires path-update storms) from
     /// immediately re-entering recovery on the next poll.
     var tunDataPlaneRecoveryCooldownUntil: Date = .distantPast
+    /// Config-OFF zombie TUN state (pinned utun still UP and still owning
+    /// routes while `tunOn == false`) — see `sweepZombieTUN`. Two strikes
+    /// (consecutive 30 s detections) confirm before anything fires; the remedy
+    /// is a kernel restart only — the broad privileged `cleanupTUNResidual`
+    /// would also sweep a co-resident proxy VPN's healthy 198.18 tunnel, so it
+    /// stays a post-restart fallback for residue that outlived its holder.
+    /// After three restarts that failed to stick we stand down behind a long
+    /// cooldown: a remedy that does not land must never become a restart loop.
+    var zombieTunStrikes = 0
+    var zombieTunRestarts = 0
+    var zombieTunRepairInFlight = false
+    /// Minimum gap between two zombie-TUN remedies (a restart itself fires
+    /// path-update storms; the sweep must not chase its own tail).
+    var zombieTunCooldownUntil: Date = .distantPast
+    /// TUN self-loop sentinel — pure state machine, see `TUNLoopSentinel`.
+    /// Driven from `recordHistoryOnly`'s per-connection diff, consumed by
+    /// `handleTUNLoopTrip`.
+    var tunLoopSentinel = TUNLoopSentinel()
+    /// Drops further trips while one is mid-route-forensics / recovery.
+    var tunLoopTripInFlight = false
     /// Kernel log-storm watchdog state (mihomo incident 2026-09-12: the
     /// batch-read loop was pinned to an fd that died at device creation on
     /// macOS 27 beta — EBADF-spun at ~118k CSW/s, 1.3 cores with zero
@@ -1031,6 +1051,10 @@ struct SystemProxyStatus: Equatable {
                             await self.verifyTUNConfig()
                             await self.auditAndRepairPeerRoutes()
                         }
+                        // The complement: tunOn == false only *now* has a
+                        // watchdog (config-off zombie holding routes) — all
+                        // existing TUN guards are gated on tunOn.
+                        await self.sweepZombieTUN()
                         self.bgTickCount = 0
                     }
                 }
@@ -1220,6 +1244,11 @@ struct SystemProxyStatus: Equatable {
                         // cannot catch an auto-route hijack.
                         await self.auditAndRepairPeerRoutes()
                     }
+                    // Complement of the tunOn branch above: a zombie TUN that
+                    // exists while the config says OFF is invisible to every
+                    // tunOn-gated guard. Fires both directions (also resets its
+                    // own strike counter when the system is clean).
+                    await self.sweepZombieTUN()
                     healthDue = Date().addingTimeInterval(30)
                 }
 
