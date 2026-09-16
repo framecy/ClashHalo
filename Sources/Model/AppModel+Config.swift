@@ -2415,6 +2415,139 @@ extension AppModel {
         await performTUNDataPlaneRecovery(gateway: tunnelDNSAddress())
     }
 
+    // MARK: - Config-OFF zombie TUN & self-loop recovery
+    //
+    // 2026-09-16 incident forensics: `tun.enable: false`, system-proxy mode,
+    // yet `utun100` was UP holding 211 auto-route splits (17.248.x — Apple
+    // ranges being the exact tripwire). dataaccessd's UDP packets were pulled
+    // into the tunnel, mihomo sent them "DIRECT", the OS delivered them right
+    // back into utun100, and every lap counted AGAINST THE SAME CONNECTION as
+    // download: ~104 MB/s of counter growth, zero bytes on the physical NIC,
+    // ~10.8 TB of phantom bytes in 26 hours. No existing watchdog sees this
+    // shape: every TUN guard is gated on `tunOn`, and here the *config* side
+    // is off while the *interface* side is on.
+
+    /// 30 s zombie sweep. Runs when — and only when — TUN is logically OFF;
+    /// it is the deliberate complement of `verifyTUNConfig` (which requires
+    /// `tunOn`). Detection is strict by construction
+    /// (`NetScanner.upDetachedMihomoTun`: pinned device name + UP + owning
+    /// routes), because the remedy restarts the kernel. Two consecutive
+    /// strikes before acting: a settle-window blip must not cost a restart.
+    func sweepZombieTUN() async {
+        guard !tunOn, reachable, !sleeping else { return }
+        guard !engine.isBusy, !tunAutoTeardownInFlight, !tunDataPlaneRecoveryInFlight,
+              !zombieTunRepairInFlight, !tunLoopTripInFlight else { return }
+        guard Date() >= tunStateSettleUntil, Date() >= zombieTunCooldownUntil else { return }
+
+        guard await NetScanner.upDetachedMihomoTun() != nil else {
+            if zombieTunStrikes != 0 { zombieTunStrikes = 0 }
+            return
+        }
+        zombieTunStrikes += 1
+        guard zombieTunStrikes >= 2 else {
+            logKernel("疑似僵尸 TUN：配置已关但 \(kPinnedTunDevice) 仍 UP 且承载路由（第 1 击，待复查确认）")
+            return
+        }
+        logKernel("确认僵尸 TUN：配置已关但 \(kPinnedTunDevice) 仍 UP 且承载路由（第 \(zombieTunStrikes) 击）")
+        await healDetachedTUN(reason: "巡检")
+    }
+
+    /// The surgical remedy: a process restart. Killing mihomo releases its
+    /// utun fd, and the device — with every auto-route split that still
+    /// diverts packets — dies with it. `cleanupTUNResidual` stays a
+    /// post-restart fallback ONLY: it sweeps *every* 198.18.x utun, so
+    /// calling it while a co-resident proxy VPN is healthy would tear down
+    /// that app's tunnel too. Mirrors the user-facing 「重启内核」 pattern:
+    /// system proxy is temporarily cleared so a dead kernel behind a stale
+    /// proxy setting cannot black-hole the Mac, and restored through the
+    /// verified path only when the kernel is back.
+    private func healDetachedTUN(reason: String) async {
+        guard zombieTunRestarts < 3 else {
+            logKernel("僵尸 TUN 已重启内核 \(zombieTunRestarts) 次仍未清除，停止自动重建（请检查共存 VPN 或在网络页手动重启内核）")
+            showToast("僵尸 TUN 无法自动清除，请在「网络」页手动重启内核", kind: .error)
+            zombieTunStrikes = 0
+            zombieTunCooldownUntil = Date().addingTimeInterval(1800)
+            return
+        }
+        zombieTunRestarts += 1
+        zombieTunRepairInFlight = true
+        defer {
+            zombieTunRepairInFlight = false
+            zombieTunStrikes = 0
+            zombieTunCooldownUntil = Date().addingTimeInterval(120)
+        }
+        logKernel("僵尸 TUN 自愈：重建内核清除隧道残留（\(reason)，第 \(zombieTunRestarts) 次）")
+        showToast("检测到已关闭的 TUN 仍在劫持路由，正在自动重启内核清除…", kind: .warn)
+        engine.isBusy = true
+        tunStateSettleUntil = Date().addingTimeInterval(45)
+        defer { engine.isBusy = false }
+        let wasProxy = systemProxyOn
+        let port = proxyPort
+        if wasProxy {
+            _ = await engine.setSystemProxy(enabled: false, port: port)
+            systemProxyOn = false
+        }
+        await engine.restart(preferRoot: engine.runningAsRoot)
+        let ready = await waitForKernelReady(maxAttempts: 12)
+        await reconnect()
+        guard ready else {
+            if wasProxy { _ = await restoreSystemProxy(reason: "僵尸 TUN 自愈（内核未就绪）") }
+            showToast("内核重启超时，请在「网络」页检查内核状态", kind: .warn)
+            return
+        }
+        // Pinned-name residue that survived its holder's death can only be
+        // a configd-held ghost; at that point the broad physical sweep is
+        // justified (and the restart cap above keeps it from looping).
+        NetScanner.invalidateTunCache()
+        if await NetScanner.upDetachedMihomoTun() != nil {
+            logKernel("内核重启后 \(kPinnedTunDevice) 仍 UP，请求特权服务物理清理残留")
+            let ok = await XPCManager.shared.callCleanupTUNResidual()
+            logKernel("僵尸 TUN 残留清理: \(ok == true ? "完成" : "特权服务不可达/失败")")
+        }
+        if wasProxy {
+            _ = await restoreSystemProxy(reason: "僵尸 TUN 自愈")
+        }
+        showToast("僵尸 TUN 已清除，内核重建完成", kind: .ok)
+    }
+
+    /// A sentinel-flagged trip (from `recordHistoryOnly`), confirmed through
+    /// route forensics before healing: the counter shape (DIRECT + frozen
+    /// upload + massive downlink growth) cannot by itself separate "our own
+    /// route is re-injecting into us" from a genuinely push-heavy download —
+    /// the route resolving to *our* tunnel is what makes it certain.
+    func handleTUNLoopTrip(_ trip: TUNLoopTrip) async {
+        guard !tunLoopTripInFlight else { return }
+        tunLoopTripInFlight = true
+        defer {
+            tunLoopTripInFlight = false
+            tunLoopSentinel.reset()
+        }
+        guard !trip.destinationIP.isEmpty else {
+            logKernel("疑似 TUN 自循环（\(trip.host)）无目的地 IP，无法路由取证，跳过")
+            return
+        }
+        let tunName = await NetScanner.mihomoTunInterface(maxAge: 0)
+        let target = await NetScanner.routeTargetInterface(trip.destinationIP)
+        guard let tunName, target == tunName else {
+            logKernel("TUN 自循环指纹命中但路由取证排除：\(trip.destinationIP) → \(target ?? "?")（隧道：\(tunName ?? "无")）")
+            return
+        }
+        let phantomGB = String(format: "%.1f", Double(trip.phantomBytes) / 1e9)
+        logKernel("确认 TUN 自循环：\(trip.host) (\(trip.destinationIP)) DIRECT 回注隧道 \(tunName)，"
+                  + "上行归零下连续 \(trip.ticks) 拍下行膨胀 \(phantomGB) GB")
+        if tunOn {
+            // User intent is ON: full data-plane recovery keeps TUN desired
+            // (stop, residual clean, root restart, re-probe, fall back only
+            // if acceptance still fails).
+            await performTUNDataPlaneRecovery(gateway: tunnelDNSAddress())
+        } else {
+            // Config OFF: the tunnel is detached — a route-confirmed trip is
+            // stronger evidence than one sweep strike, so act on it directly.
+            zombieTunStrikes = 2
+            await healDetachedTUN(reason: "自循环取证")
+        }
+    }
+
     /// One probe cycle. On threshold failure, escalates to at most one recovery.
     private func runTUNDataPlaneProbe(reason: String) async {
         guard tunOn, reachable, !sleeping else { return }

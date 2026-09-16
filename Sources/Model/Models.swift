@@ -559,12 +559,40 @@ enum NetScanner {
         interfaces().contains { $0.kind == .proxyTun && !$0.isUp }
     }
 
+    /// The mirror image of `hasDownedMihomoTun`: the pinned mihomo TUN device
+    /// is still **UP and still owns routes** while TUN is logically off — the
+    /// 2026-09-16 self-loop shape (`tun.enable: false`, yet `utun100` UP with
+    /// 211 auto-route splits, the kernel re-injecting its own DIRECT output
+    /// through the tunnel and inflating one connection to 10.8 TB of phantom
+    /// bytes). A downed residue black-holes DNS; an UP residue actively
+    /// *steals* traffic, and no existing guard sees it because every TUN
+    /// watchdog is gated on `tunOn`.
+    ///
+    /// Identity is strict by design: pinned device name only. A co-resident
+    /// proxy sharing the fake-ip range is UP while it is working, and it must
+    /// never be the answer to this question — so when the pin is not active
+    /// (older/fallback naming), return nil and let the data-plane probe own
+    /// the config-on half of the problem. Requiring at least one route to
+    /// point at the interface keeps a momentarily-route-less bring-up/down
+    /// window out of scope: nothing is being diverted yet.
+    static func upDetachedMihomoTun() async -> String? {
+        guard pinnedDeviceActive else { return nil }
+        guard let iface = interfaces().first(where: {
+            $0.kind == .proxyTun && $0.isUp && $0.id == kPinnedTunDevice
+        }) else { return nil }
+        let routes = await allRoutes()
+        return routes.contains { $0.iface == iface.id } ? iface.id : nil
+    }
+
     /// Resolve which interface the kernel routes `ip` through, via a read-only
     /// non-privileged `route -n get <ip>`. Returns the BSD interface name from the
     /// `interface:` line, or nil if route-get fails / the line is absent. Mirrors
     /// the parsing in `EngineControl.defaultInterface()`, kept here in NetScanner so
     /// the TUN-health probe stays self-contained.
-    private static func routeTargetInterface(_ ip: String) async -> String? {
+    /// Internal (was private): `handleTUNLoopTrip` uses it as the route
+    /// forensics step that separates a self-loop from a real push-heavy
+    /// download — same question, one fork, one owner.
+    static func routeTargetInterface(_ ip: String) async -> String? {
         await Task.detached(priority: .userInitiated) {
             let p = Process()
             p.executableURL = URL(fileURLWithPath: "/sbin/route")
