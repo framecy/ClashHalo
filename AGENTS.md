@@ -1,4 +1,4 @@
-# Agents.md
+# AGENTS.md
 
 本文件给后续 AI 编码代理使用。进入本仓库后，先读本文件，再按需读 `README.md`、`CHANGELOG.md` 和相关源码。
 

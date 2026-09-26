@@ -6,7 +6,7 @@
 // ours to design: the password sheet that follows belongs to the OS and is
 // deliberately left untouched.
 //
-// Contract preserved from the old implementation (see Docs / Agents.md):
+// Contract preserved from the old implementation (see Docs / AGENTS.md):
 // cancelling here must return false WITHOUT elevating.
 
 import SwiftUI
