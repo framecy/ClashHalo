@@ -2,6 +2,15 @@
 
 本项目所有重要变更记录于此。格式参考 [Keep a Changelog](https://keepachangelog.com/),版本遵循语义化版本。
 
+## [1.3.5] - 2026-09-26
+
+### Changed
+
+- **AGENTS.md 文件名规范化**：`Agents.md` → `AGENTS.md`，统一 AI 编码代理记忆文件命名；同步修正 README 文件清单与 PrivilegedPrompt 注释引用。
+- **.gitignore 扩展**：压测与监控产物（`loadtest_*/`、`monitor_*/`、`*.pid`）永不入库，仅保留本地归档。
+
+---
+
 ## [1.3.4] - 2026-09-16
 
 ### Added
