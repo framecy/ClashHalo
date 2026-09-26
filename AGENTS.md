@@ -2,7 +2,7 @@
 
 本文件给后续 AI 编码代理使用。进入本仓库后，先读本文件，再按需读 `README.md`、`CHANGELOG.md` 和相关源码。
 
-当前主干：`main`，产品版本 **v1.3.4**（`MARKETING_VERSION`），Helper **1.0.29**（`kSharedHelperVersion`：root 启动内核前把数据目录属主修复回 console 用户——锚定 passwd 数据库的规范路径，拒绝 `..`/符号链接/跨用户会话误修，属主已正确则跳过（root 会话残留的 root 属主 cache.db/providers/ruleset 会让 Helper 就绪前的用户态内核启动必然失败一次），root 内核日志超 50MB 启动截断（用户侧日志闸在 App 的 EngineControl，随 App 分发；2026-09-12 批量读 fd 半死风暴一小时写 63GB）；1.0.28 为客户端死亡清理同时识别已死的 redir-host DNS 重定向——系统 DNS 为 `127.0.0.1` 且 53 端口无监听才重置，保护用户自建回环 resolver；1.0.27 为按「本 Helper 最后写入的端口」限定 loopback 代理回收，不误清共存代理应用；1.0.26 为破坏性步骤前重查会话接管；1.0.25 为系统代理共享服务选择/分支顺序/全成功语义；相对 1.0.24 及更早需强制升级）。打包时 `make.sh` 自增 `CURRENT_PROJECT_VERSION`。
+当前主干：`main`，产品版本 **v1.3.5**（`MARKETING_VERSION`），Helper **1.0.29**（`kSharedHelperVersion`）。打包时 `make.sh` 自增 `CURRENT_PROJECT_VERSION`。
 
 ## 项目概览
 
@@ -145,11 +145,11 @@ bash make.sh
 6. **物理清理兜底**：逻辑关闭后若 `hasDownedMihomoTun()`（`proxyTun && !isUp`）为真，经 XPC 调 `cleanupTUNResidual`（`ifconfig down` + 删 IP + route flush）。门控避免误清仍 UP 的同址段 VPN（如 Shadowrocket）
 7. **旧 Helper 共存**：无 `cleanupTUNResidual` 时新鲜连接超时返回 nil，只记日志、不误操作
 8. **僵尸巡检（v1.3.4）**：上述防线全部门控在 `tunOn` 上，对「配置关但接口仍 UP 且持路由」失明（2026-09-16 幽灵流量事故）。`sweepZombieTUN` 挂在**前台与后台两条健康巡检**上、首行 `guard !tunOn` 反向门控，判据 `NetScanner.upDetachedMihomoTun()` 严格身份化——只认 pin 住的 `kPinnedTunDevice` 设备名，宁漏不误伤共存 VPN；两击确认 → `healDetachedTUN`（重启内核优先，复用「重启内核」安全时序；仍残留才升级特权清理；3 次熔断 + 冷却，防重启循环）
-9. **自循环哨兵（v1.3.4）**：僵尸态的内核 DIRECT 出网会回注同一隧道，单连接下行以链路速率膨胀而物理网卡零流量。`TUNLoopSentinel`（纯状态机，`Tests/TUNLoopSentinel` 以事故数据回放钉住）喂自 `recordHistoryOnly` 热路径：DIRECT 链 + 上行静默 + 每拍 ≥25MB + 连续 6 拍才候选，`handleTUNLoopTrip` 再过 `route -n get` 目的地取证（回指隧道才定罪，排除 LAN 直连大流）；按 `tunOn` 意图分派数据面重建或僵尸自愈。新增消费连接快照的热路径必须同步喂哨兵并在快照末尾 `reap`
+9. **自循环哨兵（v1.3.4）**：僵尸态的内核 DIRECT 出网会回注同一隧道，单连接下行以链路速率膨胀而物理网卡零流量。`TUNLoopSentinel`（纯状态机）喂自 `recordHistoryOnly` 热路径：DIRECT 链 + 上行静默 + 每拍 ≥25MB + 连续 6 拍才候选，`handleTUNLoopTrip` 再过 `route -n get` 目的地取证（回指隧道才定罪，排除 LAN 直连大流）；按 `tunOn` 意图分派数据面重建或僵尸自愈。新增消费连接快照的热路径必须同步喂哨兵并在快照末尾 `reap`
 
 ### TUN 数据面探针（v1.1.12 → v1.1.13）
 
-「接口存在」不等于「数据面活着」：`configd` 在 mihomo 底下重挂 `utun100` 后，接口表与路由表都正常，mihomo 却握着失效 fd。纯逻辑部分在 `Sources/Model/TUNDataPlaneProbe.swift`（无 UI、无进程管理、无 MainActor，直接被 `Tests/TUNDataPlaneProbe` 编译）：
+「接口存在」不等于「数据面活着」：`configd` 在 mihomo 底下重挂 `utun100` 后，接口表与路由表都正常，mihomo 却握着失效 fd。纯逻辑部分在 `Sources/Model/TUNDataPlaneProbe.swift`（无 UI、无进程管理、无 MainActor）：
 
 1. **`DNSProbe`**：向 fake-ip 网关（默认 `198.18.0.1:53`）发最小 UDP DNS 查询，校验 transaction ID / 长度 / QR 位。**NXDOMAIN、SERVFAIL 只要格式有效就算活着**——问的是 fd 能不能收发包，不是名字能不能解析
 2. **`TUNDataPlaneHealthState` 是滑动窗口，不是连续失败计数**：保留最近 `window`（默认 6）次结果，窗口内失败数达到 `failThreshold`（默认 4）触发自愈。**一次成功不清空窗口**——半死 fd 恰恰是「大部分失败、偶尔成功」，连续计数在这种形态下永远不触发（v1.1.12 的实际漏洞）
