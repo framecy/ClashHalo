@@ -80,7 +80,7 @@ xcodebuild -project ClashHalo.xcodeproj -scheme ClashHalo -configuration Debug b
 - `CHANGELOG.md`：版本变更记录
 - `Docs/design.md`：设计系统规范
 - `Docs/GatewayGuide.md`：局域网网关配置指南
-- `Agents.md`：给 AI 编码代理的工程约定
+- `AGENTS.md`：给 AI 编码代理的工程约定
 - `Scripts/`：打包与签名脚本
 - `Sources/`：应用源代码
   - `Model/`：数据模型和业务逻辑
