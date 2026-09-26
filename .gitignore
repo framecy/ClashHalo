@@ -45,8 +45,10 @@ build/
 2026-*-ClashPow.txt
 build/
 
-# 监测脚本与采集数据（非 App 源码）
-monitor_4h/
+# 压测与监控脚本及采集数据（非 App 源码，不入库）
+monitor_*/
+loadtest_*/
+*.pid
 
 # 参考文档，非发布内容
 Loon/
