@@ -21,9 +21,10 @@ import ServiceManagement
 @MainActor final class LiveMetrics: ObservableObject {
     /// Kernel resident size, bytes — the same number `ps -o rss` reports.
     ///
-    /// Not mihomo's `/memory` stream: that field is the kernel's connection
-    /// memory accounting and has been observed frozen at 363 MB for two hours
-    /// while the process held 148 MB. See `KernelMemoryGuardPolicy`.
+    /// Not mihomo's `/memory`: that is Go heap inuse, which is real memory but
+    /// not residency — a two-hour capture held 363 MB of heap against 148 MB
+    /// resident because macOS had compressed the difference. RSS is what the
+    /// guard's actions can actually move. See `KernelMemoryGuardPolicy`.
     @Published var memory: Int64 = 0
     /// This app's resident size, MB.
     @Published var appMemoryMB = 0.0
@@ -987,12 +988,12 @@ struct SystemProxyStatus: Equatable {
                 }
             }
             // Kernel memory is not sampled here. It used to be mihomo's `/memory`
-            // WebSocket, which was wrong twice over: the stream only runs while
-            // UI is visible, so the number froze at its last value across every
-            // background hour — which is exactly when the growth being measured
-            // happens — and the value itself is mihomo's connection accounting,
-            // not its footprint (see `KernelMemoryGuardPolicy`). `live.memory`
-            // is now real RSS, sampled on the connection loop in
+            // WebSocket, and that placement was wrong on two counts: the stream
+            // only runs while UI is visible, so the number froze at its last
+            // value across every background hour — which is exactly when the
+            // growth being measured happens — and the figure itself is Go heap
+            // inuse rather than residency (see `KernelMemoryGuardPolicy`).
+            // `live.memory` is now real RSS, sampled on the connection loop in
             // `sampleKernelMemory()` and kicked once here so the first frame
             // after a hidden→visible transition is not blank.
             startAppMemorySampling()
