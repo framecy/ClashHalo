@@ -140,16 +140,16 @@ struct StaleConnectionWatch {
 
 // MARK: - Kernel memory guard policy
 //
-// The guard that preceded this one compared mihomo's **connection memory
-// accounting** against 512 MB and, when it finally tripped, flushed the DNS
-// and fake-ip caches. Both halves were wrong. The number is not memory:
-// `/memory`'s `inuse` and `/connections`' `memory` field are byte-identical
-// to each other (446,267,392 on both, 2026-09-28) and were frozen at exactly
-// 363,905,024 across all 1415 samples of a two-hour capture while `ps`
-// measured the kernel at 148 MB — a high-water counter, not a footprint. And
-// the caches it flushed are not where the bytes were: the memory sat in the
-// 1039 dead sockets that no cache flush touches. So it never once fired on the
-// way to 426 MB, and had it fired it would have freed nothing.
+// The guard that preceded this one compared mihomo's reported memory against
+// 512 MB and, when it finally tripped, flushed the DNS and fake-ip caches. Both
+// halves were inert. The reported figure is Go heap inuse (`/memory` and
+// `/connections`' `memory` field are the same value — measured byte-identical
+// at 273.2 MiB against `ps` RSS 273.2 MiB, 2026-09-28), which is real memory
+// but not residency: a two-hour capture had it at 363 MB while the process
+// held 148 MB resident, because macOS had compressed the difference. And the
+// caches the guard flushed are not where the bytes were — the memory sat in
+// the 1039 dead sockets that no cache flush touches. So it never once fired on
+// the way to 426 MB, and had it fired it would have freed nothing.
 //
 // This policy reads **real RSS** (`KernelRSS`) and acts on connections first.
 // Tiering, rate limiting and the give-up/re-arm cycle follow
