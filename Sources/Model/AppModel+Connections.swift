@@ -314,7 +314,11 @@ extension AppModel {
         case .none:
             break
         case .engaged:
-            logKernel("内核内存偏高 (RSS \(mb)MB)，开始回收静默连接")
+            // Deliberately silent. The reap round that follows already logs
+            // when it actually closes something, and logging here would fire on
+            // every boot that happens to sit above the tier — which is exactly
+            // the noise the v1.1.16 App guard produced (463 lines in two hours).
+            break
         case let .suspended(afterActions):
             logKernel("内核内存回收无效：连续 \(afterActions) 次处置后 RSS 仍为 \(mb)MB，已暂停自动回收。"
                 + " 内存可能不在可回收的连接上；如需彻底释放，请在「网络」页重启内核。")
