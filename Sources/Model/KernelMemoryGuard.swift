@@ -164,13 +164,23 @@ struct StaleConnectionWatch {
 struct KernelMemoryGuardPolicy {
     /// Reap stale connections at or above this RSS.
     ///
-    /// Calibrated against the two kernel measurements on record: 145 MB with
-    /// ~100 connections (2026-09-16) and 426 MB with 1412 (2026-09-28). 320 MB
-    /// is ~2.2× the healthy working set, and the action is cheap and selective
-    /// — it can only close sockets the watch already condemned.
-    var reapLimit: UInt64 = 320_000_000
+    /// 380 MB, measured — not guessed. The floor depends on whether TUN is up,
+    /// and the first cut of this threshold (320 MB) was calibrated against a
+    /// 145 MB figure taken on 2026-09-16 with **TUN disabled**, which is not the
+    /// configuration this app runs in. Same kernel, freshly started, ~80
+    /// connections, TUN on: 316–330 MB and flat (2026-09-28, three samples over
+    /// a minute). A threshold below the floor engages on every single boot,
+    /// finds nothing to reap, spends its three strikes, and suspends — and with
+    /// `reArmGrowth` at 64 MB it then stays asleep until ~394 MB, i.e. it is
+    /// *least* available exactly during early accumulation.
+    /// 380 MB sits ~50 MB above the measured floor and still ~50 MB below the
+    /// 426–465 MB the six-day corpse pile-up actually reached.
+    var reapLimit: UInt64 = 380_000_000
     /// Additionally flush DNS + fake-ip caches.
-    var flushLimit: UInt64 = 448_000_000
+    ///
+    /// Above anything observed in the field, so it only runs when reaping has
+    /// already failed to hold the line.
+    var flushLimit: UInt64 = 500_000_000
     /// Minimum spacing between actions. Reaping is driven by a snapshot loop
     /// that runs every 1.5 s in the foreground.
     var interval: TimeInterval = 300
