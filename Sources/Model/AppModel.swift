@@ -19,7 +19,11 @@ import ServiceManagement
 /// consumed by a small, self-contained piece of UI; anything the app's own logic
 /// branches on belongs on `AppModel`, where observers expect to be woken.
 @MainActor final class LiveMetrics: ObservableObject {
-    /// Kernel-reported memory use, bytes.
+    /// Kernel resident size, bytes — the same number `ps -o rss` reports.
+    ///
+    /// Not mihomo's `/memory` stream: that field is the kernel's connection
+    /// memory accounting and has been observed frozen at 363 MB for two hours
+    /// while the process held 148 MB. See `KernelMemoryGuardPolicy`.
     @Published var memory: Int64 = 0
     /// This app's resident size, MB.
     @Published var appMemoryMB = 0.0
@@ -486,6 +490,17 @@ struct SystemProxyStatus: Equatable {
     @Published var closedConns = 0
     var lastDownTotal: Int64 = 0
     var lastCacheFlush = Date.distantPast
+    /// Per-connection silence tracking that decides which kernel connections
+    /// are corpses rather than idle sockets, plus the give-up/re-arm bookkeeping
+    /// for the kernel memory guard. See `KernelMemoryGuard.swift`.
+    var staleConnWatch = StaleConnectionWatch()
+    var kernelGuardState = KernelMemoryGuardPolicy.State()
+    /// Throttle and overlap guard for the `ps` fork behind `KernelRSS.read()`.
+    var lastKernelMemorySample = Date.distantPast
+    var kernelMemoryInFlight = false
+    /// Overlap guard for the batched close loop.
+    var kernelReapInFlight = false
+    var lastStaleReap = Date.distantPast
     /// Bookkeeping for `enforceAppMemoryGuard`: rate limiting plus the
     /// give-up/re-arm cycle. The guard is called from every hot path (1.5 s
     /// connections poll, 3 s gateway poll, foreground loop), so without the
@@ -567,7 +582,6 @@ struct SystemProxyStatus: Equatable {
     private var trafficWS: WSHandle?
 
     private var logWS: WSHandle?
-    private var memWS: WSHandle?
     private var pollTask: Task<Void, Never>?
     /// Samples this process' own RSS on a fixed cadence, independent of every
     /// network stream. App memory is a local `task_info()` read — coupling it
@@ -972,25 +986,15 @@ struct SystemProxyStatus: Equatable {
                     Task { @MainActor in self?.onTraffic(t) }
                 }
             }
-            if memWS == nil {
-                memWS = api.stream("/memory", type: MemoryTick.self) { [weak self] m in
-                    Task { @MainActor in
-                        // Kernel memory only. App memory used to be updated here
-                        // too, which quietly froze the dashboard: mihomo's
-                        // /memory stream opens with a placeholder {"inuse":0}
-                        // frame and keeps reporting 0 while the kernel is idle,
-                        // so the `inuse > 0` gate below also suppressed the
-                        // app-side reading — a local task_info() call that has
-                        // nothing to do with the kernel. Two independent
-                        // sources, now updated independently; app memory has
-                        // its own timer in `startAppMemorySampling()`.
-                        // Always update — 0 is a valid reading (kernel idle).
-                        // The old gate left live.memory stuck at its last
-                        // value forever when the kernel went idle.
-                        self?.live.memory = m.inuse
-                    }
-                }
-            }
+            // Kernel memory is not sampled here. It used to be mihomo's `/memory`
+            // WebSocket, which was wrong twice over: the stream only runs while
+            // UI is visible, so the number froze at its last value across every
+            // background hour — which is exactly when the growth being measured
+            // happens — and the value itself is mihomo's connection accounting,
+            // not its footprint (see `KernelMemoryGuardPolicy`). `live.memory`
+            // is now real RSS, sampled on the connection loop in
+            // `sampleKernelMemory()` and kicked once here so the first frame
+            // after a hidden→visible transition is not blank.
             startAppMemorySampling()
             startPolling()
 
@@ -1013,8 +1017,6 @@ struct SystemProxyStatus: Equatable {
         } else {
             trafficWS?.cancel()
             trafficWS = nil
-            memWS?.cancel()
-            memWS = nil
             pollTask?.cancel()
             pollTask = nil
             // No UI on screen: nothing reads `live.appMemoryMB`, so stop
@@ -1072,11 +1074,6 @@ struct SystemProxyStatus: Equatable {
 
     private func stopStreams() {
         trafficWS?.cancel(); trafficWS = nil
-        // memWS must drain here too. It is rebuilt only when nil (reconcile's
-        // activeUI branch), so a stale non-nil handle after an unreachable
-        // window would leave the /memory stream dead until the window is
-        // hidden and reshown.
-        memWS?.cancel(); memWS = nil
         pollTimer?.invalidate(); pollTimer = nil
         pollTask?.cancel(); pollTask = nil
         stopAppMemorySampling()
@@ -1118,7 +1115,7 @@ struct SystemProxyStatus: Equatable {
         }
     }
 
-    // MARK: - App memory sampling
+    // MARK: - Memory sampling
 
     /// How often the app's own RSS is resampled while any UI is on screen.
     ///
@@ -1127,6 +1124,14 @@ struct SystemProxyStatus: Equatable {
     /// 2 s keeps the readout visibly live without being a busy loop.
     static let appMemorySampleInterval: TimeInterval = 2
 
+    /// How often the **kernel's** RSS is resampled.
+    ///
+    /// Unlike the app's own reading this costs a `ps` fork (see `KernelRSS`),
+    /// so it rides the connection loop rather than the 2 s UI timer. One fork a
+    /// minute against a metric that drifted by single-digit MB per day in the
+    /// field is the right trade.
+    static let kernelMemorySampleInterval: TimeInterval = 60
+
     /// Start (or restart) the independent app-memory sampler.
     ///
     /// Idempotent: callers may invoke it on every visibility change without
@@ -1134,8 +1139,13 @@ struct SystemProxyStatus: Equatable {
     func startAppMemorySampling() {
         appMemTimer?.invalidate()
         // Sample immediately so the dashboard shows a real number on the first
-        // frame instead of 0 until the first interval elapses.
+        // frame instead of 0 until the first interval elapses. The kernel read
+        // needs no special-casing: its throttle starts armed (`distantPast`),
+        // so the first call after launch always goes through and later ones
+        // cannot, which is what keeps a route-change burst of `reconcileActiveStreams`
+        // from forking `ps` repeatedly.
         sampleAppMemory()
+        sampleKernelMemory()
         appMemTimer = Timer.scheduledTimer(withTimeInterval: Self.appMemorySampleInterval,
                                            repeats: true) { [weak self] _ in
             Task { @MainActor in self?.sampleAppMemory() }
@@ -1159,6 +1169,40 @@ struct SystemProxyStatus: Equatable {
         let rounded = (mb * 10).rounded() / 10
         if abs(live.appMemoryMB - rounded) >= 0.05 {
             live.appMemoryMB = rounded
+        }
+    }
+
+    /// Resample the kernel's resident size, honouring the fork throttle, and
+    /// hand the reading to `enforceKernelMemoryGuard`.
+    ///
+    /// Called from the connection loop, which is the only thing that still runs
+    /// while the app is hidden — the growth this watches for happens behind a
+    /// closed lid, so a UI-visible-only sampler would have been blind to the
+    /// entire incident it exists for.
+    func sampleKernelMemory() {
+        guard !kernelMemoryInFlight else { return }
+        let now = Date()
+        guard now.timeIntervalSince(lastKernelMemorySample) >= Self.kernelMemorySampleInterval
+        else { return }
+        kernelMemoryInFlight = true
+        // `KernelRSS.read()` forks `ps` off-main; the result hops back here.
+        // Same read-to-EOF-then-wait shape as `EngineControl.managedKernels`,
+        // and the same single exit path, so the in-flight flag cannot be left
+        // set by a cancelled or abandoned read.
+        Task { [weak self] in
+            let rss = await KernelRSS.read()
+            guard let self else { return }
+            self.kernelMemoryInFlight = false
+            self.lastKernelMemorySample = Date()
+            // nil means "not measurable right now", which in practice is the
+            // stop/start window of a kernel restart. Zero is the honest number
+            // for the tile — there is no kernel holding anything — but it must
+            // not reach the guard: 0 would read as a 400 MB effective drop and
+            // log a recovery that never happened. The previous action's verdict
+            // stays unsettled and is rendered against the next real reading,
+            // which is the comparison that actually means something.
+            if self.live.memory != (rss ?? 0) { self.live.memory = rss ?? 0 }
+            if let rss { self.enforceKernelMemoryGuard(rss: UInt64(max(rss, 0)), now: now) }
         }
     }
 
@@ -1345,6 +1389,10 @@ struct SystemProxyStatus: Equatable {
     /// the network stack come back up, then forces a clean reconnect.
     private func recoverFromWake() {
         sleeping = false
+        // Every socket the kernel still holds predates this interruption.
+        // `StaleConnectionWatch` will only condemn the ones that stay silent
+        // from here on, which is what makes the reap safe to run unattended.
+        staleConnWatch.arm(now: Date())
         XPCManager.shared.resetConnection()   // tear down stale Mach ports
 
         logKernel("系统唤醒，正在恢复连接与服务...")
@@ -1447,6 +1495,9 @@ struct SystemProxyStatus: Equatable {
         guard !sleeping else { return }   // ignore transient state during sleep/wake
         let onlineChanged = networkOnline != online
         networkOnline = online
+        // Going offline and coming back are both interruptions: a connection
+        // that was already silent when the path dropped is not going to revive.
+        if onlineChanged { staleConnWatch.arm(now: Date()) }
         
         if online {
             // Re-sync state when coming back online or when path changes

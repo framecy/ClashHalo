@@ -60,7 +60,6 @@ struct ProviderEntry: Decodable {
 }
 
 struct TrafficTick: Decodable { let up: Int64; let down: Int64 }
-struct MemoryTick: Decodable { let inuse: Int64 }
 struct DelayResult: Decodable { let delay: Int }
 
 struct LogTick: Decodable { let type: String; let payload: String }

@@ -33,6 +33,8 @@
 		ATDP1 /* TUNDataPlaneProbe.swift in Sources */ = {isa = PBXBuildFile; fileRef = BTDP1 /* TUNDataPlaneProbe.swift */; };
 		AV6H1 /* TUNIPv6Health.swift in Sources */ = {isa = PBXBuildFile; fileRef = BV6H1 /* TUNIPv6Health.swift */; };
 		ATLS1 /* TUNLoopSentinel.swift in Sources */ = {isa = PBXBuildFile; fileRef = BTLS1 /* TUNLoopSentinel.swift */; };
+		AKMG1 /* KernelMemoryGuard.swift in Sources */ = {isa = PBXBuildFile; fileRef = BKMG1 /* KernelMemoryGuard.swift */; };
+		AKRS1 /* KernelRSS.swift in Sources */ = {isa = PBXBuildFile; fileRef = BKRS1 /* KernelRSS.swift */; };
 		A015 /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = B015 /* Assets.xcassets */; };
 		AABBCCDD0000000000000001 /* HelperProtocol.swift in Sources */ = {isa = PBXBuildFile; fileRef = AABBCCDD0000000000000002 /* HelperProtocol.swift */; };
 		AABBCCDD0000000000000003 /* XPCManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = AABBCCDD0000000000000004 /* XPCManager.swift */; };
@@ -100,6 +102,8 @@
 		BTDP1 /* TUNDataPlaneProbe.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TUNDataPlaneProbe.swift; sourceTree = "<group>"; };
 		BV6H1 /* TUNIPv6Health.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TUNIPv6Health.swift; sourceTree = "<group>"; };
 		BTLS1 /* TUNLoopSentinel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TUNLoopSentinel.swift; sourceTree = "<group>"; };
+		BKMG1 /* KernelMemoryGuard.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = KernelMemoryGuard.swift; sourceTree = "<group>"; };
+		BKRS1 /* KernelRSS.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = KernelRSS.swift; sourceTree = "<group>"; };
 		B015 /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
 		BF9832249132493A9E51C30C /* ProxiesPage.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Sources/UI/Proxies/ProxiesPage.swift; sourceTree = SOURCE_ROOT; };
 		C6DEDA31B7B33D5919A12DEB /* RuleEditorModel.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = RuleEditorModel.swift; path = Sources/Core/RuleValidator/RuleEditorModel.swift; sourceTree = "<group>"; };
@@ -147,6 +151,8 @@
 				BTDP1 /* TUNDataPlaneProbe.swift */,
 				BV6H1 /* TUNIPv6Health.swift */,
 				BTLS1 /* TUNLoopSentinel.swift */,
+				BKMG1 /* KernelMemoryGuard.swift */,
+				BKRS1 /* KernelRSS.swift */,
 				A7EFEC0FDBC0406AA6A9D774 /* AppModel.swift */,
 				AMP2 /* AppModel+Proxies.swift */,
 				AMC2 /* AppModel+Connections.swift */,
@@ -349,6 +355,8 @@
 				ATDP1 /* TUNDataPlaneProbe.swift in Sources */,
 				AV6H1 /* TUNIPv6Health.swift in Sources */,
 				ATLS1 /* TUNLoopSentinel.swift in Sources */,
+				AKMG1 /* KernelMemoryGuard.swift in Sources */,
+				AKRS1 /* KernelRSS.swift in Sources */,
 				AMP1 /* AppModel+Proxies.swift in Sources */,
 				AMC1 /* AppModel+Connections.swift in Sources */,
 				AMG1 /* AppModel+Config.swift in Sources */,

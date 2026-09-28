@@ -27,15 +27,14 @@ extension AppModel {
     func recordHistoryOnly(from s: ConnectionsSnapshot) {
         if uploadTotal != s.uploadTotal { uploadTotal = s.uploadTotal }
         if downloadTotal != s.downloadTotal { downloadTotal = s.downloadTotal }
-        if let m = s.memory, m > 0, live.memory != m {
-            live.memory = m
-            // Core Memory Guard: If core usage > 512MB, flush caches (max once per 30 mins)
-            if m > 512 * 1024 * 1024 && Date().timeIntervalSince(lastCacheFlush) > 1800 {
-                lastCacheFlush = Date()
-                clearAllCache()
-                logKernel("核心内存占用过高 (\(m / 1_000_000)MB)，已自动清空 DNS 与 Fake‑IP 缓存")
-            }
-        }
+        // `s.memory` is deliberately unread now. It is mihomo's connection
+        // accounting, not its footprint, and the guard that acted on it at
+        // 512 MB neither fired on the way to 426 MB of real RSS nor would have
+        // freed a byte had it done — the memory was in dead sockets, not in the
+        // caches it flushed. Kernel memory is now sampled as RSS
+        // (`sampleKernelMemory`) and reclaimed by closing the sockets that
+        // hold it (`reapStaleConnections`).
+        sampleKernelMemory()
 
         enforceAppMemoryGuard()
 
@@ -56,7 +55,20 @@ extension AppModel {
         // Drained after the pool closes (route forensics forks `route -n
         // get`) — at most one trip per snapshot tick, see `handleTUNLoopTrip`.
         var loopTrip: TUNLoopTrip?
+        let watchNow = Date()
         autoreleasepool {
+        // Silence tracking runs ahead of the visibility branch on purpose: the
+        // background branch is exactly where a closed lid accumulates corpses,
+        // so a foreground-only feed would have been blind to the whole failure
+        // mode — the same one-path bug `enforceAppMemoryGuard` documents below.
+        var liveIDs = Set<String>(minimumCapacity: items.count)
+        for c in items {
+            liveIDs.insert(c.id)
+            staleConnWatch.observe(id: c.id, bytes: c.upload + c.download,
+                                   tcp: c.metadata.network == "tcp", now: watchNow)
+        }
+        staleConnWatch.reap(excluding: liveIDs)
+
         if needDetailedStats {
             var bytes: [String: (up: Int64, down: Int64)] = [:]
             bytes.reserveCapacity(items.count)
@@ -164,9 +176,18 @@ extension AppModel {
         if let trip = loopTrip {
             Task { @MainActor in await self.handleTUNLoopTrip(trip) }
         }
+        // Opportunistic, and rate-limited inside: a wake or an offline→online
+        // flip arms the watch, and the corpses that exposes should go back to
+        // the kernel without first waiting for RSS to cross the guard's tier.
+        reapStaleConnections(now: watchNow)
         // App memory is sampled by its own timer (`startAppMemorySampling()`),
         // not here: tying it to a connections snapshot meant it only refreshed
         // on pages that request detailed stats, leaving the dashboard stale.
+        // Kernel memory deliberately *is* sampled here (top of this function):
+        // the app timer that carries the app reading stops when no UI is on
+        // screen, and the kernel's growth happens behind a closed lid — exactly
+        // the hours that timer never runs. The snapshot loop is the only thing
+        // that keeps ticking through them.
     }
 
     // MARK: - App memory guard
@@ -250,6 +271,113 @@ extension AppModel {
                 cachedConns = Array(cachedConns.prefix(keepRows))
             }
             return true
+        }
+    }
+
+    // MARK: - Kernel memory guard
+
+    /// Thresholds and tiering live in `KernelMemoryGuardPolicy` so they can be
+    /// exercised without a kernel or a connection stream — see
+    /// `Tests/KernelMemoryGuard`.
+    static let kernelMemoryGuardPolicy = KernelMemoryGuardPolicy()
+
+    /// Minimum spacing between two reap rounds that nobody forced.
+    static let staleReapInterval: TimeInterval = 600
+    /// Ceiling on connections closed per round. The 2026-09-28 capture had 1039
+    /// candidates; a round that wide would be a visible cliff on the connections
+    /// page, and there is no reason to take the whole stack at once.
+    static let staleReapMaxPerRun = 400
+    /// Per-id `DELETE`s before the round pauses, so a mass reclaim cannot look
+    /// like a request storm to the kernel's own API server.
+    static let staleReapBatch = 50
+
+    /// Act on the kernel's **resident size**.
+    ///
+    /// Replaces the guard that read mihomo's connection accounting at a 512 MB
+    /// threshold and flushed caches. Both halves were inert against the failure
+    /// it was meant to prevent: the accounting is not a footprint (it sat frozen
+    /// at 363 MB while `ps` measured 148 MB), and the bytes were in dead sockets,
+    /// which no cache flush touches.
+    ///
+    /// Tier one closes stale connections, which is the only action that reaches
+    /// those bytes. Tier two adds the cache flush — kept because it is what the
+    /// old guard did, and fake-ip/DNS tables do grow over weeks. There is no
+    /// tier three: an automatic kernel restart is the reliable fix and the one
+    /// thing the user would feel, so when both tiers fail the guard suspends and
+    /// says so instead of looping.
+    func enforceKernelMemoryGuard(rss: UInt64, now: Date) {
+        let decision = Self.kernelMemoryGuardPolicy.decide(rss: rss, now: now,
+                                                           state: &kernelGuardState)
+        let mb = rss / 1_000_000
+
+        switch decision.transition {
+        case .none:
+            break
+        case .engaged:
+            logKernel("内核内存偏高 (RSS \(mb)MB)，开始回收静默连接")
+        case let .suspended(afterActions):
+            logKernel("内核内存回收无效：连续 \(afterActions) 次处置后 RSS 仍为 \(mb)MB，已暂停自动回收。"
+                + " 内存可能不在可回收的连接上；如需彻底释放，请在「网络」页重启内核。")
+        case .reArmed:
+            logKernel("内核内存较暂停时显著增长 (RSS \(mb)MB)，恢复回收")
+        case .recovered:
+            logKernel("内核 RSS 已回落至 \(mb)MB，恢复正常")
+        }
+
+        switch decision.action {
+        case .skip:
+            return
+        case .reap:
+            reapStaleConnections(now: now, force: true)
+        case .reapAndFlush:
+            reapStaleConnections(now: now, force: true)
+            guard now.timeIntervalSince(lastCacheFlush) > 1800 else { return }
+            lastCacheFlush = now
+            clearAllCache()
+            logKernel("内核 RSS \(mb)MB 超阈，已清空 DNS 与 Fake‑IP 缓存")
+        }
+    }
+
+    /// Close the connections `StaleConnectionWatch` has condemned.
+    ///
+    /// Selective by construction: `DELETE /connections` (close everything) is
+    /// one line shorter and would also drop every live session the user is
+    /// relying on — an idle-but-alive SSH shell, a resuming download, an IM push
+    /// socket. Only per-id closes, and only ids the watch proved silent.
+    ///
+    /// `forget`s the ids before dispatching so a snapshot that still lists them
+    /// cannot propose the same batch twice while the closes are in flight.
+    func reapStaleConnections(now: Date, force: Bool = false) {
+        guard !kernelReapInFlight else { return }
+        guard force || now.timeIntervalSince(lastStaleReap) >= Self.staleReapInterval
+        else { return }
+        let doomed = staleConnWatch.candidates(now: now)
+        guard !doomed.isEmpty else { return }
+        lastStaleReap = now
+
+        let batch = Array(doomed.prefix(Self.staleReapMaxPerRun))
+        staleConnWatch.forget(batch)
+        kernelReapInFlight = true
+        Task { [weak self] in
+            guard let self else { return }
+            defer { self.kernelReapInFlight = false }
+            var sent = 0
+            var index = batch.startIndex
+            while index < batch.endIndex {
+                let end = Swift.min(index + Self.staleReapBatch, batch.endIndex)
+                for id in batch[index..<end] {
+                    // 计数口径只能到「请求成功送达」：实测 mihomo 对一个不存在
+                    // 的 id 也回 204，所以 2xx 不能证明真关掉了什么。真正消失
+                    // 与否交给下一拍的 `reap(excluding:)` 收敛，这里不虚报。
+                    if (try? await self.api.closeConnection(id: id)) != nil { sent += 1 }
+                }
+                index = end
+                if index < batch.endIndex {
+                    try? await Task.sleep(nanoseconds: 200_000_000)
+                }
+            }
+            let remaining = doomed.count - batch.count
+            logKernel("已对 \(sent)/\(batch.count) 条静默连接发出关闭（候选 \(doomed.count)\(remaining > 0 ? "，本轮上限 \(Self.staleReapMaxPerRun)，剩余 \(remaining) 条下轮处理" : "")）")
         }
     }
 
