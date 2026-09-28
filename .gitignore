@@ -46,8 +46,10 @@ build/
 build/
 
 # 压测与监控脚本及采集数据（非 App 源码，不入库）
-monitor_*/
-loadtest_*/
+# 不带下划线的形式也要盖住：`monitor_*/` 匹配不到 `monitor/`，
+# 于是每次 `git status` 都挂着一坨永远不会入库的采集文件。
+monitor*/
+loadtest*/
 *.pid
 
 # 参考文档，非发布内容
