@@ -54,8 +54,23 @@ bash make.sh
 注意：
 
 - 不要用 `make.sh` 做普通验证；它会改 `CURRENT_PROJECT_VERSION`，可能拉 mihomo，并把 DMG 拷到 `~/Desktop`
-- 没有 XCTest target；核心逻辑至少 Debug build；涉及 Helper/TUN/打包再跑 Release
+- 没有 XCTest target，但有纯逻辑回归套件（见下）；核心逻辑至少 Debug build，涉及 Helper/TUN/打包再跑 Release
 - 除非任务明确要求，不要安装/卸载 Helper，不要打开 TUN，不要改本机系统代理/DNS/LaunchDaemon
+
+### 回归测试
+
+```bash
+bash Scripts/run-tests.sh                # 13 套全跑，末尾出矩阵
+bash Scripts/run-tests.sh --only tun     # 只跑名字含 tun 的
+bash Scripts/restore-tests.sh            # 套件文件缺失时物化
+```
+
+原则是**直接编译生产源码**，绝不在测试里重新实现一遍规则——复刻逻辑只会让产品坏掉时测试照样通过。每套是一个独立可执行的 `Tests/<名>/main.swift`，用 `swiftc -O` 连同它要钉住的那几个 `Sources/` 文件编成二进制运行。
+
+- 退出码：全绿 0，任何 FAIL / COMPILE-ERROR / 缺文件都是 1。**一套红了不会中止其余**（旧版 `set -e` 一红全断，"跑过回归"实际只覆盖了排在最前面那套）。
+- `Tests/` **不在版本管理里**（`.gitignore`，自 `291a239` 起移出），新克隆的仓库必须先 `restore-tests.sh` 才能跑回归；脚本会明确列出哪些套件连历史里都取不到、只存在于写它的那台机器上。
+- 新增可测的纯逻辑半边（无 UI、无进程管理、无 MainActor）时，**必须**在 `Scripts/run-tests.sh` 里 `add_suite` 登记一条：未登记的套件等于不存在的套件。`TUNLoopSentinel` 就长期漏登记、从未被跑过。
+- 断言不得依赖开发机的实时状态（网卡、网段、路由、已装应用）。`RouteGuard` 里那条「识别出 en0 的 10.1.1.0/24」曾让整套测试在换网络后必红——测的是笔记本，不是产品。
 
 ## 运行时数据与系统影响
 
@@ -96,6 +111,8 @@ bash make.sh
 - 前台轮询分层：`refreshConfigs` 事件驱动 + 60s 慢兜底；网关设备 `/connections` 3s（网关设备列表在屏时 1s）；连接页 WebSocket + 5s 兜底 Timer；后台 30s；**禁止** DnsPage 等再起独立连接轮询
 - 高频 `@Published` 写入前做等值短路（`mode` / `tunOn` / totals / `gatewayDevices` / `dash` / `activeConnectionsCount` / `closedConns` / `rules` / `version`）
 - **App 内存警卫唯一入口是 `enforceAppMemoryGuard()`**（`AppModel+Connections.swift`）：软档 260MB / 硬档 380MB（RSS 口径，按实测 146MB 空载稳态 + 235MB 系统代理峰值校准），内部 15s 限频，徒劳退避（连续 3 次无效即暂停），启动 30s 宽限窗（突发期只观察不裁剪，启动完成时打 RSS 采样日志）。**新增任何连接快照消费方都必须调它**。禁止再写第二份内联阈值判断
+- **内核内存唯一口径是真实 RSS**（`KernelRSS.swift`：`ps` 按可执行路径精确匹配，因为 `proc_pid_rusage` 跨 uid 读 root 内核是 EPERM）。**禁止把 `live.memory` 改回 mihomo 的 `/memory` 记账**——那不是内存：实测两小时 1415 个采样冻结在 363,905,024 而 `ps` 同期只有 148MB，且它与 `/connections` 的 `memory` 字段逐字节相等（同一个高水位计数器）。内核不可测（重启窗口 `ps` 查不到）时只更新显示、**不进看门狗**，否则 0 会被判成一次有效下降并打出假日志
+- **静默连接判死阈值只写在 `StaleConnectionWatch`**（armed 2h / 绝对 12h，TCP only），**分级只写在 `KernelMemoryGuardPolicy`**（320MB 回收 / 448MB 加清缓存 / 徒劳 3 次暂停）。看门狗**不做自动重启内核**：那是唯一用户会感觉到的动作，兜不住时提示人工处理。2026-09-28 事故：六天待机攒出 1039 条 TCP 尸体（合计只走 1.2MB）撑到 RSS 426MB，根因是设置页「禁用 Keep-Alive」被开（`disable-keep-alive: true`，用户开关不是订阅默认）+ mihomo 对代理 TCP 无空闲超时 + App 从不按年龄回收
 - 连接热路径（`onConnections` / `recordHistoryOnly` / `fetchConnectionsSnapshot` 解码）必须包 `autoreleasepool`；`cachedConns` 走 `clampConnectionCaches()` 上限，截断前先按速率排序且 `activeConnectionsCount` 先赋值（计数不受截断影响）
 - 流量 sparkline series 仅在 `route == dashboard` 或菜单栏可见时追加；默认 `trafficRefreshInterval = 2s`
 - **内核下载/检查必须直连**：`KernelManager` 使用 `connectionProxyDictionary = [:]` 的 ephemeral session，禁止经系统代理访问 GitHub
