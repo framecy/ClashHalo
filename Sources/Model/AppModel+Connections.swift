@@ -27,13 +27,13 @@ extension AppModel {
     func recordHistoryOnly(from s: ConnectionsSnapshot) {
         if uploadTotal != s.uploadTotal { uploadTotal = s.uploadTotal }
         if downloadTotal != s.downloadTotal { downloadTotal = s.downloadTotal }
-        // `s.memory` is deliberately unread now. It is mihomo's connection
-        // accounting, not its footprint, and the guard that acted on it at
-        // 512 MB neither fired on the way to 426 MB of real RSS nor would have
-        // freed a byte had it done — the memory was in dead sockets, not in the
-        // caches it flushed. Kernel memory is now sampled as RSS
-        // (`sampleKernelMemory`) and reclaimed by closing the sockets that
-        // hold it (`reapStaleConnections`).
+        // `s.memory` is deliberately unread now. It is Go heap inuse rather
+        // than residency, and the guard that acted on it at 512 MB neither
+        // fired on the way to 426 MB of real RSS nor would have freed a byte
+        // had it done — the memory was in dead sockets, not in the caches it
+        // flushed. Kernel memory is now sampled as RSS (`sampleKernelMemory`)
+        // and reclaimed by closing the sockets that hold it
+        // (`reapStaleConnections`).
         sampleKernelMemory()
 
         enforceAppMemoryGuard()
@@ -293,10 +293,10 @@ extension AppModel {
 
     /// Act on the kernel's **resident size**.
     ///
-    /// Replaces the guard that read mihomo's connection accounting at a 512 MB
+    /// Replaces the guard that read mihomo's Go heap figure against a 512 MB
     /// threshold and flushed caches. Both halves were inert against the failure
-    /// it was meant to prevent: the accounting is not a footprint (it sat frozen
-    /// at 363 MB while `ps` measured 148 MB), and the bytes were in dead sockets,
+    /// it was meant to prevent: heap inuse is not residency (it held 363 MB
+    /// while `ps` measured 148 MB resident), and the bytes were in dead sockets,
     /// which no cache flush touches.
     ///
     /// Tier one closes stale connections, which is the only action that reaches
