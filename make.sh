@@ -58,27 +58,76 @@ mkdir -p "$RES/Panels"
 rm -rf "$RES/zashboard" # Remove old wrong path if exists
 cp -R "$ROOT/Resources/Panels/zashboard/dist" "$RES/Panels/zashboard"
 
-# Bundle a default mihomo kernel so the app works out of the box. Reuse a local
-# kernel if present, otherwise download the official darwin-arm64 release.
+# Bundle a default mihomo kernel so the app works out of the box.
+#
+# The version is PINNED below (not "whatever is on this machine", not "latest"),
+# so the same source tree always ships the same kernel. Previously this step
+# only reused a local mihomo if one happened to exist and otherwise pulled
+# GitHub's latest tag — meaning the bundled kernel silently varied per build
+# machine and per day. Two builds of the same commit could ship different
+# kernels, and nothing in the repo recorded which one was intended.
+#
+# To bump: update MIHOMO_VERSION and MIHOMO_SHA256 together. Get the digest
+# from the release asset's `digest` field (or the published .sha256 file):
+#   curl -fsSL https://api.github.com/repos/MetaCubeX/mihomo/releases/latest \
+#     | grep -A3 'darwin-arm64-v.*\.gz"' | grep digest
+# The checksum is verified on every download; a mismatch aborts the build
+# rather than shipping a corrupted or substituted kernel.
+MIHOMO_VERSION="v1.19.32"
+MIHOMO_SHA256="3312a6780652c622890fd4357c6a853bbf865464fd047ac7b7f52dab8de18652"
 MIHOMO_DST="$APP/Contents/MacOS/mihomo"
-if [ ! -s "$MIHOMO_DST" ]; then
-    for src in "$HOME/Library/Application Support/ClashHalo/bin/mihomo" \
-               "$HOME/Library/Application Support/ClashHalo/kernels"/*/mihomo \
-               "$HOME/.config/mihomo/mihomo"; do
-        [ -s "$src" ] && cp "$src" "$MIHOMO_DST" && echo "      Reused local mihomo: $src" && break
-    done
-fi
-if [ ! -s "$MIHOMO_DST" ]; then
-    echo "      Downloading official mihomo (darwin-arm64)…"
-    URL=$(curl -fsSL https://api.github.com/repos/MetaCubeX/mihomo/releases/latest \
-        | grep -oE '"browser_download_url"[^,]*darwin-arm64[^"]*\.gz"' \
-        | grep -vE 'compatible|go1' | head -1 | sed -E 's/.*"(https[^"]+)".*/\1/' || true)
-    if [ -n "${URL:-}" ]; then
-        curl -fsSL "$URL" | gunzip > "$MIHOMO_DST" 2>/dev/null || true
+
+# Reuse a local copy only when it is EXACTLY the pinned version, so a stale
+# ~/Library kernel can never leak into a release. Anything else re-downloads.
+MIHOMO_URL="https://github.com/MetaCubeX/mihomo/releases/download/$MIHOMO_VERSION/mihomo-darwin-arm64-$MIHOMO_VERSION.gz"
+
+local_kernel_matches() {
+    [ -s "$1" ] || return 1
+    [ "$("$1" -v 2>/dev/null | grep -oE 'v[0-9]+\.[0-9]+\.[0-9]+' | head -1)" = "$MIHOMO_VERSION" ]
+}
+
+MIHOMO_SRC=""
+for src in "$HOME/Library/Application Support/ClashHalo/bin/mihomo" \
+           "$HOME/Library/Application Support/ClashHalo/kernels/$MIHOMO_VERSION/mihomo" \
+           "$HOME/.config/mihomo/mihomo"; do
+    if local_kernel_matches "$src"; then MIHOMO_SRC="$src"; break; fi
+done
+
+if [ -n "$MIHOMO_SRC" ]; then
+    echo "      Reusing local mihomo $MIHOMO_VERSION: $MIHOMO_SRC"
+    cp "$MIHOMO_SRC" "$MIHOMO_DST"
+else
+    echo "      Downloading pinned mihomo $MIHOMO_VERSION (darwin-arm64)…"
+    TMPGZ="$(mktemp -t mihomo)"
+    trap 'rm -f "$TMPGZ"' RETURN 2>/dev/null || true
+    if curl -fsSL "$MIHOMO_URL" -o "$TMPGZ"; then
+        ACTUAL=$(shasum -a 256 "$TMPGZ" | awk '{print $1}')
+        if [ "$ACTUAL" != "$MIHOMO_SHA256" ]; then
+            echo "      ERROR: mihomo $MIHOMO_VERSION checksum mismatch"
+            echo "        expected $MIHOMO_SHA256"
+            echo "        actual   $ACTUAL"
+            rm -f "$TMPGZ"
+            exit 1
+        fi
+        echo "      Checksum verified ✓"
+        gunzip -c "$TMPGZ" > "$MIHOMO_DST"
     fi
+    rm -f "$TMPGZ"
 fi
-if [ -s "$MIHOMO_DST" ]; then chmod 755 "$MIHOMO_DST"; echo "      mihomo kernel bundled ✓"
-else echo "      WARN: no mihomo bundled; app will download on first run."; fi
+
+if [ -s "$MIHOMO_DST" ]; then
+    chmod 755 "$MIHOMO_DST"
+    # Fail loudly if we somehow bundled the wrong kernel — a silent version
+    # drift is exactly the bug this pinning exists to prevent.
+    BUNDLED_VER="$("$MIHOMO_DST" -v 2>/dev/null | grep -oE 'v[0-9]+\.[0-9]+\.[0-9]+' | head -1)"
+    if [ "$BUNDLED_VER" != "$MIHOMO_VERSION" ]; then
+        echo "      ERROR: bundled kernel is $BUNDLED_VER, expected $MIHOMO_VERSION"
+        exit 1
+    fi
+    echo "      mihomo kernel bundled ✓ ($MIHOMO_VERSION)"
+else
+    echo "      WARN: no mihomo bundled; app will download on first run."
+fi
 
 echo "[4/4] Ad-hoc signing + DMG…"
 xattr -cr "$APP"

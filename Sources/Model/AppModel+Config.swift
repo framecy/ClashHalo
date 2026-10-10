@@ -123,11 +123,21 @@ extension AppModel {
         return v.isEmpty || v == "*" || v == "0.0.0.0" || v == "::" || v == "[::]"
     }
 
+    /// Top-level keys where the on-disk config disagrees with `profile`.
+    ///
+    /// Thin wrapper over `ConfigWriteAudit.drift`, which holds the logic so it can
+    /// be compiled and tested standalone (this file needs SwiftUI, so no test
+    /// harness can link it). See that function for which keys are exempt.
+    static func configDrift(before: String, profile: String) -> [String] {
+        ConfigWriteAudit.drift(before: before, profile: profile)
+    }
+
     /// Promote an Imported (or re-activate an Applied) profile to the
     /// running kernel: persist → reload → mark applied. Pure side-effects;
     /// the user already consented at the call site (two-stage sheet or
     /// "设为活动" tap). Reload coalesces via `appliedHash`: a re-apply of
-    /// unchanged content short-circuits before touching the kernel.
+    /// unchanged content short-circuits before touching the kernel — unless
+    /// the running config drifted since (see the guard below).
     func selectForApply(_ id: String) {
         guard !engine.isBusy else { showToast("内核操作进行中，请稍候…", kind: .warn); return }
         let oldActiveID = store.activeID
@@ -139,8 +149,21 @@ extension AppModel {
         // Skip reload if the on-disk content matches the last applied hash.
         // `commit` just rewrote config.yaml with the same content, but the
         // kernel state is unchanged — avoid the hot-reload churn.
+        //
+        // …but NOT when the running config has since drifted from the profile.
+        // `commit` above has already overwritten config.yaml with the profile
+        // text, so this guard must compare against the *pre-commit* snapshot to
+        // see the drift at all. Measured on a real machine: the settings page
+        // persists `geodata-mode` / `unified-delay` / `find-process-mode` /
+        // `log-level` … straight into config.yaml, where they outrank the
+        // profile; because `appliedHash` still hashes the untouched *profile*,
+        // re-activating the profile reported success and changed nothing. Seven
+        // keys stayed drifted through any number of "已切换配置". A guard whose
+        // whole purpose is to skip a redundant write must not also skip the
+        // repair the user is asking for by clicking the row.
+        let drifted = Self.configDrift(before: backupContent, profile: content)
         if let last = store.profiles.first(where: { $0.id == id })?.appliedHash,
-           last == Sha1.hex(content) {
+           last == Sha1.hex(content), drifted.isEmpty {
             store.markApplied(id, hash: last)
             showToast("已切换配置「\(name)」", kind: .ok)
             return
@@ -439,6 +462,11 @@ extension AppModel {
         } else if !tunOn && dnsRedirected {
             await restoreTunnelDNS()
         }
+        // …but never trust that bit alone. A redirect written before its flag was
+        // set (crash / kill / teardown racing the write) leaves the fake-ip
+        // address on a service with `overridden = 0`, and then BOTH branches
+        // above are dead forever. Sweep on observed system state instead.
+        await sweepOrphanedTunnelDNS()
 
         // Align static routes for excluded prefixes in sync with the real TUN state.
         // Fresh XPC (not cached helper()) — same silent-drop issue as start/sysproxy.
@@ -1342,6 +1370,36 @@ extension AppModel {
             if let v = live[key] ?? disk[key] { body[key] = v }
         }
         if let v = disk["recvmsgx"] ?? live["recvmsgx"] { body["recvmsgx"] = v }
+
+        // `inet4-address` is deliberately NOT written here, and this is a measured
+        // finding rather than an omission.
+        //
+        // The obvious fix for the tunnel claiming the all-zero host address —
+        //
+        //     $ ifconfig utun100
+        //     inet 198.18.0.0 --> 198.18.0.0 netmask 0xfffffffc
+        //
+        // — is to own the key and send `198.18.0.1/30`. That was implemented and
+        // then disproved live on mihomo v1.19.29 (darwin arm64, with_gvisor):
+        // **this build ignores `tun.inet4-address` entirely.** The key is accepted
+        // and silently dropped; the kernel kept reporting its built-in
+        // `["198.18.0.0/30"]` through all four routes tried:
+        //
+        //   1. PATCH /configs {"tun":{"enable":true,"inet4-address":["198.18.0.1/30"]}}
+        //      → HTTP 204, value unchanged.
+        //   2. disable → enable (fresh bring-up) carrying the key → unchanged.
+        //   3. `inet4-address: [198.18.0.1/30]` written into config.yaml and
+        //      reloaded via `PUT /configs?force=true` → unchanged.
+        //   4. Decisive: a *malformed* value (`NOT-AN-IP`) reloaded with HTTP 204
+        //      and no validation error, and a different *valid* value
+        //      (`198.19.0.1/30`) was ignored too. The key is never parsed.
+        //
+        // Sending it anyway would be worse than useless: it makes the App's
+        // intent look satisfied while the kernel does the opposite, and it hides
+        // the real remedy (a privileged `ifconfig utun100 inet 198.18.0.1 ...`
+        // after bring-up, the same mechanism `ProxyManager.cleanupTUNResidual`
+        // already uses for `inet <addr> delete`).
+        //
         // TUN v6 显式接管（TUNIPv6Health）：物理 v6 断供（RA 停发/路由缺失/
         // 探测不可达）时，把全球单播 v6 整段排除出 auto-route——v6 失败发生在
         // 内核层、应用毫秒级回退 IPv4，而不是进隧道后被 DIRECT 拨号放大成
@@ -2449,6 +2507,22 @@ extension AppModel {
             return
         }
         logKernel("确认僵尸 TUN：配置已关但 \(kPinnedTunDevice) 仍 UP 且承载路由（第 \(zombieTunStrikes) 击）")
+        // Claim the repair slot *before* the next suspension point. The guard at
+        // the top of this function reads `zombieTunRepairInFlight`, but the flag
+        // used to be set only inside `healDetachedTUN` — i.e. after this line's
+        // `await`. Two sweeps landing in that window both passed the guard and
+        // both called heal: observed live as
+        //
+        //     17:23:58 确认僵尸 TUN …（第 2 击）
+        //     17:23:58 僵尸 TUN 自愈：重建内核清除隧道残留（巡检，第 1 次）
+        //     17:23:58 确认僵尸 TUN …（第 3 击）
+        //     17:23:58 僵尸 TUN 自愈：重建内核清除隧道残留（巡检，第 2 次）
+        //
+        // i.e. two kernel rebuilds for one zombie — and while hidden this can be
+        // two *concurrent* `engine.restart` calls. Setting it here (and having
+        // `healDetachedTUN` leave the release to its own defer) closes the window
+        // regardless of which caller gets there first.
+        zombieTunRepairInFlight = true
         await healDetachedTUN(reason: "巡检")
     }
 
@@ -2559,11 +2633,19 @@ extension AppModel {
         // The interface must still exist — if it is gone, the existing B10 /
         // verifyTUNConfig teardown path owns the response. Probing a missing
         // gateway would only produce false "data plane dead" noise.
-        guard await NetScanner.mihomoTunInterface(maxAge: 0) != nil else { return }
+        //
+        // Its NAME is also the probe's identity predicate: the socket is bound
+        // to this device and only a reply arriving on it counts. Without that
+        // the probe accepted mihomo's `any:53` hijack answer over the default
+        // route and reported the tunnel healthy against `198.18.0.0` — the
+        // network address of `198.18.0.0/30`, which no host owns — for 1400
+        // consecutive rounds while the data plane was unusable.
+        guard let tunDevice = await NetScanner.mihomoTunInterface(maxAge: 0) else { return }
 
         let gateway = tunnelDNSAddress()
-        logKernel("TUN 数据面探测开始（\(reason)）→ \(gateway):53")
-        let outcomes = await engine.runTUNDataPlaneProbeCycle(gateway: gateway)
+        logKernel("TUN 数据面探测开始（\(reason)）→ \(gateway):53 @\(tunDevice)")
+        let outcomes = await engine.runTUNDataPlaneProbeCycle(gateway: gateway,
+                                                              interface: tunDevice)
         // Feed every attempt into the sliding-window state machine on this
         // actor — never pass actor-isolated state as `inout` into an async
         // helper. A success does NOT reset the window: a half-dead fd can
@@ -2703,13 +2785,25 @@ extension AppModel {
 
         // Secondary acceptance: 2–3 short probes. Any success unlocks the lock.
         // All fail → close TUN, restore direct, stop looping.
+        //
+        // Probe identity matters most here: this is the acceptance step that
+        // decides whether a rebuilt tunnel is declared healthy. Binding to the
+        // device (rather than trusting the default route) is what stops an
+        // `any:53` hijack answer from being accepted as proof the new fd works.
+        guard let acceptanceDevice = await NetScanner.mihomoTunInterface(maxAge: 0) else {
+            logKernel("TUN 自愈验收无法进行：无法确定隧道设备名")
+            await fallbackCloseTUNAfterFailedRecovery(reason: "重建后无法确认隧道设备")
+            return
+        }
         var accepted = false
         for attempt in 1...3 {
-            if await engine.probeTUNDataPlane(gateway: gateway, timeout: 0.8) {
+            if await engine.probeTUNDataPlane(gateway: gateway,
+                                              interface: acceptanceDevice,
+                                              timeout: 0.8) {
                 accepted = true
                 break
             }
-            logKernel("TUN 自愈验收失败 \(attempt)/3: DNS gateway \(gateway) 无响应")
+            logKernel("TUN 自愈验收失败 \(attempt)/3: DNS gateway \(gateway)@\(acceptanceDevice) 无响应")
             if attempt < 3 {
                 try? await Task.sleep(nanoseconds: UInt64(attempt) * 1_000_000_000)
             }
@@ -2759,14 +2853,32 @@ extension AppModel {
 
     /// The TUN gateway to use as the system resolver. Prefers the live config's
     /// `tun.inet4-address` gateway; falls back to mihomo's default fake-ip gateway.
+    ///
+    /// The configured value is a PREFIX (mihomo's default is `198.18.0.0/30`),
+    /// and the address inside it is the *network* address — the all-zero host
+    /// part. Stripping the `/30` and using the remainder verbatim hands the
+    /// system a resolver that can never answer: .0 is not a host in that subnet
+    /// (only .1 and .2 are), so every query to it is dropped. Measured live
+    /// before this fix: `dig @198.18.0.0 www.baidu.com` → "connection timed
+    /// out; no servers could be reached" and `ping 198.18.0.0` → 100% loss,
+    /// while the tunnel itself was up. That is the whole-system DNS blackhole.
+    ///
+    /// The answerable gateway is the first *host* of the prefix, so advance past
+    /// the network address. Falls back to mihomo's default fake-ip gateway when
+    /// the config has no usable prefix.
     func tunnelDNSAddress() -> String {
-        if let tun = configs["tun"] as? [String: Any],
-           let addrs = tun["inet4-address"] as? [String],
-           let first = addrs.first {
-            let ip = String(first.split(separator: "/").first ?? "")
-            if !ip.isEmpty { return ip }
-        }
-        return "198.18.0.1"
+        let addrs = (configs["tun"] as? [String: Any])?["inet4-address"] as? [String] ?? []
+        // Prefer the address the interface ACTUALLY holds over the one the config
+        // prefix implies. Measured 2026-10-09: mihomo ignores `tun.inet4-address`
+        // outright (PATCH / config.yaml / PUT ?force=true all left
+        // `ifconfig utun100` at `inet 198.18.0.0`), so the prefix-derived `.1` and
+        // the kernel's real `.0` inevitably diverge — the app was redirecting
+        // system DNS to an address the interface never carried, and only the
+        // `dns-hijack: any:53` subnet-wide answer kept it working. Observe the
+        // live address; fall back to the prefix only when observation is empty.
+        let observed = NetScanner.mihomoTunInterfaceSync()
+            .flatMap { name in NetScanner.interfaces().first(where: { $0.id == name })?.ipv4 } ?? []
+        return TUNDNSAddress.gateway(observed: observed, fromInet4Addresses: addrs)
     }
 
     /// Redirect system DNS into the tunnel (idempotent). Saves the pre-existing
@@ -2791,6 +2903,58 @@ extension AppModel {
             return
         }
         let gateway = tunnelDNSAddress()
+        // Second invariant at the same write point: the address must be a HOST.
+        // `198.18.0.0/30`'s network address (.0) is not answerable, so writing it
+        // blackholes every lookup the moment the tunnel is not carrying DNS.
+        // tunnelDNSAddress() already advances past it; this refuses to write
+        // anything non-host-shaped even if the config grows an exotic prefix.
+        guard TUNDNSAddress.firstHostAddress(inPrefix: gateway) != nil else {
+            logKernel("TUN DNS 重定向跳过：网关地址 \(gateway) 不是合法主机地址，拒绝写入")
+            return
+        }
+        // Third invariant at the same write point: mihomo must actually be
+        // serving DNS. The first two gates prove the tunnel interface exists and
+        // that the address is host-shaped — but *neither* asks whether anything
+        // will answer on it. Measured live on this machine with TUN up and
+        // `config.yaml` carrying `dns.enable: false`:
+        //
+        //     curl /configs → dns = null
+        //     dig @198.18.0.1 www.baidu.com → status: SERVFAIL
+        //     dig @198.18.0.0 www.baidu.com → status: SERVFAIL
+        //     nslookup www.baidu.com        → ** server can't find ...: SERVFAIL
+        //
+        // i.e. the whole system lost name resolution while the redirect stood.
+        // That is the same failure class as the .0 gateway bug: an unasserted
+        // premise at a system-state write. Pointing the system resolver into a
+        // tunnel whose DNS core is off is a guaranteed blackhole — strictly
+        // worse than leaving the user's original (working) resolver in place,
+        // because every lookup is then hijacked into a resolver that cannot
+        // answer instead of merely bypassing the tunnel.
+        //
+        // Read from config.yaml, not `/configs`: mihomo's API does not return
+        // the dns block at all (it reported `dns = null` even with enable:true
+        // pushed via PATCH), so the persisted file is the only truthful source.
+        // Same accessor the neighbouring `ensureProxyDNS` gate uses.
+        let dnsBlock = (engine.readConfigFile()?["dns"] as? [String: Any]) ?? [:]
+        let dnsEnabled = (dnsBlock["enable"] as? Bool) ?? false
+        // And the address must actually be routed into our tunnel — the gate that
+        // replaced the falsified "host bits are zero ⇒ network address ⇒ no reply"
+        // rule. Measured 2026-10-09: with TUN up both .0 and .1 answer (the tunnel
+        // takes the whole 198.18.0.0/15 via auto-route and dns-hijack replies on
+        // it); with TUN down both time out. What separates a working redirect from
+        // a blackhole is the route, not the address's host bits.
+        let tunnelName = NetScanner.mihomoTunInterfaceSync()
+        let routed = NetScanner.routedInterface(for: gateway)
+        guard TUNDNSAddress.shouldRedirectSystemDNS(dnsEnabled: dnsEnabled,
+                                                    interfacePresent: true,
+                                                    gateway: gateway,
+                                                    routedInterface: routed,
+                                                    tunnel: tunnelName) else {
+            logKernel("TUN DNS 重定向跳过：config.yaml 的 dns.enable=\(dnsEnabled ? "true" : "false")、"
+                      + "网关 \(gateway) 实际出口 \(routed ?? "无路由")/隧道 \(tunnelName ?? "未找到")；"
+                      + "此时写入会让全部解析进入无法应答的隧道，保持系统原 DNS 不变，待条件满足后由对账重试")
+            return
+        }
         let d = UserDefaults.standard
         let wasOverridden = d.bool(forKey: Self.kDNSOverriddenKey)
         // N9: pin the network service the redirect is written to. Restoring
@@ -2840,6 +3004,171 @@ extension AppModel {
         d.set(false, forKey: Self.kDNSOverriddenKey)
         d.removeObject(forKey: Self.kDNSSavedKey)
         d.removeObject(forKey: Self.kDNSServiceKey)
+    }
+
+    /// Throttle for `sweepOrphanedTunnelDNS`'s scan (see its doc comment).
+    private static var lastOrphanSweepAt: Date = .distantPast
+    private static let orphanSweepMinInterval: TimeInterval = 30
+    /// Sticky across passes: set when a sweep finds a fake-ip resolver it could
+    /// not clear, so the throttle cannot silence a live blackhole.
+    private static var dnsRepairNeeded = false
+
+    /// Withdraw a TUN fake-ip resolver that is still sitting in the system DNS
+    /// while no tunnel is up, **regardless of the `tun.dns.overridden` flag**.
+    ///
+    /// Throttled: the reconcile that calls this runs on every refresh, and each
+    /// pass costs a `networksetup -getdnsservers` fork per candidate service. The
+    /// throttle only suppresses the *scan*; a detected residue is always fixed
+    /// immediately, so the guard can never leave a blackhole in place.
+    ///
+    /// The flag is a single bit of bookkeeping, and it desyncs: a redirect
+    /// written before the flag-setting line was reached (crash, kill, or a
+    /// teardown that raced the write) leaves the address on the service with
+    /// `overridden = 0`. `restoreTunnelDNS()` opens with
+    /// `guard d.bool(forKey: kDNSOverriddenKey) else { return }`, so from then
+    /// on **neither** branch of the reconcile at `refreshConfigs` runs
+    /// (`tunOn && !dnsRedirected` is false while TUN is off;
+    /// `!tunOn && dnsRedirected` is false because the flag is clear) and the
+    /// stale resolver is never cleaned. Observed live 2026-10-09: Wi-Fi still
+    /// carried `198.18.0.0` with TUN off, `tun.dns.saved`/`tun.dns.service`
+    /// absent. It only stayed harmless because the default interface happened
+    /// to be Ethernet — the moment Wi-Fi became primary, every lookup died.
+    ///
+    /// So the decision is made on **observed system state**, not on the flag:
+    /// if a network service's DNS is a fake-ip address and no mihomo tunnel is
+    /// up, that resolver is a guaranteed blackhole and gets removed. This is the
+    /// same idempotent shape `ensureProxyDNS` uses for its residual revert.
+    func sweepOrphanedTunnelDNS() async {
+        // Only meaningful with the tunnel down: with it up the redirect is live
+        // and correct (that is `enableTunnelDNS`'s job).
+        guard !tunOn else { return }
+        // Identity-strict on purpose, and the opposite of the liveness tolerance
+        // used elsewhere: this decides whether *our* fake-ip redirect is now
+        // orphaned. A co-resident proxy's healthy 198.18 tunnel must not suppress
+        // the sweep — the system resolver we wrote points at the mihomo gateway,
+        // and if our own tunnel is gone that resolver is still a blackhole no
+        // matter what another app has up.
+        guard await NetScanner.ownMihomoTunInterface() == nil else { return }
+
+        // A tunnel exists but is not ours — a co-resident proxy. Not a reason
+        // to stop sweeping (our residue is still ours to clear), but a reason
+        // to be careful about services we have no provenance for, because that
+        // other kernel may legitimately own the fake-ip range for its own
+        // resolver. `ownMihomoTunInterface()` returning nil above only proves
+        // *our* tunnel is down, not that the machine has none.
+        let otherTunnelIsUp = !NetScanner.interfaces()
+            .filter { $0.kind == .proxyTun && $0.isUp }.isEmpty
+
+        let pinnedService = UserDefaults.standard.string(forKey: Self.kDNSServiceKey) ?? ""
+        // Cheap skip on the overwhelmingly common path (healthy machine, no
+        // redirect ever written): with no recorded service AND no flag, there is
+        // nothing we ever wrote, so there is nothing to withdraw. Still checks
+        // the current default below, because a redirect from an older build has
+        // neither the flag nor the recorded service.
+        let flagged = UserDefaults.standard.bool(forKey: Self.kDNSOverriddenKey)
+        let pinned = !pinnedService.isEmpty
+
+        // Throttle the scan, but never the FIX: once something is written here,
+        // `dnsRepairNeeded` pins the throttle open until the residue is gone.
+        // Re-arming the window only on a clean pass means a persistently failing
+        // write keeps retrying rather than being throttled into silence.
+        let now = Date()
+        guard flagged || Self.dnsRepairNeeded
+                || now.timeIntervalSince(Self.lastOrphanSweepAt) >= Self.orphanSweepMinInterval else {
+            return
+        }
+        Self.lastOrphanSweepAt = now
+
+        // Sweep *every* service, not just the one we pinned plus the current
+        // default. Those two are not the set a redirect can strand on: a
+        // redirect written while Wi-Fi was primary outlives a switch to
+        // Ethernet, and the service that is not the default at sweep time is
+        // exactly the one the old two-entry scan could not see. One
+        // `networksetup` fork returns the whole list, so this costs a single
+        // process however many services the machine has.
+        var services: [String] = []
+        if pinned, !pinnedService.isEmpty { services.append(pinnedService) }
+        let current = await EngineControl.defaultNetworkService()
+        for name in await EngineControl.allNetworkServices() {
+            if name == current { continue }
+            if !services.contains(name) { services.append(name) }
+        }
+        if let current, !services.contains(current) { services.append(current) }
+        guard !services.isEmpty else { return }
+
+        // Whether any residue survived this pass. Tracked separately from
+        // `dnsRepairNeeded` because that flag is now decided once, after the
+        // loop: clearing it inside the loop let an early success erase the
+        // record of a later failure, which is exactly the shape a widened
+        // sweep must not have.
+        var residueRemains = false
+
+        for service in services {
+            let servers = await EngineControl.currentSystemDNS(service: service)
+            guard let stale = servers.first(where: { TUNDNSAddress.isFakeIPResolver($0) }) else { continue }
+            // An address inside the fake-ip range is residue whoever wrote it:
+            // no user types `198.18.x.x` as a resolver by hand, and with no
+            // mihomo tunnel up to serve it, it is a guaranteed blackhole.
+            //
+            // The old guard (`!flagged && !pinned && service != services.last`)
+            // tried to avoid touching config we did not write, but the price
+            // was leaving a dead resolver in place: residue from a build that
+            // recorded neither the flag nor the pinned service, sitting on a
+            // non-default interface, was invisible *and* skipped. Provenance
+            // is already established by the address itself, so gate on that
+            // instead — the rule lives in TUNDNSAddress so it can be tested.
+            let isDefaultService = (service == current)
+            let hasProvenance = flagged || pinned
+            guard TUNDNSAddress.shouldSweepResidueOn(hasProvenance: hasProvenance,
+                                                     isDefaultService: isDefaultService,
+                                                     otherTunnelIsUp: otherTunnelIsUp) else {
+                logKernel("TUN DNS 残留清理：服务 \(service) 上的 \(stale) 疑似其他内核所有，跳过")
+                continue
+            }
+
+            // Residue found and the write is about to be attempted: provisionally
+            // leave the throttle open. It is cleared below only on success.
+            residueRemains = true
+
+            // Prefer the snapshot we saved at enable time; fall back to clearing
+            // the service so it returns to DHCP-provided resolvers.
+            let savedString = UserDefaults.standard.string(forKey: Self.kDNSSavedKey) ?? ""
+            let saved = savedString == "Empty" || savedString.isEmpty
+                ? ["Empty"]
+                : savedString.split(separator: ",").map(String.init)
+            let restored = saved.filter { !TUNDNSAddress.isFakeIPResolver($0) }
+            let target = restored.isEmpty ? ["Empty"] : restored
+
+            // The snapshot belongs to the service we originally pinned; applying
+            // it to a *different* service would smear one interface's DNS onto
+            // another. For any other service, just clear the stale entry.
+            let useSnapshot = pinned && service == pinnedService
+            let ok = await EngineControl.applySystemDNS(useSnapshot ? target : ["Empty"], service: service)
+            guard ok else {
+                // Keep the signal set: a failed write must survive to the end
+                // of the sweep even if a later service clears cleanly.
+                logKernel("TUN DNS 残留清理写入失败：服务 \(service)（下次巡检重试）")
+                continue
+            }
+            logKernel("TUN DNS 残留清理：服务 \(service) 上的 \(stale) 已回退（TUN 未开启，该地址必然黑洞）")
+        }
+
+        // Decided once, after the whole sweep: the throttle stays exempt only
+        // if some service still carries residue, or a write failed. Folding
+        // this per-service let an early success mask a later failure.
+        Self.dnsRepairNeeded = residueRemains
+
+        // The flag no longer describes reality once the sweep has run — but
+        // only once it has actually *finished* the job. A failed write clears
+        // nothing: dropping the recorded service would discard the one clue
+        // that points at where the residue lives, and the next sweep would
+        // have to rediscover it from the default interface alone (which is the
+        // gap this sweep was widened to close).
+        if flagged && !Self.dnsRepairNeeded {
+            UserDefaults.standard.set(false, forKey: Self.kDNSOverriddenKey)
+            UserDefaults.standard.removeObject(forKey: Self.kDNSSavedKey)
+            UserDefaults.standard.removeObject(forKey: Self.kDNSServiceKey)
+        }
     }
 
     /// Deep-merge config overrides into the running config via the engine

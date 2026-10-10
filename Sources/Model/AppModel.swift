@@ -998,6 +998,8 @@ struct SystemProxyStatus: Equatable {
             // after a hidden→visible transition is not blank.
             startAppMemorySampling()
             startPolling()
+            // The visible path's 30 s health loop owns the zombie sweep again.
+            stopBackgroundSafetyWatch()
 
             // Coming back from hidden: everything on screen is as stale as the
             // time spent hidden, so refresh once immediately instead of making
@@ -1024,6 +1026,22 @@ struct SystemProxyStatus: Equatable {
             // sampling rather than keep a 2 s timer alive in the background.
             stopAppMemorySampling()
             wasUIActive = false
+            // …but do NOT stop guarding the two states that damage the machine
+            // while nobody is watching. The 30 s health loop lives inside
+            // `pollTask`, which is cancelled just above, so a zombie TUN that
+            // outlives its kernel (interface UP, still owning routes, config
+            // saying OFF) survives indefinitely once the window is closed —
+            // reproduced here by SIGKILLing mihomo with TUN up: `utun100` stayed
+            // UP still holding 174 route entries, and with the window shut the
+            // app logged nothing for 20+ minutes and never noticed. That is the
+            // same shape as the 2026-09-16 self-loop, which inflated a single
+            // connection to 10.8 TB of phantom traffic precisely because no
+            // guard fires when `tunOn == false`.
+            //
+            // The hidden-state cadence is deliberately slow: this only has to
+            // beat "user notices the network is broken", and each tick costs a
+            // getifaddrs scan (no fork) in the common case.
+            startBackgroundSafetyWatch()
         }
 
         pollTimer?.invalidate()
@@ -1157,6 +1175,46 @@ struct SystemProxyStatus: Equatable {
         appMemTimer?.invalidate()
         appMemTimer = nil
     }
+
+    // MARK: - 后台安全巡检（窗口不可见时仍在跑）
+
+    /// Cadence of the hidden-state safety watch. 60 s is chosen against the
+    /// failure it guards: a zombie tunnel only matters once it starts diverting
+    /// traffic, and a minute of unnoticed diversion is a far better trade than
+    /// leaving 174 hijacked routes installed until the user happens to open the
+    /// window. It is also the interval the visible path already tolerates for
+    /// its slow config fallback.
+    static let backgroundSafetyInterval: TimeInterval = 60
+
+    /// Start (or restart) the always-on guard timer. Idempotent.
+    func startBackgroundSafetyWatch() {
+        backgroundSafetyTimer?.invalidate()
+        backgroundSafetyTimer = Timer.scheduledTimer(
+            withTimeInterval: Self.backgroundSafetyInterval, repeats: true
+        ) { [weak self] _ in
+            Task { @MainActor in await self?.runBackgroundSafetyWatch() }
+        }
+    }
+
+    func stopBackgroundSafetyWatch() {
+        backgroundSafetyTimer?.invalidate()
+        backgroundSafetyTimer = nil
+    }
+
+    /// The subset of the 30 s health loop that must not depend on the UI being
+    /// on screen. Today that is only the zombie-TUN sweep, which is the one
+    /// guard whose subject is invisible to every `tunOn`-gated check.
+    ///
+    /// `sweepZombieTUN` carries its own guards (reachable, not busy, settle
+    /// window, upDetachedMihomoTun), so calling it from here cannot double-fire
+    /// with the visible path in a harmful way — both funnel into the same
+    /// `zombieTunRepairInFlight` flag.
+    private func runBackgroundSafetyWatch() async {
+        guard reachable, !sleeping else { return }
+        await sweepZombieTUN()
+    }
+
+    private var backgroundSafetyTimer: Timer?
 
     /// One RSS reading, pushed to the UI only when it actually changed.
     ///
