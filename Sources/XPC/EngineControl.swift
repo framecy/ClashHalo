@@ -923,6 +923,47 @@ import Network
         }.value
     }
 
+    /// Every enabled network service name on this machine, in service order.
+    ///
+    /// This exists because the orphaned-DNS sweep originally checked only the
+    /// service we pinned plus the current default. That pair is not the set of
+    /// services a redirect can strand on: a redirect written while Wi-Fi was
+    /// primary survives a switch to Ethernet, and whichever service is *not*
+    /// the default at sweep time is invisible to it. The 2026-10-09 residue
+    /// stayed harmless only by luck (the default happened to be the other
+    /// interface); the moment roles swapped, every lookup would have died.
+    ///
+    /// Disabled services are skipped — macOS marks them with a leading `*`, and
+    /// they carry no live resolver path to strand. A single `networksetup` fork
+    /// returns the whole list, so widening the sweep costs one process, not one
+    /// per service.
+    nonisolated static func allNetworkServices() async -> [String] {
+        await Task.detached(priority: .userInitiated) {
+            let p = Process()
+            p.executableURL = URL(fileURLWithPath: "/usr/sbin/networksetup")
+            p.arguments = ["-listnetworkserviceorder"]
+            let pipe = Pipe(); p.standardOutput = pipe; p.standardError = Pipe()
+            do { try p.run() } catch { return [] }
+            let data = pipe.fileHandleForReading.readDataToEndOfFile(); p.waitUntilExit()
+            guard let out = String(data: data, encoding: .utf8) else { return [] }
+            var names: [String] = []
+            for line in out.components(separatedBy: "\n") {
+                // "(1) Wi-Fi" / "(*2) Disabled Service"
+                guard let r = line.range(of: #"^\((\*?)(\d+)\)\s+(.+)$"#,
+                                         options: .regularExpression) else { continue }
+                let matched = String(line[r])
+                guard !matched.hasPrefix("(*") else { continue }  // disabled
+                let name = matched
+                    .replacingOccurrences(of: #"^\(\*?\d+\)\s*"#,
+                                          with: "", options: .regularExpression)
+                    .trimmingCharacters(in: .whitespaces)
+                guard !name.isEmpty, !names.contains(name) else { continue }
+                names.append(name)
+            }
+            return names
+        }.value
+    }
+
     /// Read the system DNS servers for the default service (or an explicit one).
     nonisolated static func currentSystemDNS(service: String? = nil) async -> [String] {
         let svc: String?
@@ -1858,61 +1899,203 @@ import Network
     // `route-exclude-address` provenance and `cleanupTUNResidual` are used, both
     // of which already refuse to touch a peer tunnel's owned routes.
 
-    /// Send a one-packet UDP DNS probe to the TUN gateway and return whether the
-    /// kernel's dns-hijack round-tripped a valid reply within `timeout`.
+    /// Send a one-packet UDP DNS probe **out of the tunnel device** and return
+    /// whether the kernel's dns-hijack round-tripped a valid reply within
+    /// `timeout` — attributably on that same device.
     ///
-    /// Runs as a receive loop with a hard deadline so a missing fd (no reply
-    /// ever) is reported as false rather than hanging the recovery orchestrator.
-    /// The `gateway` MUST be the same `tunnelDNSAddress` the caller uses for the
-    //  system DNS redirect — defaults to mihomo's fake-ip gateway.
-    nonisolated func probeTUNDataPlane(gateway: String, timeout: TimeInterval = 0.8) async -> Bool {
-        // In-process UDP, no shell/privilege. Bound on a throwaway socket and
-        // closed before return so a stuck fd cannot outlive the probe.
+    /// Runs with a hard deadline so a missing fd (no reply ever) is reported as
+    /// false rather than hanging the recovery orchestrator. The `gateway` MUST be
+    /// the same `tunnelDNSAddress` the caller uses for the system DNS redirect.
+    ///
+    /// `interface` is not advisory — it is the identity predicate:
+    ///   * egress is pinned with `IP_BOUND_IF` (the documented way to force a UDP
+    ///     socket onto a device; `NWParameters.requiredInterface` cannot be used
+    ///     because `NWInterface` has no public initializer, so an interface can
+    ///     never be constructed from a name);
+    ///   * ingress is attributed with `IP_RECVDSTADDR` — the local address the
+    ///     reply landed on — and admitted only when it is the bound device's own
+    ///     address (`TUNProbeReplyGate`).
+    ///
+    /// `IP_RECVIF` would be the natural "which device did this arrive on" signal,
+    /// but it is broken on macOS for UDP: it reports index 463380 for a reply
+    /// that provably arrived on `en0` (index 7), via the documented C macros.
+    /// Comparing it would reject every genuine reply. See `TUNProbeReplyGate`.
+    ///
+    /// Probing over the default route and accepting any well-formed reply is what
+    /// made this check report "应答" for 1400 consecutive rounds against
+    /// `198.18.0.0` — the network address of `198.18.0.0/30`, which no host owns.
+    /// mihomo's `any:53` hijack answered it whether or not the tunnel worked, so
+    /// the probe could never fail on the very condition it exists to detect.
+    nonisolated func probeTUNDataPlane(gateway: String,
+                                       interface: String,
+                                       timeout: TimeInterval = 0.8) async -> Bool {
+        await withCheckedContinuation { (cont: CheckedContinuation<Bool, Never>) in
+            DispatchQueue.global(qos: .userInitiated).async {
+                cont.resume(returning: Self.blockingTUNProbe(gateway: gateway,
+                                                             interface: interface,
+                                                             timeout: timeout))
+            }
+        }
+    }
+
+    /// Blocking body of `probeTUNDataPlane` — runs off the main actor.
+    ///
+    /// Raw BSD socket rather than `NWConnection` because only the socket layer
+    /// exposes both halves of what identity requires: `IP_BOUND_IF` to pin egress
+    /// and `IP_RECVDSTADDR` to learn which local address a datagram landed on. A
+    /// socket with neither would be unable to tell "our tunnel answered" from
+    /// "something else answered", which is precisely the bug this fixes.
+    nonisolated private static func blockingTUNProbe(gateway: String,
+                                                     interface: String,
+                                                     timeout: TimeInterval) -> Bool {
         let probe = DNSProbe(txID: UInt16.random(in: 1...UInt16.max))
         let payload = probe.query()
-        guard let port = NWEndpoint.Port(rawValue: 53) else { return false }
-        let host = NWEndpoint.Host(gateway)
-        let params = NWParameters.udp
-        // Prefer the default path — the system route table should already pin
-        // 198.18/15 at our utun. Forcing a specific interface is a privilege we
-        // do not need, and would break the probe on the very machines where the
-        // route has been re-homed by a peer tunnel.
-        let dg = NWConnection(host: host, port: port, using: params)
-        return await withCheckedContinuation { (cont: CheckedContinuation<Bool, Never>) in
-            // Completion can race the hard deadline; lock so we resume exactly once.
-            let lock = NSLock()
-            var resumed = false
-            let finish: (Bool) -> Void = { v in
-                lock.lock(); defer { lock.unlock() }
-                if !resumed {
-                    resumed = true
-                    cont.resume(returning: v)
-                    dg.cancel()
-                }
-            }
-            // Hard deadline — a missing fd never replies.
-            let queue = DispatchQueue.global(qos: .userInitiated)
-            queue.asyncAfter(deadline: .now() + timeout) { finish(false) }
 
-            dg.stateUpdateHandler = { state in
-                switch state {
-                case .ready:
-                    dg.send(content: payload, completion: .contentProcessed { err in
-                        if err != nil { finish(false); return }
-                        dg.receiveMessage { data, _, _, err in
-                            if err != nil { finish(false); return }
-                            let r = data.map { probe.validate(response: $0) } ?? .never
-                            finish(r == .valid)
-                        }
-                    })
-                case .failed, .cancelled:
-                    finish(false)
-                default:
-                    break
+        // Resolve the device to a BSD index AND to its own IPv4 address. Both are
+        // required: the index pins egress, the address is the identity the reply
+        // must match. Either missing → fail closed rather than probe the default
+        // route, because an unattributable reply is exactly what must never be
+        // counted as health.
+        let index = if_nametoindex(interface)
+        guard index != 0 else { return false }
+        guard let boundAddress = ipv4Address(ofInterface: interface) else { return false }
+
+        let fd = socket(AF_INET, SOCK_DGRAM, 0)
+        guard fd >= 0 else { return false }
+        defer { close(fd) }
+
+        // Pin egress to the tunnel device. Without this the packet follows the
+        // default route and mihomo's hijack answers it regardless of fd health.
+        var boundIf = index
+        guard setsockopt(fd, IPPROTO_IP, IP_BOUND_IF,
+                         &boundIf, socklen_t(MemoryLayout<UInt32>.size)) == 0 else {
+            return false
+        }
+        // Ask the kernel to report the local address each datagram landed on, so
+        // the reply can be attributed rather than merely received.
+        var on: Int32 = 1
+        guard setsockopt(fd, IPPROTO_IP, IP_RECVDSTADDR,
+                         &on, socklen_t(MemoryLayout<Int32>.size)) == 0 else {
+            return false
+        }
+
+        // Hard deadline: a stale fd never replies, and the recovery orchestrator
+        // must not be held open waiting for it.
+        var tv = timeval(tv_sec: Int(timeout),
+                         tv_usec: Int32((timeout - Double(Int(timeout))) * 1_000_000))
+        _ = setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &tv, socklen_t(MemoryLayout<timeval>.size))
+
+        // Send to the gateway on UDP/53.
+        var addr = sockaddr_in()
+        addr.sin_len = UInt8(MemoryLayout<sockaddr_in>.size)
+        addr.sin_family = sa_family_t(AF_INET)
+        addr.sin_port = CFSwapInt16HostToBig(53)
+        guard inet_pton(AF_INET, gateway, &addr.sin_addr) == 1 else { return false }
+
+        let sent = withUnsafePointer(to: &addr) { raw -> Int in
+            raw.withMemoryRebound(to: sockaddr.self, capacity: 1) { sa in
+                payload.withUnsafeBytes { buf in
+                    sendto(fd, buf.baseAddress, buf.count, 0, sa,
+                           socklen_t(MemoryLayout<sockaddr_in>.size))
                 }
             }
-            dg.start(queue: queue)
         }
+        guard sent == payload.count else { return false }
+
+        // One receive. `recvmsg` so the control message carrying IP_RECVDSTADDR is
+        // available; a plain recv would discard exactly the field that makes the
+        // reply admissible.
+        var buffer = [UInt8](repeating: 0, count: 1500)
+        var control = [UInt8](repeating: 0, count: 256)
+        var from = sockaddr_storage()
+        var msg = msghdr()
+        msg.msg_name = withUnsafeMutablePointer(to: &from) { UnsafeMutableRawPointer($0) }
+        msg.msg_namelen = socklen_t(MemoryLayout<sockaddr_storage>.size)
+
+        // Both buffers must stay alive AND pinned for the whole `recvmsg` call,
+        // and `msg.msg_control` must be assigned inside the same scope that owns
+        // the buffer: assigning it in a nested scope that then exits leaves a
+        // dangling pointer and the kernel's control data is never readable (the
+        // walk below would see zeros and reject every reply).
+        var replyDestination: String? = nil
+        let n: Int = buffer.withUnsafeMutableBytes { bufRaw -> Int in
+            control.withUnsafeMutableBytes { ctrlRaw -> Int in
+                msg.msg_control = ctrlRaw.baseAddress
+                msg.msg_controllen = socklen_t(ctrlRaw.count)
+                var iov = iovec(iov_base: bufRaw.baseAddress, iov_len: bufRaw.count)
+                msg.msg_iov = withUnsafeMutablePointer(to: &iov) { $0 }
+                msg.msg_iovlen = 1
+                let received = recvmsg(fd, &msg, 0)
+                guard received > 0 else { return received }
+
+                // Walk the control-message chain while the buffer is valid.
+                //
+                // Swift does not import `CMSG_FIRSTHDR`/`CMSG_NXTHDR`/`CMSG_DATA`,
+                // so the chain is walked by hand against the verified Darwin
+                // layout (`sizeof(cmsghdr) == 12`, `CMSG_DATA` at offset 12,
+                // `CMSG_SPACE(n)` aligned to 4).
+                let align = MemoryLayout<UInt32>.size
+                var offset = 0
+                let total = Int(msg.msg_controllen)
+                while offset + MemoryLayout<cmsghdr>.size <= total {
+                    let base = UnsafeRawPointer(ctrlRaw.baseAddress!) + offset
+                    let header = base.assumingMemoryBound(to: cmsghdr.self)
+                    let len = Int(header.pointee.cmsg_len)
+                    // A zero/short length would spin forever on a malformed chain.
+                    guard len >= MemoryLayout<cmsghdr>.size, offset + len <= total else { break }
+                    if header.pointee.cmsg_level == IPPROTO_IP,
+                       header.pointee.cmsg_type == IP_RECVDSTADDR {
+                        var landed = in_addr()
+                        memcpy(&landed,
+                               base + MemoryLayout<cmsghdr>.size,
+                               MemoryLayout<in_addr>.size)
+                        var nameBuf = [CChar](repeating: 0, count: Int(INET_ADDRSTRLEN))
+                        if inet_ntop(AF_INET, &landed, &nameBuf,
+                                     socklen_t(INET_ADDRSTRLEN)) != nil {
+                            replyDestination = String(cString: nameBuf)
+                        }
+                    }
+                    // Advance by the aligned length, per `CMSG_NXTHDR` semantics.
+                    offset += (len + align - 1) & ~(align - 1)
+                }
+                return received
+            }
+        }
+        guard n > 0 else { return false }
+
+        let data = Data(buffer[0..<n])
+        guard probe.validate(response: data) == .valid else { return false }
+
+        return TUNProbeReplyGate.admits(boundAddress: boundAddress,
+                                        replyDestination: replyDestination)
+    }
+
+    /// The IPv4 address configured on `interface`, or nil when it has none.
+    ///
+    /// Used as the probe's identity anchor: `IP_BOUND_IF` pins which device the
+    /// packet leaves by, and this address is what the reply's `IP_RECVDSTADDR`
+    /// must match for the reply to count as evidence about that device.
+    ///
+    /// Read through `getifaddrs` rather than `ifconfig` so no process is forked
+    /// on a path that can run every few seconds.
+    nonisolated static func ipv4Address(ofInterface name: String) -> String? {
+        var head: UnsafeMutablePointer<ifaddrs>? = nil
+        guard getifaddrs(&head) == 0, let first = head else { return nil }
+        defer { freeifaddrs(head) }
+
+        var cursor: UnsafeMutablePointer<ifaddrs>? = first
+        while let cur = cursor {
+            defer { cursor = cur.pointee.ifa_next }
+            guard let sa = cur.pointee.ifa_addr,
+                  sa.pointee.sa_family == UInt8(AF_INET) else { continue }
+            guard String(cString: cur.pointee.ifa_name) == name else { continue }
+            var host = [CChar](repeating: 0, count: Int(NI_MAXHOST))
+            let rc = getnameinfo(sa, socklen_t(sa.pointee.sa_len),
+                                 &host, socklen_t(host.count),
+                                 nil, 0, NI_NUMERICHOST)
+            if rc == 0 { return String(cString: host) }
+        }
+        return nil
     }
 
     /// Run a *single probe cycle*: short-window spaced retries. Returns the
@@ -1929,9 +2112,10 @@ import Network
     /// after a beat or two, or intermittently) leaves enough evidence in the
     /// window for the state machine to trip on the next pass.
     func runTUNDataPlaneProbeCycle(gateway: String,
+                                   interface: String,
                                    delays: [TimeInterval] = [1, 1, 2, 2]) async -> [Bool] {
         var outcomes: [Bool] = []
-        let firstOK = await probeTUNDataPlane(gateway: gateway)
+        let firstOK = await probeTUNDataPlane(gateway: gateway, interface: interface)
         outcomes.append(firstOK)
         // An instant first-attempt reply is healthy — return in ~1 s without
         // paying the remaining 4 retries. Anything else (failure OR later success)
@@ -1939,7 +2123,7 @@ import Network
         if firstOK { return outcomes }
         for delay in delays {
             try? await Task.sleep(nanoseconds: UInt64(delay * 1_000_000_000))
-            let ok = await probeTUNDataPlane(gateway: gateway)
+            let ok = await probeTUNDataPlane(gateway: gateway, interface: interface)
             outcomes.append(ok)
             // Do not short-circuit on a mid-cycle success: a fd that only
             // answers after retry/re-mounting is the precise failure we are
@@ -2299,9 +2483,40 @@ import Network
     /// that feature is enabled, so the 0600 promise must hold for every writer
     /// (setTopLevelScalars, setTunEnabled, hardenControllerConfig, setConfig…),
     /// not just applyTailscaleOverlay which used to chmod alone.
-    private func writeConfig(_ text: String, to path: String) {
+    ///
+    /// Also the single place where the write is audited. Before this, an
+    /// unexplained change to the running config (e.g. an eight-key drift from the
+    /// activated profile) left no trace at all, and the only recovery was
+    /// comparing `config.yaml.bak-*` snapshots — which could not name the key,
+    /// the time, or the writer. `writer` is therefore threaded in explicitly so
+    /// the log attributes each change to its call site.
+    private func writeConfig(_ text: String, to path: String, writer: String = #function) {
+        // Audit at *flattened* granularity, not top-level. Measured on a real
+        // machine: a profile switch that repaired `sniffer.enable: false → true`
+        // — a real, sha-changing write — logged "(no changes)", because both
+        // sides rendered the whole `sniffer:` block as the opaque "(block)" and
+        // the map compared equal. An audit log that reports "no changes" for a
+        // write that changed the file is worse than no audit log: it is the
+        // same class of false-negative this whole investigation set out to kill.
+        let before = (try? String(contentsOfFile: path, encoding: .utf8))
+            .map(ConfigWriteAudit.flattenedScalars(in:))
         try? text.write(toFile: path, atomically: true, encoding: .utf8)
         try? FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: path)
+        let after = ConfigWriteAudit.flattenedScalars(in: text)
+        if let before {
+            ConfigWriteAudit.record(
+                writer: writer,
+                path: path,
+                changes: ConfigWriteAudit.changes(from: before, to: after)
+            )
+        } else {
+            // No readable prior file: this write created the config (first install).
+            ConfigWriteAudit.record(
+                writer: writer,
+                path: path,
+                changes: ["(created with \(after.count) top-level keys)"]
+            )
+        }
     }
 
     /// Read config.yaml and return a dictionary. Used to read fields that mihomo

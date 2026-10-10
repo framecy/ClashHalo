@@ -2,6 +2,29 @@
 
 本项目所有重要变更记录于此。格式参考 [Keep a Changelog](https://keepachangelog.com/)，版本遵循语义化版本。
 
+## [1.3.6] - 2026-10-10
+
+### Added
+
+- **配置写入审计**：所有改写 `config.yaml` 的路径落盘到 `~/Library/Logs/ClashHalo/config-writes.log`，配置漂移可追溯到具体写入者。
+- **配置漂移检测**：加载 profile 后逐键比对「实际生效配置」与「profile 原文」并告警，区分刻意的运行时覆盖与意外分叉。
+- **TUN 数据面探针身份校验**：应答必须落在被探测的隧道地址上（`IP_RECVDSTADDR` 归属判定），杜绝劫持应答被误判为健康。
+- **后台安全巡检**：TUN 与系统代理状态的后台守卫，界面关闭时仍持续自愈。
+- **sweep 清理门槛可测化**：抽成纯函数 `shouldSweepResidueOn(hasProvenance:isDefaultService:otherTunnelIsUp:)`。
+
+### Changed
+
+- **内核升级至 mihomo v1.19.32**（原 v1.19.29），并修正 v1.19.32 默认 listener TUN 栈为 mips。
+- **`make.sh` 内核版本固定**：锁定 `MIHOMO_VERSION` + `MIHOMO_SHA256`，本地副本版本不符即重新下载并校验，破损或哈希不匹配直接中止构建。
+- **TUN DNS 网关地址改为观测优先**：以内核实际下发的 `inet4-address` 为准，可达性判据由「主机位是否有效」改为「路由是否指向隧道」。旧判据依赖的「网络地址永不应答」前提经实测证伪——`198.18.0.0` 与 `198.18.0.1` 的行为完全一致。
+- **DNS 探针谓词收紧**：只承认 `RCODE=NOERROR`；`SERVFAIL`/`NXDOMAIN` 不再算作数据面存活。
+- **残留 DNS 清理覆盖全部网络服务**：候选集从「固定服务 + 当前默认」扩展到系统全部网络服务，修复非默认接口（如 `Ethernet`）上的残留永不被清扫。
+
+### Fixed
+
+- **TUN 关闭后系统 DNS 残留**：旧版本遗留、无标志位、非默认服务上的 fake-ip 残留此前被永久跳过，现按观测到的系统状态清理，并在写入失败时保留重试线索。
+- **僵尸 TUN 自愈竞态**：`zombieTunRepairInFlight` 置位提前到巡检调用之前，消除同一僵尸事件被重复触发自愈。
+
 ## [1.3.5] - 2026-09-26
 
 ### Changed
