@@ -276,10 +276,28 @@ struct YAMLPreview: Equatable {
     /// Returns the YAML content the caller should hand to `setConfig`.
     func commit(_ id: String) -> String? {
         let text = content(id); guard !text.isEmpty else { return nil }
+        // This is the writer that actually repairs drift, so it must appear in
+        // the audit trail. It runs *before* `engine.setConfig` → `writeConfig`,
+        // which therefore sees the profile already on disk and honestly logs
+        // "(no changes)" for its own no-op rewrite — leaving the single write
+        // that mattered unattributed. Measured: a switch that repaired
+        // `sniffer.enable: false → true` produced no record naming this call.
+        let before = (try? String(contentsOfFile: configPath, encoding: .utf8))
+            .map(ConfigWriteAudit.flattenedScalars(in:))
         try? text.write(toFile: configPath, atomically: true, encoding: .utf8)
         // config.yaml may carry the tailnet auth-key in plain text — keep the
         // 0600 promise on this writer too (EngineControl covers its own).
         try? FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: configPath)
+        if let before {
+            ConfigWriteAudit.record(
+                writer: "ConfigStore.commit(\(id.prefix(8)))",
+                path: configPath,
+                changes: ConfigWriteAudit.changes(
+                    from: before,
+                    to: ConfigWriteAudit.flattenedScalars(in: text)
+                )
+            )
+        }
         activeID = id
         if let i = profiles.firstIndex(where: { $0.id == id }) {
             // Mark Pending until `markApplied` confirms the kernel reload

@@ -382,7 +382,10 @@ enum NetScanner {
     /// offered here — turning our own `auto-route` off — left TUN up with no
     /// routes at all, i.e. no network.
     static func foreignDefaultRouteHolder() async -> String? {
-        let mine = await mihomoTunInterface()
+        // Identity-strict: this asks "which *other* tunnel holds the default
+        // route?". Answering with a foreign proxy's own tunnel would make it
+        // compare that tunnel against itself and never report the real conflict.
+        let mine = await ownMihomoTunInterface()
         return await allRoutes().first {
             $0.dest == "default"
                 && $0.iface.hasPrefix("utun")
@@ -404,7 +407,7 @@ enum NetScanner {
         // own TUN was switched off) and offered a repair that injects
         // `route-exclude-address` into mihomo, which cannot influence another
         // app's routes at all.
-        let tunIfaceNames: Set<String> = await mihomoTunInterface().map { [$0] } ?? []
+        let tunIfaceNames: Set<String> = await ownMihomoTunInterface().map { [$0] } ?? []
         // Identify SD-WAN interface names (Tailscale, ZeroTier, etc.)
         let sdwanIfaceNames = Set(ifaces.filter { $0.kind.sdwan }.map { $0.id })
 
@@ -482,6 +485,94 @@ enum NetScanner {
 
     private static var tunCache: (name: String?, at: Date)?
 
+    /// Synchronous sibling of `mihomoTunInterface()` for callers that cannot
+    /// await — notably `AppModel.tunnelDNSAddress()`, which is a plain `-> String`
+    /// used at several decision points.
+    ///
+    /// Deliberately bypasses the 1.5 s `tunCache`: the whole point of the caller is
+    /// to read the address the interface holds *now*, and a cached name from just
+    /// before a bring-up would hand back stale interface state. `interfaces()` is
+    /// one `getifaddrs` call with no fork, so the cost is acceptable at these
+    /// call sites (config reconcile, TUN enable, health probe) — none of which are
+    /// per-packet.
+    ///
+    /// Identity rule mirrors `mihomoTunInterfaceUncached()`: prefer the pinned
+    /// device name, then the sole 198.18 candidate.
+    static func mihomoTunInterfaceSync() -> String? {
+        let candidates = interfaces().filter { $0.kind == .proxyTun }
+        if candidates.isEmpty { return nil }
+        if pinnedDeviceActive, let exact = candidates.first(where: { $0.id == kPinnedTunDevice }) {
+            return exact.id
+        }
+        return candidates.first?.id
+    }
+
+    /// Which interface the kernel would actually send traffic for `ip` out of.
+    ///
+    /// Synchronous and fork-free: a single `RTM_GET` round-trip on the kernel's
+    /// routing socket (PF_ROUTE). The existing `routeTargetInterface(_:)` answers
+    /// the same question but forks `/sbin/route` and is `async`, which cannot be
+    /// used from the plain-`String` decision points that need this.
+    ///
+    /// The request must carry `rtm_addrs = RTA_DST`; with `rtm_addrs` left at 0
+    /// Darwin returns nothing at all for every address (verified — all-nil
+    /// results, which looks deceptively like "no route").
+    ///
+    /// Measured 2026-10-09 on a live tunnel, which is why this exists at all:
+    ///   TUN up   → 198.18.0.0 → utun100, 198.18.0.1 → utun100
+    ///   TUN down → 198.18.0.0 → en0,     198.18.0.1 → en0
+    static func routedInterface(for ip: String) -> String? {
+        let s = socket(PF_ROUTE, SOCK_RAW, 0)
+        guard s >= 0 else { return nil }
+        defer { close(s) }
+
+        var addr = sockaddr_in()
+        addr.sin_len = UInt8(MemoryLayout<sockaddr_in>.size)
+        addr.sin_family = sa_family_t(AF_INET)
+        guard inet_pton(AF_INET, ip, &addr.sin_addr) == 1 else { return nil }
+
+        var msg = rt_msghdr()
+        msg.rtm_msglen = UInt16(MemoryLayout<rt_msghdr>.size + MemoryLayout<sockaddr_in>.size)
+        msg.rtm_version = UInt8(RTM_VERSION)
+        msg.rtm_type = UInt8(RTM_GET)
+        msg.rtm_flags = Int32(RTF_UP)
+        msg.rtm_addrs = Int32(RTA_DST)   // without this the kernel answers nothing
+        msg.rtm_seq = 1
+
+        var buf = [UInt8]()
+        withUnsafeBytes(of: msg) { buf.append(contentsOf: $0) }
+        withUnsafeBytes(of: addr) { buf.append(contentsOf: $0) }
+        guard buf.withUnsafeBytes({ write(s, $0.baseAddress, buf.count) }) > 0 else { return nil }
+
+        var reply = [UInt8](repeating: 0, count: 4096)
+        guard read(s, &reply, reply.count) > 0 else { return nil }
+        let hdr = reply.withUnsafeBytes { $0.load(as: rt_msghdr.self) }
+        if hdr.rtm_errno != 0 { return nil }
+        let idx = Int(hdr.rtm_index)
+        guard idx != 0 else { return nil }
+        return interfaceName(index: idx)
+    }
+
+    /// Map a kernel interface index to its BSD name via `getifaddrs` AF_LINK rows.
+    private static func interfaceName(index: Int) -> String? {
+        var head: UnsafeMutablePointer<ifaddrs>?
+        guard getifaddrs(&head) == 0, let first = head else { return nil }
+        defer { freeifaddrs(head) }
+        var seen = Set<String>()
+        var p: UnsafeMutablePointer<ifaddrs>? = first
+        while let cur = p {
+            let nm = String(cString: cur.pointee.ifa_name)
+            if !seen.contains(nm), let ia = cur.pointee.ifa_addr,
+               ia.pointee.sa_family == sa_family_t(AF_LINK) {
+                seen.insert(nm)
+                let link = ia.withMemoryRebound(to: sockaddr_dl.self, capacity: 1) { $0.pointee }
+                if Int(link.sdl_index) == index { return nm }
+            }
+            p = cur.pointee.ifa_next
+        }
+        return nil
+    }
+
     /// Drop the cached interface lookup so the next `mihomoTunInterface()` does
     /// real work. Needed before a *decisive* re-check: a negative result is
     /// cached like any other, so a reconcile that runs within the TTL after a
@@ -489,19 +580,62 @@ enum NetScanner {
     /// which made the post-PATCH retry in `applyTUNState` a guaranteed no-op.
     static func invalidateTunCache() { tunCache = nil }
 
+    /// Identity-strict variant of `mihomoTunInterface()`: returns our tunnel
+    /// **only** when it answers to the pinned device name.
+    ///
+    /// `mihomoTunInterface()` answers a liveness question ("is a mihomo TUN up?")
+    /// and deliberately tolerates a kernel that renamed the device, because
+    /// treating that as "missing" makes the auto-teardown sites disable a working
+    /// tunnel. But some callers ask an *ownership* question instead — "is this
+    /// 198.18 interface mine?" — and for those, a foreign proxy's tunnel must
+    /// never be claimed:
+    ///
+    ///   • `conflictingRoutes()` blamed this app for shadowing routes when the
+    ///     tunnel it was analysing belonged to Shadowrocket (10 phantom conflicts
+    ///     while our own TUN was off) and offered a repair that injects
+    ///     `route-exclude-address` into mihomo — which cannot influence another
+    ///     app's routes at all.
+    ///   • zombie/residue sweeps must not tear down a co-resident VPN's tunnel.
+    ///
+    /// Falls back to the sole candidate only when the pin is *not* active, i.e.
+    /// when there is no name to be strict about.
+    static func ownMihomoTunInterface(maxAge: TimeInterval = 1.5) async -> String? {
+        guard pinnedDeviceActive else { return await mihomoTunInterface(maxAge: maxAge) }
+        let candidates = interfaces().filter { $0.kind == .proxyTun }
+        guard let ours = candidates.first(where: { $0.id == kPinnedTunDevice }) else {
+            return nil
+        }
+        return ours.id
+    }
+
     private static func mihomoTunInterfaceUncached() async -> String? {
         let ifaces = interfaces()
         let candidates = ifaces.filter { $0.kind == .proxyTun }
         if candidates.isEmpty { return nil }
         // With the device name pinned, identity is exact: our TUN is the one
-        // called `kPinnedTunDevice`, and a 198.18 interface under another name is
-        // some other proxy app's. Returning nil when the pin is absent is the
-        // correct answer *and* the detector for a kernel that ignored the pin —
-        // `applyTUNState` reads the resulting `tunOn == false` and falls back to
-        // kernel-assigned naming.
-        if pinnedDeviceActive {
-            return candidates.first(where: { $0.id == kPinnedTunDevice })?.id
+        // called `kPinnedTunDevice`.
+        if pinnedDeviceActive, let exact = candidates.first(where: { $0.id == kPinnedTunDevice }) {
+            return exact.id
         }
+        // The pin did not hold for this bring-up. Reporting the tunnel missing
+        // here is *destructive*: every caller reads nil as liveness, and the two
+        // auto-teardown sites (`refreshConfigs` B10, the 30 s `verifyTUNConfig`
+        // probe) answer an absent tunnel by disabling a working one.
+        //
+        // Reproduced on this machine: with `device` unset, mihomo brought up a
+        // fully healthy tunnel as `utun10` (ICMP 0% loss, DNS NOERROR), yet the
+        // pinned lookup returned nil, so the app declared "TUN 接口丢失（可能与
+        // 其他 utun 服务冲突）" and tore down a working tunnel. A kernel that
+        // ignores or renames the device is not a conflict — the tunnel exists and
+        // carries traffic.
+        //
+        // So fall through to the ordinary heuristics below rather than returning
+        // nil. Identity stays strict exactly where it matters: `upDetachedMihomoTun`
+        // (zombie residue) and the foreign-tunnel teardown decisions remain
+        // name-gated, so a co-resident proxy's 198.18 utun is never claimed as
+        // ours nor swept. Only the "is our TUN alive?" answer loosens.
+        // (When several 198.18 utuns exist and none is ours we still cannot tell
+        // which is ours, so the conservative paths below keep returning nil.)
         if candidates.count == 1 {
             // Single candidate — historically trusted as-is to avoid a netstat
             // fork on the common 3 s poll and to never wrongly tear down a healthy

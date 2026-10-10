@@ -60,6 +60,31 @@ add_suite yamlscalar-tests \
   "$ROOT/Sources/Core/YamlEditor/YamlScalar.swift" \
   "$ROOT/Tests/YamlScalar/main.swift"
 
+# TUN 系统 DNS 网关：2026-10-09 断网事故。配置里的 inet4-address 是**前缀**
+# （198.18.0.0/30），裸切掉 /30 写进系统 DNS 的是网络地址 .0 —— 内核永不应答，
+# TUN 一抖/一关就全网解析黑洞（实测 dig @198.18.0.0 → connection timed out，
+# ping → 100% 丢包，而 utun100 还在）。钉住「必须取前缀里的主机地址」以及
+# fake-ip 残留识别，后者是修复「overridden 标志失同步后残留永不清理」的依据。
+add_suite tundnsaddress-tests \
+  "$ROOT/Sources/Model/TUNDNSAddress.swift" \
+  "$ROOT/Tests/TUNDNSAddress/main.swift"
+
+# config.yaml 写入审计：11 个调用点就地改写运行配置，其中设置页的 persistent 键
+# 会压过已激活的 profile。此前无任何记录——排查只能比对 config.yaml.bak-* 快照，
+# 且答不出「哪个键、何时、被谁」。钉住顶层标量解析口径、差异计算，以及 secret
+# 之类凭据必须脱敏但仍留痕。
+add_suite configwriteaudit-tests \
+  "$ROOT/Sources/Model/ConfigWriteAudit.swift" \
+  "$ROOT/Tests/ConfigWriteAudit/main.swift"
+
+# 重新激活 profile 的短路判定：appliedHash 哈希的是 profile 自身，而设置页把
+# persistent 键就地写进 config.yaml —— profile 没变、运行配置已漂移，短路却仍
+# 成立，于是「已切换配置」是绿色空操作，实测 7 个键永不恢复。钉住漂移必须能
+# 阻断短路，同时刻意加固键（secret/external-controller）不得算作漂移。
+add_suite applydrift-tests \
+  "$ROOT/Sources/Model/ConfigWriteAudit.swift" \
+  "$ROOT/Tests/ApplyDrift/main.swift"
+
 # 规则编辑器引擎：值内 `#` 是数据而非注释（旧版截断导致保存即删规则）。
 add_suite yamlruleengine-tests \
   "$ROOT/Sources/Model/RuleNode.swift" \
