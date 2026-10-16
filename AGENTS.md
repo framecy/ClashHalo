@@ -2,7 +2,7 @@
 
 本文件给后续 AI 编码代理使用。进入本仓库后，先读本文件，再按需读 `README.md`、`CHANGELOG.md` 和相关源码。
 
-当前主干：`main`，产品版本 **v1.3.6**（`MARKETING_VERSION`，与 `Sources/Info.plist` 的 `CFBundleShortVersionString` 同源），Helper **1.0.30**（`kSharedHelperVersion`，`Helper-Info.plist` 的 `CFBundleVersion` 同值）。当前构建号 **126**（`CURRENT_PROJECT_VERSION`，`make.sh` 每次打包自增）。
+当前主干：`main`，产品版本 **v1.3.7**（`MARKETING_VERSION`，与 `Sources/Info.plist` 的 `CFBundleShortVersionString` 同源），Helper **1.0.30**（`kSharedHelperVersion`，`Helper-Info.plist` 的 `CFBundleVersion` 同值）。当前构建号 **127**（`CURRENT_PROJECT_VERSION`，`make.sh` 每次打包自增）。
 
 ## 项目概览
 

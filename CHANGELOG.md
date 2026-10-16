@@ -2,6 +2,40 @@
 
 本项目所有重要变更记录于此。格式参考 [Keep a Changelog](https://keepachangelog.com/)，版本遵循语义化版本。
 
+## [1.3.7] - 2026-10-16
+
+> 1.3.6 发布后复审出的高危项收敛。**本版本必须搭配 Helper 1.0.30**：旧 Helper 会在 DNS 还原失败时回写公共 DNS、用整表 `route -n flush` 清路由，本身就会破坏用户系统配置。
+
+### Added
+
+- **崩溃防护：内核日志改合并刷新**：`logKernel` 每行不再单独触发一次 `@Published` 事务。此前 macOS 26 上一次真实崩溃中，SwiftUI 把高频图事务推迟到协作线程池，与主线程 AppKit 布局竞争，触发 `NSStatusItem setVisible:` / `-[NSMenu itemArray]` 断言中止（两份崩溃报告零应用帧）。文件日志仍逐行同步写，界面日志按 0.3 秒合并。
+- **DNS 台账可测化**：`TunnelDNSLedger` 抽出 `DNSLedgerStore` 与 `SystemDNSDriving` 两个协议，回归套件 `Tests/DNSLedger` 直接编译生产源码钉住 5 条不变量（属主隔离、读失败不落快照、pending→committed、恢复失败保留账本、服务漂移自愈）。
+
+### Changed
+
+- **订阅下载强制直连**：订阅请求的 URLSession 由 `.default` 改为 ephemeral + 空代理字典。此前在「切换内核」的 `stopKernel` 窗口里，订阅请求会打到无人监听的 mixed-port 而黑洞，用户感知为「订阅突然坏了」。
+- **共存指纹去除接口绑定后缀**：utun 序号随睡眠唤醒 / 隧道重建漂移（utun8→utun9）不再被当作拓扑变化。此前每次漂移都回以整块 `tun` PATCH + 全量静态路由重装——2026-10-14 日志一天出现 6 次假性拓扑变化、路由条数在 7/8/9 振荡、在途连接被反复抖断；而该 PATCH 根本携带不了 DNS 绑定（mihomo 忽略运行时 `dns` PATCH）。
+- **TUN-off 拆除重新排序**：静态路由清理与隧道残留物理清理现在跑在 `restoreTunnelDNS()` **之前**。先清路由、后恢复 DNS，缩小断流窗口。
+- **默认接口探测改用 `SCDynamicStore`**：`EngineControl.defaultInterface()` 从硬编码 `en0` 改为读 `State:/Network/Global/IPv4 → PrimaryInterface`，读不到时才回退 `en0` 并记日志。
+- **`ConfigStore.save()` 返回成功与否**：Keychain 写入失败与 `manifest.json` 落盘失败都进 app.log。此前 `try?` 静默吞掉——manifest 一旦撕裂，`load()` 会静默重建「默认配置」并孤立所有 `profiles/<id>.yaml`。
+- **Helper 侧恢复命令超时分层**：`cmdTimeout` 1.2 秒、恢复路径 `restoreCmdTimeout` 5.0 秒；`enabledNetworkServices()` 失败后立即重试一次，两次都失败则记名日志并按空处理。
+
+### Fixed
+
+- **DNS 快照被读取故障洗掉**：`currentSystemDNS(service:)` 改为三态 `[String]?`（`nil` = 读取失败）并加 5 秒超时。旧版错误路径返回 `[]`，会被当成「用户没配 DNS」写进快照，恢复时写回空列表，真实配置就此丢失。
+- **`tun.device.pinUnsupported` 无重置点**：该标志此前一旦置位永不复位，一次瞬态失败（utun100 被占用、configd 竞争）就永久放弃 `kPinnedTunDevice`，永久降低身份判定并致盲僵尸巡检。现每次启动重置。
+- **严格 F/S 交替形态的半死 TUN 不自愈**：滑动窗口失败数会永远停在 `failThreshold-1`，主条件与 `allHealthy` 都不成立，状态机卡死在「不触发也不清零」。补交替触发判据 + 同窗口只触发一次的闩锁。
+- **Helper 残留清理越权**：移除整表 `route -n flush`，改为按接口 `-ifscope` 定向删除，并新增「UP 且不是 pin 住设备即跳过」的资格判据。`flush` 会连用户与其他 VPN 的路由一起清。
+- **回环解析器被误判为死**：`isLoopbackDNSLive()` 补 UDP 探测，仅当 TCP 明确拒绝**且** UDP 不响应才判死。此前只看 TCP，把 mihomo 的 UDP 优先监听误判为死并清掉一个活着的监听。
+- **残留清理被无关隧道误放行**：`shouldSweepResidueOn` 新增 `residueRoutedIntoOtherTunnel` 参数，改为逐地址取证。旧的 `return !otherTunnelIsUp` 意味着机器上只要有任一条 proxyTun 处于 UP，所有无来源证据的残留就逐轮跳过——用户把默认服务切过去的那一刻全网黑洞。
+- **共存网段冲突静默丢弃**：`excludeRouteMap` 从静默改为首赢 + 回调日志，写明「保留谁、忽略谁、取自检测顺序而非仲裁」，被黑洞时可直接定位。
+
+### 已知限制（有意不在本版关闭）
+
+- `RouteTable.drift(expected:in:pinned:)` 的第三接口豁免会吞掉残留载体。
+- `cleanupTUNResidual` 的 split 路由残留依赖 `if_down` 清 `RTF_UP` 惰性化，不逐条删除。
+- `isAuthorizedClient(_:)` 有意保留 `kSecCSDoNotValidateExecutable | kSecCSDoNotValidateResources`，否则 Debug / ad-hoc 构建会被 `SecCodeCheckValidity` 拒绝。
+
 ## [1.3.6] - 2026-10-16
 
 ### Added
