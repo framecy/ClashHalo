@@ -246,6 +246,10 @@ struct TUNDataPlaneHealthState {
     /// "N/threshold" message mirrors what actually drives the decision.
     private(set) var consecutiveFailures: Int = 0
 
+    /// 交替形态闩锁：threshold-1 补触发对当前窗口只生效一次，reset() 解除
+    /// （见 record() 的交替触发注释）。
+    private var alternateTripLatch = false
+
     /// Historical alias kept for call-site logging; equals `failThreshold`.
     var threshold: Int { failThreshold }
 
@@ -285,7 +289,21 @@ struct TUNDataPlaneHealthState {
         // threshold; once we are *at* it, subsequent failures keep the count
         // at/around the threshold but the orchestrator has already acted, so
         // don't re-trip. (It clears the window on completed recovery.)
-        return consecutiveFailures == failThreshold
+        if consecutiveFailures == failThreshold { return true }
+        // 交替形态触发（2026-10-14 审查中-10 修复）：半死 fd 的另一种形态是
+        // 严格 F/S 交替——窗口失败数永远在 failThreshold-1 上震荡（6 窗 3 失），
+        // 主条件永不满足、allHealthy 也永不成立，状态机卡死在「不触发也不
+        // 清零」，这正是 v1.1.13 滑动窗口设计时漏掉的实测盲区。补判据：
+        // 满窗 + 失败数达 threshold-1 + 本条是失败。闩锁保证同一窗口只触发
+        // 一次（交替形态下否则每隔一条失败就重复触发、反复拉起 recovery），
+        // reset() 时解除——与主条件「触发后由编排方清窗」的契约一致。
+        // 健康形态零误报：满窗最多 1~2 次偶发失败到不了 threshold-1。
+        if !alternateTripLatch, window.count == capacity,
+           consecutiveFailures == failThreshold - 1 {
+            alternateTripLatch = true
+            return true
+        }
+        return false
     }
 
     /// True when the window is full and every entry is a success. The
@@ -301,5 +319,6 @@ struct TUNDataPlaneHealthState {
     mutating func reset() {
         window.removeAll(keepingCapacity: true)
         consecutiveFailures = 0
+        alternateTripLatch = false
     }
 }

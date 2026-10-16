@@ -69,6 +69,20 @@ add_suite tundnsaddress-tests \
   "$ROOT/Sources/Model/TUNDNSAddress.swift" \
   "$ROOT/Tests/TUNDNSAddress/main.swift"
 
+# 系统 DNS 重定向台账：2026-10-14 多次断网事故的根因簇——双写者（TUN fake-ip
+# 网关 / 代理 redir-host 的 127.0.0.1）共用单快照与单 flag、退出路径无条件清账、
+# sweep 有两个盲区。钉住 TunnelDNSLedger 的 5 条不变量：属主隔离（接管时继承
+# 真值快照）、快照只在读取成功时落盘（三态 nil ≠ Empty）、pending→committed
+# 两段式、恢复失败保留账本、服务漂移自愈；另钉 shouldSweepResidueOn 的共存
+# 豁免逐地址取证（39 条断言）。生产适配器 `EngineControlDNSDriver` 在
+# EngineControl.swift 末尾，套件以同名 stub（StubDriver.swift）替身，
+# TunnelDNSLedger.swift 保持零 impure 依赖、可单独编译。
+add_suite dnsledger-tests \
+  "$ROOT/Sources/Model/TunnelDNSLedger.swift" \
+  "$ROOT/Sources/Model/TUNDNSAddress.swift" \
+  "$ROOT/Tests/DNSLedger/StubDriver.swift" \
+  "$ROOT/Tests/DNSLedger/main.swift"
+
 # config.yaml 写入审计：11 个调用点就地改写运行配置，其中设置页的 persistent 键
 # 会压过已激活的 profile。此前无任何记录——排查只能比对 config.yaml.bak-* 快照，
 # 且答不出「哪个键、何时、被谁」。钉住顶层标量解析口径、差异计算，以及 secret
