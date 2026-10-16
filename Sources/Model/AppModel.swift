@@ -216,13 +216,43 @@ struct SystemProxyStatus: Equatable {
     // Kernel Logs (Startup/Process logs)
     // Make this the canonical home for the in-flight apply flag.
     @Published var pendingApplyID: String? = nil
-    @Published var kernelLogs: [String] = []
+    @Published private(set) var kernelLogs: [String] = []
+    /// 未发布的暂存缓冲 + 合并节拍（2026-10-15 崩溃修复）。
+    ///
+    /// macOS 26A428 上 SwiftUI 会把高频图事务延迟到协作线程池刷新
+    /// （GraphHost.asyncTransaction → flushTransactions），延迟刷新携带
+    /// 菜单栏/主菜单更新时与主线程的 AppKit 布局并发 → `NSStatusItem
+    /// setVisible:` / `-[NSMenu itemArray]` 断言 abort。两份崩溃报告
+    /// （07:16:24 / 07:21:12）零应用帧，纯框架竞态；碰撞概率正比于
+    /// 图事务量。旧实现 logKernel 每写一行都 @Published append ——
+    /// 整棵 ContentView 树 + 菜单栏图标 + 主菜单全量失效，启动 1.2s 内
+    /// 十几笔事务（新版日志行更多：账本/pin/探针不再饿死），恰好撞上
+    /// 窗口布局期。
+    ///
+    /// 现改为 0.3s 合并发布：突发期事务量降一个数量级；文件日志
+    /// （appendAppLog）仍逐行同步写，事后诊断能力不减；日志页面最多
+    /// 延迟 0.3s 刷新，无感。全部状态只在 MainActor 上触碰。
+    private var pendingLogLines: [String] = []
+    private var logFlushScheduled = false
+
     func logKernel(_ msg: String) {
         let line = "[\(Self.logDF.string(from: Date()))] \(msg)"
-        kernelLogs.append(line)
-        if kernelLogs.count > 100 { kernelLogs.removeFirst(kernelLogs.count - 100) }
+        pendingLogLines.append(line)
         print("KernelLog: \(msg)")
         Self.appendAppLog(line)
+        guard !logFlushScheduled else { return }
+        logFlushScheduled = true
+        Task { @MainActor [weak self] in
+            try? await Task.sleep(nanoseconds: 300_000_000)
+            guard let self else { return }
+            self.logFlushScheduled = false
+            guard !self.pendingLogLines.isEmpty else { return }
+            self.kernelLogs.append(contentsOf: self.pendingLogLines)
+            self.pendingLogLines.removeAll(keepingCapacity: true)
+            if self.kernelLogs.count > 100 {
+                self.kernelLogs.removeFirst(self.kernelLogs.count - 100)
+            }
+        }
     }
 
     /// Persistent GUI-side log at `~/Library/Logs/ClashHalo/app.log`.
@@ -284,6 +314,22 @@ struct SystemProxyStatus: Equatable {
     /// is about to exit so a late result cannot restart a kernel the user no
     /// longer wants.
     var tunDataPlaneProbeTask: Task<Void, Never>?
+    /// 探针合并调度状态（2026-10-14 审查中-9 修复）：
+    /// - `tunProbeScheduledFireDate`：在排任务的预定触发时刻；合并调度取
+    ///   min(既有, 新请求)，保证高频事件风暴只能把探针拉早/保持，永远推不
+    ///   晚（旧实现每个事件都 cancel+重建倒计时，风暴下探针被无限顺延、
+    ///   永不执行且零日志——整条数据面防线静默失效）。任务开始执行或被
+    ///   取消时置 nil。
+    /// - `tunProbeLastRunDate`：runner 最近一次实际开跑的时刻（饿死保底
+    ///   判据：超过 2×delay 仍未跑成即强制立即排程）。
+    /// - `tunProbeRunning`：探针轮执行中标志，维持「至多一轮在跑」的既有
+    ///   不变量（合并调度的并入目标）。
+    /// - `tunProbeMergeLogAt`：合并日志限频（风暴期 10s 至多一条；保底日志
+    ///   不限频）。
+    var tunProbeScheduledFireDate: Date?
+    var tunProbeLastRunDate: Date?
+    var tunProbeRunning = false
+    var tunProbeMergeLogAt: Date = .distantPast
     /// Earliest time a new data-plane recovery may start. Prevents a recovery
     /// that itself restarts the kernel (and fires path-update storms) from
     /// immediately re-entering recovery on the next poll.
@@ -330,6 +376,20 @@ struct SystemProxyStatus: Equatable {
     /// restore) has already run. Within this window refreshConfigs must not
     /// derive tunOn to false; turning ON and every *explicit* teardown path
     /// (user toggle off, stopEngine, kernel-unreachable reconnect) are exempt.
+    ///
+    /// 取值地图（2026-10-14 审查低级项，记录各档用途；改值需实机回归，
+    /// 勿轻动）：
+    /// - 10s：常规 bring-up（PATCH 成功 / restart 回退 / 重建后 utun 已现）
+    ///   ——覆盖 utun 创建 + 路由装载的 NWPathMonitor 风暴；
+    /// - 45s：healDetachedTUN 僵尸自愈重启——整内核 restart +
+    ///   waitForKernelReady 全程；
+    /// - 60s：rebuildTUNDeviceInPlace 就地重建——disable→等待→enable 两段
+    ///   PATCH + configd 重挂设备，流程最长故档位最大。
+    /// 三档不同是重建成本不同所致。与数据面自愈重入门
+    /// `tunDataPlaneRecoveryCooldownUntil`（30s）不矛盾：settle 门「状态
+    /// 推导」（半建立状态不得被判为丢失），cooldown 门「补救重演」（自愈
+    /// 自身的风暴不得立刻触发下一次自愈）；僵尸补救冷却另成体系（120s
+    /// 两次自愈最小间隔 / 1800s 三次无效后的熔断，见 zombieTunCooldownUntil）。
     var tunStateSettleUntil: Date = .distantPast
     /// Circuit breaker for the *interface-missing* auto-teardown.
     ///
@@ -696,6 +756,17 @@ struct SystemProxyStatus: Equatable {
         updater.onLog = { [weak self] msg in self?.logKernel(msg) }
         applyActivationPolicy()        // Dock icon visibility per saved preference
         refreshLaunchAtLogin()         // sync the launch-at-login mirror
+        // 重置「pin 不支持」持久标志（2026-10-14 审查低级项修复）：该标志原先
+        // 没有任何重置点——一次瞬态失败（如 utun100 恰好被占、configd 竞态）就
+        // **永久**放弃固定设备名，`upDetachedMihomoTun` / cleanupTUNResidual 的
+        // UP 形态判定等身份化判据随之永久降级，僵尸巡检从此失明。现在每次启动
+        // 给一次重试机会：若本机确实 pin 不上，本会话内会再次失败并重新置位
+        // （会话内行为与旧版完全一致），只是不再把上一次会话的失败判定跨会话
+        // 永久化。必须放在下面 pinnedDeviceActive 快照之前。
+        if UserDefaults.standard.bool(forKey: Self.kTunPinUnsupportedKey) {
+            UserDefaults.standard.set(false, forKey: Self.kTunPinUnsupportedKey)
+            logKernel("启动：重置 tun.device.pinUnsupported，本次会话将重试 \(kPinnedTunDevice) 设备名固定（此前因瞬态失败被永久放弃）")
+        }
         // Tell the scanner whether our utun answers to a fixed name, so a
         // co-resident proxy sharing the 198.18 fake-ip space is never taken for
         // ours (nor torn down as our residue). See `kPinnedTunDevice`.
@@ -2071,11 +2142,18 @@ struct SystemProxyStatus: Equatable {
         }
 
         // Check 2: Verify DNS redirection is still active
+        //
+        // currentSystemDNS 是三态：nil = 读取失败。失败时**不得**当"网关不在
+        // DNS 列表里"去重推——那等于在未知系统状态下改写 DNS，可能把用户
+        // 真实配置洗掉。放弃本轮校验，等下一拍（60s 巡检）再试。
         let gateway = tunnelDNSAddress()
-        let current = await EngineControl.currentSystemDNS()
-        if !current.contains(gateway) {
-            logKernel("检测到 TUN DNS 发生漂移，正在重新重定向...")
-            await enableTunnelDNS()
+        if let current = await EngineControl.currentSystemDNS() {
+            if !current.contains(gateway) {
+                logKernel("检测到 TUN DNS 发生漂移，正在重新重定向...")
+                await enableTunnelDNS()
+            }
+        } else {
+            logKernel("读取系统 DNS 失败，跳过本轮 TUN DNS 漂移校验（不在未知状态下改写 DNS）")
         }
 
         // Check 3: Re-converge coexistence. Peer tunnels accept and withdraw
@@ -2335,6 +2413,17 @@ struct SystemProxyStatus: Equatable {
             signal(sig, SIG_IGN)
             let src = DispatchSource.makeSignalSource(signal: sig, queue: .global())
             src.setEventHandler {
+                // A SIGTERM/SIGINT is a real quit, same as ⌘Q: tear down
+                // properly, then exit. Doing the teardown *before* `exit(0)` is
+                // the whole point — exiting first would hand the root kernel to
+                // the Helper's client-death watchdog, which stops it ~2 s later
+                // *without* the system-proxy and DNS restore that
+                // `performCleanup()` runs first, leaving DNS pinned to a
+                // resolver that no longer answers.
+                //
+                // `performCleanup()` is one-shot and synchronous, and this
+                // handler runs on a global queue (never the main thread), so a
+                // semaphore wait here cannot deadlock the main actor.
                 AppDelegate.performCleanup()
                 exit(0)
             }

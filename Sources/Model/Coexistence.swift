@@ -368,10 +368,29 @@ enum Coexistence {
     /// helper needs for real static routes. Same detection pass as the config
     /// planner, so the routes installed on the system and the prefixes excluded
     /// inside mihomo can never describe different topologies.
-    static func excludeRouteMap(_ peers: [CoexistencePeer]) -> [String: String] {
-        peers.reduce(into: [String: String]()) { acc, peer in
-            acc.merge(peer.routeOwners) { current, _ in current }
+    ///
+    /// 中-8（2026-10-14）：两条隧道声明同一网段时依旧**首赢**（一个前缀挂多
+    /// 接口路由超出本轮范围），但不再静默——「首」取自检测顺序而非仲裁，选错
+    /// 赢家就是黑洞，`onConflict` 是唯一留给排查的线索。回调同步执行、默认
+    /// nil，纯函数语义与既有调用点不受影响。
+    static func excludeRouteMap(_ peers: [CoexistencePeer],
+                                onConflict: ((_ cidr: String, _ kept: String,
+                                              _ droppedPeer: String, _ droppedIface: String) -> Void)? = nil) -> [String: String] {
+        var acc = [String: String]()
+        var winner = [String: String]()   // cidr → 首赢者 displayName（仅供冲突日志）
+        for peer in peers {
+            for (cidr, iface) in peer.routeOwners {
+                guard let kept = acc[cidr] else {
+                    acc[cidr] = iface
+                    winner[cidr] = peer.displayName
+                    continue
+                }
+                if kept != iface {
+                    onConflict?(cidr, "\(winner[cidr] ?? "?")→\(kept)", peer.displayName, iface)
+                }
+            }
         }
+        return acc
     }
 
     // MARK: Route-table drift
@@ -568,10 +587,16 @@ enum Coexistence {
 
     /// Stable digest of a plan. Callers compare against the last applied value to
     /// decide whether a PATCH is warranted at all.
+    ///
+    /// 中-6（2026-10-14）：解析器值经 `resolverIdentity` 归一——`#utunN` 绑定
+    /// 后缀不入指纹。utun 序号随睡眠唤醒/隧道重建而漂移，入指纹就会让每次换号
+    /// 都触发整块 `tun` PATCH + 全量路由重装（一天 6 次假性「拓扑变化」的根因），
+    /// 而 PATCH 根本携带不了 DNS 绑定（mihomo 忽略运行时 `dns` PATCH）。
+    /// 完整事故记录与去重理由见 `CoexistenceProvenance.resolverIdentity`。
     static func fingerprint(_ plan: CoexistencePlan) -> String {
         let policy = plan.nameserverPolicy
             .sorted { $0.key < $1.key }
-            .map { "\($0.key)=\($0.value.joined(separator: ","))" }
+            .map { "\($0.key)=\(CoexistenceProvenance.resolverIdentity($0.value).joined(separator: ","))" }
             .joined(separator: ";")
         return [
             plan.routeExcludes.joined(separator: ","),

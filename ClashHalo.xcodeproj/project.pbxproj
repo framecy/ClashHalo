@@ -34,6 +34,7 @@
 		AV6H1 /* TUNIPv6Health.swift in Sources */ = {isa = PBXBuildFile; fileRef = BV6H1 /* TUNIPv6Health.swift */; };
 		ATLS1 /* TUNLoopSentinel.swift in Sources */ = {isa = PBXBuildFile; fileRef = BTLS1 /* TUNLoopSentinel.swift */; };
 		ATDA1 /* TUNDNSAddress.swift in Sources */ = {isa = PBXBuildFile; fileRef = BTDA1 /* TUNDNSAddress.swift */; };
+		ATDL1 /* TunnelDNSLedger.swift in Sources */ = {isa = PBXBuildFile; fileRef = BTDL1 /* TunnelDNSLedger.swift */; };
 		ACWA1 /* ConfigWriteAudit.swift in Sources */ = {isa = PBXBuildFile; fileRef = BCWA1 /* ConfigWriteAudit.swift */; };
 		AKMG1 /* KernelMemoryGuard.swift in Sources */ = {isa = PBXBuildFile; fileRef = BKMG1 /* KernelMemoryGuard.swift */; };
 		AKRS1 /* KernelRSS.swift in Sources */ = {isa = PBXBuildFile; fileRef = BKRS1 /* KernelRSS.swift */; };
@@ -105,6 +106,7 @@
 		BV6H1 /* TUNIPv6Health.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TUNIPv6Health.swift; sourceTree = "<group>"; };
 		BTLS1 /* TUNLoopSentinel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TUNLoopSentinel.swift; sourceTree = "<group>"; };
 		BTDA1 /* TUNDNSAddress.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TUNDNSAddress.swift; sourceTree = "<group>"; };
+		BTDL1 /* TunnelDNSLedger.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TunnelDNSLedger.swift; sourceTree = "<group>"; };
 		BCWA1 /* ConfigWriteAudit.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ConfigWriteAudit.swift; sourceTree = "<group>"; };
 		BKMG1 /* KernelMemoryGuard.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = KernelMemoryGuard.swift; sourceTree = "<group>"; };
 		BKRS1 /* KernelRSS.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = KernelRSS.swift; sourceTree = "<group>"; };
@@ -156,6 +158,7 @@
 				BV6H1 /* TUNIPv6Health.swift */,
 				BTLS1 /* TUNLoopSentinel.swift */,
 				BTDA1 /* TUNDNSAddress.swift */,
+				BTDL1 /* TunnelDNSLedger.swift */,
 				BCWA1 /* ConfigWriteAudit.swift */,
 				BKMG1 /* KernelMemoryGuard.swift */,
 				BKRS1 /* KernelRSS.swift */,
@@ -362,6 +365,7 @@
 				AV6H1 /* TUNIPv6Health.swift in Sources */,
 				ATLS1 /* TUNLoopSentinel.swift in Sources */,
 				ATDA1 /* TUNDNSAddress.swift in Sources */,
+				ATDL1 /* TunnelDNSLedger.swift in Sources */,
 				ACWA1 /* ConfigWriteAudit.swift in Sources */,
 				AKMG1 /* KernelMemoryGuard.swift in Sources */,
 				AKRS1 /* KernelRSS.swift in Sources */,
@@ -400,7 +404,7 @@
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
 				CODE_SIGN_ENTITLEMENTS = ClashHalo.entitlements;
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 125;
+				CURRENT_PROJECT_VERSION = 126;
 				ENABLE_HARDENED_RUNTIME = YES;
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_FILE = Sources/Info.plist;
@@ -432,7 +436,7 @@
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
 				CODE_SIGN_ENTITLEMENTS = ClashHalo.entitlements;
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 125;
+				CURRENT_PROJECT_VERSION = 126;
 				ENABLE_HARDENED_RUNTIME = YES;
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_FILE = Sources/Info.plist;
