@@ -153,21 +153,44 @@ enum TUNDNSAddress {
     ///   或记录下来的 pinned 服务名）→ **清**。是我们写的，当然由我们回收。
     /// - `isDefaultService` → **清**。默认接口是当前实际解析路径，黑洞摆在那里
     ///   就是现成故障；且旧版本遗留的残留正落在这条路径上。
-    /// - 否则（无来源证据、非默认接口）→ 只有在**没有别的内核隧道在跑**时才清。
+    /// - 否则（无来源证据、非默认接口）→ 只有在**没有别的内核隧道在跑**时才无条件清。
     ///   地址本身已证明是 fake-ip 段（没有用户会手填 `198.18.x.x` 当解析器），
     ///   无隧道服务它就是死地址；但若共存代理正开着，那一段可能确属它所有。
     ///
     /// 2026-10-10 修正：旧判据是 `!flagged && !pinned && service != services.last`
     /// 直接 `continue`。它把「旧版本遗留、无标志、非默认接口」的残留永久跳过 ——
     /// 而那恰好是清理逻辑存在的理由。改动前已用场景验证复现该盲区。
+    ///
+    /// 2026-10-14 修正（审查中-2）：`otherTunnelIsUp` 单独成立**不足以**豁免。
+    /// 旧实现在这里 `return !otherTunnelIsUp`，意思是「机器上只要有任一条
+    /// proxyTun 处于 UP，所有无来源证据、非默认服务上的残留就逐轮跳过」——
+    /// 哪怕那条残留根本没有路由进对方的隧道（对方可能只用 100.64/10 之类的
+    /// 自己的段，与 198.18.0.0/15 毫无关系）。后果是残留长期驻留，用户把默认
+    /// 服务切到它所在服务的那一刻即全网解析黑洞（2026-10-09 实测的残留正是这种
+    /// 无 key 形态）。所以豁免改为需要**逐地址取证**：只有残留地址此刻确实被
+    /// 路由进某条活着的共存隧道（`residueRoutedIntoOtherTunnel`），才认为它可能
+    /// 属于对方内核。取证判据与 `routedInto(_:tunnel:)` 同源，不引入第二套猜测。
+    ///
     /// - Parameter hasProvenance: 有我们写过该服务的证据。
     /// - Parameter isDefaultService: 该服务是当前默认路由对应的服务。
     /// - Parameter otherTunnelIsUp: 存在非本 App 的内核隧道（共存代理）。
+    /// - Parameter residueRoutedIntoOtherTunnel: 该残留地址此刻**是否确实被路由进**
+    ///   上述某条活着的共存隧道。`nil`（默认）表示调用方没有做这项取证 —— 此时
+    ///   保持修复前的行为（有共存隧道即收手），不替调用方猜；`false` 表示取证做了
+    ///   且不成立（残留没进对方隧道，是无人应答的死地址）→ 照清。
     static func shouldSweepResidueOn(hasProvenance: Bool,
                                      isDefaultService: Bool,
-                                     otherTunnelIsUp: Bool) -> Bool {
+                                     otherTunnelIsUp: Bool,
+                                     residueRoutedIntoOtherTunnel: Bool? = nil) -> Bool {
         if hasProvenance || isDefaultService { return true }
-        return !otherTunnelIsUp
+        // 无来源证据 + 非默认服务：有共存隧道在跑时，必须证明残留**没有**进对方
+        // 的隧道才动手。取证成立（确实路由进对方活隧道）→ 收手，那一段可能属它；
+        // 取证不成立 → 它就是无人应答的死地址，照清（这正是中-2 的修复点）。
+        if otherTunnelIsUp {
+            guard let routed = residueRoutedIntoOtherTunnel else { return false }
+            return !routed
+        }
+        return true
     }
 
     /// 系统 DNS 重定向是否该写入 —— 写入点的完整不变量。

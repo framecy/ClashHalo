@@ -399,8 +399,10 @@ extension AppModel {
                     // so every path (user toggle, auto-teardown, config drift)
                     // is covered in one place.
                     if wasOn && !shouldBeOn {
-                        let dnsRedirected = UserDefaults.standard.bool(forKey: Self.kDNSOverriddenKey)
-                        if dnsRedirected {
+                        // 按属主判断，不再裸读共享 flag：TUN 关闭要收的是 `.tun`
+                        // 属主的重定向。pending 记录（写入已发起未确认）同样算在账，
+                        // 所以用 record(for:) 而不是 isActive()。
+                        if TunnelDNSLedger.record(for: .tun) != nil {
                             await restoreTunnelDNS()
                         }
                     }
@@ -452,15 +454,38 @@ extension AppModel {
         // point where tunOn is derived from reality, so it also recovers the
         // correct DNS after an app restart (TUN survived → keep redirect; TUN
         // died → restore). Both calls are idempotent and only act on a
-        // transition. TUN is the SOLE owner of the system-DNS redirect:
-        // proxy-mode never sets it (fake-ip answers black-hole direct apps,
-        // see ensureProxyDNS), so a set key here is always TUN's to withdraw —
-        // including in the mixed flow "TUN off while proxy still on".
-        let dnsRedirected = UserDefaults.standard.bool(forKey: Self.kDNSOverriddenKey)
-        if tunOn && !dnsRedirected {
+        // transition.
+        //
+        // 属主分离后必须**按属主**对账，不能再共用一个 flag：
+        // - `tunOn` 为真 → `.tun` 属主必须在账，缺了就补写；
+        // - `tunOn` 为假 → `.tun` 属主必须清账，还在就还原（pending 记录同样
+        //   算在账 —— 那正是「写入已发起、进程被杀」的崩溃窗口，需要还原）。
+        //
+        // `.proxy` 属主**不在这里对账**：它由系统代理开关路径（`ensureProxyDNS`
+        // / `restoreProxyDNS`）与 fake-ip 自愈分支管理。旧实现两个属主共用
+        // `kDNSOverriddenKey`，于是 redir-host 模式下代理写下的 127.0.0.1 会在
+        // 下一拍 refresh 被这个分支当成「TUN 残留」还原掉（:883 注释记载的
+        // "reverted within ~12 s"）—— 两个写者互相拆台，谁的状态都保不住。
+        //
+        // 顺带修正上面那段过时注释的说法：TUN 并非系统 DNS 重定向的**唯一**写者，
+        // 代理模式在 `enhanced-mode: redir-host` 下确实会写 127.0.0.1（fake-ip
+        // 下自行跳过）。真正的不变量是「**每个写者各有独立账本**」。
+        let tunRedirect = TunnelDNSLedger.record(for: .tun)
+        if tunOn && tunRedirect == nil {
             await enableTunnelDNS()
-        } else if !tunOn && dnsRedirected {
+        } else if !tunOn && tunRedirect != nil {
             await restoreTunnelDNS()
+            // 属主接管的收尾：TUN 开启时会**继承并清除** `.proxy` 属主的账
+            // （系统 DNS 只有一份全局状态，留两条账就等于让退出清理把
+            // 127.0.0.1 写回一个已经停掉的内核 —— 那正是要修的黑洞形态）。
+            // 代价是 TUN 关闭后，代理模式原有的 DNS 重定向意图也一并没了。
+            // 所以这里补一次重建：仅在系统代理确实还开着时，且本分支是
+            // transition-gated（restore 成功后账本即清，不会每拍重入）。
+            // `ensureProxyDNS` 自带全部前提守卫（!tunOn / redir-host /
+            // 监听 53 / 探测应答），fake-ip 模式下它只会自愈残留、不会写入。
+            if systemProxyOn {
+                await ensureProxyDNS()
+            }
         }
         // …but never trust that bit alone. A redirect written before its flag was
         // set (crash / kill / teardown racing the write) leaves the fake-ip
@@ -471,7 +496,9 @@ extension AppModel {
         // Align static routes for excluded prefixes in sync with the real TUN state.
         // Fresh XPC (not cached helper()) — same silent-drop issue as start/sysproxy.
         if tunOn && !staticRoutesInjected {
-            let excludeRoutes = Coexistence.excludeRouteMap(await Coexistence.detect())
+            let excludeRoutes = Coexistence.excludeRouteMap(await Coexistence.detect()) { cidr, kept, droppedPeer, droppedIface in
+                self.logKernel("TUN 共存：网段 \(cidr) 被多条隧道同时声明——保留 \(kept)，忽略 \(droppedPeer)→\(droppedIface)（首赢取自检测顺序而非仲裁；若该网段黑洞请查此条）")
+            }
             if !excludeRoutes.isEmpty {
                 let ok = await XPCManager.shared.callSetupExcludeRoutes(excludeRoutes)
                 logKernel("XPC Helper 注入静态路由: \(ok == true ? "成功" : "失败")")
@@ -893,9 +920,15 @@ extension AppModel {
             // Self-heal: a redirect left by an older build (or a TUN session
             // whose teardown raced) must not survive in proxy-only mode —
             // with the tunnel gone, fake-ip answers black-hole direct apps.
-            if UserDefaults.standard.bool(forKey: Self.kDNSOverriddenKey) {
-                logKernel("ensureProxyDNS: 检测到残留的 DNS 重定向，正在回退…")
-                await restoreProxyDNS()
+            //
+            // 走 restoreAll：fake-ip + 代理模式下**任何属主**的重定向都不该站着
+            // —— `.proxy` 属主本来就不该在 fake-ip 下写入（旧版本共用 key 时写过），
+            // `.tun` 属主则是 TUN 关闭后未回收的残留（含 pending：写入已发起但
+            // 进程被杀的崩溃窗口）。Ledger 按属主逐条还原并只在写成功后清账。
+            if TunnelDNSLedger.isAnyActive() {
+                let owners = TunnelDNSLedger.activeOwners().map(\.label).joined(separator: "、")
+                logKernel("ensureProxyDNS: 检测到残留的 DNS 重定向（在账属主：\(owners)），正在回退…")
+                await TunnelDNSLedger.restoreAll(log: { self.logKernel($0) })
             }
             return
         }
@@ -933,21 +966,28 @@ extension AppModel {
         }
 
         logKernel("ensureProxyDNS: 正在设置系统 DNS 为 127.0.0.1")
-        let d = UserDefaults.standard
-        // Use the same key as enableTunnelDNS so the two flows don't fight
-        // over which one "owns" the DNS redirect. Whichever set it last is
-        // responsible for restoring it.
-        if !d.bool(forKey: Self.kDNSOverriddenKey) {
-            let original = await EngineControl.currentSystemDNS()
-            let snapshot = original.isEmpty ? "Empty" : original.joined(separator: ",")
-            d.set(snapshot, forKey: Self.kDNSSavedKey)
-            d.set(true, forKey: Self.kDNSOverriddenKey)
-        }
-        let ok = await EngineControl.applySystemDNS(["127.0.0.1"])
+        // 走 Ledger 的 `.proxy` 属主（审查高-2 修复）。
+        //
+        // 修复前这里与 `enableTunnelDNS` **共用同一套 key**（原注释："whichever
+        // set it last is responsible for restoring"），而且既不 pin 服务、也不在
+        // flag 已置时重新快照。两个后果都是实打实的断网：
+        //   · 127.0.0.1 可能写到与 TUN pin 不同的服务上 —— TUN 的恢复只管自己
+        //     pin 的服务，那个服务上的 127.0.0.1 就没人回收，内核一停即黑洞；
+        //   · flag 已被 TUN 置位时这里跳过快照，于是它写下的 127.0.0.1 从来没有
+        //     对应的原值记录，恢复时写回的是 TUN 之前的快照，代理这次的写入成了
+        //     无主状态。
+        // 现在两类属主各持独立 pin + 快照；同一服务上发生接管时由 Ledger 继承原
+        // 快照，保证最终能还原到「任何重定向之前」的真值。
+        //
+        // 快照同样遵守三态语义：读取失败（nil）时 Ledger 直接放弃本轮重定向，
+        // 不会把空列表当 "Empty" 存下来。
+        let ok = await TunnelDNSLedger.redirect(owner: .proxy,
+                                                servers: ["127.0.0.1"],
+                                                log: { self.logKernel($0) })
         if ok {
             logKernel("系统代理 DNS 已设为 127.0.0.1（经 mihomo DoH 解析，防 GFW 污染）")
         } else {
-            logKernel("系统代理 DNS 重定向写入失败（127.0.0.1），域名可能被 GFW 污染")
+            logKernel("系统代理 DNS 重定向未完成（读取原 DNS 失败或写入失败），域名可能被 GFW 污染")
         }
     }
 
@@ -1054,10 +1094,14 @@ extension AppModel {
 
     /// Restore system DNS saved before proxy mode took over. Idempotent — safe
     /// to call from every teardown path. Only restores if TUN is OFF (TUN's
-    /// restoreTunnelDNS handles its own teardown).
+    /// redirect is handled separately; don't touch it while tunnel is up).
+    ///
+    /// 实现走 `.proxy` 属主：TUN off 时才执行，TUN on 时不做（TUN 的恢复由
+    /// `restoreTunnelDNS()` 接管）。Ledger 保证只有 proxy 属主的 snapshot 被还原，
+    /// tun 属主不动（避免共用同一份快照带来的混乱）。
     func restoreProxyDNS() async {
         guard !tunOn else { return }
-        await restoreTunnelDNS()
+        await TunnelDNSLedger.restore(owner: .proxy, log: { self.logKernel($0) })
     }
 
         /// Drop every connection the kernel still holds once no forwarding face is
@@ -1607,6 +1651,13 @@ extension AppModel {
 
     /// Record that the kernel would not take the pinned name, and stop asking.
     func disableTunDevicePin() {
+        // 2026-10-14（审查低级项）：此前放弃 pin 完全静默——事后排查
+        // 「cleanupTUNResidual 的 UP 形态判定、僵尸巡检 upDetachedMihomoTun
+        // 为何全部失效」毫无线索（它们都以 pinnedDeviceActive 为前提）。
+        // 该标志原本无任何重置点：一次瞬态失败即永久放弃。现在
+        // AppModel.start() 每次启动都会重置它（每次启动重试一次 pin）；
+        // 会话内语义不变——写下这行后本次会话不再尝试 pin。
+        logKernel("放弃 TUN 固定设备名 \(kPinnedTunDevice)：内核不接受 pin，改用动态 utun 名（已持久化 tun.device.pinUnsupported=true，本次会话内不再重试，下次启动将重置并重试；身份化清理与僵尸巡检判据随之降级）")
         UserDefaults.standard.set(true, forKey: Self.kTunPinUnsupportedKey)
         NetScanner.pinnedDeviceActive = false
         engine.setTunDevice(nil)
@@ -1691,16 +1742,30 @@ extension AppModel {
         // the kernel's exclusions and the real routes drifted apart for as long
         // as TUN stayed on, and a stale route pointing into a peer tunnel is the
         // half that actually breaks traffic. Re-push both together.
-        let excludeRoutes = Coexistence.excludeRouteMap(peers)
+        let excludeRoutes = Coexistence.excludeRouteMap(peers) { cidr, kept, droppedPeer, droppedIface in
+            self.logKernel("TUN 共存：网段 \(cidr) 被多条隧道同时声明——保留 \(kept)，忽略 \(droppedPeer)→\(droppedIface)（首赢取自检测顺序而非仲裁；若该网段黑洞请查此条）")
+        }
+        var routesHardFailed = false
         if !excludeRoutes.isEmpty {
             let routesOK = await XPCManager.shared.callSetupExcludeRoutes(excludeRoutes)
             logKernel("TUN 共存：静态路由同步 \(routesOK == true ? "成功" : "失败")（\(excludeRoutes.count) 条）")
             staticRoutesInjected = routesOK == true
+            // 中-7（2026-10-14）：`false` = Helper 应答了但推送失败。旧实现此时
+            // 照样提交指纹，reconcile 从此认定「已对齐」永不重试，对端网段黑洞
+            // 只能等 auditAndRepairPeerRoutes 的 600s 慢心跳。现在明确失败就不
+            // 提交指纹，下一拍 reconcile（事件驱动/60s 慢兜底）整块重推。
+            // `nil`（Helper 缺失/过旧/XPC 超时）不同：重试也不会成功，照旧提交
+            // ——否则无 Helper 的机器每拍都白做一次整块 PATCH。
+            routesHardFailed = routesOK == false
         } else {
             _ = await XPCManager.shared.callCleanupAllExcludeRoutes()
             staticRoutesInjected = false
         }
-        lastCoexistenceFingerprint = fp
+        if routesHardFailed {
+            logKernel("TUN 共存：指纹未提交（静态路由推送被 Helper 明确拒绝），下一拍 reconcile 将重试")
+        } else {
+            lastCoexistenceFingerprint = fp
+        }
     }
 
     /// Periodic route-table audit, and a surgical repair when it finds drift.
@@ -1765,6 +1830,12 @@ extension AppModel {
             fixed: fixed.map { "\($0.cidr) → \($0.expected)" },
             remaining: after.map(\.describe)
         )
+        // 低-a 语义注记（2026-10-14）：`staticRoutesInjected` 的含义是「排除路由
+        // 当前归我们所有、已在系统路由表上」，不是「本轮全新注入成功」。修复
+        // 路径刷新它是正当的：上面的整表重推就是注入本身，留 false 只会让
+        // refreshConfigs 的 `tunOn && !staticRoutesInjected` 门在下一拍把同一批
+        // 路由再注一遍。全新注入失败仍在其原位可见（reconcile 打「同步失败」
+        // 且不提交指纹，见中-7）——两个通道各自记账，不靠这一个布尔区分。
         staticRoutesInjected = true
     }
 
@@ -2053,7 +2124,13 @@ extension AppModel {
                 gatewayModeOn = false
                 gatewayDevices.removeAll(keepingCapacity: false)
             }
-            await restoreTunnelDNS()
+            // 2026-10-14（审查中-11 修复）：先清路由、后恢复 DNS——顺序即
+            // 断流窗口。旧顺序先 restoreTunnelDNS：解析器立刻切回真实
+            // DNS、应用拿到真 IP 发起连接，而静态路由/残留 utun 还指着死
+            // 隧道 → 秒级「解析成功但连不通」的回流丢包（应用还可能缓存
+            // 失败结果）。先停流量层（清静态路由 + 物理清残留），再恢复
+            // 解析层：DNS 恢复的一刻路由已经直连，新连接一次成功。对齐
+            // performCleanup「先断流量层、再恢复解析层」的既有分层。
             // The kernel that owned these is gone, so nothing else will ever
             // withdraw them — same reasoning as the `stopEngine` teardown.
             if staticRoutesInjected {
@@ -2065,6 +2142,7 @@ extension AppModel {
                 logKernel("关闭 TUN 时检测到残留 utun，请求特权服务物理清理…")
                 _ = await XPCManager.shared.callCleanupTUNResidual()
             }
+            await restoreTunnelDNS()
             logKernel("内核未运行，TUN 已就地关闭（配置落盘 tun.enable=false）")
             showToast("TUN 模式已关闭", kind: .ok)
             return
@@ -2279,8 +2357,11 @@ extension AppModel {
                     // calling it here too is a belt-and-suspenders guarantee:
                     // if refreshConfigs short-circuits (inflight task, stale
                     // cache) the user is still left with working DNS.
-                    let dnsRedirected = UserDefaults.standard.bool(forKey: Self.kDNSOverriddenKey)
-                    if dnsRedirected {
+                    // 按属主判断：TUN 关闭只收 `.tun` 属主的账。`.proxy` 属主
+                    // （redir-host 模式的 127.0.0.1）在系统代理仍开着时必须留着，
+                    // 否则关 TUN 会顺手拆掉代理模式的防污染解析。
+                    // record(for:) 含 pending：写入已发起但未确认的崩溃窗口同样要还原。
+                    if TunnelDNSLedger.record(for: .tun) != nil {
                         await restoreTunnelDNS()
                     }
                     // Kernel stays warm, but nothing should be flowing through it
@@ -2348,12 +2429,27 @@ extension AppModel {
     func cancelTUNDataPlaneProbe(resetHealth: Bool = false) {
         tunDataPlaneProbeTask?.cancel()
         tunDataPlaneProbeTask = nil
+        tunProbeScheduledFireDate = nil
         if resetHealth { tunDataPlaneHealth.reset() }
     }
 
     /// Schedule a debounced data-plane probe. Multiple triggers within the
     /// settle/cooldown windows collapse onto one Task. Never restarts the
     /// kernel by itself — only a failed probe cycle may escalate to recovery.
+    ///
+    /// 2026-10-14（审查中-9 修复）：合并调度替代 cancel+重建。旧实现每个
+    /// 事件都把倒计时清零重排——高频事件风暴（NWPathMonitor/path-update，
+    /// 间隔 < delay）下探针被无限顺延、永不执行，且零日志：整条数据面
+    /// 防线静默失效。现语义：
+    /// - 已有轮在跑：并入该轮（维持「至多一轮在跑」不变量），不并行；
+    /// - 已有在排任务：触发时刻取 min(既有, now+delay)——风暴只能把探针
+    ///   拉早或保持不变，永远推不晚；时刻不变时完全复用既有 Task，不
+    ///   取消重建；
+    /// - 仅在需要拉早（或触发饿死保底）时才重建 Task；
+    /// - 保底：距上次实际开跑超过 2×delay 仍没跑成 → 强制立即排一次
+    ///   （覆盖任务被外部取消等丢失路径）。
+    /// 合并与保底路径都打日志（合并限频 10s 一条防风暴刷屏；保底不限频）：
+    /// 饿死曾经完全静默，可见性本身就是排查价值。
     func scheduleTUNDataPlaneProbe(reason: String, delay: TimeInterval = 0) {
         guard tunOn, reachable, !sleeping else { return }
         guard !tunDataPlaneRecoveryInFlight else { return }
@@ -2361,17 +2457,67 @@ extension AppModel {
         guard Date() >= tunStateSettleUntil else { return }
         guard Date() >= tunDataPlaneRecoveryCooldownUntil else { return }
 
-        // Coalesce concurrent schedules onto one Task so a path-update storm
-        // cannot spawn three parallel probe cycles that all race into recovery.
-        tunDataPlaneProbeTask?.cancel()
+        let now = Date()
+        // 饿死保底判据：距上次实际开跑超过 2×delay。delay==0 的调用本身
+        // 就是立即排程，无饿死可言；lastRunDate==nil（从未跑过）也不算——
+        // 首次调度后合并逻辑已保证任务不会被推晚。
+        let starved = delay > 0
+            && tunProbeLastRunDate.map { now.timeIntervalSince($0) > delay * 2 } == true
+
+        // 已有轮在跑：并入该轮。旧实现会 cancel 运行中的轮再重排——既打断
+        // 取证又继续顺延，两个毛病一起修掉。
+        if tunProbeRunning {
+            logProbeScheduleMerge("已有探测轮执行中，事件并入该轮（原因：\(reason)）", now: now)
+            return
+        }
+
+        if let existing = tunDataPlaneProbeTask, !existing.isCancelled,
+           let existingFire = tunProbeScheduledFireDate {
+            let target = starved ? now : min(existingFire, now.addingTimeInterval(delay))
+            if !starved, target >= existingFire {
+                // 合并：既有触发时刻更早或相等，任务原样保留。
+                logProbeScheduleMerge("合并调度：保留既有触发时刻（原因：\(reason)）", now: now)
+                return
+            }
+            if starved { logProbeScheduleStarved(now: now, delay: delay, reason: reason) }
+            existing.cancel()
+            startTUNDataPlaneProbeTask(fireAfter: max(0, target.timeIntervalSince(now)), reason: reason)
+            return
+        }
+
+        if starved { logProbeScheduleStarved(now: now, delay: delay, reason: reason) }
+        startTUNDataPlaneProbeTask(fireAfter: starved ? 0 : delay, reason: reason)
+    }
+
+    /// 实际建探针 Task 并登记预定触发时刻（fireAfter=0 表示立即执行）。
+    /// 「预定时刻 → 执行中」的交接在 MainActor 的同一同步段内完成
+    /// （置 nil 与置 running 之间无挂起点），不给并行调度留缝隙。
+    private func startTUNDataPlaneProbeTask(fireAfter: TimeInterval, reason: String) {
+        tunProbeScheduledFireDate = Date().addingTimeInterval(fireAfter)
         tunDataPlaneProbeTask = Task { @MainActor [weak self] in
             guard let self else { return }
-            if delay > 0 {
-                try? await Task.sleep(nanoseconds: UInt64(delay * 1_000_000_000))
+            if fireAfter > 0 {
+                try? await Task.sleep(nanoseconds: UInt64(fireAfter * 1_000_000_000))
             }
             guard !Task.isCancelled else { return }
+            self.tunProbeScheduledFireDate = nil
+            self.tunProbeRunning = true
             await self.runTUNDataPlaneProbe(reason: reason)
+            self.tunProbeRunning = false
         }
+    }
+
+    /// 合并日志限频：风暴期同一形态每 10s 至多一条，避免刷爆 app.log。
+    private func logProbeScheduleMerge(_ msg: String, now: Date) {
+        guard now.timeIntervalSince(tunProbeMergeLogAt) >= 10 else { return }
+        tunProbeMergeLogAt = now
+        logKernel("TUN 数据面探针\(msg)")
+    }
+
+    /// 保底日志不限频：真实饿死是稀有且重要的事件，条条都要留痕。
+    private func logProbeScheduleStarved(now: Date, delay: TimeInterval, reason: String) {
+        let since = tunProbeLastRunDate.map { Int(now.timeIntervalSince($0)) } ?? -1
+        logKernel("TUN 数据面探针饿死保底触发：距上次实际执行 \(since)s（>2×delay=\(Int(delay * 2))s），强制立即排程（原因：\(reason)）")
     }
 
     /// Kernel log-storm watchdog — runs on the verifyTUNConfig cadence
@@ -2442,6 +2588,8 @@ extension AppModel {
     /// open a settle window so refreshConfigs cannot derive tunOn false.
     private func rebuildTUNDeviceInPlace() async {
         engine.isBusy = true
+        // 60s = settle 最长档：就地重建走 disable→1.5s→enable 两段 PATCH +
+        // configd 重挂设备（各档用途见 tunStateSettleUntil 声明处取值地图）。
         tunStateSettleUntil = Date().addingTimeInterval(60)
         defer { engine.isBusy = false }
         _ = await engine.patchConfig(["tun": tunPatchBody(enable: false)])
@@ -2492,7 +2640,21 @@ extension AppModel {
     /// routes), because the remedy restarts the kernel. Two consecutive
     /// strikes before acting: a settle-window blip must not cost a restart.
     func sweepZombieTUN() async {
-        guard !tunOn, reachable, !sleeping else { return }
+        // v1.3.4 故意的反向门控：tunOn=true 时僵尸形态归配置管理路径
+        // （applyTUNState / 数据面探针）处置，本巡检不介入——该行为不变。
+        // 盲区日志（2026-10-14 审查低级项）：tunOn=true 且内核不可达、
+        // 而 pin 住的 utun 仍 UP 持路由 = 「配置说开、内核已死、隧道仍在
+        // 劫持流量」的夹缝——配置管理路径的前提（reachable）已不成立，
+        // 该形态此前完全静默。只记日志方便排查，不做任何处置。
+        // 判据必须带 !reachable：upDetachedMihomoTun 对健康 TUN 同样返回
+        // utun100（UP + 持路由正是健康形态），裸判会每轮巡检误报。
+        if tunOn {
+            if !reachable, await NetScanner.upDetachedMihomoTun() != nil {
+                logKernel("僵尸 TUN 巡检盲区记录：tunOn=true 但内核不可达且 \(kPinnedTunDevice) 仍 UP 持路由——按设计本巡检不介入，等待配置管理路径/数据面探针处置")
+            }
+            return
+        }
+        guard reachable, !sleeping else { return }
         guard !engine.isBusy, !tunAutoTeardownInFlight, !tunDataPlaneRecoveryInFlight,
               !zombieTunRepairInFlight, !tunLoopTripInFlight else { return }
         guard Date() >= tunStateSettleUntil, Date() >= zombieTunCooldownUntil else { return }
@@ -2540,6 +2702,9 @@ extension AppModel {
             logKernel("僵尸 TUN 已重启内核 \(zombieTunRestarts) 次仍未清除，停止自动重建（请检查共存 VPN 或在网络页手动重启内核）")
             showToast("僵尸 TUN 无法自动清除，请在「网络」页手动重启内核", kind: .error)
             zombieTunStrikes = 0
+            // 1800s = 熔断冷却（与下方 120s 的两次自愈最小间隔用途不同）：
+            // 连续 3 次补救无效说明自动手段已尽，长停防止「治不好的补救」
+            // 变成无限重启循环——补救本身成为新故障源。
             zombieTunCooldownUntil = Date().addingTimeInterval(1800)
             return
         }
@@ -2548,11 +2713,15 @@ extension AppModel {
         defer {
             zombieTunRepairInFlight = false
             zombieTunStrikes = 0
+            // 120s = 两次僵尸自愈的最小间隔：重启自身会产生 path 风暴，
+            // 巡检不能追自己的尾巴（三次无效后的 1800s 熔断档在上方）。
             zombieTunCooldownUntil = Date().addingTimeInterval(120)
         }
         logKernel("僵尸 TUN 自愈：重建内核清除隧道残留（\(reason)，第 \(zombieTunRestarts) 次）")
         showToast("检测到已关闭的 TUN 仍在劫持路由，正在自动重启内核清除…", kind: .warn)
         engine.isBusy = true
+        // 45s = 内核重启档 settle：restart + waitForKernelReady 全程（取值
+        // 地图见 tunStateSettleUntil 声明处；勿与 bring-up 的 10s 档混淆）。
         tunStateSettleUntil = Date().addingTimeInterval(45)
         defer { engine.isBusy = false }
         let wasProxy = systemProxyOn
@@ -2624,6 +2793,10 @@ extension AppModel {
 
     /// One probe cycle. On threshold failure, escalates to at most one recovery.
     private func runTUNDataPlaneProbe(reason: String) async {
+        // 到达 runner 即视为调度机制没有饿死——即使下面的 guard 弹回本轮，
+        // 也记录「实际开跑」时刻（中-9 饿死保底以此为准：它要抓的是「任务
+        // 永远排不上、倒计时被事件风暴无限顺延」，不是 guard 弹回）。
+        tunProbeLastRunDate = Date()
         guard tunOn, reachable, !sleeping else { return }
         guard !tunDataPlaneRecoveryInFlight else { return }
         guard !engine.isBusy, !tunAutoTeardownInFlight else { return }
@@ -2702,6 +2875,10 @@ extension AppModel {
             tunDataPlaneRecoveryInFlight = false
             // Cool-down so a recovery-induced path storm cannot immediately
             // re-enter. Also covers the failure path where we closed TUN.
+            // 30s 与 settle 窗（10/45/60s）刻意不同轴：settle 门「状态推导」，
+            // 本冷却门「补救重演」——自愈自身重启内核产生新风暴，风暴到达时
+            // 窗口失败计数还没滑出，无此门会立刻触发下一次自愈（取值地图见
+            // tunStateSettleUntil 声明处）。
             tunDataPlaneRecoveryCooldownUntil = Date().addingTimeInterval(30)
             tunDataPlaneHealth.reset()
         }
@@ -2845,11 +3022,15 @@ extension AppModel {
     // enter the tunnel and hit mihomo's dns-hijack/fake-ip. Original DNS is saved
     // and restored on disable/stop (and recovered at next launch after a crash).
 
-    static let kDNSOverriddenKey = "tun.dns.overridden"
-    static let kDNSSavedKey = "tun.dns.saved"
+    // 系统 DNS 重定向的记账 key。**唯一真相源在 `DNSRedirectOwner`**
+    // （Sources/Model/TunnelDNSLedger.swift），这里只是历史别名：读写一律走
+    // `TunnelDNSLedger` 的 API，不要再直接碰这些 key —— 两个写者共用一套裸 key
+    // 正是审查高-1/高-2 的成因。
+    static let kDNSOverriddenKey = DNSRedirectOwner.tun.overriddenKey
+    static let kDNSSavedKey = DNSRedirectOwner.tun.savedKey
     /// N9: the network service the redirect was written to, so restore targets
     /// the same service even if the system default changed in between.
-    static let kDNSServiceKey = "tun.dns.service"
+    static let kDNSServiceKey = DNSRedirectOwner.tun.serviceKey
 
     /// The TUN gateway to use as the system resolver. Prefers the live config's
     /// `tun.inet4-address` gateway; falls back to mihomo's default fake-ip gateway.
@@ -2884,11 +3065,11 @@ extension AppModel {
     /// Redirect system DNS into the tunnel (idempotent). Saves the pre-existing
     /// DNS once so a manual user setting is restored later, not clobbered.
     ///
-    /// Ordering matters: the `overridden` flag is only set AFTER the
-    /// networksetup write succeeds. Flag-first used to desync the state machine
-    /// when the write failed mid path-storm — overridden=1 with system DNS still
-    /// at the original value, so later teardowns "restored" a redirect that
-    /// never happened and health checks believed the redirect was live.
+    /// 记账走 `TunnelDNSLedger`（.tun 属主）：pending → 写入 → committed 两段式，
+    /// 写失败回滚、恢复失败保留账本。详见该文件顶部的不变量说明与本函数尾部注释。
+    ///
+    /// 本函数只负责**写入前提的三重守卫**（接口在 / 地址是合法主机 / 地址确实被
+    /// 路由进自家隧道且 dns.enable），守卫全部通过后才把记账与写入交给 Ledger。
     func enableTunnelDNS() async {
         // Invariant asserted AT THE WRITE POINT, not just at callers: the
         // redirect target is the TUN fake-ip gateway, which only answers while
@@ -2955,55 +3136,59 @@ extension AppModel {
                       + "此时写入会让全部解析进入无法应答的隧道，保持系统原 DNS 不变，待条件满足后由对账重试")
             return
         }
-        let d = UserDefaults.standard
-        let wasOverridden = d.bool(forKey: Self.kDNSOverriddenKey)
-        // N9: pin the network service the redirect is written to. Restoring
-        // into whatever the default is *later* would strand the old service's
-        // redirect and pollute the new default with the old server list.
-        let service = await EngineControl.defaultNetworkService()
-        var snapshot: String? = nil
-        if !wasOverridden {
-            let original = await EngineControl.currentSystemDNS(service: service)
-            // Use sentinel value "Empty" if system DNS is unconfigured (common on fresh macOS)
-            snapshot = original.isEmpty ? "Empty" : original.joined(separator: ",")
-        }
-        let ok = await EngineControl.applySystemDNS([gateway], service: service)
-        guard ok else {
-            logKernel("TUN DNS 重定向写入失败，保持原状态待下次巡检重试")
+        // 第四道守卫（审查中-1 的配对项）：数据面探针已判定不健康时不写重定向。
+        //
+        // 前三道守卫证明的是「接口在 / 地址合法 / 地址被路由进自家隧道」，但
+        // **路由正确不代表 fd 还能收发包** —— configd 在 mihomo 底下重挂 utun100
+        // 之后，接口表与路由表都正常，mihomo 握着失效 fd（见 TUNDataPlaneProbe
+        // 文档）。此时写入 198.18.x 与前三道守卫要拦的是同一类故障：把全系统解析
+        // 指进一个不会应答的隧道。
+        //
+        // 这道守卫同时是 `sweepOrphanedTunnelDNS` 放宽前置条件的**必要配对**：
+        // sweep 在数据面不健康时会清掉残留，如果这里照写，两个自愈路径就会每拍
+        // 互相拆台（清掉→写回→清掉）。两边看同一份证据（窗口失败数达阈值），
+        // 探针恢复后 `reset()` 同时放开，重定向由 reconcile 补写。
+        //
+        // 判据不用 `!allHealthy`：窗口为空（刚启动/刚 reset）时它也为真，会把
+        // 健康的开启流程误拦。
+        if tunDataPlaneHealth.consecutiveFailures >= tunDataPlaneHealth.threshold {
+            logKernel("TUN DNS 重定向跳过：数据面探针判定不健康（窗口失败 "
+                      + "\(tunDataPlaneHealth.consecutiveFailures)/\(tunDataPlaneHealth.threshold)），"
+                      + "此时写入 198.18.x 等于把全系统解析指进不应答的隧道；待探针恢复后由对账补写")
             return
         }
-        if !wasOverridden, let snapshot {
-            d.set(snapshot, forKey: Self.kDNSSavedKey)
-            d.set(service ?? "", forKey: Self.kDNSServiceKey)
-            d.set(true, forKey: Self.kDNSOverriddenKey)
+        // 记账与写入交给 TunnelDNSLedger（系统 DNS 重定向的唯一属主）。
+        //
+        // 顺序由 Ledger 保证：先落 pending 记录（含 pin 的服务 + 原 DNS 快照），
+        // 再写系统 DNS，写成功才把 pending 转成 committed，写失败立即回滚删账。
+        // 这同时满足两条互相拉扯的不变量 ——
+        //   · 不留「有账无写」：写失败即回滚，后续 teardown 不会去「还原」一次
+        //     从未发生的重定向（旧实现把 flag 放在写入之后正是为了这个）；
+        //   · 不留「有写无账」：pending 在写入**之前**落盘，进程在写入与记账之间
+        //     被杀时，下次启动仍能看见 pending 并还原（2026-10-09 现场就是这种
+        //     无账残留：Wi-Fi 上钉着 198.18.0.0 而三个 key 全空）。
+        //
+        // N9：pin 住写入时的那个网络服务。默认服务会在 enable/restore 之间漂移
+        // （Wi-Fi ↔ 以太网），Ledger 检测到漂移会先还原旧服务再接管新服务，
+        // 不再把旧服务的重定向晾成无主残留。
+        let service = await EngineControl.defaultNetworkService()
+        let ok = await TunnelDNSLedger.redirect(owner: .tun,
+                                                servers: [gateway],
+                                                service: service,
+                                                log: { self.logKernel($0) })
+        if !ok {
+            logKernel("TUN DNS 重定向未完成（读取原 DNS 失败或写入失败），保持原状态待下次巡检重试")
         }
     }
 
     /// Restore the system DNS saved before TUN took over (no-op if we never
     /// overrode it). Idempotent — safe to call from every teardown path.
-    /// The flag is only cleared after the restore write succeeds, so a failed
-    /// networksetup keeps the state machine armed for the next teardown pass.
+    ///
+    /// 实现整体下沉到 `TunnelDNSLedger.restore(owner: .tun)`：按 pin 的服务还原
+    /// 快照（pin 服务不可用时回退当前默认服务），**只在写成功后清账**，写失败
+    /// 保留记录待下一拍重试。
     func restoreTunnelDNS() async {
-        let d = UserDefaults.standard
-        guard d.bool(forKey: Self.kDNSOverriddenKey) else { return }
-        let savedString = d.string(forKey: Self.kDNSSavedKey) ?? ""
-        // Handle sentinel "Empty" by clearing DNS (networksetup needs "Empty" literal)
-        let saved = savedString == "Empty" ? ["Empty"] : savedString.split(separator: ",").map(String.init)
-        // N9: restore into the service we redirected at enable time, falling
-        // back to the current default when that service is gone.
-        let pinnedService = d.string(forKey: Self.kDNSServiceKey) ?? ""
-        var ok = await EngineControl.applySystemDNS(saved, service: pinnedService.isEmpty ? nil : pinnedService)
-        if !ok, !pinnedService.isEmpty {
-            logKernel("TUN DNS 恢复：原服务 \(pinnedService) 不可用，回退当前默认服务")
-            ok = await EngineControl.applySystemDNS(saved)
-        }
-        guard ok else {
-            logKernel("TUN DNS 恢复写入失败，保留重定向标记待重试")
-            return
-        }
-        d.set(false, forKey: Self.kDNSOverriddenKey)
-        d.removeObject(forKey: Self.kDNSSavedKey)
-        d.removeObject(forKey: Self.kDNSServiceKey)
+        await TunnelDNSLedger.restore(owner: .tun, log: { self.logKernel($0) })
     }
 
     /// Throttle for `sweepOrphanedTunnelDNS`'s scan (see its doc comment).
@@ -3038,17 +3223,53 @@ extension AppModel {
     /// if a network service's DNS is a fake-ip address and no mihomo tunnel is
     /// up, that resolver is a guaranteed blackhole and gets removed. This is the
     /// same idempotent shape `ensureProxyDNS` uses for its residual revert.
+    ///
+    /// 2026-10-14（审查中-1/中-2）两处放宽与收紧：
+    /// - **放宽**：前置守卫不再要求「TUN 关且自家隧道接口消失」。接口在、但数据面
+    ///   探针已判定不健康（失效 fd）时同样清扫 —— 那种形态下 198.18.x 就是个不应答
+    ///   的黑洞，而旧守卫会一路放行到探针重建内核为止。`enableTunnelDNS` 加了同源
+    ///   守卫，两个自愈路径不会互相拆台。
+    /// - **收紧**：共存隧道 UP 不再自动豁免无来源证据的残留，必须逐地址取证
+    ///   （`routedInto`）证明它确实进了对方隧道才收手。
+    ///
+    /// 记账读写一律经 `TunnelDNSLedger`（`.tun` 属主）：本函数只清 TUN 的账，
+    /// 不动 `.proxy` 属主（127.0.0.1 与 fake-ip 残留无关）。
     func sweepOrphanedTunnelDNS() async {
+        // 数据面已判定不健康（滑动窗口失败数达到阈值）—— 这是审查中-1 的关键补充。
+        //
+        // 「接口在」不等于「数据面活着」：configd 在 mihomo 底下重挂 utun100 后，
+        // 接口表与路由表都正常，mihomo 却握着失效 fd（见 TUNDataPlaneProbe 文档）。
+        // 此时下面那两道守卫（tunOn / 自家隧道接口存在）会**全部放行**，系统 DNS
+        // 仍钉在 198.18.x 上，而那个地址已经收不到应答 —— 用户看到的就是「TUN 开着
+        // 但全网打不开」，且没有任何一条自愈路径会去动 DNS（探针的重建/回退要几秒
+        // 到几十秒，这期间黑洞一直挂着）。
+        //
+        // 判据用 `consecutiveFailures >= threshold`（窗口内失败数已达触发线），
+        // 不用 `!allHealthy`：后者在窗口为空（刚启动/刚 reset）时也为真，会把健康
+        // 机器上的重定向误清。
+        let dataPlaneUnhealthy = tunDataPlaneHealth.consecutiveFailures >= tunDataPlaneHealth.threshold
         // Only meaningful with the tunnel down: with it up the redirect is live
-        // and correct (that is `enableTunnelDNS`'s job).
-        guard !tunOn else { return }
+        // and correct (that is `enableTunnelDNS`'s job). 例外：数据面已判定不健康时，
+        // 即使 tunOn 为真也要清扫 —— 那个重定向此刻只是黑洞，不是「live and correct」。
+        guard !tunOn || dataPlaneUnhealthy else { return }
         // Identity-strict on purpose, and the opposite of the liveness tolerance
         // used elsewhere: this decides whether *our* fake-ip redirect is now
         // orphaned. A co-resident proxy's healthy 198.18 tunnel must not suppress
         // the sweep — the system resolver we wrote points at the mihomo gateway,
         // and if our own tunnel is gone that resolver is still a blackhole no
         // matter what another app has up.
-        guard await NetScanner.ownMihomoTunInterface() == nil else { return }
+        //
+        // 中-1 放宽：自家隧道接口存在**但数据面已判定不健康**时同样清扫。
+        // 与 `enableTunnelDNS` 新增的同名守卫配对 —— 两边看同一份证据，所以不会
+        // 出现「sweep 清掉、reconcile 立刻写回」的乒乓。探针恢复后 reset() 窗口，
+        // 两处守卫同时放开，重定向由 reconcile 补写。
+        let ownTunnel = await NetScanner.ownMihomoTunInterface()
+        guard ownTunnel == nil || dataPlaneUnhealthy else { return }
+        if ownTunnel != nil, dataPlaneUnhealthy {
+            logKernel("TUN DNS 残留清理：自家隧道 \(ownTunnel ?? "?") 接口在但数据面探针判定不健康"
+                      + "（窗口失败 \(tunDataPlaneHealth.consecutiveFailures)/\(tunDataPlaneHealth.threshold)），"
+                      + "此时 198.18.x 解析器只是黑洞，一并清扫")
+        }
 
         // A tunnel exists but is not ours — a co-resident proxy. Not a reason
         // to stop sweeping (our residue is still ours to clear), but a reason
@@ -3056,16 +3277,28 @@ extension AppModel {
         // other kernel may legitimately own the fake-ip range for its own
         // resolver. `ownMihomoTunInterface()` returning nil above only proves
         // *our* tunnel is down, not that the machine has none.
-        let otherTunnelIsUp = !NetScanner.interfaces()
-            .filter { $0.kind == .proxyTun && $0.isUp }.isEmpty
+        //
+        // 中-2：记下这些活隧道的**接口名**，而不只是一个布尔。豁免必须逐地址取证
+        // （见下面 `residueRoutedIntoOtherTunnel`）—— 旧实现只要机器上有任何一条
+        // proxyTun 处于 UP，就把所有「无来源证据 + 非默认服务」上的残留逐轮跳过，
+        // 哪怕那条残留根本没有路由进对方的隧道。用户把默认服务切到残留所在服务的
+        // 那一刻即全网黑洞（2026-10-09 实测的残留正是这种无 key 形态）。
+        let otherLiveTunnels = NetScanner.interfaces()
+            .filter { $0.kind == .proxyTun && $0.isUp && $0.id != ownTunnel }
+            .map(\.id)
+        let otherTunnelIsUp = !otherLiveTunnels.isEmpty
 
-        let pinnedService = UserDefaults.standard.string(forKey: Self.kDNSServiceKey) ?? ""
+        // 记账一律走 Ledger（不再裸读 key）：sweep 关心的是 `.tun` 属主 ——
+        // fake-ip 残留只可能来自 TUN 重定向。`.proxy` 属主写的是 127.0.0.1，
+        // 不在本函数的清理范围里，也不该被这里清账。
+        let tunRecord = TunnelDNSLedger.record(for: .tun)
+        let pinnedService = tunRecord?.service ?? ""
         // Cheap skip on the overwhelmingly common path (healthy machine, no
         // redirect ever written): with no recorded service AND no flag, there is
         // nothing we ever wrote, so there is nothing to withdraw. Still checks
         // the current default below, because a redirect from an older build has
         // neither the flag nor the recorded service.
-        let flagged = UserDefaults.standard.bool(forKey: Self.kDNSOverriddenKey)
+        let flagged = tunRecord != nil
         let pinned = !pinnedService.isEmpty
 
         // Throttle the scan, but never the FIX: once something is written here,
@@ -3104,7 +3337,13 @@ extension AppModel {
         var residueRemains = false
 
         for service in services {
-            let servers = await EngineControl.currentSystemDNS(service: service)
+            // 三态语义：nil = 读取失败。失败既不能当"无残留"跳过（会让黑洞
+            // 留在系统里），也不能当"有残留"动手（会在未知状态下改写 DNS）。
+            // 跳过本轮该服务，由 30s 节流后的下一拍重试。
+            guard let servers = await EngineControl.currentSystemDNS(service: service) else {
+                logKernel("TUN DNS 残留清理：服务 \(service) 的 DNS 读取失败，本轮跳过（不当作干净，下拍重试）")
+                continue
+            }
             guard let stale = servers.first(where: { TUNDNSAddress.isFakeIPResolver($0) }) else { continue }
             // An address inside the fake-ip range is residue whoever wrote it:
             // no user types `198.18.x.x` as a resolver by hand, and with no
@@ -3119,10 +3358,19 @@ extension AppModel {
             // instead — the rule lives in TUNDNSAddress so it can be tested.
             let isDefaultService = (service == current)
             let hasProvenance = flagged || pinned
+            // 中-2：豁免前逐地址取证 —— 这条残留**此刻是否真的被路由进某条活着的
+            // 共存隧道**。只有取证成立才可能是对方内核的解析器；否则它就是个没有
+            // 路由的死地址，照清不误。判据与 `enableTunnelDNS` 的可达性守卫同源
+            // （`TUNDNSAddress.routedInto`），不引入第二套关于「谁的地址」的猜测。
+            let routedIface = otherTunnelIsUp ? NetScanner.routedInterface(for: stale) : nil
+            let residueRoutedIntoOtherTunnel = otherTunnelIsUp
+                && otherLiveTunnels.contains { TUNDNSAddress.routedInto(routedIface, tunnel: $0) }
             guard TUNDNSAddress.shouldSweepResidueOn(hasProvenance: hasProvenance,
                                                      isDefaultService: isDefaultService,
-                                                     otherTunnelIsUp: otherTunnelIsUp) else {
-                logKernel("TUN DNS 残留清理：服务 \(service) 上的 \(stale) 疑似其他内核所有，跳过")
+                                                     otherTunnelIsUp: otherTunnelIsUp,
+                                                     residueRoutedIntoOtherTunnel: residueRoutedIntoOtherTunnel) else {
+                logKernel("TUN DNS 残留清理：服务 \(service) 上的 \(stale) 确实被路由进共存隧道 "
+                          + "\(routedIface ?? "?")，疑似其他内核所有，跳过")
                 continue
             }
 
@@ -3131,13 +3379,10 @@ extension AppModel {
             residueRemains = true
 
             // Prefer the snapshot we saved at enable time; fall back to clearing
-            // the service so it returns to DHCP-provided resolvers.
-            let savedString = UserDefaults.standard.string(forKey: Self.kDNSSavedKey) ?? ""
-            let saved = savedString == "Empty" || savedString.isEmpty
-                ? ["Empty"]
-                : savedString.split(separator: ",").map(String.init)
-            let restored = saved.filter { !TUNDNSAddress.isFakeIPResolver($0) }
-            let target = restored.isEmpty ? ["Empty"] : restored
+            // the service so it returns to DHCP-provided resolvers. 解码走 Ledger
+            // 的 codec：它会剔除快照里被污染的 fake-ip 地址（旧版本把 198.18.x
+            // 当「用户原值」存过），剔完为空则回到 "Empty"（DHCP）。
+            let target = DNSLedgerCodec.sanitizedRestoreTarget(fromSnapshot: tunRecord?.snapshot ?? "")
 
             // The snapshot belongs to the service we originally pinned; applying
             // it to a *different* service would smear one interface's DNS onto
@@ -3150,7 +3395,9 @@ extension AppModel {
                 logKernel("TUN DNS 残留清理写入失败：服务 \(service)（下次巡检重试）")
                 continue
             }
-            logKernel("TUN DNS 残留清理：服务 \(service) 上的 \(stale) 已回退（TUN 未开启，该地址必然黑洞）")
+            logKernel("TUN DNS 残留清理：服务 \(service) 上的 \(stale) 已回退（"
+                      + (ownTunnel == nil ? "TUN 未开启" : "TUN 数据面不健康")
+                      + "，该地址此刻必然黑洞）")
         }
 
         // Decided once, after the whole sweep: the throttle stays exempt only
@@ -3164,10 +3411,11 @@ extension AppModel {
         // that points at where the residue lives, and the next sweep would
         // have to rediscover it from the default interface alone (which is the
         // gap this sweep was widened to close).
+        //
+        // 只清 `.tun` 属主的账：sweep 处理的是 fake-ip 残留，与 `.proxy` 属主
+        // （127.0.0.1）无关，清错属主会把代理模式的重定向记录抹成无主状态。
         if flagged && !Self.dnsRepairNeeded {
-            UserDefaults.standard.set(false, forKey: Self.kDNSOverriddenKey)
-            UserDefaults.standard.removeObject(forKey: Self.kDNSSavedKey)
-            UserDefaults.standard.removeObject(forKey: Self.kDNSServiceKey)
+            TunnelDNSLedger.clear(owner: .tun)
         }
     }
 

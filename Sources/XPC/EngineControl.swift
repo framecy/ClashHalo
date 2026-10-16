@@ -2,6 +2,7 @@ import Foundation
 import Combine
 import SwiftUI
 import Network
+import SystemConfiguration
 
 @MainActor final class EngineControl: ObservableObject {
     static let shared = EngineControl()
@@ -754,6 +755,19 @@ import Network
     }
 
     /// The BSD name of the current default-route interface (e.g. `en0`), or nil.
+    ///
+    /// 2026-10-14（审查低级项）：默认路由落在 utun 上时，旧实现**硬编码偏好 en0**。
+    /// 那是猜测，不是取证：本机实测 8 个 `en*` 接口全部 UP（en0…en8），用 USB 网卡
+    /// 或雷电扩展坞时真正的上行是 en1/en5/en7。猜错的代价落在 DNS 链路上 ——
+    /// `defaultNetworkService()` 用它反查服务名，pin 到一个并不承载流量的服务
+    /// （如已断开的 Wi-Fi）上，重定向不生效、恢复也找错服务，正是「残留清不掉」
+    /// 的一类成因。
+    ///
+    /// 改成先问 System Configuration 的权威答案：`State:/Network/Global/IPv4` 的
+    /// `PrimaryInterface`（进程内 C API，**零 fork**，实测与 `route -n get default`
+    /// 一致：en0 / Router 10.1.1.1）。只有它也指向 utun、或读不到、或那个接口
+    /// 并非「UP 且有 IPv4 的物理接口」时，才回退到原有的物理接口扫描
+    /// （保留 en0 偏好作为最后手段，健康机器上的行为与旧版完全一致）。
     nonisolated static func defaultInterface() async -> String? {
         await Task.detached(priority: .userInitiated) {
             let p = Process()
@@ -778,14 +792,27 @@ import Network
             if let iface = routeIface, !iface.hasPrefix("utun") {
                 return iface
             }
-            // Fallback: Scan physical interfaces if the default route points to a tunnel or is missing.
-            let physicalIfaces = NetScanner.interfaces().filter {
+
+            // 默认路由被隧道接管（或读不到）：先取 System Configuration 的权威主接口。
+            let physical = NetScanner.interfaces().filter {
                 $0.kind == .physical && $0.isUp && !$0.ipv4.isEmpty
             }
-            if physicalIfaces.contains(where: { $0.id == "en0" }) {
+            if let store = SCDynamicStoreCreate(nil, "ClashHalo.defaultInterface" as CFString, nil, nil),
+               let global = SCDynamicStoreCopyValue(store, "State:/Network/Global/IPv4" as CFString) as? [String: Any],
+               let primary = global["PrimaryInterface"] as? String,
+               !primary.isEmpty,
+               !primary.hasPrefix("utun"),
+               physical.contains(where: { $0.id == primary }) {
+                return primary
+            }
+
+            // Fallback: Scan physical interfaces if the default route points to a tunnel or is missing.
+            if physical.contains(where: { $0.id == "en0" }) {
+                NSLog("[ClashHalo] defaultInterface: 默认路由在 %@ 上且 SC 主接口不可用，回退 en0（可能与真实上行不符）",
+                      routeIface ?? "未知")
                 return "en0"
             }
-            return physicalIfaces.first?.id
+            return physical.first?.id
         }.value
     }
 
@@ -965,26 +992,50 @@ import Network
     }
 
     /// Read the system DNS servers for the default service (or an explicit one).
-    nonisolated static func currentSystemDNS(service: String? = nil) async -> [String] {
+    ///
+    /// 2026-10-14（审查中-3 修复）：返回值语义改为三态 `[String]?`——
+    /// - `nil`：读取失败（networksetup 超时/启动失败/无默认服务），调用方
+    ///   不得把它当 "Empty" 处理。旧版错误路径直接返回 `[]`，而 GUI 的
+    ///   enableTunnelDNS 会把 `[]` 当"用户没配 DNS"存进快照，恢复时就把
+    ///   空列表写回系统——真用户配置被一次读取故障洗掉；
+    /// - `[]`：读取成功且服务确实没有 DNS（"Empty"），这是合法状态；
+    /// - 非空：读取成功的 DNS 列表。
+    /// 同时补了 5s 超时：旧版无超时，networksetup 卡住会把调用链挂死。
+    nonisolated static func currentSystemDNS(service: String? = nil) async -> [String]? {
         let svc: String?
         if let service, !service.isEmpty {
             svc = service
         } else {
             svc = await defaultNetworkService()
         }
-        guard let svc else { return [] }
-        return await Task.detached(priority: .userInitiated) {
+        guard let svc else { return nil }
+        return await Task.detached(priority: .userInitiated) { () -> [String]? in
             let p = Process()
             p.executableURL = URL(fileURLWithPath: "/usr/sbin/networksetup")
             p.arguments = ["-getdnsservers", svc]
             let pipe = Pipe(); p.standardOutput = pipe; p.standardError = Pipe()
-            do { try p.run() } catch { return [] }
-            let data = pipe.fileHandleForReading.readDataToEndOfFile(); p.waitUntilExit()
-            let out = String(data: data, encoding: .utf8) ?? ""
-            let ips = out.split(separator: "\n")
-                .map { $0.trimmingCharacters(in: .whitespaces) }
-                .filter { $0.range(of: #"^[0-9a-fA-F:.]+$"#, options: .regularExpression) != nil }
-            return ips
+            // 5s 超时：readDataToEndOfFile 会一直阻塞到进程退出，没有兜底
+            // 的话一次 networksetup 卡顿就挂住整条恢复链路。
+            let timer = DispatchSource.makeTimerSource(queue: DispatchQueue.global())
+            timer.schedule(deadline: .now() + 5.0)
+            timer.setEventHandler { if p.isRunning { p.terminate() } }
+            do {
+                try p.run()
+                timer.resume()
+                let data = pipe.fileHandleForReading.readDataToEndOfFile()
+                p.waitUntilExit()
+                timer.cancel()
+                // 超时被 terminate 时退出码非零，与真失败同判——沿用本文件
+                // runNetworkSetupOutput 的既有口径，不再另设跨队列 timedOut 标志。
+                guard p.terminationStatus == 0 else { return nil }
+                let out = String(data: data, encoding: .utf8) ?? ""
+                return out.split(separator: "\n")
+                    .map { $0.trimmingCharacters(in: .whitespaces) }
+                    .filter { $0.range(of: #"^[0-9a-fA-F:.]+$"#, options: .regularExpression) != nil }
+            } catch {
+                timer.cancel()
+                return nil
+            }
         }.value
     }
 
@@ -2611,4 +2662,23 @@ import Network
     /// Scalar interpretation lives in `YamlScalar` so the regression suite can
     /// compile the real rules instead of re-implementing them.
     private func parseValue(_ raw: String) -> Any { YamlScalar.parse(raw) }
+}
+
+// MARK: - TunnelDNSLedger 生产适配器
+
+/// `SystemDNSDriving` 的生产实现：转发到本文件的 networksetup 封装。
+/// 放在这里（而不是 TunnelDNSLedger.swift）是为了让 Ledger 保持零 impure
+/// 依赖——回归套件 Tests/DNSLedger 单独编译真实 Ledger 源码 + 同名 stub。
+/// 这是 DNS 记账链路里**唯一**碰真实系统状态的地方。
+struct EngineControlDNSDriver: SystemDNSDriving {
+    func currentDNS(service: String?) async -> [String]? {
+        await EngineControl.currentSystemDNS(service: service)
+    }
+    @discardableResult
+    func applyDNS(_ servers: [String], service: String?) async -> Bool {
+        await EngineControl.applySystemDNS(servers, service: service)
+    }
+    func defaultService() async -> String? {
+        await EngineControl.defaultNetworkService()
+    }
 }

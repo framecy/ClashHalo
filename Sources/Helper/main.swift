@@ -19,6 +19,16 @@ func isAuthorizedClient(_ conn: NSXPCConnection) -> Bool {
     // kSecCSDoNotValidateExecutable | kSecCSDoNotValidateResources (== kSecCSBasicValidateOnly)
     // skips hash and seal verification — only the code-signing metadata (identifier) is
     // checked. This handles developer-signed and most ad-hoc builds.
+    //
+    // 取舍（2026-10-14 审查中-12，这两个 flag 刻意保留不动）：本 App 的 Debug/开发
+    // 构建是 ad-hoc 签名，去掉豁免后 SecCodeCheckValidity 会去校验可执行哈希与资源
+    // 封印，ad-hoc 产物过不了 → 用户自己的 GUI 被 Helper 拒之门外，特权操作全线失效，
+    // 现场只能手动 bootout/重装 LaunchDaemon 才能恢复。要真正收紧到「验签」级别，前提
+    // 是发布链路统一走 Developer ID + 公证，并为 Debug 构建单开一条可判定的放行规则——
+    // 那是发布策略决定，不在本次修复范围内。
+    // 代价必须写清楚：identifier-only 的元数据检查可以被本机任意用户用
+    // `codesign -s - -i com.clashhalo.app` 伪造，因此 Layer 2/3 的归一化路径锚定是
+    // 目前唯一还能提高门槛的一层（见 canonicalClientPath / isAllowedBundleParent）。
     var code: SecCode?
     let attrs = [kSecGuestAttributePid: pid] as CFDictionary
     if SecCodeCopyGuestWithAttributes(nil, attrs, [], &code) == errSecSuccess, let code {
@@ -59,34 +69,82 @@ func isAuthorizedClient(_ conn: NSXPCConnection) -> Bool {
     return false
 }
 
-/// True only for a genuine ClashHalo app bundle root path, not any
-/// path that merely contains the substring (prevents a rogue app at e.g.
-/// /tmp/clashhalo-evil/x from impersonating the client).
+/// 归一化客户端路径（2026-10-14 审查中-12 安全部分）。顺序沿用
+/// `isAllowedKernelPath` 的既有惯用法：先 `standardizingPath` 折叠 `..`/`~`，
+/// 再 `resolvingSymlinksInPath` 解开软链，两步之后都不允许残留 `..`。
+/// 这样 `/Applications/../tmp/evil/ClashHalo.app`、以及指向伪造 bundle 的软链，
+/// 都会在参与比对之前现出真实位置。
+private func canonicalClientPath(_ path: String) -> String? {
+    let std = (path as NSString).standardizingPath
+    guard !std.contains("..") else { return nil }
+    let resolved = (std as NSString).resolvingSymlinksInPath
+    guard !resolved.contains("..") else { return nil }
+    return resolved
+}
+
+/// 允许的 bundle 父目录（入参已小写）。刻意不只认 `/Applications`：
+/// Debug 验证流程是直接 `open` Xcode 产物目录里的 App（`Scripts/build-debug.sh`
+/// → `<repo>/.build/Build/Products/Debug/ClashHalo.app`），用户也可能从挂载的
+/// DMG 里直接运行；把这些真客户端锁在 Helper 之外，比伪造路径的危害大得多。
+/// 所以这里认的是「安装根的形状」而非某台机器的绝对路径（AGENTS.md：断言不得
+/// 依赖开发机的实时状态）。归一化 + 结构锚定已经把「任意目录塞一个同名 bundle」
+/// 堵到只剩这几个根，攻击者要冒充就得先能写 /Applications 或挂载卷。
+private func isAllowedBundleParent(_ lowercasedParent: String) -> Bool {
+    let p = lowercasedParent
+    if p == "/applications" { return true }
+    // 从挂载卷（DMG）直接运行
+    if p.hasPrefix("/volumes/") { return true }
+    // Xcode 产物布局 Build/Products/{Debug,Release}
+    if p.hasSuffix("/build/products/debug") || p.hasSuffix("/build/products/release") { return true }
+    // 控制台用户自己的 ~/Applications
+    if let home = consoleUser()?.home.lowercased(), p == home + "/applications" { return true }
+    return false
+}
+
+/// True only for a genuine ClashHalo app bundle root path sitting at an allowed
+/// install root — 不是「路径里含有该子串」，也不是任意目录下的同名 bundle。
 private func isClashAppBundlePath(_ path: String) -> Bool {
-    let p = path.lowercased()
-    return p.hasSuffix("/clashhalo.app") || p.hasSuffix("/clashpow.app")
+    guard let p = canonicalClientPath(path) else { return false }
+    let comps = p.lowercased().split(separator: "/", omittingEmptySubsequences: true)
+    // 至少两段：根目录下的裸 `/ClashHalo.app` 一律拒
+    guard comps.count >= 2, let last = comps.last,
+          last == "clashhalo.app" || last == "clashpow.app" else { return false }
+    return isAllowedBundleParent("/" + comps.dropLast().joined(separator: "/"))
 }
 
-/// True only for an executable inside ClashHalo.app/Contents/MacOS/.
-/// Requires the full bundle-internal structure, not a substring match.
+/// True only for an executable inside ClashHalo.app/Contents/MacOS/ at an
+/// allowed install root. 旧实现是裸 `contains`，`/tmp/evil/ClashHalo.app/
+/// Contents/MacOS/x` 就能冒充客户端；现在要求这四段正好落在路径末尾，
+/// 可执行名之后不得再有任何分量。
 private func isClashExecutablePath(_ path: String) -> Bool {
-    let p = path.lowercased()
-    return p.contains("/clashhalo.app/contents/macos/") ||
-           p.contains("/clashpow.app/contents/macos/")
+    guard let p = canonicalClientPath(path) else { return false }
+    let comps = p.lowercased().split(separator: "/", omittingEmptySubsequences: true)
+    guard comps.count >= 5 else { return false }
+    let n = comps.count
+    guard comps[n - 2] == "macos", comps[n - 3] == "contents",
+          comps[n - 4] == "clashhalo.app" || comps[n - 4] == "clashpow.app",
+          !comps[n - 1].isEmpty else { return false }
+    return isAllowedBundleParent("/" + comps[0..<(n - 4)].joined(separator: "/"))
 }
 
-/// The console user's uid plus their canonical ClashHalo data directory,
-/// built from the passwd database — never from an XPC client's path.
-/// The uid comes from /dev/console ownership (the same source
-/// `networksetup`-style tooling trusts); nil when nobody is logged in
-/// (root-owned console at boot), in which case there is nothing to repair to.
-func consoleRepairTarget() -> (uid: uid_t, dir: String)? {
+/// The console user (uid + home), derived from /dev/console ownership and the
+/// passwd database — never from an XPC client's path. nil when nobody is logged
+/// in (root-owned console at boot), in which case there is nothing to repair to.
+/// Shared by `consoleRepairTarget()` and the client-path allowlist so both
+/// agree on who "the logged-in user" is.
+private func consoleUser() -> (uid: uid_t, home: String)? {
     var st = stat()
     guard stat("/dev/console", &st) == 0, st.st_uid != 0,
           let pw = getpwuid(st.st_uid) else { return nil }
     let home = String(cString: pw.pointee.pw_dir)
     guard home.hasPrefix("/") else { return nil }
-    return (st.st_uid, home + "/Library/Application Support/ClashHalo")
+    return (st.st_uid, home)
+}
+
+/// The console user's uid plus their canonical ClashHalo data directory.
+func consoleRepairTarget() -> (uid: uid_t, dir: String)? {
+    guard let u = consoleUser() else { return nil }
+    return (u.uid, u.home + "/Library/Application Support/ClashHalo")
 }
 
 /// Only permit launching a binary at the canonical ClashHalo kernel path.
@@ -912,8 +970,14 @@ class HelperDelegate: NSObject, NSXPCListenerDelegate {
         Helper.routesLock.lock()
         _ = ProxyManager.cleanupTUNResidual(downedOnly: true)
         Helper.routesLock.unlock()
-        let dnsReset = ProxyManager.restoreDNSIfTunnelPinned()
-        log("handleClientExit: tunnel-pinned DNS restored (\(dnsReset))")
+        let dnsReport = ProxyManager.restoreDNSIfTunnelPinned()
+        log("handleClientExit: tunnel-pinned DNS 恢复结果：\(dnsReport.summary)")
+        if !dnsReport.allClear {
+            // 有服务没恢复干净：系统 DNS 可能仍钉在 198.18.x 上，正是断网形态。
+            // Helper 侧刻意不再兜底写公网 DNS（会践踏用户自己的自定义 DNS），
+            // 只把现场记全，交 GUI 下次启动的 sweep 续修。
+            log("handleClientExit: DNS 未完全恢复 failed=\(dnsReport.failed) unreadable=\(dnsReport.unreadable)，需 GUI 侧 sweep 续修")
+        }
 
         // 5. Disable IP Forwarding
         if hadGateway {
