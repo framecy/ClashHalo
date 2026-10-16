@@ -5,6 +5,15 @@ import Foundation
 /// (Xcode target) since both include this file — prevents the two-location
 /// version drift that caused infinite upgrade loops.
 ///
+/// 1.0.30: audit fix batch (2026-10-14): DNS restore commands get a 5s timeout
+/// and lose the 223.5.5.5 fallback — failed restores keep the old value for the
+/// GUI sweep instead of clobbering user DNS; the loopback resolver liveness
+/// probe adds UDP (TCP-only misjudged mihomo's UDP-first listener as dead);
+/// cleanupTUNResidual replaces the whole-table `route -n flush` with targeted
+/// deletes and covers the global default route via an ownership pre-check;
+/// client-auth path matching is normalized (`..` folding + symlink resolution)
+/// and anchored to an install-root allowlist; restoreDNSIfTunnelPinned returns
+/// a per-service report so partial failures are visible in helper.log.
 /// 1.0.29: before every root mihomo spawn, repair the data-directory owner to
 /// the console user — anchored to the passwd-derived canonical path (the
 /// client's path string must match it exactly; `..`, symlink anchors and
@@ -23,7 +32,7 @@ import Foundation
 /// session takeover before its destructive steps (quit/relaunch race).
 /// 1.0.25: system-proxy rework (shared ProxyServicePlan, branch-order fix, no
 /// 2-service cap, full-success-only Bool).
-public let kSharedHelperVersion = "1.0.29"
+public let kSharedHelperVersion = "1.0.30"
 
 /// The utun name mihomo is asked to take, instead of accepting whatever index
 /// the kernel hands out. Shared with the Helper so it can tell a route our own
@@ -247,6 +256,16 @@ public enum RouteTable {
     /// decision is exactly what tore down peer tunnels before. Scoped routes are
     /// filtered out first — they only apply to traffic already bound to their
     /// interface, so they are never an answer to "what carries this prefix".
+    ///
+    /// Known limitation (2026-10-14 审查低级项, deliberately not closed here):
+    /// the third-interface exemption also swallows a *stale* carrier — the same
+    /// peer's previous utun still UP after a renumber (utun8 lingering while the
+    /// plan expects utun9), black-holing the prefix into a dead tunnel. Telling
+    /// "another owner's decision" from "this owner's dead predecessor" needs
+    /// per-interface vendor identity, which this pure table comparison does not
+    /// have; lingering utuns are the GUI-side zombie sweep's and
+    /// `cleanupTUNResidual`'s job instead. If a prefix black-holes behind a
+    /// live-but-wrong third carrier, this exemption is why.
     public static func drift(expected: [String: String],
                              in table: [Entry],
                              pinned: String = kPinnedTunDevice) -> [Drift] {

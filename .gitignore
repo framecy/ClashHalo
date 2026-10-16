@@ -50,6 +50,8 @@ build/
 # 于是每次 `git status` 都挂着一坨永远不会入库的采集文件。
 monitor*/
 loadtest*/
+# 8 小时无人值守网络监察的采集产物（raw.jsonl 单次即 11MB）
+netwatch*/
 *.pid
 
 # 参考文档，非发布内容

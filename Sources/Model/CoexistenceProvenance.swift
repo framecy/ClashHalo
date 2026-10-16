@@ -103,4 +103,38 @@ public enum CoexistenceProvenance {
             .filter { !injected.contains($0) || isProtectiveExclusion($0) }
             .sorted()
     }
+
+    // MARK: Resolver identity (fingerprint normalization)
+
+    /// Resolver identity for **fingerprint purposes**: each `<server>#<iface>`
+    /// binding reduced to its address, then deduped and sorted.
+    ///
+    /// Why the `#utunN` suffix must never enter the plan fingerprint
+    /// (2026-10-14 审查中-6)：BSD 按创建顺序发放 utun 序号，睡眠唤醒/隧道重建
+    /// 会给同一个对端换号（utun8→utun9）。后缀入指纹后，每次换号都被
+    /// `reconcileCoexistenceIfChanged` 当成「拓扑变化」，回以整块 `tun` PATCH
+    /// + 全量静态路由重装——2026-10-14 日志里一天 6 次假性「拓扑变化」同步、
+    /// 路由条数在 7/8/9 之间振荡，就是这么来的。而那个 PATCH **根本携带不了
+    /// DNS 绑定**：mihomo 忽略运行时 `dns` PATCH，`<server>#<iface>` pin 活在
+    /// config.yaml 里，只能由用户触发的 `repairDNSInterfaceBindings` 修复
+    /// （漂移检测走 `Coexistence.resolverDrift`）。也就是说换号引发的整块
+    /// PATCH 纯属无谓消耗：它既修不了绑定，还会重建 TUN、抖掉在途连接。
+    ///
+    /// 剥掉后缀后，指纹只随**实质变化**而动：解析器地址集合、排除网段集合、
+    /// fake-ip-filter 集合。策略字符串本身保留后缀（那是 mihomo 的接口绑定
+    /// 语法，`dnsAdvice` 必须原样打印给用户抄进 config.yaml）。
+    ///
+    /// 去重是必要的：换号过渡期新旧两个接口可能同时被检测到，同一地址的两条
+    /// 绑定（`1.2.3.4#utun8`、`1.2.3.4#utun9`）在指纹语义下是同一个事实。
+    ///
+    /// 住在本文件的理由与 provenance 相同：这是极易改错的纯规则，而
+    /// `Coexistence.swift` 经 `Models.swift` 摸到 SwiftUI，回归套件编不了它。
+    static func resolverIdentity(_ resolvers: [String]) -> [String] {
+        Array(Set(resolvers.map { entry -> String in
+            // 与 `Coexistence.resolverInterfaces` 同一套解析：`#` 前是地址。
+            // 无后缀的条目原样保留；`first ??` 防御空串（`"".split` 得空数组，
+            // 直接下标会崩——resolverInterfaces 用 `count == 2` guard 挡同类）。
+            String(entry.split(separator: "#", maxSplits: 1).first ?? Substring(entry))
+        })).sorted()
+    }
 }

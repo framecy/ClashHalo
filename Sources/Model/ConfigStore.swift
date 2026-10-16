@@ -38,11 +38,22 @@ struct YAMLPreview: Equatable {
     private var manifestPath: String { dir + "/manifest.json" }
     private let fm = FileManager.default
 
-    /// URLSession with timeout for subscription downloads (30s timeout prevents hanging on slow servers)
+    /// 订阅下载专用 session：**必须直连，禁止继承系统代理**。
+    ///
+    /// 原来用 `URLSessionConfiguration.default`，它会带上系统代理/PAC 设置。
+    /// ClashHalo 开系统代理时，订阅请求会先打到 127.0.0.1:mixed-port，再由
+    /// mihomo 转发。问题出在「切换内核」时序上：换内核要先 `stopKernel`，
+    /// 那 30s 窗口里 mixed-port 无人监听，此时任何订阅刷新都会黑洞（表现为
+    /// 订阅一直转圈或"网络错误"），而用户看到的却是"订阅突然坏了"。
+    /// 直连之后，订阅可用性只取决于用户的物理网络，不受内核重启窗口影响。
+    /// 写法对齐 `KernelManager.session`（同一理由：内核下载也必须直连）。
+    /// 超时保持原值：慢服务器 30s 内必须给出响应，整体 60s 封顶。
     private let session: URLSession = {
-        let config = URLSessionConfiguration.default
+        let config = URLSessionConfiguration.ephemeral
         config.timeoutIntervalForRequest = 30
         config.timeoutIntervalForResource = 60
+        // 空 proxy 字典 = 本 session 忽略系统代理与 PAC，强制直连出口。
+        config.connectionProxyDictionary = [:]
         return URLSession(configuration: config)
     }()
 
@@ -99,21 +110,49 @@ struct YAMLPreview: Equatable {
         if reconciled { save() }
     }
 
-    func save() {
+    /// 保存清单与所有订阅 URL（URL 本体进 Keychain，manifest 里清空）。
+    ///
+    /// 返回 false 表示这次持久化没完全成功（Keychain 写入失败或 manifest 落盘失败），
+    /// 失败细节写入 app.log。调用方多数不需要处理返回值（`@discardableResult`），
+    /// 但订阅导入/应用这类用户可见路径可以据此提示。
+    ///
+    /// 隐私不变量（不可破坏）：manifest.json **绝不能**含真实订阅 URL——
+    /// 它会被 `ConfigWriteAudit`、备份、用户手动拷贝带出去。URL 只存 Keychain
+    /// + 0600 镜像文件，manifest 里一律 `url = nil`。
+    @discardableResult
+    func save() -> Bool {
+        var failedIDs: [String] = []
         let sanitized = profiles.map { p -> Profile in
             if let u = p.url {
-                KeychainHelper.save(key: p.id, value: u)
+                if !KeychainHelper.save(key: p.id, value: u) {
+                    failedIDs.append(p.id)
+                }
             }
             var copy = p
-            copy.url = nil
+            copy.url = nil          // 隐私不变量：manifest 不留 URL
             return copy
         }
-        if let data = try? JSONEncoder().encode(sanitized) {
+        var ok = true
+        if !failedIDs.isEmpty {
+            // OSStatus 码没有从 KeychainHelper.save 暴露出来（签名只返回 Bool，
+            // 且内部已按「Keychain 失败但镜像存在就算成功」聚合），所以这里
+            // 只能记到 key 名粒度。要更细的 errSec* 诊断需要改 KeychainHelper 的
+            // 返回值类型——超出本次改动范围。
+            let list = failedIDs.map { String($0.prefix(8)) }.joined(separator: ", ")
+            AppModel.appendAppLog("配置保存：订阅 URL 写入 Keychain 失败 [id=\(list)]（镜像文件可能仍可用）")
+            ok = false
+        }
+        do {
+            let data = try JSONEncoder().encode(sanitized)
             // Atomic — this is the only non-YAML state file in the app, and a
             // torn manifest makes load() silently rebuild a single "默认配置"
             // profile from config.yaml, orphaning every profiles/<id>.yaml.
-            try? data.write(to: URL(fileURLWithPath: manifestPath), options: [.atomic])
+            try data.write(to: URL(fileURLWithPath: manifestPath), options: [.atomic])
+        } catch {
+            AppModel.appendAppLog("配置保存：manifest.json 写入失败 \(error.localizedDescription)")
+            return false
         }
+        return ok
     }
 
     func content(_ id: String) -> String { (try? String(contentsOfFile: path(id), encoding: .utf8)) ?? "" }

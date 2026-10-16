@@ -2,7 +2,7 @@
 
 本文件给后续 AI 编码代理使用。进入本仓库后，先读本文件，再按需读 `README.md`、`CHANGELOG.md` 和相关源码。
 
-当前主干：`main`，产品版本 **v1.3.5**（`MARKETING_VERSION`），Helper **1.0.29**（`kSharedHelperVersion`）。打包时 `make.sh` 自增 `CURRENT_PROJECT_VERSION`。
+当前主干：`main`，产品版本 **v1.3.6**（`MARKETING_VERSION`），Helper **1.0.30**（`kSharedHelperVersion`）。打包时 `make.sh` 自增 `CURRENT_PROJECT_VERSION`。
 
 ## 项目概览
 
@@ -28,6 +28,7 @@
   - `Coexistence.swift`：utun 共存。分层取证检测 VPN 对端（守护进程 + IP 段，未知厂商退化为通用 peer）、`route-exclude-address` 归属追踪（自动条目可撤回，用户手写条目不动）、指纹门控。**`PATCH /configs` 对嵌套对象是整块替换不是深合并**，改 `tun` 任何字段都必须走 `tunPatchBody()` 重述完整块，否则 `enable` 会被打回 false；DNS 层无法安全 PATCH，只经 `dnsAdvice` 写日志。
     **路由采集必须过滤**（`routesByInterface`）：对端的接口作用域路由（`I` 标志）全局不承载流量，把它重装成非作用域静态路由等于凭空制造劫持；链路专用前缀与本机直连网段一律不得指向隧道。判据在 `PeerRouteGuard`（`HelperProtocol.swift`，GUI 与 Helper 共用），Helper 侧二次拦截并回收孤儿路由
   - `ConfigStore.swift`：订阅 manifest；URL 存 Keychain
+  - `TunnelDNSLedger.swift`：系统 DNS 重定向的唯一记账属主（纯逻辑、无 MainActor、零 impure 依赖）。`.tun` / `.proxy` 双属主各持独立 service pin + 快照，pending→committed 两段式，恢复失败保留账本；生产适配器 `EngineControlDNSDriver` 在 `EngineControl.swift` 末尾，回归套件 `Tests/DNSLedger`（dnsledger-tests）钉住 5 条不变量；排查用 `grep '\[DNSLedger\]' ~/Library/Logs/ClashHalo/app.log`
 - `Sources/XPC/`：
   - `HelperProtocol.swift`：XPC 协议 + 共享常量 `kSharedHelperVersion` / `kProxyBypassDomains`
   - `EngineControl.swift`：内核与配置热补丁、Helper 升级（`runAdmin(prompt:)` 预授权说明）、系统代理/DNS
@@ -144,7 +145,7 @@ bash Scripts/restore-tests.sh            # 套件文件缺失时物化
 - `mihomo` 签名不要随意 hardened runtime；会影响 TUN/utun
 - TUN 是运行时能力：启动时强制 `tun.enable: false`，只应通过 UI/Helper 流程开启
 - **网关开关是用户意图**（`UserDefaults` 镜像 `net.gatewayModeOn`），禁止从 config 残留签名推断开启；开关关时清理残留 `dns.listen: 0.0.0.0:53`
-- **系统 DNS 重定向的唯一属主是 TUN**：代理模式禁止把系统 DNS 指向 mihomo——fake-ip 应答会把不走代理的应用解析到不可路由的 198.18.x 假地址直接断网（`ensureProxyDNS` 在 fake-ip 下跳过并自愈残留）；代理模式域名防污染由 sniffer（parse-pure-ip）承担
+- **系统 DNS 重定向的记账唯一属主是 `TunnelDNSLedger`**：合法写点有两个属主——TUN（fake-ip 网关 198.18.x，pin 服务）与代理 redir-host 模式（127.0.0.1，独立账本）；**fake-ip 下代理模式禁止写系统 DNS**（fake-ip 应答会把不走代理的应用解析到不可路由的 198.18.x 假地址直接断网；`ensureProxyDNS` 的跳过守卫必须保留），此时域名防污染由 sniffer（parse-pure-ip）承担。写入/清账一律走 Ledger API（`redirect` / `restore` / `restoreAll`），禁止直接读写 `kDNS*Key`——共享账本正是 2026-10-14 断网事故的高-1/高-2 根因；快照只在读取成功时落盘（`currentSystemDNS` 三态，nil ≠ Empty），恢复写确认成功才清账，退出路径超时/失败保留账本交下次启动续修
 - **系统级网络状态的写点必须自证安全前提**：写 DNS/系统代理/路由/转发前，在写入函数内部断言使该写入成立的事实（fake-ip 网关接口存在、目标端口在监听、状态属主归我），不要只依赖上游调用方的门——门会回归。同理，修复「被下游 bug 掩盖的机制」时必须先审它的设计意图在放行后是否本身有害（归属修复让 fake-ip DNS 重定向驻留进而断网即此类）；全局状态尽量单一属主（如系统 DNS 重定向只归 TUN、bypass 只归 `kProxyBypassDomains`）
 - Helper 版本唯一来源是 `kSharedHelperVersion`（`HelperProtocol.swift`），并同步 `Helper-Info.plist` 的 `CFBundleVersion`。需要强制升级旧 Helper 时才 bump
 - 系统代理 bypass 唯一来源是 `kProxyBypassDomains`（约 86 条：localhost/mDNS/RFC1918/link-local/CGNAT）。Helper、本地 fallback、`reconcileProxyBypassIfNeeded`、网络拓扑视图都只引用它
@@ -168,11 +169,12 @@ bash Scripts/restore-tests.sh            # 套件文件缺失时物化
 
 「接口存在」不等于「数据面活着」：`configd` 在 mihomo 底下重挂 `utun100` 后，接口表与路由表都正常，mihomo 却握着失效 fd。纯逻辑部分在 `Sources/Model/TUNDataPlaneProbe.swift`（无 UI、无进程管理、无 MainActor）：
 
-1. **`DNSProbe`**：向 fake-ip 网关（默认 `198.18.0.1:53`）发最小 UDP DNS 查询，校验 transaction ID / 长度 / QR 位。**NXDOMAIN、SERVFAIL 只要格式有效就算活着**——问的是 fd 能不能收发包，不是名字能不能解析
-2. **`TUNDataPlaneHealthState` 是滑动窗口，不是连续失败计数**：保留最近 `window`（默认 6）次结果，窗口内失败数达到 `failThreshold`（默认 4）触发自愈。**一次成功不清空窗口**——半死 fd 恰恰是「大部分失败、偶尔成功」，连续计数在这种形态下永远不触发（v1.1.12 的实际漏洞）
+1. **`DNSProbe`**：向 fake-ip 网关（默认 `198.18.0.1:53`）发最小 UDP DNS 查询，校验 transaction ID / 长度 / QR 位 / RCODE，**只认 NOERROR 算活着**——旧规则「NXDOMAIN/SERVFAIL 格式有效即活」已被真实事故推翻：SERVFAIL 意味着查询到达 mihomo 但解析失败，是断网签名不是健康签名（旧规则让探针在 DNS 全黑洞期间连报 1400 轮假绿灯）。探测主机名选在 fake-ip filter 覆盖内（非 `.local`），健康路径必回 NOERROR；NXDOMAIN 也不接受，防止被规则黑洞的探测主机重新打开同一漏洞
+2. **`TUNDataPlaneHealthState` 是滑动窗口，不是连续失败计数**：保留最近 `window`（默认 6）次结果，窗口内失败数达到 `failThreshold`（默认 4）触发自愈。**一次成功不清空窗口**——半死 fd 恰恰是「大部分失败、偶尔成功」，连续计数在这种形态下永远不触发（v1.1.12 的实际漏洞）。**交替形态补触发（2026-10-14）**：严格 F/S 交替会让失败数永远停在 threshold-1，补条件「满窗 + 失败数==threshold-1 + 本条失败 + 闩锁未置位」同一窗口只触发一次，闩锁随 `reset()` 解除
 3. **一轮内每次尝试都要记入窗口**：`runTUNDataPlaneProbe` 不得一遇成功就 break；`runTUNDataPlaneProbeCycle` 默认 5 次，只在**首次尝试即刻应答**时短路
-4. **`reset()` 只在 `allHealthy`（满窗口全成功）后调用**，别让一次侥幸成功抹掉判定
-5. **自愈是整进程重建**，不是 `PATCH tun off/on`——PATCH 不保证重开失效 fd；二次验收仍失败则关 TUN 回退直连，不动用户原本开启的系统代理
+4. **调度是合并制、禁止 cancel+重建（2026-10-14）**：`scheduleTUNDataPlaneProbe` 对已在排任务取触发时刻 min(既有, now+delay)——高频事件只能拉早探针、永远推不晚（cancel+重建在事件风暴下会把探针饿死且完全静默）；距上次实际执行超过 2×delay 强制立即排程兜底
+5. **`reset()` 只在 `allHealthy`（满窗口全成功）后调用**，别让一次侥幸成功抹掉判定
+6. **自愈是整进程重建**，不是 `PATCH tun off/on`——PATCH 不保证重开失效 fd；二次验收仍失败则关 TUN 回退直连，不动用户原本开启的系统代理
 
 ### 网络拓扑 / 静态路由绕行
 
