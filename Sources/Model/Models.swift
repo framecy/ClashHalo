@@ -287,6 +287,12 @@ enum NetScanner {
     }
 
     /// Routes touching utun interfaces only (used by the SD-WAN topology view).
+    ///
+    /// 口径是**全部** utun，不是「属于本 App 的 TUN」。唯一调用点
+    /// `SdwanPage.rescan()` 的三处消费者（拓扑连线、网络接口拓扑、UTUN 路由表）
+    /// 都按出口接口分组，同机 Tailscale/ZeroTier/Oray 的路由本来就该与本 App 的
+    /// 并列展示，所以这里不做身份过滤。这不是归属结论：要回答「这条隧道是不是
+    /// mihomo 的」必须用 `ownMihomoTunInterface()`（`conflictingRoutes()` 即如此）。
     static func tunRoutes() async -> [(dest: String, iface: String)] {
         let all = await allRoutes()
         return all.filter { $0.iface.hasPrefix("utun") }.map { ($0.dest, $0.iface) }

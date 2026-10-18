@@ -148,10 +148,15 @@ struct ConfigPage: View {
         .contentShape(Rectangle())
         .onTapGesture { if !active && !pendingApply { M.selectForApply(p.id) } }
         .contextMenu {
-            if !active { Button { M.selectForApply(p.id) } label: { Label("设为活动", systemImage: "checkmark") } }
+            if !active {
+                Button { M.selectForApply(p.id) } label: { Label("设为活动", systemImage: "checkmark") }
+                    .disabled(M.engine.isBusy)
+            }
             Button { editingID = p.id } label: { Label("编辑 YAML…", systemImage: "pencil") }
+                .disabled(M.engine.isBusy)
             if draft {
                 Button(role: .destructive) { M.store.discardDraft(p.id) } label: { Label("放弃导入", systemImage: "trash.slash") }
+                    .disabled(M.engine.isBusy)
             }
             if p.source == "remote" {
                 Button {
@@ -167,10 +172,11 @@ struct ConfigPage: View {
                 } label: {
                     Label("更新订阅", systemImage: "arrow.clockwise")
                 }
+                .disabled(M.engine.isBusy)
             }
             Divider()
             Button(role: .destructive) { M.store.remove(p.id) } label: { Label("删除", systemImage: "trash") }
-                .disabled(active || draft)
+                .disabled(active || draft || M.engine.isBusy)
         }
     }
 

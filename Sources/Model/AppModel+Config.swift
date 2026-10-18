@@ -22,6 +22,14 @@ extension AppModel {
         ]
     ]
 
+    /// 内核 DNS 监听地址的唯一来源（P3-3）。
+    ///
+    /// 系统代理的防污染重定向要求 mihomo 监听在 `127.0.0.1:53`（系统解析器只会
+    /// 问 127.0.0.1 的 53 端口）；`1053` 是 mihomo 默认值，也是“该重定向不成立时”
+    /// 应当写回的形态。两者此前以字面量散落 6 处，改端口时很容易只改一半。
+    static let systemProxyDNSListen = "127.0.0.1:53"
+    static let defaultDNSListen = "127.0.0.1:1053"
+
     /// 内核 `log-level` 的唯一选项真相源（P1-8）。
     ///
     /// 设置页与日志页此前各写一份：设置页有 `silent`、日志页没有，于是用户在设置页
@@ -470,7 +478,7 @@ extension AppModel {
                 engine.setTopLevelScalars([
                     "dns": [
                         "enable": true,
-                        "listen": "127.0.0.1:1053",
+                        "listen": Self.defaultDNSListen,
                         "enhanced-mode": "fake-ip"
                     ]
                 ])
@@ -478,7 +486,7 @@ extension AppModel {
                 // Best-effort live reload; ignore failures (kernel may be down).
                 try? await api.reloadConfig(path: engine.configFilePath)
                 if var dns = configs["dns"] as? [String: Any] {
-                    dns["listen"] = "127.0.0.1:1053"
+                    dns["listen"] = Self.defaultDNSListen
                     configs["dns"] = dns
                 }
                 // Residual Gateway signature usually means a previous session left
@@ -1114,7 +1122,7 @@ extension AppModel {
         guard let disk = engine.readConfigFile(),
               let dns = disk["dns"] as? [String: Any],
               let listen = dns["listen"] as? String else { return false }
-        if listen == "127.0.0.1:53" { return true }
+        if listen == Self.systemProxyDNSListen { return true }
 
         logKernel("系统代理需要 DNS 监听 53 端口，当前为 \(listen)，正在修改并重载内核…")
         // Patch config.yaml: change dns.listen to 127.0.0.1:53.
@@ -1124,7 +1132,7 @@ extension AppModel {
         // which then makes the !tunOn guard in ensureProxyDNS skip the DNS
         // redirect (leaving the system on the polluted router DNS).
         engine.setTopLevelScalars([
-            "dns": ["listen": "127.0.0.1:53"],
+            "dns": ["listen": Self.systemProxyDNSListen],
             "tun": ["enable": false]
         ])
         noteConfigContentChanged()
@@ -1139,7 +1147,7 @@ extension AppModel {
         }
         // Re-sync after reload
         await refreshConfigs()
-        logKernel("mihomo DNS 已切换到 127.0.0.1:53")
+        logKernel("mihomo DNS 已切换到 \(Self.systemProxyDNSListen)")
         return true
     }
 
@@ -1433,7 +1441,7 @@ extension AppModel {
                 "allow-lan": preGatewayAllowLan ?? false,
                 "dns": [
                     "enable": true,
-                    "listen": preGatewayDNSListen ?? "127.0.0.1:1053",
+                    "listen": preGatewayDNSListen ?? Self.defaultDNSListen,
                     "enhanced-mode": "fake-ip"
                 ]
             ]
@@ -2457,7 +2465,7 @@ extension AppModel {
                         "allow-lan": preGatewayAllowLan ?? false,
                         "dns": [
                             "enable": true,
-                            "listen": preGatewayDNSListen ?? "127.0.0.1:1053",
+                            "listen": preGatewayDNSListen ?? Self.defaultDNSListen,
                             "enhanced-mode": "fake-ip"
                         ]
                     ]
