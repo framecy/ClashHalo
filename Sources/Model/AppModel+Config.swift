@@ -282,7 +282,23 @@ extension AppModel {
     }
 
     private func refreshConfigsBody() async {
-        guard var c = try? await api.fetchConfigs() else { return }
+        // P0-3：这里**不能**静默 return。TUN 对账、静态路由注入、按属主的 DNS
+        // 对账全都挂在“这个函数跑到尾”上；静默失败会让所有自愈停摆，而界面只
+        // 表现为「怎么切配置都不再注入绕行路由」，日志里一个字都没有。
+        let fetched: [String: Any]?
+        let fetchError: Error?
+        do {
+            fetched = try await api.fetchConfigs()
+            fetchError = nil
+        } catch {
+            fetched = nil
+            fetchError = error
+        }
+        guard let fetched else {
+            await noteConfigFetchFailure(fetchError)
+            return
+        }
+        var c = fetched
 
         // Strictly enforce CDN GEO defaults if missing or empty
         var geo: [String: String] = [:]
@@ -498,23 +514,72 @@ extension AppModel {
 
         // Align static routes for excluded prefixes in sync with the real TUN state.
         // Fresh XPC (not cached helper()) — same silent-drop issue as start/sysproxy.
+        //
+        // P0-3 两处修正：
+        //  · 「这一拍没有路由要注入」≠「已经注入过了」。旧代码把空路由图直接置
+        //    `staticRoutesInjected = true`，于是之后即使检测出真实对端网段，
+        //    `tunOn && !staticRoutesInjected` 永远为假 —— 绕行路由一辈子不再注入。
+        //    改为到期复查（30s），既不每拍 fork 探测，也不会永久锁死。
+        //  · 注入/清理失败不再只写一行日志：限流 toast 让用户知道绕行没做成，同时
+        //    `staticRoutesInjected` 保持假值让下一轮继续重试（重试语义本来就是对的，
+        //    这里只补可观测性，**不**改成放弃）。
         if tunOn && !staticRoutesInjected {
-            let excludeRoutes = Coexistence.excludeRouteMap(await Coexistence.detect()) { cidr, kept, droppedPeer, droppedIface in
-                self.logKernel("TUN 共存：网段 \(cidr) 被多条隧道同时声明——保留 \(kept)，忽略 \(droppedPeer)→\(droppedIface)（首赢取自检测顺序而非仲裁；若该网段黑洞请查此条）")
-            }
-            if !excludeRoutes.isEmpty {
-                let ok = await XPCManager.shared.callSetupExcludeRoutes(excludeRoutes)
-                logKernel("XPC Helper 注入静态路由: \(ok == true ? "成功" : "失败")")
-                if ok == true { staticRoutesInjected = true }
-            } else {
-                // If there are no routes to exclude, mark it as injected to prevent repeated checks
-                staticRoutesInjected = true
+            if Date() >= staticRoutesCheckedUntil {
+                staticRoutesCheckedUntil = Date().addingTimeInterval(Self.kStaticRoutesRecheck)
+                let excludeRoutes = Coexistence.excludeRouteMap(await Coexistence.detect()) { cidr, kept, droppedPeer, droppedIface in
+                    self.logKernel("TUN 共存：网段 \(cidr) 被多条隧道同时声明——保留 \(kept)，忽略 \(droppedPeer)→\(droppedIface)（首赢取自检测顺序而非仲裁；若该网段黑洞请查此条）")
+                }
+                if !excludeRoutes.isEmpty {
+                    let ok = await XPCManager.shared.callSetupExcludeRoutes(excludeRoutes)
+                    logKernel("XPC Helper 注入静态路由: \(ok == true ? "成功" : (ok == nil ? "失败（特权服务不可达）" : "失败（被拒绝）"))")
+                    if ok == true { staticRoutesInjected = true } else { noteRouteXPCFailure("注入", ok: ok) }
+                } else if throttleAllows("routes.empty", interval: 300) {
+                    // 空图只做诊断记录（5 分钟一次），绝不能当成“已注入”。
+                    logKernel("TUN 共存：本次检测无对端网段需要注入静态绕行路由（\(Int(Self.kStaticRoutesRecheck))s 后复查）")
+                }
             }
         } else if !tunOn && staticRoutesInjected {
             let ok = await XPCManager.shared.callCleanupAllExcludeRoutes()
-            logKernel("XPC Helper 清理静态路由: \(ok == true ? "成功" : "失败")")
-            if ok == true { staticRoutesInjected = false }
+            logKernel("XPC Helper 清理静态路由: \(ok == true ? "成功" : (ok == nil ? "失败（特权服务不可达）" : "失败（被拒绝）"))")
+            if ok == true { staticRoutesInjected = false } else { noteRouteXPCFailure("清理", ok: ok) }
         }
+    }
+
+    /// 静态路由注入/清理的到期复查间隔（P0-3）。`Coexistence.detect()` 会 fork
+    /// `ipconfig`/`netstat`，3 s 一拍太贵；30 s 足够跟上“用户刚打开 Tailscale”
+    /// 这种分钟级变化。
+    static let kStaticRoutesRecheck: TimeInterval = 30
+
+    /// `/configs` 取失败时的统一处置（P0-3）。
+    ///
+    /// 单次失败不等于内核已死（6 s 超时可能正撞上内核重载），所以这里**不自己**
+    /// 写 `reachable` —— 那会绕过 `reconnect()` 里“内核刚死”的 DNS / 系统代理
+    /// 回退（`wasReachable` 被提前置假，那段回退就永远不进）。交给单一属主
+    /// `reconnect()` 判断并处置；本函数只负责限频记录原因。
+    private func noteConfigFetchFailure(_ error: Error?) async {
+        let reason = error?.localizedDescription ?? "未知原因"
+        if throttleAllows("refreshConfigs.fetch", interval: 30) {
+            logKernel("配置刷新失败：无法获取 /configs（\(reason)），本轮跳过 TUN/路由/DNS 对账")
+        }
+        guard reachable else { return }   // 已断线：重连链路在跑，别重复触发
+        await reconnect()
+    }
+
+    /// 路由 XPC 失败的限流可观测性（P0-3）：一个永远失败的注入会每轮重试，
+    /// 不能每轮弹一次 toast，但也不能只在日志里留一行。
+    private func noteRouteXPCFailure(_ action: String, ok: Bool?) {
+        guard throttleAllows("routes.xpc", interval: 60) else { return }
+        let why = ok == nil ? "特权服务不可达" : "特权服务拒绝执行"
+        showToast("静态路由\(action)失败（\(why)），将自动重试", kind: .warn)
+    }
+
+    /// 同一类事件在窗口内只放行一次（日志/toast 限频）。窗口状态在
+    /// `AppModel.throttleStamps`，按 key 隔离，互不影响。
+    private func throttleAllows(_ key: String, interval: TimeInterval) -> Bool {
+        let now = Date()
+        if let last = throttleStamps[key], now.timeIntervalSince(last) < interval { return false }
+        throttleStamps[key] = now
+        return true
     }
 
     // MARK: Master switches
