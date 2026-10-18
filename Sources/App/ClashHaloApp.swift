@@ -1,4 +1,5 @@
 import SwiftUI
+import ObjectiveC
 
 // MARK: - App Delegate
 
@@ -27,16 +28,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         AppDelegate.performCleanup()
     }
 
-    /// Closing the last window keeps ordinary macOS behaviour and terminates the
-    /// app — which is now safe, because `applicationShouldTerminate` holds the
-    /// quit until the tunnel has been torn down properly.
+    /// Closing the last window must NOT quit the app.
     ///
-    /// (AppKit semantics worth stating because they invert the obvious reading:
-    /// returning `true` here *allows* termination. This method is deliberately not
-    /// where the TUN policy lives; putting a `false` here is what previously kept
-    /// the app resident against the user's wishes.)
+    /// 产品语义（用户明确要求）：**⌘W 只关窗口，⌘Q 才退出应用**。代理客户端常驻菜单栏
+    /// 是常态——关掉窗口只是不想看界面，代理、TUN、菜单栏图标应当继续工作；反过来让
+    /// “关窗”顺手拆掉内核与系统代理，用户会以为是自己把网弄断了。
+    ///
+    /// AppKit 语义提醒（与直觉相反）：这里返回 `true` 才**允许**关闭最后一个窗口后退出。
+    /// 历史上是 `false`（常驻），中间改成 `true`（关窗即退，靠 `applicationShouldTerminate`
+    /// 兜 TUN 收尾），现按用户要求改回 `false`。由于主窗口的关闭已被
+    /// `MainWindowCloseKeepsRunning` 拦成“收起来”，正常路径根本不会走到“最后一个窗口
+    /// 被销毁”；这个 `false` 是兜底：任何意外销毁窗口的路径都不该把正在代理的进程带走。
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool {
-        true
+        false
     }
 
     /// Quit is always a real quit — but with TUN up it *waits* for the tunnel to
@@ -269,6 +273,60 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     private static let _cleanupOnce = DispatchSemaphore(value: 1)
+}
+
+// MARK: - ⌘W vs ⌘Q
+
+/// 把主窗口的「关闭」改成「收起来」—— ⌘W 只关窗口，不退出应用。
+///
+/// AppKit 的 `performClose:`（⌘W、红灯按钮都走它）会问 delegate `windowShouldClose:`，
+/// SwiftUI 默认答"关掉并销毁窗口"。配合 `applicationShouldTerminateAfterLastWindowClosed`
+/// 就是"⌘W = 退出应用 + 拆内核"，对常驻菜单栏的代理客户端是错的行为。
+///
+/// 这里只在 `windowShouldClose` 里 `orderOut` 并返回 false，其余选择器全部转发给
+/// SwiftUI 原来的 delegate（委派代理模式），所以 SwiftUI 自己的窗口管理不受影响。
+/// 窗口实例因此保留：Dock 图标点击（`applicationShouldHandleReopen`）与菜单栏
+/// 「打开主窗口」都能把它原样唤回，滚动位置、当前页签也都还在。
+final class MainWindowCloseKeepsRunning: NSObject, NSWindowDelegate {
+    weak var forward: NSWindowDelegate?
+
+    override func responds(to aSelector: Selector!) -> Bool {
+        if aSelector == #selector(NSWindowDelegate.windowShouldClose(_:)) { return true }
+        return forward?.responds(to: aSelector) ?? super.responds(to: aSelector)
+    }
+
+    override func forwardingTarget(for aSelector: Selector!) -> Any? { forward }
+
+    func windowShouldClose(_ sender: NSWindow) -> Bool {
+        sender.orderOut(nil)
+        // 前排轮询按这个 flag 决定是否降频（`isMainWindowVisible`）；`orderOut`
+        // 不一定触发 SwiftUI 的 onDisappear，这里显式置假。
+        MainActor.assumeIsolated { AppModel.shared.isMainWindowVisible = false }
+        return false
+    }
+}
+
+/// 把上面的代理挂到 SwiftUI 主窗口上（幂等，只挂一次）。
+///
+/// `NSWindow.delegate` 是 weak 的，所以代理由窗口的关联对象持有，避免被立刻释放。
+struct MainWindowCloseGuard: NSViewRepresentable {
+    private static var proxyKey: UInt8 = 0
+
+    func makeNSView(context: Context) -> NSView {
+        let probe = NSView(frame: .zero)
+        // `makeNSView` 时视图还没进入窗口层级，取 window 要等下一轮 runloop。
+        DispatchQueue.main.async {
+            guard let window = probe.window else { return }
+            if window.delegate is MainWindowCloseKeepsRunning { return }
+            let proxy = MainWindowCloseKeepsRunning()
+            proxy.forward = window.delegate
+            window.delegate = proxy
+            objc_setAssociatedObject(window, &MainWindowCloseGuard.proxyKey, proxy, .OBJC_ASSOCIATION_RETAIN)
+        }
+        return probe
+    }
+
+    func updateNSView(_ nsView: NSView, context: Context) {}
 }
 
 // MARK: - App
