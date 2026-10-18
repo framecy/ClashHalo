@@ -289,6 +289,16 @@ struct SystemProxyStatus: Equatable {
     @Published var systemProxyStatus = SystemProxyStatus()
     @Published var tunOn = false
     var staticRoutesInjected = false
+    /// `staticRoutesInjected` 的“到期复查”时间戳。
+    ///
+    /// 空路由图不再把自己标成“已注入”（那会把后续真实出现的对端网段永久锁死），
+    /// 改为按这个时间点重新检测；检测要 fork `ipconfig`/`netstat`，所以不能每拍做。
+    var staticRoutesCheckedUntil: Date = .distantPast
+    /// 限频时间戳表（日志与 toast 共用，键由调用点自己定）。
+    ///
+    /// 失败原因会被 3 s / 60 s 两种节拍重复撞见；不限频就等于把日志刷满，而刷满的
+    /// 日志没有诊断价值，反复弹的 toast 只会训练用户忽略提示。
+    var throttleStamps: [String: Date] = [:]
     /// In-flight guard so the B10 auto-teardown (config says TUN on but interface
     /// gone) and the verifyTUNConfig 30 s probe don't both fire `applyTUNState`
     /// concurrently with a user toggle / restart. Re-arming it to `false`
@@ -1360,7 +1370,41 @@ struct SystemProxyStatus: Equatable {
             // frozen at their initial value — the old code only polled /connections
             // for gateway mode, leaving non-gateway users with all-zero cards.
             var dashDue = Date.distantPast
-            while let self, !Task.isCancelled, self.reachable, self.isMainWindowVisible || self.isMenuBarVisible {
+            // P0-4：`self.reachable` 不再是循环条件。
+            //
+            // 内核假死（API 不可达）与“僵尸 TUN 仍持着路由”经常同时发生，而
+            // `sweepZombieTUN`（含它专为这个夹缝加的“盲区”诊断日志）、内存警卫、
+            // 以及内核恢复后的第一时间对账都挂在这个循环上 —— 循环一退，防线比
+            // 故障先停摆，之后要等下一次界面事件才会重启轮询。
+            //
+            // 不可达期间只做三件廉价的事：跑到期的健康巡检、内存警卫、带指数
+            // 退避的重探（200 ms → 2 s 上限）。探活后走与事件驱动同一条
+            // `reconnect()`：内核刚死时的 DNS / 系统代理回退由它单一属主负责，
+            // 这里自己置 `reachable` 会跳过那段回退。
+            //
+            // 注意这里**不**自动重启内核：看门狗不做自动重启（AGENTS.md），那
+            // 是唯一用户能感觉到的动作，兜不住时提示人工处理。
+            var unreachableBackoff: UInt64 = 200_000_000
+            while let self, !Task.isCancelled, self.isMainWindowVisible || self.isMenuBarVisible {
+                if !self.reachable {
+                    if Date() >= healthDue {
+                        // 僵尸巡检自带 `guard reachable`：这一拍只会留下盲区诊断
+                        // 记录，不会误杀健康 TUN（`upDetachedMihomoTun` 对健康
+                        // TUN 同样返回 utun100，裸判会误报）。
+                        await self.sweepZombieTUN()
+                        healthDue = Date().addingTimeInterval(30)
+                    }
+                    self.enforceAppMemoryGuard()
+                    await self.api.probe(timeout: 0.5)
+                    if self.api.reachable {
+                        unreachableBackoff = 200_000_000
+                        await self.reconnect()
+                        continue
+                    }
+                    try? await Task.sleep(nanoseconds: unreachableBackoff)
+                    unreachableBackoff = min(unreachableBackoff * 2, 2_000_000_000)
+                    continue
+                }
                 // Config is now event-driven: every patchConfig / reloadConfig
                 // call already invokes refreshConfigs(). The 12 s poll was
                 // picking up kernel-internal changes (geo-auto-update, etc.)
