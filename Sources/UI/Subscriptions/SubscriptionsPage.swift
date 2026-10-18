@@ -15,7 +15,9 @@ struct SubscriptionsPage: View {
     var body: some View {
         VStack(spacing: 0) {
             PageToolbar {
-                Button { Task { await updateAll() } } label: { Label("全部更新", systemImage: "arrow.clockwise") }
+                // P2-2（方案 B）：本页刷的是**内核里的 proxy-provider 缓存**，不重写
+                // 磁盘配置文件（那是配置页的事）。文案必须让两者分得开。
+                Button { Task { await updateAll() } } label: { Label("全部刷新节点", systemImage: "arrow.clockwise") }
                     .dsButton()
                 Button { editName = nil; fName = ""; fURL = ""; showSheet = true } label: { Label("添加订阅", systemImage: "plus") }
                     .dsButton(.prominent)
@@ -81,7 +83,7 @@ struct SubscriptionsPage: View {
                         ProgressView().controlSize(.small)
                     } else {
                         Button { Task { await update(p.name) } } label: { Image(systemName: "arrow.clockwise") }
-                            .buttonStyle(.borderless).help("更新")
+                            .buttonStyle(.borderless).help("刷新内核节点（不重写配置文件）")
                         Button { beginEdit(p.name) } label: { Image(systemName: "pencil") }
                             .buttonStyle(.borderless).help("编辑")
                         Button { confirmDelete = p.name } label: { Image(systemName: "trash") }
@@ -154,12 +156,12 @@ struct SubscriptionsPage: View {
             // 旧节点列表再画一遍，看起来像"刷新过了"。
             M.logKernel("[Subscriptions] 更新订阅「\(name)」失败: \(error.localizedDescription)")
             busy.remove(name)
-            M.showToast("更新「\(name)」失败，已保留原节点列表", kind: .error)
+            M.showToast("刷新节点「\(name)」失败，已保留原节点列表", kind: .error)
             return
         }
         try? await Task.sleep(nanoseconds: 800_000_000)
         await reload(); busy.remove(name)
-        M.showToast("已更新订阅「\(name)」", kind: .ok)
+        M.showToast("内核节点「\(name)」已刷新", kind: .ok)
     }
     private func updateAll() async { for p in providers { await update(p.name) } }
     private func dateStr(_ unix: Int64) -> String {

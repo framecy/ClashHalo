@@ -164,13 +164,18 @@ struct ConfigPage: View {
                         let ok = await M.store.updateRemote(p.id)
                         if ok {
                             if active { M.selectForApply(p.id) }
-                            M.showToast("订阅「\(p.name)」已更新成功", kind: .ok)
+                            // P2-2（方案 B）：这里刷的是**磁盘上的配置文件**，不是
+                            // 内核里的节点缓存。文案必须说清是哪一件事，否则用户在两个
+                            // 页面都能看到“已更新”，却更新的不是一个东西。
+                            M.showToast("配置文件「\(p.name)」已从订阅源更新", kind: .ok)
                         } else {
-                            M.showToast("订阅「\(p.name)」更新失败，已保留原配置", kind: .error)
+                            M.showToast("配置文件「\(p.name)」更新失败，已保留原文件", kind: .error)
                         }
                     }
                 } label: {
-                    Label("更新订阅", systemImage: "arrow.clockwise")
+                    // 配置页的“更新”= 用订阅源重写磁盘配置文件（节点缓存不刷新，
+                    // 那是订阅页的事）。菜单项文案跟着说清。
+                    Label("更新配置文件", systemImage: "arrow.clockwise")
                 }
                 .disabled(M.engine.isBusy)
             }
