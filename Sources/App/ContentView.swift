@@ -40,6 +40,9 @@ struct ContentView: View {
         // brand accent (Medium Purple U). Without this, List(.sidebar) keeps the
         // system blue while content uses DS.Palette.accent.
         .tint(DS.Palette.accent)
+        // ⌘W 只收起窗口、不退出应用（见 MainWindowCloseKeepsRunning）：
+        // 这个零尺寸探针视图负责把窗口的 close 拦截代理挂上去。
+        .background(MainWindowCloseGuard())
         .onAppear { M.isMainWindowVisible = true }
         .onDisappear { M.isMainWindowVisible = false }
         // macOS 最小化不触发 onDisappear，需单独监听窗口通知
