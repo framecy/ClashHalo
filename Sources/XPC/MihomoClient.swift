@@ -92,10 +92,17 @@ private struct SafeDecoder: @unchecked Sendable {
     func fetchProviders() async throws -> ProvidersPayload { try await get("/providers/proxies") }
 
     /// Force-update a subscription (proxy provider).
+    ///
+    /// 必须检查状态码：mihomo 在上游订阅拉取失败时回的**不是**连接错误，而是一个
+    /// 5xx 响应体。旧实现 `_ = try await session.data(for: req)` 把响应丢掉，于是
+    /// “上游拉不到订阅”走成成功路径 —— 界面弹绿条、节点一个没变（P0-6 的另一半）。
     func updateProvider(_ name: String) async throws {
         let enc = name.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? name
         guard let req = request("/providers/proxies/\(enc)", method: "PUT") else { throw MihomoError.badURL }
-        _ = try await session.data(for: req)
+        let (_, resp) = try await session.data(for: req)
+        if let h = resp as? HTTPURLResponse, !(200..<300).contains(h.statusCode) {
+            throw MihomoError.http(h.statusCode)
+        }
     }
 
     /// Health-check a subscription (triggers delay test for all its nodes).

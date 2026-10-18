@@ -328,12 +328,14 @@ extension AppModel {
         }
 
         // Mihomo API does not return sniffer or dns config, so read them from config.yaml
+        var diskEnhancedMode = "fake-ip"
         if let fileConfig = engine.readConfigFile() {
             if let sniffer = fileConfig["sniffer"] as? [String: Any] {
                 c["sniffer"] = sniffer
             }
             if let dns = fileConfig["dns"] as? [String: Any] {
                 c["dns"] = dns
+                if let mode = dns["enhanced-mode"] as? String, !mode.isEmpty { diskEnhancedMode = mode }
             }
         }
 
@@ -489,6 +491,26 @@ extension AppModel {
         // 顺带修正上面那段过时注释的说法：TUN 并非系统 DNS 重定向的**唯一**写者，
         // 代理模式在 `enhanced-mode: redir-host` 下确实会写 127.0.0.1（fake-ip
         // 下自行跳过）。真正的不变量是「**每个写者各有独立账本**」。
+        //
+        // P0-5：但“不在这里对账”过头了 —— `.tun` 属主每拍都会对账，`.proxy` 属主
+        // 却只在 `ensureProxyDNS` 的 fake-ip 分支里被顺手 `restoreAll`，于是
+        // redir-host + 系统代理写下的 127.0.0.1 **没有常规回收路径**：关掉系统代理，
+        // `scutil --dns` 里那行 127.0.0.1 会一直留着，内核一停就是解析黑洞。
+        // 这一拍按属主对账，判据只有两条：这笔账还在，且它成立的前提已经不在
+        // （系统代理关了，或增强模式已不是 redir-host）。
+        //
+        // 顺序很关键：必须排在下面 `.tun` 分支**之前**。TUN 关闭的那一拍，
+        // `.tun` 分支会在 restore 之后调 `ensureProxyDNS()` 重建代理的重定向，先清
+        // 后建才对；反过来会把刚建好的账目又拆掉。
+        if TunnelDNSLedger.record(for: .proxy) != nil,
+           !systemProxyOn || diskEnhancedMode != "redir-host" {
+            let why = !systemProxyOn ? "系统代理已关闭" : "增强模式为 \(diskEnhancedMode)"
+            logKernel("[DNSLedger] .proxy 属主失去成立前提（\(why)），还原系统 DNS…")
+            let restored = await TunnelDNSLedger.restore(owner: .proxy, log: { self.logKernel($0) })
+            if !restored, throttleAllows("proxyDNS.restore", interval: 120) {
+                showToast("系统 DNS 未能还原（127.0.0.1 可能残留），请检查网络设置", kind: .warn)
+            }
+        }
         let tunRedirect = TunnelDNSLedger.record(for: .tun)
         if tunOn && tunRedirect == nil {
             await enableTunnelDNS()
@@ -1055,7 +1077,12 @@ extension AppModel {
         if ok {
             logKernel("系统代理 DNS 已设为 127.0.0.1（经 mihomo DoH 解析，防 GFW 污染）")
         } else {
+            // 同类失败两种反馈（P0-5）：探测失败会弹 toast，写入失败却只有一行日志。
+            // 用户看到的是“代理开着但域名照样被污染”，界面什么都不说。
             logKernel("系统代理 DNS 重定向未完成（读取原 DNS 失败或写入失败），域名可能被 GFW 污染")
+            if throttleAllows("proxyDNS.redirect", interval: 120) {
+                showToast("系统 DNS 重定向未完成，域名可能被污染", kind: .warn)
+            }
         }
     }
 
