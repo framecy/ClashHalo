@@ -22,6 +22,23 @@ extension AppModel {
         ]
     ]
 
+    /// 内核 `log-level` 的唯一选项真相源（P1-8）。
+    ///
+    /// 设置页与日志页此前各写一份：设置页有 `silent`、日志页没有，于是用户在设置页
+    /// 选“静默”后日志页一个段都不选中 —— 界面看起来“坏了”。两边都从这里取，
+    /// 且标签统一成与每行日志前缀同形的短大写（`Log.level.uppercased()`），
+    /// 免得“选的是 warning、行首印的是 WARN”再制造一次对不上号。
+    ///
+    /// `silent` 必须保留：它是 mihomo 唯一能彻底停掉日志推送的值，用户抱怨日志
+    /// 刷屏时这就是正解；日志页把它显示成一段，而不是藏起来。
+    static let logLevelOptions: [(value: String, label: String)] = [
+        ("silent", "SILENT"),
+        ("error", "ERROR"),
+        ("warning", "WARN"),
+        ("info", "INFO"),
+        ("debug", "DEBUG")
+    ]
+
     // MARK: - 访问控制 × 局域网网关
     //
     // These two cards write the same mihomo fields with opposite intent, and
@@ -1210,13 +1227,23 @@ extension AppModel {
     /// Deliberately gated on Gateway being off too: Gateway exists to serve LAN
     /// clients through this kernel, so tearing their connections down while it
     /// is on would be sabotage rather than cleanup.
-    func dropAllConnectionsWhenIdle() async {
-        guard reachable, !tunOn, !systemProxyOn, !gatewayModeOn else { return }
+    /// 返回是否真的断开了。P1-5：旧实现返回 `Void`，失败只有一行日志 —— 用户关掉
+    /// TUN 与系统代理后，长连接（流媒体、WebSocket、下载）仍从旧路径走，界面却已
+    /// 显示“全部关闭”。失败必须能被看见，但三处调用点都会调用它，所以提示在这里
+    /// 统一做且限流，避免同一件事弹三次。
+    @discardableResult
+    func dropAllConnectionsWhenIdle() async -> Bool {
+        guard reachable, !tunOn, !systemProxyOn, !gatewayModeOn else { return true }
         do {
             try await api.closeAllConnections()
             logKernel("TUN 与系统代理均已关闭，已断开全部既有连接以恢复直连")
+            return true
         } catch {
             logKernel("断开既有连接失败：\(error.localizedDescription)")
+            if throttleAllows("dropAll.fail", interval: 120) {
+                showToast("未能断开既有连接，部分长连接可能仍在走内核", kind: .warn)
+            }
+            return false
         }
     }
 
@@ -1699,8 +1726,19 @@ extension AppModel {
     /// Call this before every `reloadConfig` / `restart`. See
     /// `EngineControl.persistTunState` for why writing only `tun.enable` is a
     /// network-outage bug rather than a partial fix.
-    func persistTunStateForReload() {
-        engine.persistTunState(enabled: tunOn, device: pinnedTunDevice)
+    /// 写回运行中的 TUN 状态 + pin 住的设备名（reload/restart 会重读文件）。
+    ///
+    /// P1-6：写失败必须被看见。设备名没写进文件时，内核重启后会自己挑一个 utun
+    /// 名，而巡检按 pin 的旧名字判“接口丢失”，接着把整条隧道拆掉 —— 一次静默的
+    /// 写失败会变成一次断网，所以这里既返回 Bool 也弹提示。
+    @discardableResult
+    func persistTunStateForReload() -> Bool {
+        let ok = engine.persistTunStateReporting(tunOn, device: pinnedTunDevice)
+        if !ok, throttleAllows("tunDevice.persist", interval: 120) {
+            logKernel("TUN 设备名写入 config.yaml 失败：重载后内核可能换用别的 utun 名")
+            showToast("TUN 设备名未能写入配置，重载后隧道名可能变化", kind: .warn)
+        }
+        return ok
     }
 
     // MARK: TUN flap circuit breaker
@@ -3741,11 +3779,23 @@ extension AppModel {
         // prefixes stay pinned after the core is gone. Fresh XPC only.
         if hadStaticRoutes {
             let ok = await XPCManager.shared.callCleanupAllExcludeRoutes()
-            logKernel("XPC Helper 清理静态路由: \(ok == true ? "成功" : "失败")")
-            if ok == true || ok == nil {
-                // nil = helper unreachable: drop the local flag so we retry inject
-                // on next TUN up rather than believing routes still managed.
+            switch ok {
+            case .some(true):
                 staticRoutesInjected = false
+                logKernel("XPC Helper 清理静态路由: 成功")
+            case .some(false):
+                // Helper 明确拒绝：路由可能还在。保留标记，让下一拍 refreshConfigs
+                // 的清理分支（`!tunOn && staticRoutesInjected`）继续续清。
+                logKernel("XPC Helper 清理静态路由: 失败（特权服务拒绝执行），保留标记待续清")
+            case .none:
+                // P1-4：nil 只表示“Helper 不可达”，**不等于**“没有路由要清”。
+                // 旧代码在这里把标记置假，退出留下的孤儿静态路由就再也没人认领
+                // （Helper 升级后出现过同类事故）。保留标记：Helper 恢复后它自身会
+                // 回收孤儿路由，本进程下一拍的清理分支也会继续尝试。
+                logKernel("XPC Helper 清理静态路由: 失败（特权服务不可达），保留标记待下次续清")
+                if throttleAllows("routes.exitCleanup", interval: 120) {
+                    showToast("退出时未能清理静态路由（特权服务不可达），已留待续清", kind: .warn)
+                }
             }
         }
         // Physical residual: killall may leave a downed 198.18 utun whose

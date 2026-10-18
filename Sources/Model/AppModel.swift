@@ -299,6 +299,9 @@ struct SystemProxyStatus: Equatable {
     /// 失败原因会被 3 s / 60 s 两种节拍重复撞见；不限频就等于把日志刷满，而刷满的
     /// 日志没有诊断价值，反复弹的 toast 只会训练用户忽略提示。
     var throttleStamps: [String: Date] = [:]
+    /// 上一次写进日志的探测失败原因（P1-3）。只用于“原因变化才记录”，
+    /// 不可达期间的重连重试因此不会刷屏。
+    var lastLoggedProbeError: String?
     /// In-flight guard so the B10 auto-teardown (config says TUN on but interface
     /// gone) and the verifyTUNConfig 30 s probe don't both fire `applyTUNState`
     /// concurrently with a user toggle / restart. Re-arming it to `false`
@@ -974,16 +977,27 @@ struct SystemProxyStatus: Equatable {
         // Purely observation-based: Is the official mihomo REST API responding?
         let wasReachable = self.reachable
         await api.probe()
-        if !api.reachable && wasReachable {
-            // Was reachable a moment ago — a single failed probe during a network
-            // path churn (TUN bring-up, interface switch) must not cascade into
-            // the unreachable teardown (tunOn off + DNS restore + proxy off).
-            // Confirm with a short-delay second probe before declaring it dead.
+        if !api.reachable {
+            // P1-2：原先只在“刚才还活着”（`wasReachable`）时才补探一次。冷启动 /
+            // 合盖唤醒后网络栈还在抖，第一次探测落空就判死会级联到 unreachable
+            // teardown（tunOn 被关、DNS 被还原、系统代理被关）。改成任何一次失败
+            // 都补一次 300 ms 后的确认，代价只有在“真死”时多一次 300 ms。
             try? await Task.sleep(nanoseconds: 300_000_000)
             await api.probe()
         }
         reachable = api.reachable
         if version != api.version { version = api.version }
+        // P1-3：把失败原因写进日志。401（密钥不匹配）与“连接被拒（内核没起来）”
+        // 在界面上都是“不可达”，但处置完全不同。只在原因变化时记录，避免 3 s 重试
+        // 把日志刷满。
+        if !api.reachable {
+            if let why = api.lastProbeError, why != lastLoggedProbeError {
+                lastLoggedProbeError = why
+                logKernel("内核 API 不可达：\(why)")
+            }
+        } else if lastLoggedProbeError != nil {
+            lastLoggedProbeError = nil
+        }
         
         if reachable && !wasReachable {
             // Just came online
