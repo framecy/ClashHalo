@@ -482,6 +482,11 @@ struct SdwanPage: View {
     private func rescan() {
         ifaces = NetScanner.interfaces()
         Task {
+            // 口径：`tunRoutes()` 给的是**全部** utun 的路由，不是「本 App 的 TUN」。
+            // 本页三处消费者（拓扑连线 / 网络接口拓扑 / UTUN 路由表）都按出口接口
+            // 分组，Tailscale、ZeroTier、Oray 的路由与我们的并列展示是刻意的。
+            // 要判定某条路由是否归 mihomo，用 `NetScanner.ownMihomoTunInterface()`
+            // （`conflictingRoutes()` 就是这么判的），别拿这份列表当归属证据。
             async let r = NetScanner.tunRoutes()
             async let c = NetScanner.conflictingRoutes()
             let (routes_, conflicts_) = await (r, c)

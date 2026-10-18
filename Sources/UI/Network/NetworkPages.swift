@@ -585,6 +585,14 @@ struct NPicker: View {
     }
 }
 
+/// 可持久化的嵌套配置输入框（`parent.sub`）。
+///
+/// P2-1（类型契约，别再踩）：`persistent` 默认 **true** —— 用它渲染的字段会立刻写进
+/// `config.yaml` 并触发内核重载，不是"只改运行时"。因此这两类东西禁止用它渲染：
+///   1. **密钥 / 令牌**：它没有掩码能力，会明文显示在屏幕上、明文落在 0600 的
+///      config.yaml 里。API secret 这类字段必须走专门的密码输入控件；
+///   2. 只想临时生效的调试值（写盘后 reload 会连带按文件重读其他 load-time 设置）。
+/// 当前两个调用点（DnsPage 的 `fake-ip-range` / `listen`）都是非敏感字段。
 struct NText: View {
     @EnvironmentObject var M: AppModel
     let parent: String; let sub: String; let label: String; let placeholder: String; let persistent: Bool

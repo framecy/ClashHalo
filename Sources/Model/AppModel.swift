@@ -2324,10 +2324,14 @@ struct SystemProxyStatus: Equatable {
     /// - `onFinished(true)` after a successful disk write (even if only disk);
     ///   `false` if the write itself failed or reload rolled the disk back.
     func applyRuleEditorSave(save: @escaping () -> Bool, onFinished: ((Bool) -> Void)? = nil) {
-        withEngineBusy {
+        let started = withEngineBusy {
             let ok = await self.applyRuleEditorSaveAsync(save: save)
             onFinished?(ok)
         }
+        // P3-2：抢不到锁时 `withEngineBusy` 已经弹过“内核操作进行中”，但它不会执行
+        // body —— `onFinished` 也就永远不来，调用方（规则页/连接页）会一直停在
+        // “保存中”。这里补一次 false，让 UI 明确收尾。（toast 不重复弹。）
+        if !started { onFinished?(false) }
     }
 
     @discardableResult
