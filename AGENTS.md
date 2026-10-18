@@ -2,7 +2,7 @@
 
 本文件给后续 AI 编码代理使用。进入本仓库后，先读本文件，再按需读 `README.md`、`CHANGELOG.md` 和相关源码。
 
-当前主干：`main`，产品版本 **v1.3.7**（`MARKETING_VERSION`，与 `Sources/Info.plist` 的 `CFBundleShortVersionString` 同源），Helper **1.0.30**（`kSharedHelperVersion`，`Helper-Info.plist` 的 `CFBundleVersion` 同值）。当前构建号 **127**（`CURRENT_PROJECT_VERSION`，`make.sh` 每次打包自增）。
+当前主干：`main`，产品版本 **v1.3.8**（`MARKETING_VERSION`，与 `Sources/Info.plist` 的 `CFBundleShortVersionString` 同源），Helper **1.0.30**（`kSharedHelperVersion`，`Helper-Info.plist` 的 `CFBundleVersion` 同值）。当前构建号 **130**（`CURRENT_PROJECT_VERSION`，`make.sh` 每次打包自增）。
 
 ## 项目概览
 
@@ -182,7 +182,7 @@ bash Scripts/restore-tests.sh            # 套件文件缺失时物化
 
 ## UI 约定
 
-规范：`Docs/design.md`。实现真相源：`Sources/UI/DesignTokens.swift` + 共享组件（`PageHead` / `Card` / `ContentUnavailable`）。
+规范：`Docs/design.md`。实现真相源：`Sources/UI/DesignTokens.swift` + 共享组件（`PageToolbar` / `Card` / `ContentUnavailable`）。
 
 - 颜色/间距/圆角/图标一律走 `DS.Palette`、`DS.Spacing`、`DS.Radius`、`DS.Icon`、`Font.ds*`
 - 品牌 accent：PANTONE Medium Purple U（`#65428A`）；数据可视化用 `upload`/`download`/`info`/`error`，**不要**把图表系列绑到 brand accent
@@ -190,7 +190,7 @@ bash Scripts/restore-tests.sh            # 套件文件缺失时物化
 - 主题跟随系统 Appearance，完整 Light/Dark；禁止页面级 `preferredColorScheme`
 - 侧栏：自绘导航（不用 `List(.sidebar)`）；图标一律 outline + `monochrome` + 固定 `lg` 槽；导航与 footer 共用 `pageContentInset` + 同结构图标列
 - 网络拓扑角色色用 `rolePhysical` / `roleTailscale` / `roleZerotier` / `roleOray` / `roleOther`（`proxyTun` 用 `accent`）
-- 复用 `PageHead`、`Card`、form rows；工具型密度，避免营销式 hero
+- 复用 `PageToolbar`（全站唯一顶栏实现）、`Card`、form rows；工具型密度，避免营销式 hero
 - pre-commit 会警告 raw `.font(.system(size: N))` 与字体阶梯漂移
 
 ## 版本与发布
