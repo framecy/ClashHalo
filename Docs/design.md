@@ -1,6 +1,6 @@
 # ClashHalo Design System
 
-工程级 UI 规范。实现真相源是 `Sources/UI/DesignTokens.swift` 与共享组件（`PageHead` / `Card` / `ContentUnavailable` / form rows）。本文件描述目标、令牌、组件契约和 Light/Dark 规则。
+工程级 UI 规范。实现真相源是 `Sources/UI/DesignTokens.swift` 与共享组件（`PageToolbar` / `Card` / `ContentUnavailable` / form rows）。本文件描述目标、令牌、组件契约和 Light/Dark 规则。
 
 **目标平台**：macOS 14+，视觉语言对齐现代 macOS 系统风格（macOS 27 一代：语义色、材质分层、连续圆角、工具型密度）。
 **主题**：完美支持 **Light / Dark**，跟随系统 Appearance，禁止页面级 `preferredColorScheme` 硬锁。
@@ -209,10 +209,16 @@ Card 内边距：`l`。
 - 详情区背景：`windowBg`
 - Toast：底部居中 capsule + ultraThinMaterial
 
-### 6.2 `PageHead`
+### 6.2 `PageToolbar`（全站唯一顶栏）
 
-- 左：title (`dsPageTitle`) + 可选 desc (`dsBody` + secondary)
+结构固定：**标题（可选）→ 页内控件（可选）→ 弹性空白 → 右对齐操作**。
+
+- 标题：`dsPageTitle`，单行；仪表盘的问候语也走这里（不再把标题塞进 `ScrollView`）
+- 页内控件：分段器 / 搜索框放左侧（设置、网络、日志、规则、连接页）
 - 右：动作组中的标准文字按钮使用 `dsButton(...)`（固定 32pt）
+- 高度锁死 `m + controlHeight + m`；底部通栏 1pt `separator`；水平内距 `pageContentInset`（与侧栏 `appHeader` 同源）
+- **禁止页面内再手写顶栏**（不要复制 padding / frame(height:) / background / Divider）
+- 两种写法：`PageToolbar(title:) { actions }`（只有操作）与 `PageToolbar(leading:actions:)`（页内控件 + 操作）
 - 不放营销副文案
 
 ### 6.3 `Card`
@@ -237,7 +243,7 @@ Card 内边距：`l`。
 
 ### 6.5 Toolbar strip（连接/日志/规则）
 
-统一：
+下列视觉约定全部由 §6.2 的 `PageToolbar` 统一承载，页面只往里放控件。统一：
 
 - 控件高度：`DS.Layout.controlHeight = 32`（tab / 按钮 / 搜索框 / 输入框同源）
 - 标准文字/图文按钮（工具栏、卡片 CTA、sheet 底部操作）一律使用 `dsButton(...)`；它负责**按钮本体**的固定 32pt chrome，禁止只给外层容器设高度。
@@ -374,7 +380,7 @@ padding(.vertical, 5)                    // 用 DS.Spacing.*
 | 文件 | 职责 |
 |---|---|
 | `Sources/UI/DesignTokens.swift` | 令牌 + 输入样式 + 共享小部件 + Preview |
-| `Sources/App/ContentView.swift` | Shell、`PageHead`、`Card` |
+| `Sources/App/ContentView.swift` | Shell、`PageToolbar`、`Card` |
 | `Sources/UI/**` | 页面只组合令牌与共享组件 |
 | `Docs/design.md` | 本规范 |
 
