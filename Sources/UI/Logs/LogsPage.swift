@@ -16,14 +16,13 @@ struct LogsPage: View {
         }
         VStack(spacing: 0) {
             HStack(alignment: .center, spacing: DS.Spacing.m) {
-                DSSegmentedControl(selection: Binding(get: { VM.logLevel }, set: { VM.changeLogLevel($0) }), choices: [
-                    DSChoice("DEBUG", "debug"),
-                    DSChoice("INFO", "info"),
-                    DSChoice("WARN", "warning"),
-                    DSChoice("ERROR", "error")
-                ])
-                .frame(width: 240)
-                .help("日志订阅级别（服务端过滤）。默认 WARN，避免每条连接刷屏。")
+                // P1-8：选项集合只有一份（AppModel.logLevelOptions），与设置页
+                // 完全同源；`SILENT` 也在段里，选了它日志就停止追加，而不是让
+                // 四个段全都不选中、界面看起来坏掉。
+                DSSegmentedControl(selection: Binding(get: { VM.logLevel }, set: { VM.changeLogLevel($0) }),
+                                   choices: AppModel.logLevelOptions.map { DSChoice($0.label, $0.value) })
+                .frame(width: 320)
+                .help("日志订阅级别（服务端过滤）。默认 WARN，避免每条连接刷屏；SILENT 停止日志推送。")
 
                 HStack(spacing: DS.Spacing.s) {
                     Image(systemName: "magnifyingglass").foregroundColor(.secondary).font(.dsBody)
