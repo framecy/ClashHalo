@@ -3691,6 +3691,9 @@ extension AppModel {
                 showToast("内核重启后未响应，已回滚原配置", kind: .error)
                 return false
             }
+            // 重启后必须重读运行态：reconnect() 只重建流与控制器端点，不刷新
+            // `configs`；少了这一步，界面会停在旧值上直到下一次 60s 慢兜底。
+            await refreshConfigs()
             noteConfigContentChanged()
             return true
         }
