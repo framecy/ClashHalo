@@ -166,6 +166,9 @@ struct LogsPage: View {
 
         // 写入内核持久化（log-level 是 load-time-only，需 patchPersistent）
         Task {
+            // 返回值不在这里用：失败时事务已回滚并弹了错误 toast，而 logLevel
+            // 仍读 M.configs 里的旧级别，下面照样要重订阅 —— 上面已经把列表
+            // 清空、WS 取消了，不重订阅才会让界面看起来“日志坏了”。
             await M.patchPersistent(["log-level": level])
             subscribeLogs()
         }
