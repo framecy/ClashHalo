@@ -13,20 +13,16 @@ struct GeneralPage: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            // 顶栏与侧栏 appHeader / PageToolbar 同高：m + 32 + m，分割线通栏对齐
-            DSSegmentedControl(selection: $selectedTab, choices: [
-                DSChoice("通用", "general", systemImage: "gearshape"),
-                DSChoice("高级设置", "advanced", systemImage: "slider.horizontal.3"),
-                DSChoice("权限", "privilege", systemImage: "shield"),
-                DSChoice("关于", "about", systemImage: "info.circle")
-            ])
-            .padding(.horizontal, DS.Layout.pageContentInset)
-            .padding(.vertical, DS.Spacing.m)
-            .frame(height: DS.Layout.chromeHeight, alignment: .center)
-            .frame(maxWidth: .infinity)
-            .background(DS.Palette.chromeBg)
-
-            Divider().overlay(DS.Palette.separator)
+            // 顶栏交给共享 PageToolbar（P2-3）：高度 m+32+m、通栏分割线、
+            // 水平内距与侧栏 appHeader 同源，不再每页手搓一份。
+            PageToolbar(leading: {
+                DSSegmentedControl(selection: $selectedTab, choices: [
+                    DSChoice("通用", "general", systemImage: "gearshape"),
+                    DSChoice("高级设置", "advanced", systemImage: "slider.horizontal.3"),
+                    DSChoice("权限", "privilege", systemImage: "shield"),
+                    DSChoice("关于", "about", systemImage: "info.circle")
+                ])
+            }, actions: { EmptyView() })
 
             ScrollView {
                 VStack(spacing: DS.Spacing.m) {

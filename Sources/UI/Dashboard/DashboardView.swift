@@ -24,19 +24,16 @@ struct DashboardPage: View {
     }
 
     var body: some View {
-        ScrollView {
-            VStack(alignment: .leading, spacing: DS.Spacing.l) {
-                HStack(alignment: .center) {
-                    Text(greeting()).font(.dsSection)
-                    Spacer()
-                    HStack(spacing: DS.Spacing.s) {
-                        zashboardButton
-                        rangePicker
-                    }
-                }
-                .padding(.horizontal, DS.Spacing.xs)
-                .padding(.top, DS.Spacing.m)
-
+        VStack(spacing: 0) {
+            // P2-3：仪表盘原先自成一套 —— 标题塞在 ScrollView 里，会随滚动消失，
+            // 高度也比其它页的顶栏差一档。现在走共享 PageToolbar：标题（问候语）
+            // 贴左、面板/时间范围靠右，与侧栏 appHeader 同一条高度基线。
+            PageToolbar(title: greeting()) {
+                zashboardButton
+                rangePicker
+            }
+            ScrollView {
+                VStack(alignment: .leading, spacing: DS.Spacing.l) {
                     // Row 1: Top stats bar (4 columns, height 64)
                     HStack(spacing: DS.Spacing.l) {
                         BarStat("总下载", fmtBytes(Double(M.downloadTotal)), "arrow.down.circle.fill", DS.Palette.download)
@@ -142,7 +139,13 @@ struct DashboardPage: View {
 
 
             }
-            .padding(.horizontal, DS.Spacing.l).padding(.bottom, DS.Spacing.xl)
+            // 标题进了 chrome 顶栏后，内容与标题必须共用一个左缘：仪表盘原先用
+            // Spacing.l 比其它页的 pageContentInset 窄一档，标题一上来就会看到
+            // 4pt 的错位。顶距补 Spacing.l，与配置页/网络拓扑页的节奏一致。
+            .padding(.horizontal, DS.Layout.pageContentInset)
+            .padding(.top, DS.Spacing.l)
+            .padding(.bottom, DS.Spacing.xl)
+            }
         }
     }
 
