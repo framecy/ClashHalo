@@ -304,7 +304,12 @@ struct NumRow: View {
         // reload. Leave the edit on screen (hasChanges stays true) instead.
         guard let n = Int(text) else { return }
         hasChanges = false
-        Task { if persistent { await M.patchPersistent([key: n]) } else { await M.patch([key: n]) } }
+        Task {
+            let ok = persistent ? await M.patchPersistent([key: n]) : await M.patch([key: n])
+            // 写入被拒（校验失败 / 内核忙 / 事务回滚）：把输入框弹回内核真值，
+            // 别让一个没落地的数字留在界面上冒充“已生效”。
+            if !ok { text = configValue }
+        }
     }
 }
 
@@ -319,7 +324,14 @@ struct ToggleRow: View {
             Spacer()
             Toggle("", isOn: Binding(
                 get: { (M.configs[key] as? Bool) == true },
-                set: { v in Task { if persistent { await M.patchPersistent([key: v]) } else { await M.patch([key: v]) } } }
+                set: { v in
+                    Task {
+                        // 没有本地 @State：开关的值直接读 M.configs。写入被拒时
+                        // patchPersistent/patch 已弹出原因并从内核真值重同步，开关
+                        // 自己就回到原位，因此这里的返回值没有可回弹的状态。
+                        if persistent { _ = await M.patchPersistent([key: v]) } else { _ = await M.patch([key: v]) }
+                    }
+                }
             ))
             .toggleStyle(.switch)
             .labelsHidden()
@@ -370,7 +382,11 @@ struct TextRow: View {
     }
     private func commit() {
         hasChanges = false
-        Task { if persistent { await M.patchPersistent([key: text]) } else { await M.patch([key: text]) } }
+        Task {
+            let ok = persistent ? await M.patchPersistent([key: text]) : await M.patch([key: text])
+            // 失败回弹：输入框里的草稿不能比磁盘更“新”。
+            if !ok { text = (M.configs[key] as? String) ?? "" }
+        }
     }
 }
 
@@ -388,7 +404,7 @@ struct PickerRow: View {
                     let val = (M.configs[key] as? String) ?? ""
                     return options.contains(where: { $0.0 == val }) ? val : (options.first?.0 ?? "")
                 },
-                set: { v in Task { if persistent { await M.patchPersistent([key: v]) } else { await M.patch([key: v]) } } }
+                set: { v in Task { if persistent { _ = await M.patchPersistent([key: v]) } else { _ = await M.patch([key: v]) } } }
             ), choices: options.map { DSChoice($0.1, $0.0) })
             .frame(width: DS.Layout.fieldTrailing, alignment: .trailing)
         }
@@ -441,7 +457,13 @@ struct StringListRow: View {
         .padding(.vertical, DS.Spacing.s)
         .onAppear { items = (M.configs[key] as? [Any])?.map { "\($0)" } ?? [] }
     }
-    private func commit() { Task { if persistent { await M.patchPersistent([key: items]) } else { await M.patch([key: items]) } } }
+    private func commit() {
+        Task {
+            let ok = persistent ? await M.patchPersistent([key: items]) : await M.patch([key: items])
+            // 失败回弹到磁盘/内核里的真实列表，别留一条从没落地的条目。
+            if !ok { items = (M.configs[key] as? [Any])?.map { "\($0)" } ?? [] }
+        }
+    }
 
     /// Infer expected format from placeholder and validate accordingly.
     private func validateInput(_ s: String) -> Bool {
@@ -476,7 +498,13 @@ struct GeoURLRow: View {
                 .onSubmit {
                     let geo = (M.configs["geox-url"] as? [String: Any] ?? [:])
                         .merging([sub: text]) { _, new in new }
-                    Task { await M.patchPersistent(["geox-url": geo]) }
+                    Task {
+                        if await M.patchPersistent(["geox-url": geo]) == false {
+                            // 失败回弹到真实值，避免界面显示一个没写进配置的下载源。
+                            let current = M.configs["geox-url"] as? [String: Any] ?? [:]
+                            text = (current[sub] as? String) ?? defaultURL
+                        }
+                    }
                 }
         }
         .padding(.vertical, DS.Spacing.s)
@@ -503,16 +531,20 @@ struct NToggle: View {
             Toggle("", isOn: Binding(
                 get: { (nestedDict(M, parent)[sub] as? Bool) == true },
                 set: { v in
+                    let previous = (nestedDict(M, parent)[sub] as? Bool) == true
                     // Optimistic UI update to prevent toggle flickering/rollback
                     var currentParent = M.configs[parent] as? [String: Any] ?? [:]
                     currentParent[sub] = v
                     M.configs[parent] = currentParent
 
                     Task {
-                        if persistent {
-                            await M.patchPersistent([parent: [sub: v]])
-                        } else {
-                            await M.patch([parent: [sub: v]])
+                        let ok = persistent ? await M.patchPersistent([parent: [sub: v]]) : await M.patch([parent: [sub: v]])
+                        if !ok {
+                            // 内核/磁盘拒绝了这笔写入：把乐观渲染的开关弹回真值。
+                            // 不回弹就是“绿灯开着 + 红色错误 toast”并存的假象。
+                            var revert = M.configs[parent] as? [String: Any] ?? [:]
+                            revert[sub] = previous
+                            M.configs[parent] = revert
                         }
                     }
                 }
@@ -541,9 +573,9 @@ struct NPicker: View {
                 set: { v in
                     Task {
                         if persistent {
-                            await M.patchPersistent([parent: [sub: v]])
+                            _ = await M.patchPersistent([parent: [sub: v]])
                         } else {
-                            await M.patch([parent: [sub: v]])
+                            _ = await M.patch([parent: [sub: v]])
                         }
                     }
                 }
@@ -586,11 +618,9 @@ struct NText: View {
     }
     private func commit() {
         Task {
-            if persistent {
-                await M.patchPersistent([parent: [sub: text]])
-            } else {
-                await M.patch([parent: [sub: text]])
-            }
+            let ok = persistent ? await M.patchPersistent([parent: [sub: text]]) : await M.patch([parent: [sub: text]])
+            // 失败回弹：界面上的值必须等于真正生效的值。
+            if !ok { text = configValue }
         }
     }
 }
@@ -636,11 +666,9 @@ struct NList: View {
     }
     private func commit() {
         Task {
-            if persistent {
-                await M.patchPersistent([parent: [sub: items]])
-            } else {
-                await M.patch([parent: [sub: items]])
-            }
+            let ok = persistent ? await M.patchPersistent([parent: [sub: items]]) : await M.patch([parent: [sub: items]])
+            // 失败回弹到真实列表，避免界面比配置多/少一条。
+            if !ok { items = configItems }
         }
     }
 }

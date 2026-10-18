@@ -208,14 +208,17 @@ extension AppModel {
                 // Gateway cascade: the new profile may have overwritten
                 // allow-lan / dns.listen. Re-apply the Gateway overrides so
                 // the gateway keeps working.
+                //
+                // 走与设置页同一条事务（备份→写盘→mihomo -t 校验→重载→失败回滚），
+                // 不再手写第二份 setTopLevelScalars + reload。那份重复实现既不校验
+                // 也不回滚，失败时只有一句裸 toast，文件却已经改过 —— 与设置页
+                // 那条“有保护”的路是同一个功能的两套实现。
                 if gatewayModeOn {
-                    engine.setTopLevelScalars(Self.gatewayOverrides)
-                    persistTunStateForReload()
-                    do {
-                        try await api.reloadConfig(path: engine.configFilePath)
-                        await refreshConfigs()
-                    } catch {
-                        showToast("网关配置重载失败", kind: .error)
+                    let gatewayOK = await patchPersistentTransactional(Self.gatewayOverrides)
+                    if !gatewayOK {
+                        // 事务内部已经弹出具体失败原因并回滚了文件，这里只补一条
+                        // 日志说明后果，不再叠加 toast 盖掉那条更有信息量的提示。
+                        logKernel("网关级联：网关配置未能重新应用（已按事务回滚），请检查「网络」页网关状态")
                     }
                 }
 
@@ -3456,10 +3459,21 @@ extension AppModel {
 
     /// Apply load-time-only settings that mihomo ignores on a runtime PATCH
     /// (geodata-*, unified-delay, keep-alive…): write them to config.yaml and
-    /// reload. The current runtime TUN state is written back first so the reload
-    /// (which re-reads the file) doesn't drop a running root TUN.
-    func patchPersistent(_ rawOverrides: [String: Any]) async {
-        guard reachable else { showToast("内核未连接，无法修改配置", kind: .error); return }
+    /// reload — as one transaction (backup → write → `mihomo -t` → reload →
+    /// rollback on any failure). See `patchPersistentTransactional` for the
+    /// ordering contract.
+    ///
+    /// 旧实现把文件改了就直接 reload，失败只在 catch 里弹一条 toast：写坏的
+    /// config.yaml 留在磁盘上，用户要等下次启动内核起不来才发现。同文件的
+    /// `saveProxyProviders` 早就是“备份→校验→回滚”的完整事务 —— 同一个功能
+    /// 两套实现，这一份就是漏掉保护的那半。
+    ///
+    /// Returns whether the disk file **and** the running kernel both took the
+    /// change. Callers holding local edit state (`@State` text/items) must
+    /// revert it on `false`.
+    @discardableResult
+    func patchPersistent(_ rawOverrides: [String: Any]) async -> Bool {
+        guard reachable else { showToast("内核未连接，无法修改配置", kind: .error); return false }
 
         // 访问控制 and 局域网网关 write the same fields — see the reconcile.
         let (overrides, blocked, warnings) = reconcileAccessControlWithGateway(rawOverrides)
@@ -3471,11 +3485,56 @@ extension AppModel {
             // Put the UI back on the kernel's actual values — the row already
             // rendered the write it never got.
             await refreshConfigs()
-            if overrides.isEmpty { return }
+            if overrides.isEmpty { return false }
+        }
+
+        let ok = await patchPersistentTransactional(overrides)
+        // 成功提示只在这一层弹：级联调用方（切换配置、TUN 保留）各有自己的
+        // 收尾文案，多弹一条只会盖掉信息量更高的那条。
+        if ok { showToast("配置已更新", kind: .ok) }
+        return ok
+    }
+
+    /// Transactional core behind every persistent (config.yaml) write.
+    ///
+    /// 顺序是硬约束，不是风格：
+    /// 1. 备份当前文件 —— 读不到就**不写**，没有备份就没有回滚；
+    /// 2. 写盘，并把运行中的 TUN 状态一并写回（reload 会重读文件）；
+    /// 3. `mihomo -t` 校验 —— 这正是内核启动时读的那份文件，写坏了必须当场发现；
+    /// 4. 需要重启内核的分支（`secret` / `external-controller` 只能在进程启动时绑定）；
+    /// 5. 否则 reload + `refreshConfigs`；
+    /// 6. 任何一步失败 → 还原备份、说清原因、返回 false。
+    ///
+    /// 失败一律在这里自己弹错误 toast（含“已回滚”字样），调用方不要叠加第二条。
+    @discardableResult
+    func patchPersistentTransactional(_ overrides: [String: Any]) async -> Bool {
+        guard !overrides.isEmpty else { return true }
+        let path = engine.configFilePath
+        guard let backup = try? String(contentsOfFile: path, encoding: .utf8) else {
+            // 读不到就没有回滚能力。宁可拒绝写入，也不能把一份没法还原的文件改坏。
+            logKernel("持久化写入取消：无法读取 \(path) 作为回滚备份")
+            showToast("无法读取当前配置，已取消修改", kind: .error)
+            return false
         }
 
         engine.setTopLevelScalars(overrides)
         persistTunStateForReload()
+
+        if let err = await engine.validateConfig() {
+            await restoreConfigSnapshot(backup, at: path)
+            // 区分“这一笔写入写坏了”和“文件本来就不合法”：两者都必须回滚，
+            // 但责任方不同，用户看到的措辞必须能分辨，否则改个日志级别也会被
+            // 告知“配置无效”却不知道是谁弄坏的。
+            if await engine.validateConfig() != nil {
+                logKernel("持久化写入回滚：config.yaml 本身校验不通过（\(err)）")
+                showToast("配置本身校验不通过，已回滚：\(err)", kind: .error)
+            } else {
+                logKernel("持久化写入回滚：写入导致配置无效（\(err)）")
+                showToast("配置无效，已回滚：\(err)", kind: .error)
+            }
+            await refreshConfigs()
+            return false
+        }
 
         // The control-plane secret and listen address are bound once when the
         // REST server starts. A config reload re-applies proxies/rules/DNS to
@@ -3486,28 +3545,45 @@ extension AppModel {
             await engine.restart(preferRoot: engine.isRoot)
             _ = await waitForKernelReady(maxAttempts: 8)
             await reconnect()
-            await refreshConfigs()
-            noteConfigContentChanged()
-            if reachable {
-                showToast("配置已更新", kind: .ok)
-            } else {
-                showToast("内核重启后未响应，请检查配置", kind: .error)
+            guard reachable else {
+                // 内核没起来 = 这笔改动不可用。还原文件，让下一次启动至少还能用
+                // 改动前的配置；这里不再自动重启重试，避免“失败即重试”的循环。
+                await restoreConfigSnapshot(backup, at: path)
+                logKernel("持久化写入回滚：内核重启后未响应，已还原改动前的配置")
+                showToast("内核重启后未响应，已回滚原配置", kind: .error)
+                return false
             }
-            return
+            noteConfigContentChanged()
+            return true
         }
 
         do {
-            try await api.reloadConfig(path: engine.configFilePath)
+            try await api.reloadConfig(path: path)
             await refreshConfigs()
             noteConfigContentChanged()
-            showToast("配置已更新", kind: .ok)
+            return true
         } catch {
-            // The file was already rewritten before the reload attempt; the
-            // kernel kept its previous runtime config. Resync the UI from
-            // runtime truth so optimistic form writes don't linger on a value
-            // the kernel never took.
+            // 内核明确拒绝了这份配置：文件已经改过，必须还原，否则下次启动
+            // 内核读到的正是它刚才拒绝过的内容（用户只会看到一闪而过的 toast）。
+            await restoreConfigSnapshot(backup, at: path)
+            logKernel("持久化写入回滚：内核拒绝重载（\(error.localizedDescription)）")
+            showToast("更新失败，已回滚：\(error.localizedDescription)", kind: .error)
+            // 运行态仍是内核手里的旧配置，UI 按真值重同步，别停在乐观写入值上。
             await refreshConfigs()
-            showToast("更新失败：\(error.localizedDescription)", kind: .error)
+            return false
+        }
+    }
+
+    /// Put a backed-up config.yaml back on disk (keeping its 0600 mode) and
+    /// resync the UI from runtime truth. Used by both transactional writers.
+    private func restoreConfigSnapshot(_ text: String, at path: String) async {
+        do {
+            try text.write(toFile: path, atomically: true, encoding: .utf8)
+            // atomic write 会重建文件，权限跟着默认值走 —— config.yaml 必须
+            // 保持 0600（订阅 URL 等敏感内容在别的文件里，但这条规则不能破）。
+            try? FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: path)
+        } catch {
+            logKernel("配置回滚写入失败：\(error.localizedDescription)")
         }
     }
 
@@ -3522,7 +3598,7 @@ extension AppModel {
         engine.writeProxyProviders(providers)
         persistTunStateForReload()    // preserve running TUN across reload
         if let err = await engine.validateConfig() {
-            if let b = backup { try? b.write(toFile: path, atomically: true, encoding: .utf8) }
+            if let b = backup { await restoreConfigSnapshot(b, at: path) }
             showToast("配置无效，已回滚：\(err)", kind: .error)
             return false
         }
@@ -3534,7 +3610,7 @@ extension AppModel {
             showToast("订阅已保存", kind: .ok)
             return true
         } catch {
-            if let b = backup { try? b.write(toFile: path, atomically: true, encoding: .utf8) }
+            if let b = backup { await restoreConfigSnapshot(b, at: path) }
             showToast("保存失败，已回滚：\(error.localizedDescription)", kind: .error)
             return false
         }
