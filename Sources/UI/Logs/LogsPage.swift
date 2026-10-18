@@ -15,7 +15,9 @@ struct LogsPage: View {
             q.isEmpty || $0.text.localizedCaseInsensitiveContains(q)
         }
         VStack(spacing: 0) {
-            HStack(alignment: .center, spacing: DS.Spacing.m) {
+            // P2-3：手搓顶栏改为共享 PageToolbar —— 左侧级别分段器 + 搜索，
+            // 右侧暂停/导出/行数，高度与分割线与其它页同一条契约。
+            PageToolbar(leading: {
                 // P1-8：选项集合只有一份（AppModel.logLevelOptions），与设置页
                 // 完全同源；`SILENT` 也在段里，选了它日志就停止追加，而不是让
                 // 四个段全都不选中、界面看起来坏掉。
@@ -31,30 +33,20 @@ struct LogsPage: View {
                         .font(.dsBody)
                 }
                 .dsSearchFieldChrome(maxWidth: 220)
-
-                Spacer(minLength: 0)
-
-                HStack(spacing: DS.Spacing.s) {
-                    Button { paused.toggle(); if paused { frozen = VM.logs } } label: {
-                        Label(paused ? "继续" : "暂停", systemImage: paused ? "play.fill" : "pause.fill")
-                    }
-                    .dsButton()
-
-                    Button { exportLogs(rows) } label: { Label("导出", systemImage: "square.and.arrow.up") }
-                        .dsButton()
-
+            }, actions: {
+                Button { paused.toggle(); if paused { frozen = VM.logs } } label: {
+                    Label(paused ? "继续" : "暂停", systemImage: paused ? "play.fill" : "pause.fill")
                 }
+                .dsButton()
+
+                Button { exportLogs(rows) } label: { Label("导出", systemImage: "square.and.arrow.up") }
+                    .dsButton()
 
                 HStack(spacing: DS.Spacing.s - 2) {
                     Circle().fill(paused ? Color.secondary : DS.Palette.accent).frame(width: 6, height: 6)
                     Text("\(rows.count) 行").font(.dsMono).foregroundColor(.secondary)
                 }
-            }
-            .padding(.horizontal, DS.Layout.pageContentInset)
-            .padding(.vertical, DS.Spacing.m)
-            .frame(height: DS.Layout.chromeHeight, alignment: .center)
-            .background(DS.Palette.chromeBg)
-            Divider().overlay(DS.Palette.separator)
+            })
             if source.isEmpty {
                 ContentUnavailable("等待日志流…", "doc.text.magnifyingglass")
             } else {

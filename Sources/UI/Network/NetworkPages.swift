@@ -213,17 +213,12 @@ struct NetworkHubPage: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            // 顶栏与侧栏 appHeader / PageToolbar 同高：m + 32 + m，分割线通栏对齐
-            DSSegmentedControl(selection: $tab, choices: tabs.map {
-                DSChoice($0.0, $0.1, systemImage: $0.2)
-            })
-            .padding(.horizontal, DS.Layout.pageContentInset)
-            .padding(.vertical, DS.Spacing.m)
-            .frame(height: DS.Layout.chromeHeight, alignment: .center)
-            .frame(maxWidth: .infinity)
-            .background(DS.Palette.chromeBg)
-
-            Divider().overlay(DS.Palette.separator)
+            // 顶栏交给共享 PageToolbar（P2-3）：与设置页/日志页/规则页同一条契约
+            PageToolbar(leading: {
+                DSSegmentedControl(selection: $tab, choices: tabs.map {
+                    DSChoice($0.0, $0.1, systemImage: $0.2)
+                })
+            }, actions: { EmptyView() })
 
             // Tab 下方的上下文操作行：仅当当前 tab 提供页面级操作时显示
             // 放在分割线下方，避免顶栏高度因 DNS 动作行抖动、与侧栏分割线错位
