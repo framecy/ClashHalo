@@ -61,7 +61,9 @@ struct ConnectionsPage: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            HStack(alignment: .center, spacing: DS.Spacing.m) {
+            // P2-3：文档列了 5 页手搓顶栏，这里是第 6 处（同一契约的复制品）。
+            // 不一起收进来，“顶栏只有一处实现”就仍然不成立。
+            PageToolbar(leading: {
                 DSSegmentedControl(selection: $selectedTab, choices: [
                     DSChoice("连接中", 0),
                     DSChoice("已关闭", 1),
@@ -88,22 +90,14 @@ struct ConnectionsPage: View {
                         .font(.dsCaption).foregroundColor(.secondary)
                         .help("系统代理模式下，不遵守代理设置的应用、UDP/QUIC 与绕过列表流量不经过内核，不计入本页统计。开启 TUN 可获得更完整的接管与统计。")
                 }
-
-                Spacer(minLength: 0)
-
+            }, actions: {
                 Text("\(filteredRows.count) 匹配").font(.dsBody).foregroundColor(.secondary)
 
                 Button(role: .destructive) { showConfirmDisconnect = true } label: {
                     Label("全部断开", systemImage: "xmark.circle")
                 }
                 .dsButton(.destructive)
-
-            }
-            .padding(.horizontal, DS.Layout.pageContentInset)
-            .padding(.vertical, DS.Spacing.m)
-            .frame(height: DS.Layout.chromeHeight, alignment: .center)
-            .background(DS.Palette.chromeBg)
-            Divider().overlay(DS.Palette.separator)
+            })
 
             if selectedTab == 2 {
                 ConnAggregateView(

@@ -17,7 +17,8 @@ struct RulesPage: View {
         let rows = model.nodes.filter(matches)
 
         VStack(spacing: 0) {
-            HStack(alignment: .center, spacing: DS.Spacing.m) {
+            // P2-3：手搓顶栏改为共享 PageToolbar（左侧搜索，右侧批量操作/刷新/添加）
+            PageToolbar(leading: {
                 HStack(spacing: DS.Spacing.s) {
                     Image(systemName: "magnifyingglass")
                         .foregroundColor(.secondary)
@@ -27,9 +28,7 @@ struct RulesPage: View {
                         .font(.dsBody)
                 }
                 .dsSearchFieldChrome(maxWidth: 320)
-
-                Spacer(minLength: 0)
-
+            }, actions: {
                 if !selection.isEmpty {
                     Text("已选 \(selection.count) 项")
                         .font(.dsBody)
@@ -69,14 +68,7 @@ struct RulesPage: View {
                     Label("添加规则", systemImage: "plus")
                 }
                 .dsButton(.prominent)
-
-            }
-            .padding(.horizontal, DS.Layout.pageContentInset)
-            .padding(.vertical, DS.Spacing.m)
-            .frame(height: DS.Layout.chromeHeight, alignment: .center)
-            .background(DS.Palette.chromeBg)
-
-            Divider().overlay(DS.Palette.separator)
+            })
 
             if let err = model.errorMessage {
                 ContentUnavailable("加载出错: \(err)", "exclamationmark.triangle")

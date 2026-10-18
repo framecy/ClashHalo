@@ -58,7 +58,7 @@ struct ContentView: View {
     //
     // Shell 契约 (Docs/design.md §6.1 / §9)：
     // 侧栏与内容区共用同一 chrome 节奏：
-    //   top chrome 高度 = m + controlHeight + m（与 PageToolbar / 连接·日志·规则顶栏一致）
+    //   top chrome 高度 = m + controlHeight + m（唯一实现见 PageToolbar，全部页面共用）
     //   分割线 = 通栏 1pt separator（禁止 inset hairline，否则跨栏无法对齐）
     // 列表分组「监控 / 代理 / 配置」；底 = Proxy / TUN + 内核版本。
     //
@@ -385,64 +385,51 @@ struct ContentView: View {
 
 // MARK: - Components
 
-/// Page top bar. Title/desc are optional — non-dashboard pages pass empty title and only actions.
-struct PageHead<Actions: View>: View {
-    let title: String
-    let desc: String?
+/// Page top bar — the **single** chrome contract for every page.
+///
+/// 结构固定为「标题（可选）→ 页内控件（可选）→ 弹性空白 → 右对齐操作」，高度锁死
+/// `m + controlHeight + m`，底部通栏 1pt 分割线，水平内距与侧栏 `appHeader` 共用
+/// `pageContentInset`。这套契约此前被手工复制 5 份（Logs / Rules / General / Network
+/// 各自手搓顶栏，Dashboard 把标题塞在 ScrollView 里随滚动消失），改一处漏四处。
+/// 现在只有这一个实现；零调用点的 `PageHead` 已删除。
+///
+/// 两种用法：
+/// - `PageToolbar { 按钮… }` —— 只有右侧操作（配置 / 策略 / 网络拓扑 / 订阅页）；
+/// - `PageToolbar(leading: {…})` / `PageToolbar(leading:actions:)` —— 页内分段器在左
+///   （设置 / 日志 / 规则 / 网络）。
+struct PageToolbar<Leading: View, Actions: View>: View {
+    var title: String?
+    @ViewBuilder var leading: () -> Leading
     @ViewBuilder var actions: () -> Actions
 
-    private var hasTitle: Bool { !title.isEmpty }
-    private var hasActions: Bool { Actions.self != EmptyView.self }
-
-    var body: some View {
-        if hasTitle || hasActions {
-            HStack(alignment: hasTitle ? .bottom : .center) {
-                if hasTitle {
-                    VStack(alignment: .leading, spacing: DS.Spacing.xs) {
-                        Text(title)
-                            .font(.dsPageTitle)
-                            .foregroundColor(.primary)
-                        if let desc = desc, !desc.isEmpty {
-                            Text(desc)
-                                .font(.dsBody)
-                                .foregroundColor(.secondary)
-                        }
-                    }
-                    Spacer(minLength: 0)
-                } else {
-                    Spacer(minLength: 0)
-                }
-
-                if hasActions {
-                    HStack(spacing: DS.Spacing.s) {
-                        actions()
-                    }
-                }
-            }
-            .padding(.horizontal, DS.Layout.pageContentInset)
-            .padding(.top, hasTitle ? DS.Spacing.l : DS.Spacing.m)
-            .padding(.bottom, DS.Spacing.m)
-        }
+    init(title: String? = nil,
+         @ViewBuilder leading: @escaping () -> Leading,
+         @ViewBuilder actions: @escaping () -> Actions) {
+        self.title = title
+        self.leading = leading
+        self.actions = actions
     }
-}
-
-extension PageHead where Actions == EmptyView {
-    init(title: String, desc: String? = nil) {
-        self.init(title: title, desc: desc, actions: { EmptyView() })
-    }
-}
-
-/// Actions-only page toolbar (no title/desc). Prefer this on non-dashboard pages.
-/// Matches design.md §6.5 / §6.1: fixed 32pt controls, pageContentInset, chromeBg strip.
-/// Height locked to `m + controlHeight + m` so the bottom Divider lines up with the sidebar header.
-struct PageToolbar<Actions: View>: View {
-    @ViewBuilder var actions: () -> Actions
 
     var body: some View {
         VStack(spacing: 0) {
-            HStack(spacing: DS.Spacing.s) {
-                Spacer(minLength: 0)
-                actions()
+            HStack(spacing: DS.Spacing.m) {
+                if let title, !title.isEmpty {
+                    Text(title)
+                        .font(.dsPageTitle)
+                        .foregroundColor(.primary)
+                        .lineLimit(1)
+                }
+                if Actions.self != EmptyView.self {
+                    // 有右侧操作：页内控件按自身宽度贴左，操作靠右。
+                    leading()
+                    Spacer(minLength: 0)
+                    HStack(spacing: DS.Spacing.s) {
+                        actions()
+                    }
+                } else {
+                    // 没有操作：页内控件占满整条（设置/网络页的全宽分段器就是这种形态）。
+                    leading()
+                }
             }
             .padding(.horizontal, DS.Layout.pageContentInset)
             .padding(.vertical, DS.Spacing.m)
@@ -452,6 +439,13 @@ struct PageToolbar<Actions: View>: View {
 
             Divider().overlay(DS.Palette.separator)
         }
+    }
+}
+
+extension PageToolbar where Leading == EmptyView {
+    /// 只有右侧操作（尾随闭包永远表示 actions，避免与页内控件槽产生重载歧义）。
+    init(title: String? = nil, @ViewBuilder actions: @escaping () -> Actions) {
+        self.init(title: title, leading: { EmptyView() }, actions: actions)
     }
 }
 
