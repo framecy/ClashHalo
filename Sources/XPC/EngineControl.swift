@@ -348,7 +348,15 @@ import SystemConfiguration
     /// deliberate give-up, clears it).
     func persistTunState(enabled: Bool, device: String?) {
         setTunEnabled(enabled)
-        if enabled { setTunDevice(device) }
+        if enabled { _ = setTunDevice(device) }
+    }
+
+    /// 同上，但把 `tun.device` 的写盘结果交给调用方（P1-6）。
+    /// 只有 `AppModel.persistTunStateForReload` 需要这个反馈。
+    @discardableResult
+    func persistTunStateReporting(_ enabled: Bool, device: String?) -> Bool {
+        setTunEnabled(enabled)
+        return enabled ? setTunDevice(device) : true
     }
 
     /// Write (or clear) `tun.device` on disk so a kernel that starts from the file
@@ -361,9 +369,17 @@ import SystemConfiguration
     /// interfaces, which is exactly the ambiguity the pin exists to remove.
     /// `nil` deletes the key: the fallback path must leave the kernel free to
     /// assign a name again, not merely stop mentioning one.
-    func setTunDevice(_ name: String?) {
+    ///
+    /// P1-6：返回是否真的写成功。旧实现读失败用 `try?` 静默返回，用户以为设备名
+    /// 改了、实际内核重载后会自己挑一个 utun 名，而健康巡检按 pin 住的旧名字判
+    /// “接口丢失”并把整条隧道拆掉。失败必须能上浮到 UI。
+    @discardableResult
+    func setTunDevice(_ name: String?) -> Bool {
         let path = configFilePath
-        guard let text = try? String(contentsOfFile: path, encoding: .utf8) else { return }
+        guard let text = try? String(contentsOfFile: path, encoding: .utf8) else {
+            onLog?("写入 tun.device 失败：无法读取 \(path)（权限或文件不存在）")
+            return false
+        }
         var lines = text.components(separatedBy: "\n")
         var inTun = false, changed = false, tunIdx = -1
         var i = 0
@@ -396,8 +412,9 @@ import SystemConfiguration
             changed = true
         }
         if changed {
-            writeConfig(lines.joined(separator: "\n"), to: path)
+            return writeConfig(lines.joined(separator: "\n"), to: path)
         }
+        return true
     }
 
     // MARK: - DNS resolver interface pins (config.yaml editing)
@@ -1917,6 +1934,18 @@ import SystemConfiguration
     /// Stop and restart the kernel. Awaits the start attempt so callers that
     /// immediately `waitForKernelReady` do not race a fire-and-forget Task.
     ///
+    /// 锁的所有权（P1-7）：`isBusy` **不归本函数**，所以这里刻意没有
+    /// `defer { isBusy = false }`。审计结果（2026-02 逐处核对）：所有持有
+    /// `engine.isBusy = true` 后 await 的调用点（`withEngineBusy` 的 Task、
+    /// `healDetachedTUN`、`rebuildTUNDeviceInPlace`、`performTUNDataPlaneRecovery`、
+    /// verifyTUN/PATH 巡检、`selectForApply`）各自都带 `defer`；`restart` 自己的
+    /// 调用方里没有任何一处是“置了锁却指望本函数释放”。
+    /// 若在此加 `defer { isBusy = false }`，反而会把外层锁提前释放 —— 例如
+    /// `healDetachedTUN` 在 restart 之后还要 `waitForKernelReady(12)`，锁一放，
+    /// 用户 toggle 就能并发闯进来重开一次 TUN，正是这套护栏要防的竞态。
+    /// 结论：`isBusy` 的生命周期永远由 `EngineControl.isBusy` 的**持有者**用
+    /// `defer` 收尾，本函数保持无锁。
+    ///
     /// - Parameter preferRoot: defaults to true because the internal callers
     ///   (TUN enable, the root-upgrade path in `ensureRunningAsync`) restart
     ///   precisely *in order to* obtain a root kernel. A plain user-facing
@@ -2541,7 +2570,8 @@ import SystemConfiguration
     /// comparing `config.yaml.bak-*` snapshots — which could not name the key,
     /// the time, or the writer. `writer` is therefore threaded in explicitly so
     /// the log attributes each change to its call site.
-    private func writeConfig(_ text: String, to path: String, writer: String = #function) {
+    @discardableResult
+    private func writeConfig(_ text: String, to path: String, writer: String = #function) -> Bool {
         // Audit at *flattened* granularity, not top-level. Measured on a real
         // machine: a profile switch that repaired `sniffer.enable: false → true`
         // — a real, sha-changing write — logged "(no changes)", because both
@@ -2551,7 +2581,15 @@ import SystemConfiguration
         // same class of false-negative this whole investigation set out to kill.
         let before = (try? String(contentsOfFile: path, encoding: .utf8))
             .map(ConfigWriteAudit.flattenedScalars(in:))
-        try? text.write(toFile: path, atomically: true, encoding: .utf8)
+        // P1-6：写盘失败不再被 `try?` 吞掉。写入静默失败时磁盘还是旧内容，
+        // 而这正是“界面上写成功了，重载后行为却回退”的根因形态，必须能上报。
+        var writeFailed = false
+        do {
+            try text.write(toFile: path, atomically: true, encoding: .utf8)
+        } catch {
+            writeFailed = true
+            onLog?("写入配置文件失败（\(path)）：\(error.localizedDescription)")
+        }
         try? FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: path)
         let after = ConfigWriteAudit.flattenedScalars(in: text)
         if let before {
@@ -2568,6 +2606,7 @@ import SystemConfiguration
                 changes: ["(created with \(after.count) top-level keys)"]
             )
         }
+        return !writeFailed
     }
 
     /// Read config.yaml and return a dictionary. Used to read fields that mihomo

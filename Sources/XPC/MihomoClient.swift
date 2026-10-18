@@ -204,19 +204,62 @@ private struct SafeDecoder: @unchecked Sendable {
         _ = try await session.data(for: req)
     }
 
+    /// 最近一次探测失败的原因（超时 / 401 未授权 / 连接被拒…）。
+    ///
+    /// 普通属性而不是 `@Published`：探测在重连与巡检里是高频路径，而“为什么不可达”
+    /// 只需要进日志。`secret` 不匹配（HTTP 401）是最常见的“内核活着但 App 说不可达”，
+    /// 它和“内核没起来（连接被拒）”的处置完全不同，日志里必须能分辨。
+    private(set) var lastProbeError: String?
+
     func probe(timeout: TimeInterval = 1.0) async {
-        guard let url = URL(string: apiBase + "/version") else { reachable = false; return }
+        guard let url = URL(string: apiBase + "/version") else {
+            reachable = false
+            lastProbeError = "无效的 API 地址（\(apiBase)）"
+            return
+        }
         var r = URLRequest(url: url)
         r.timeoutInterval = timeout
         if !secret.isEmpty { r.setValue("Bearer \(secret)", forHTTPHeaderField: "Authorization") }
-        
+
         do {
-            let (data, _) = try await session.data(for: r)
+            let (data, resp) = try await session.data(for: r)
+            let status = (resp as? HTTPURLResponse)?.statusCode ?? 0
+            // 旧实现直接解码 body：401 的 body 是错误 JSON，解码失败只会得到一句
+            // “不可达”，把“密钥不匹配”这个最需要动作的原因丢掉了。
+            if status != 200 { throw MihomoError.http(status) }
             let v = try SafeDecoder.shared.decode(MihomoVersion.self, from: data)
             version = v.version
             reachable = true
+            lastProbeError = nil
         } catch {
             reachable = false
+            lastProbeError = Self.probeFailureReason(error)
+            // 内核退出后不能继续挂上一次的版本号 —— 那是“它还在跑”的假象。
+            // 等值短路：version 已经是 "?" 时不触发 @Published 重绘。
+            if version != "?" { version = "?" }
+        }
+    }
+
+    /// 把探测失败压成一句可分辨的中文原因。
+    private static func probeFailureReason(_ error: Error) -> String {
+        if let m = error as? MihomoError {
+            if case .http(let code) = m {
+                if code == 401 || code == 403 {
+                    return "HTTP \(code)（API 密钥不匹配 / 未授权）"
+                }
+                return "HTTP \(code)"
+            }
+            return m.errorDescription ?? "未知错误"
+        }
+        let ns = error as NSError
+        guard ns.domain == NSURLErrorDomain else { return error.localizedDescription }
+        switch ns.code {
+        case NSURLErrorTimedOut:                     return "请求超时（\(ns.code)）"
+        case NSURLErrorCannotConnectToHost,
+             NSURLErrorNetworkConnectionLost:        return "连接被拒 / 内核未启动（\(ns.code)）"
+        case NSURLErrorNotConnectedToInternet:       return "网络不可用（\(ns.code)）"
+        case NSURLErrorCancelled:                    return "探测被取消（\(ns.code)）"
+        default:                                     return "网络错误（\(ns.code)）"
         }
     }
 

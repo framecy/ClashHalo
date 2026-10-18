@@ -71,7 +71,11 @@ struct GeneralPage: View {
                         // 路由与连接
                         Card(title: "路由与连接", icon: "arrow.triangle.branch") {
                             VStack(spacing: 2) {
-                                PickerRow("日志级别", key: "log-level", options: [("silent","静默"),("error","error"),("warning","warning"),("info","info"),("debug","debug")], persistent: true)
+                                // P1-8：与日志页同源（AppModel.logLevelOptions），
+                                // 不再各写一份选项集合。
+                                PickerRow("日志级别", key: "log-level",
+                                          options: AppModel.logLevelOptions.map { ($0.value, $0.label) },
+                                          persistent: true)
                                 ToggleRow("TCP 并发连接", key: "tcp-concurrent", persistent: true)
                                 ToggleRow("统一延迟测速", key: "unified-delay", persistent: true)
                                 TextRow("绑定网卡", key: "interface-name", placeholder: "自动", persistent: true)
