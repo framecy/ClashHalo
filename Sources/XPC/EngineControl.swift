@@ -2592,7 +2592,11 @@ import SystemConfiguration
         }
         try? FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: path)
         let after = ConfigWriteAudit.flattenedScalars(in: text)
-        if let before {
+        if writeFailed {
+            // 写盘失败时绝不能把这笔改动记成“已发生”：审计日志是排查“谁改了、
+            // 什么时候改的”的唯一凭据，一条假记录比没有记录更糟。
+            ConfigWriteAudit.record(writer: writer, path: path, changes: ["(write failed — disk unchanged)"])
+        } else if let before {
             ConfigWriteAudit.record(
                 writer: writer,
                 path: path,

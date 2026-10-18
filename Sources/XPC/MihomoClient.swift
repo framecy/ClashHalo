@@ -124,7 +124,13 @@ private struct SafeDecoder: @unchecked Sendable {
 
     func fetchConfigs() async throws -> [String: Any] {
         guard let req = request("/configs") else { throw MihomoError.badURL }
-        let (data, _) = try await session.data(for: req)
+        let (data, resp) = try await session.data(for: req)
+        // 非 200（典型：secret 不匹配的 401）的 body 是错误 JSON，旧实现会把它
+        // 当成“一份没有 tun/dns 键的配置”返回 —— 于是 refreshConfigs 看起来
+        // “成功但什么都没发生”，P0-3 的失败分支永远进不去。这里如实判错。
+        if let h = resp as? HTTPURLResponse, h.statusCode != 200 {
+            throw MihomoError.http(h.statusCode)
+        }
         return autoreleasepool {
             (try? JSONSerialization.jsonObject(with: data) as? [String: Any]) ?? [:]
         }
@@ -223,10 +229,12 @@ private struct SafeDecoder: @unchecked Sendable {
 
         do {
             let (data, resp) = try await session.data(for: r)
-            let status = (resp as? HTTPURLResponse)?.statusCode ?? 0
             // 旧实现直接解码 body：401 的 body 是错误 JSON，解码失败只会得到一句
             // “不可达”，把“密钥不匹配”这个最需要动作的原因丢掉了。
-            if status != 200 { throw MihomoError.http(status) }
+            // 只在**确实是 HTTP 响应**且非 200 时判错（不该把“没有响应头”当 HTTP 0）。
+            if let h = resp as? HTTPURLResponse, h.statusCode != 200 {
+                throw MihomoError.http(h.statusCode)
+            }
             let v = try SafeDecoder.shared.decode(MihomoVersion.self, from: data)
             version = v.version
             reachable = true
