@@ -146,7 +146,17 @@ struct SubscriptionsPage: View {
     }
     private func update(_ name: String) async {
         busy.insert(name)
-        try? await M.api.updateProvider(name)
+        do {
+            try await M.api.updateProvider(name)
+        } catch {
+            // 这里原来用 `try?` 把失败吞掉，再无条件弹绿色「已更新订阅」——节点一个没变
+            // 也报成功。失败时如实报错并**不** reload()：更新没成功，重取只会把同一份
+            // 旧节点列表再画一遍，看起来像"刷新过了"。
+            M.logKernel("[Subscriptions] 更新订阅「\(name)」失败: \(error.localizedDescription)")
+            busy.remove(name)
+            M.showToast("更新「\(name)」失败，已保留原节点列表", kind: .error)
+            return
+        }
         try? await Task.sleep(nanoseconds: 800_000_000)
         await reload(); busy.remove(name)
         M.showToast("已更新订阅「\(name)」", kind: .ok)
