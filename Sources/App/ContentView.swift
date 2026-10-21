@@ -280,13 +280,17 @@ struct ContentView: View {
             }
             // 开关是状态控件，不与标准 32pt 按钮/tab 共用尺寸（design.md §6.7）
             // busy 时禁用，避免连点只靠 toast 解释（design.md §10.1）
-            Toggle("", isOn: isOn)
-                .toggleStyle(.switch)
-                .controlSize(.mini)
-                .labelsHidden()
-                .tint(onColor)
-                .disabled(busy)
-                .opacity(busy ? 0.55 : 1)
+            //
+            // 用自绘紧凑开关而不是系统 `Toggle(.switch)`：后者在当前 macOS 上是
+            // 固定 54×24pt（实测 NSSwitch intrinsic 就是 54×24，且 controlSize
+            // 对它无效），在 236pt 侧栏里比 12pt 正文大得离谱。
+            // 32×18 是 8pt 网格内的折中尺寸，见 `DSCompactSwitch`。
+            DSCompactSwitch(isOn: isOn.wrappedValue,
+                            onColor: onColor,
+                            isEnabled: !busy,
+                            accessibilityText: label) {
+                isOn.wrappedValue.toggle()
+            }
         }
         .padding(.vertical, DS.Spacing.xs / 2)
         .padding(.horizontal, DS.Spacing.s)
