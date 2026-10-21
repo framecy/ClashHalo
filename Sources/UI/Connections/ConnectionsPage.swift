@@ -120,66 +120,8 @@ struct ConnectionsPage: View {
                 )
                 .onTapGesture { selection = nil }
             } else {
-                Table(filteredRows, selection: $selection, sortOrder: $sortOrder) {
-                    TableColumn("目标", value: \.host) { c in
-                        VStack(alignment: .leading, spacing: 1) {
-                            Text(c.host).font(.dsBodyMedium).lineLimit(1)
-                            Text("\(c.dstIP):\(c.port)").font(.dsMono).foregroundColor(.secondary).lineLimit(1)
-                        }
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                    }.width(min: 180, ideal: 240)
-                    TableColumn("进程", value: \.process) { c in
-                        Text(c.process).font(.dsBody).foregroundColor(.secondary).lineLimit(1)
-                            .frame(maxWidth: .infinity, alignment: .leading)
-                    }.width(min: 80, ideal: 120)
-                    TableColumn("规则", value: \.rule) { c in
-                        Text(c.rule).font(.dsMono).foregroundColor(.secondary).lineLimit(1)
-                            .frame(maxWidth: .infinity, alignment: .leading)
-                    }.width(min: 100, ideal: 150)
-                    TableColumn("链路", value: \.chain) { c in
-                        HStack(spacing: 4) {
-                            Text(c.chain).font(.dsBodySemibold).foregroundColor(c.category == "proxy" ? DS.Palette.accent : .secondary).lineLimit(1)
-                            Text(c.node).font(.dsMono).foregroundColor(.secondary).lineLimit(1)
-                        }
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                    }.width(min: 120, ideal: 180)
-                    TableColumn("↓", value: \.downRate) { c in
-                        Text(fmtRate(Double(c.downRate))).font(.dsMono)
-                            .frame(maxWidth: .infinity, alignment: .leading)
-                    }.width(70)
-                    TableColumn("↑", value: \.upRate) { c in
-                        Text(fmtRate(Double(c.upRate))).font(.dsMono).foregroundColor(.secondary)
-                            .frame(maxWidth: .infinity, alignment: .leading)
-                    }.width(70)
-                    TableColumn("") { c in
-                        if selectedTab == 0 {
-                            Button { M.closeConnection(id: c.id) } label: { Image(systemName: "xmark.circle") }
-                                .buttonStyle(.borderless).foregroundColor(.secondary).help("断开此连接")
-                        }
-                    }.width(36)
-                }
-                // Lock table content inset to the same token as the toolbar strip.
-                .contentMargins(.horizontal, DS.Layout.pageContentInset, for: .scrollContent)
-                .contextMenu(forSelectionType: Conn.ID.self) { ids in
-                    if let id = ids.first, let c = filteredRows.first(where: { $0.id == id }) {
-                        Button("添加/修改分流规则...") {
-                            prepareRuleEdit(for: c)
-                        }
+                connTable
 
-                        // 一键「独立制裁」：写规则 → 校验 → reload → 断开。
-                        // 决策（写哪种规则、能不能写）在 `QuickRule`（纯逻辑、有回归套件），
-                        // 这里只把结果交给既有事务，不另起保存路径。
-                        Divider()
-                        quickRuleSection(for: c)
-
-                        if selectedTab == 0 {
-                            Divider()
-                            Button("断开连接", role: .destructive) {
-                                M.closeConnection(id: c.id)
-                            }
-                        }
-                    }
-                }
             }
         }
         .onAppear {
@@ -246,6 +188,171 @@ struct ConnectionsPage: View {
             || c.process.localizedCaseInsensitiveContains(q)
             || c.chain.localizedCaseInsensitiveContains(q)
             || c.rule.localizedCaseInsensitiveContains(q)
+    }
+
+    /// 表格「来源」列的判定。本机地址集合用 `M.localIPs`（连接快照每拍刷新一次），
+    /// 不在这里逐行调 `getifaddrs`——表格一次渲染有 N 行，系统调用会被放大成开销。
+    /// `srcIP == "?"` 是 `Conn` 的「字段缺失」占位，必须当空串交给判定器。
+    private func origin(for c: Conn) -> ConnOrigin {
+        ConnOriginClassifier.classify(
+            inboundName: c.inboundName,
+            inboundPort: c.inboundPort,
+            sourceIP: c.srcIP == "?" ? "" : c.srcIP,
+            localIPs: M.localIPs
+        )
+    }
+
+    /// 连接表单独成一个属性：`Table` 的列构造器是巨型表达式，嵌在页面 body 里
+    /// 再加一列就越过类型检查预算（实测加到 8 列即超时）。拆开后各自推导。
+    ///
+    /// 「来源」列是常驻列，不做显隐切换：条件列（`if`）在 `TableColumnBuilder` 里
+    /// 需要 macOS 14.4+，本工程部署目标 14.0；用 `TableColumnCustomization` 隐藏
+    /// 会多出一条「表头右键」的控制路径，与自绘开关不同步。列宽压到 88pt 即可。
+    private var connTable: some View {
+        Table(filteredRows, selection: $selection, sortOrder: $sortOrder) {
+            TableColumn("目标", value: \.host) { c in
+                targetCell(c)
+            }.width(min: 180, ideal: 240)
+            TableColumn("进程", value: \.process) { c in
+                processCell(c)
+            }.width(min: 80, ideal: 120)
+            TableColumn("来源") { c in
+                sourceCell(c)
+            }.width(min: 88, ideal: 118)
+            TableColumn("规则", value: \.rule) { c in
+                ruleCell(c)
+            }.width(min: 100, ideal: 150)
+            TableColumn("链路", value: \.chain) { c in
+                chainCell(c)
+            }.width(min: 120, ideal: 180)
+            TableColumn("↓", value: \.downRate) { c in
+                downCell(c)
+            }.width(70)
+            TableColumn("↑", value: \.upRate) { c in
+                upCell(c)
+            }.width(70)
+            TableColumn("") { c in
+                actionCell(c)
+            }.width(36)
+        }
+        // Lock table content inset to the same token as the toolbar strip.
+        .contentMargins(.horizontal, DS.Layout.pageContentInset, for: .scrollContent)
+        .contextMenu(forSelectionType: Conn.ID.self) { ids in
+            if let id = ids.first, let c = filteredRows.first(where: { $0.id == id }) {
+                Button("添加/修改分流规则...") {
+                    prepareRuleEdit(for: c)
+                }
+
+                // 一键「独立制裁」：写规则 → 校验 → reload → 断开。
+                // 决策（写哪种规则、能不能写）在 `QuickRule`（纯逻辑、有回归套件），
+                // 这里只把结果交给既有事务，不另起保存路径。
+                Divider()
+                quickRuleSection(for: c)
+
+                if selectedTab == 0 {
+                    Divider()
+                    Button("断开连接", role: .destructive) {
+                        M.closeConnection(id: c.id)
+                    }
+                }
+            }
+        }
+    }
+
+    // MARK: - 表格单元格
+    //
+    // 每个单元格都抽成独立 `@ViewBuilder`：`Table` 的列构造器是一个巨型表达式，
+    // 单元格写在里面时再加一列就会「unable to type-check in reasonable time」。
+    // 拆出来之后每个单元格各自推导，列定义只剩 `TableColumn(...) { cell(c) }`。
+
+    @ViewBuilder
+    private func targetCell(_ c: Conn) -> some View {
+        VStack(alignment: .leading, spacing: 1) {
+            Text(c.host).font(.dsBodyMedium).lineLimit(1)
+            Text("\(c.dstIP):\(c.port)")
+                .font(.dsMono)
+                .foregroundColor(.secondary)
+                .lineLimit(1)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    @ViewBuilder
+    private func processCell(_ c: Conn) -> some View {
+        Text(c.process)
+            .font(.dsBody)
+            .foregroundColor(.secondary)
+            .lineLimit(1)
+            .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    @ViewBuilder
+    private func ruleCell(_ c: Conn) -> some View {
+        Text(c.rule)
+            .font(.dsMono)
+            .foregroundColor(.secondary)
+            .lineLimit(1)
+            .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    @ViewBuilder
+    private func chainCell(_ c: Conn) -> some View {
+        HStack(spacing: 4) {
+            Text(c.chain)
+                .font(.dsBodySemibold)
+                .foregroundColor(c.category == "proxy" ? DS.Palette.accent : .secondary)
+                .lineLimit(1)
+            Text(c.node)
+                .font(.dsMono)
+                .foregroundColor(.secondary)
+                .lineLimit(1)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    @ViewBuilder
+    private func downCell(_ c: Conn) -> some View {
+        Text(fmtRate(Double(c.downRate)))
+            .font(.dsMono)
+            .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    @ViewBuilder
+    private func upCell(_ c: Conn) -> some View {
+        Text(fmtRate(Double(c.upRate)))
+            .font(.dsMono)
+            .foregroundColor(.secondary)
+            .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    @ViewBuilder
+    private func actionCell(_ c: Conn) -> some View {
+        if selectedTab == 0 {
+            Button { M.closeConnection(id: c.id) } label: { Image(systemName: "xmark.circle") }
+                .buttonStyle(.borderless)
+                .foregroundColor(.secondary)
+                .help("断开此连接")
+        }
+    }
+
+    /// 「来源」列的单元格。单独抽成 `@ViewBuilder` 方法，是为了让类型检查在
+    /// 这里收口——直接写进 `Table` 的列构造器会把那一大团表达式的推导顶到超时。
+    @ViewBuilder
+    private func sourceCell(_ c: Conn) -> some View {
+        let o = origin(for: c)
+        Text(o.shortLabel)
+            .font(.dsBody)
+            .foregroundColor(.secondary)
+            .lineLimit(1)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .help(sourceHelp(c, o))
+    }
+
+    /// 「来源」列的完整证据（悬停提示）：标题 + 入站副标题。列里只放短标签，
+    /// 完整判定过程放进 help，避免为了一列多占宽度。
+    private func sourceHelp(_ c: Conn, _ o: ConnOrigin) -> String {
+        let src = c.srcIP == "?" ? "" : c.srcIP
+        return "\(o.title(process: c.process)) · \(o.subtitle(sourceIP: src))"
     }
 
     private func prepareRuleEdit(for c: Conn) {
