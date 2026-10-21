@@ -5,6 +5,263 @@ import SwiftUI
 private func cfgStr(_ c: [String: Any], _ k: String) -> String { c[k].map { "\($0)" } ?? "—" }
 private func cfgBool(_ c: [String: Any], _ k: String) -> Bool { (c[k] as? Bool) == true }
 
+// MARK: - 端口转发（入站监听）
+//
+// 数据与写盘都走 `InboundListener` / `InboundListenerStore`（纯逻辑 + 回归套件），
+// 这里只做表单与列表。两条安全线：
+//   * 默认 `listen: 127.0.0.1`（仅本机），「允许局域网访问」必须显式勾选；
+//   * 端口冲突在保存前就查清楚并指出是谁占的，不把内核的 500 抛给用户。
+
+struct PortForwardingCard: View {
+    @EnvironmentObject var M: AppModel
+    @State private var editing: InboundListener? = nil
+    @State private var showingNew = false
+    @State private var confirmingDelete: InboundListener? = nil
+    /// 缓存的解析结果。`body` 里同步读 70 KB 的 config.yaml 会随每次重绘发生，
+    /// 规则页也是同样的做法：只在文件路径变化或 `configContentEpoch` 自增时重读。
+    @State private var listeners: [InboundListener] = []
+
+    var body: some View {
+        let list = listeners
+        return Card(title: "端口转发（入站监听）", icon: "arrow.left.arrow.right",
+                    actions: {
+                        Button { showingNew = true } label: { Label("添加转发", systemImage: "plus") }
+                            .dsButton()
+                            .disabled(M.engine.isBusy)
+                    }) {
+            VStack(alignment: .leading, spacing: DS.Spacing.s) {
+                if list.isEmpty {
+                    Text("把本机端口转发到局域网里的设备（如 NAS 管理页、打印机后台）。默认只监听 127.0.0.1，不会对外开放。")
+                        .font(.dsBody).foregroundColor(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                } else {
+                    ForEach(list) { l in row(l) }
+                }
+                if !list.isEmpty {
+                    Text("监听在 0.0.0.0 的转发对同网段所有设备开放；不需要时请关掉。")
+                        .font(.dsCaption).foregroundColor(.secondary)
+                        .padding(.top, DS.Spacing.xs)
+                }
+            }
+        }
+        .onAppear(perform: reloadListeners)
+        .onChange(of: M.engine.configFilePath) { _, _ in reloadListeners() }
+        .onChange(of: M.configContentEpoch) { _, _ in reloadListeners() }
+        .sheet(isPresented: $showingNew) {
+            ListenerEditorSheet(existing: listeners, editing: nil) { showingNew = false }
+        }
+        .sheet(item: Binding(get: { editing.map { ListenerBox(listener: $0) } },
+                             set: { editing = $0?.listener })) { box in
+            ListenerEditorSheet(existing: listeners, editing: box.listener) { editing = nil }
+        }
+        .confirmationDialog("删除转发「\(confirmingDelete?.name ?? "")」？",
+                            isPresented: Binding(get: { confirmingDelete != nil },
+                                                 set: { if !$0 { confirmingDelete = nil } }),
+                            titleVisibility: .visible) {
+            Button("删除", role: .destructive) {
+                guard let target = confirmingDelete else { return }
+                confirmingDelete = nil
+                M.saveInboundListeners(listeners.filter { $0.name != target.name })
+            }
+        } message: {
+            Text("将移除该监听端口并立即重载内核；正在使用这个转发的连接会断开。")
+        }
+    }
+
+    struct ListenerBox: Identifiable {
+        let listener: InboundListener
+        var id: String { listener.id }
+    }
+
+    private func row(_ l: InboundListener) -> some View {
+        HStack(spacing: DS.Spacing.m) {
+            DSCompactSwitch(isOn: l.isEnabled,
+                            isEnabled: !M.engine.isBusy,
+                            accessibilityText: l.name) {
+                toggle(l, !l.isEnabled)
+            }
+
+            VStack(alignment: .leading, spacing: DS.Spacing.xs) {
+                HStack(spacing: DS.Spacing.s) {
+                    Text(l.name).font(.dsBodySemibold)
+                    Text(l.type.label)
+                        .font(.dsCaption)
+                        .foregroundColor(.secondary)
+                    Text(l.allowsLAN ? "局域网可访问" : "仅本机")
+                        .font(.dsCaption)
+                        .foregroundColor(l.allowsLAN ? DS.Palette.warn : .secondary)
+                }
+                HStack(spacing: DS.Spacing.m) {
+                    Text("127.0.0.1:\(l.port)").font(.dsMono)
+                    if l.type.needsTarget {
+                        Text("→ \(l.target)").font(.dsMono).foregroundColor(.secondary)
+                    }
+                    Text(l.networkText.uppercased()).font(.dsCaption).foregroundColor(.secondary)
+                }
+                .font(.dsCaption)
+            }
+            Spacer(minLength: 0)
+
+            Button { editing = l } label: { Image(systemName: "pencil") }
+                .buttonStyle(.borderless).help("编辑")
+                .disabled(M.engine.isBusy)
+            Button { confirmingDelete = l } label: { Image(systemName: "trash") }
+                .buttonStyle(.borderless).foregroundColor(DS.Palette.error).help("删除")
+                .disabled(M.engine.isBusy)
+        }
+        .padding(DS.Spacing.m)
+        .background(DS.Palette.fillFaint)
+        .clipShape(RoundedRectangle(cornerRadius: DS.Radius.chip, style: .continuous))
+    }
+
+    private func reloadListeners() {
+        listeners = M.inboundListeners()
+    }
+
+    private func toggle(_ l: InboundListener, _ on: Bool) {
+        var list = listeners
+        guard let i = list.firstIndex(where: { $0.name == l.name }) else { return }
+        list[i].isEnabled = on
+        // 先落本地缓存（勾选立即跟手），保存失败时事务会回滚磁盘，重新读盘即回到真实状态。
+        listeners = list
+        M.saveInboundListeners(list) { ok in
+            if !ok { reloadListeners() }
+        }
+    }
+}
+
+struct ListenerEditorSheet: View {
+    @EnvironmentObject var M: AppModel
+    @Environment(\.dismiss) private var dismiss
+    let existing: [InboundListener]
+    let editing: InboundListener?
+    let onClose: () -> Void
+
+    @State private var name = ""
+    @State private var type: ListenerType = .tunnel
+    @State private var port = ""
+    @State private var target = ""
+    @State private var listen = InboundListener.loopback
+    @State private var tcp = true
+    @State private var udp = false
+    @State private var error = ""
+    @State private var loaded = false
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: DS.Spacing.l) {
+            Text(editing == nil ? "添加端口转发" : "编辑端口转发").font(.dsCardLabel)
+
+            VStack(alignment: .leading, spacing: DS.Spacing.s) {
+                Text("名称").font(.dsBody).foregroundColor(.secondary)
+                TextField("如 fwd-nas（会显示在连接页的「来源」里）", text: $name)
+                    .inputStyle().font(.dsMono)
+
+                Text("类型").font(.dsBody).foregroundColor(.secondary)
+                DSMenuPicker(selection: $type, choices: ListenerType.allCases.map {
+                    DSChoice($0.label, $0)
+                })
+                .frame(width: 200)
+
+                Text("监听端口").font(.dsBody).foregroundColor(.secondary)
+                TextField("如 18080", text: $port).inputStyle().font(.dsMono)
+
+                if type.needsTarget {
+                    Text("目标地址（IP:端口）").font(.dsBody).foregroundColor(.secondary)
+                    TextField("如 192.168.1.233:8080", text: $target).inputStyle().font(.dsMono)
+                }
+
+                Text("协议").font(.dsBody).foregroundColor(.secondary)
+                HStack(spacing: DS.Spacing.l) {
+                    Toggle("TCP", isOn: $tcp).toggleStyle(.checkbox)
+                    Toggle("UDP", isOn: $udp).toggleStyle(.checkbox)
+                }
+
+                HStack {
+                    Text("允许局域网访问").font(.dsBody)
+                    Spacer(minLength: DS.Spacing.s)
+                    DSCompactSwitch(isOn: listen == InboundListener.anyAddress,
+                                    accessibilityText: "允许局域网访问") {
+                        listen = (listen == InboundListener.anyAddress)
+                            ? InboundListener.loopback : InboundListener.anyAddress
+                    }
+                }
+                Text(listen == InboundListener.anyAddress
+                     ? "监听 0.0.0.0：同网段的任何设备都能连这个端口。只在你确实要从别的设备访问时开启。"
+                     : "监听 127.0.0.1：只有本机能连，不对外开放。")
+                    .font(.dsCaption).foregroundColor(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+
+            if !error.isEmpty {
+                Text(error).font(.dsBody).foregroundColor(DS.Palette.error)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+
+            HStack {
+                Button("取消") { onClose(); dismiss() }.dsButton()
+                Spacer()
+                Button("保存") { Task { await save() } }
+                    .dsButton(.prominent)
+                    .disabled(M.engine.isBusy)
+            }
+        }
+        .padding(DS.Spacing.xl)
+        .frame(width: 480)
+        .onAppear(perform: loadOnce)
+    }
+
+    private func loadOnce() {
+        guard !loaded else { return }
+        loaded = true
+        guard let e = editing else { return }
+        name = e.name
+        type = e.type
+        port = "\(e.port)"
+        target = e.target
+        listen = e.listen
+        tcp = e.network.contains(.tcp)
+        udp = e.network.contains(.udp)
+    }
+
+    private func save() async {
+        error = ""
+        var network: Set<ListenerNetwork> = []
+        if tcp { network.insert(.tcp) }
+        if udp { network.insert(.udp) }
+        let candidate = InboundListener(name: name.trimmingCharacters(in: .whitespaces),
+                                        type: type,
+                                        port: Int(port.trimmingCharacters(in: .whitespaces)) ?? 0,
+                                        listen: listen,
+                                        target: target.trimmingCharacters(in: .whitespaces),
+                                        network: network,
+                                        isEnabled: editing?.isEnabled ?? true)
+        // 编辑时先把自己从「已存在」里去掉，否则一定报重名。
+        let others = existing.filter { $0.name != editing?.name }
+        if let reason = InboundListenerStore.validate(candidate, existing: others,
+                                                      reservedPorts: M.reservedInboundPorts()) {
+            error = reason
+            return
+        }
+        // 端口被其它进程占着：`mihomo -t` 查不出来（它不探测端口），必须自己问系统。
+        if let owner = await Task.detached(priority: .userInitiated, operation: {
+            AppModel.portOwnerDescription(candidate.port)
+        }).value {
+            error = "端口 \(candidate.port) 已被「\(owner)」占用，请换一个端口"
+            return
+        }
+
+        var list = existing
+        if let e = editing, let i = list.firstIndex(where: { $0.name == e.name }) {
+            list[i] = candidate
+        } else {
+            list.append(candidate)
+        }
+        M.saveInboundListeners(list) { ok in
+            if ok { onClose(); dismiss() }
+        }
+    }
+}
+
 struct NetworkPage: View {
     @EnvironmentObject var M: AppModel
     var body: some View {
@@ -22,6 +279,8 @@ struct NetworkPage: View {
                         Text("端口设为 0 即禁用。建议绝大多数应用使用混合端口（兼容 HTTP 与 SOCKS5）。系统代理仅接管遵守系统代理设置的应用流量（UDP/QUIC 与绕过列表不经过内核），需要完整接管请开启 TUN。")
                             .font(.dsBody).foregroundColor(.secondary).padding(.top, DS.Spacing.s)
                     }
+                    PortForwardingCard()
+
                     Card(title: "全局网络", icon: "globe") {
                         VStack(spacing: 2) {
                             ToggleRow("IPv6 支持", key: "ipv6", persistent: true)
@@ -48,10 +307,11 @@ struct NetworkPage: View {
                                 if M.engine.isBusy {
                                     ProgressView().controlSize(.mini).scaleEffect(DS.Progress.miniScale)
                                 }
-                                Toggle("", isOn: Binding(get: { M.gatewayModeOn }, set: { _ in M.toggleGatewayMode() }))
-                                    .toggleStyle(.switch).labelsHidden()
-                                    .disabled(M.engine.isBusy)
-                                    .opacity(M.engine.isBusy ? 0.55 : 1)
+                                DSCompactSwitch(isOn: M.gatewayModeOn,
+                                                isEnabled: !M.engine.isBusy,
+                                                accessibilityText: "作为网关中枢") {
+                                    M.toggleGatewayMode()
+                                }
                             }.padding(.vertical, DS.Spacing.s)
                         }
                         Text("开启后将自动配置 IP 转发并接管局域网内其他所有设备的流量（需配合 TUN）。其他设备需将网关和 DNS 指向本机的局域网 IP。")
@@ -95,11 +355,23 @@ struct GatewayDeviceRow: View {
     var body: some View {
         HStack {
             VStack(alignment: .leading, spacing: DS.Spacing.xs) {
-                Text(dev.ip)
-                    .font(.dsMonoBold)
+                HStack(spacing: DS.Spacing.s) {
+                    Text(dev.ip)
+                        .font(.dsMonoBold)
+                    // 身份一行：厂商 · 类型（推测）。拿不到就如实说「未知」——
+                    // ARP 只覆盖同网段最近通信过的设备，跨 VLAN 时本来就没有。
+                    Text(dev.identitySummary.isEmpty ? "身份未知" : dev.identitySummary)
+                        .font(.dsCaption)
+                        .foregroundColor(dev.identitySummary.isEmpty ? .secondary : .primary)
+                        .lineLimit(1)
+                        .truncationMode(.tail)
+                }
                 HStack(spacing: DS.Spacing.m) {
                     Label("\(dev.activeConnections) 连接", systemImage: "point.3.connected.trianglepath.dotted")
                     Label("\(dev.durationString)", systemImage: "clock")
+                    if !dev.mac.isEmpty {
+                        Text(dev.mac).font(.dsMono).foregroundColor(.secondary)
+                    }
                 }
                 .font(.dsCaption)
                 .foregroundColor(.secondary)
@@ -128,6 +400,17 @@ struct GatewayDeviceRow: View {
         .padding(DS.Spacing.m)
         .background(DS.Palette.fillFaint)
         .clipShape(RoundedRectangle(cornerRadius: DS.Radius.chip, style: .continuous))
+        .contextMenu {
+            Button("复制 IP") {
+                NSPasteboard.general.clearContents()
+                NSPasteboard.general.setString(dev.ip, forType: .string)
+            }
+            Button("复制 MAC") {
+                NSPasteboard.general.clearContents()
+                NSPasteboard.general.setString(dev.mac, forType: .string)
+            }
+            .disabled(dev.mac.isEmpty)
+        }
     }
 }
 
@@ -144,8 +427,11 @@ struct TunPage: View {
                             if M.engine.isBusy {
                                 ProgressView().controlSize(.mini).scaleEffect(DS.Progress.miniScale)
                             }
-                            Toggle("", isOn: Binding(get: { M.tunOn }, set: { _ in M.toggleTUN() }))
-                                .toggleStyle(.switch).labelsHidden()
+                            DSCompactSwitch(isOn: M.tunOn,
+                                            isEnabled: !M.engine.isBusy,
+                                            accessibilityText: "TUN 模式") {
+                                M.toggleTUN()
+                            }
                                 .disabled(M.engine.isBusy)
                                 .opacity(M.engine.isBusy ? 0.55 : 1)
                         }.padding(.vertical, DS.Spacing.s)
@@ -317,19 +603,19 @@ struct ToggleRow: View {
         HStack {
             Text(label).font(.dsBody)
             Spacer()
-            Toggle("", isOn: Binding(
-                get: { (M.configs[key] as? Bool) == true },
-                set: { v in
-                    Task {
-                        // 没有本地 @State：开关的值直接读 M.configs。写入被拒时
-                        // patchPersistent/patch 已弹出原因并从内核真值重同步，开关
-                        // 自己就回到原位，因此这里的返回值没有可回弹的状态。
-                        if persistent { _ = await M.patchPersistent([key: v]) } else { _ = await M.patch([key: v]) }
-                    }
+            // 统一用紧凑开关（design.md §6.7）：系统 NSSwitch 在当前 macOS 上是
+            // 54×24pt 固定尺寸，比这一行的 12pt 文字大得多。
+            DSCompactSwitch(isOn: (M.configs[key] as? Bool) == true,
+                            isEnabled: !M.engine.isBusy,
+                            accessibilityText: label) {
+                let v = !((M.configs[key] as? Bool) == true)
+                Task {
+                    // 没有本地 @State：开关的值直接读 M.configs。写入被拒时
+                    // patchPersistent/patch 已弹出原因并从内核真值重同步，开关
+                    // 自己就回到原位，因此这里的返回值没有可回弹的状态。
+                    if persistent { _ = await M.patchPersistent([key: v]) } else { _ = await M.patch([key: v]) }
                 }
-            ))
-            .toggleStyle(.switch)
-            .labelsHidden()
+            }
             .frame(width: DS.Layout.fieldTrailing, alignment: .trailing)
         }
         .padding(.vertical, DS.Spacing.s)
@@ -523,29 +809,28 @@ struct NToggle: View {
     var body: some View {
         HStack {
             Text(label).font(.dsBody); Spacer()
-            Toggle("", isOn: Binding(
-                get: { (nestedDict(M, parent)[sub] as? Bool) == true },
-                set: { v in
-                    let previous = (nestedDict(M, parent)[sub] as? Bool) == true
-                    // Optimistic UI update to prevent toggle flickering/rollback
-                    var currentParent = M.configs[parent] as? [String: Any] ?? [:]
-                    currentParent[sub] = v
-                    M.configs[parent] = currentParent
+            let current = (nestedDict(M, parent)[sub] as? Bool) == true
+            DSCompactSwitch(isOn: current,
+                            isEnabled: !M.engine.isBusy,
+                            accessibilityText: label) {
+                let previous = current
+                let v = !current
+                // Optimistic UI update to prevent toggle flickering/rollback
+                var currentParent = M.configs[parent] as? [String: Any] ?? [:]
+                currentParent[sub] = v
+                M.configs[parent] = currentParent
 
-                    Task {
-                        let ok = persistent ? await M.patchPersistent([parent: [sub: v]]) : await M.patch([parent: [sub: v]])
-                        if !ok {
-                            // 内核/磁盘拒绝了这笔写入：把乐观渲染的开关弹回真值。
-                            // 不回弹就是“绿灯开着 + 红色错误 toast”并存的假象。
-                            var revert = M.configs[parent] as? [String: Any] ?? [:]
-                            revert[sub] = previous
-                            M.configs[parent] = revert
-                        }
+                Task {
+                    let ok = persistent ? await M.patchPersistent([parent: [sub: v]]) : await M.patch([parent: [sub: v]])
+                    if !ok {
+                        // 内核/磁盘拒绝了这笔写入：把乐观渲染的开关弹回真值。
+                        // 不回弹就是“绿灯开着 + 红色错误 toast”并存的假象。
+                        var revert = M.configs[parent] as? [String: Any] ?? [:]
+                        revert[sub] = previous
+                        M.configs[parent] = revert
                     }
                 }
-            ))
-            .toggleStyle(.switch)
-            .labelsHidden()
+            }
             .frame(width: DS.Layout.fieldTrailing, alignment: .trailing)
         }.padding(.vertical, DS.Spacing.s)
     }

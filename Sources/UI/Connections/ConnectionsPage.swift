@@ -11,6 +11,10 @@ struct ConnectionsPage: View {
         let id = UUID()
         let node: RuleNode?
         let conn: Conn
+        /// 打开弹窗那一刻的真实目标名快照（策略组 + 节点 + 内置 + config.yaml 里的组）。
+        /// 用快照而不是每次求值：`AppModel.ruleTargetNames` 会读一次 config.yaml，
+        /// 不能放在 body / sheet 闭包的渲染路径上反复执行。
+        let knownTargets: Set<String>
     }
 
     /// Domain-aggregated row for "聚合" view: folds every active Conn sharing
@@ -161,6 +165,13 @@ struct ConnectionsPage: View {
                         Button("添加/修改分流规则...") {
                             prepareRuleEdit(for: c)
                         }
+
+                        // 一键「独立制裁」：写规则 → 校验 → reload → 断开。
+                        // 决策（写哪种规则、能不能写）在 `QuickRule`（纯逻辑、有回归套件），
+                        // 这里只把结果交给既有事务，不另起保存路径。
+                        Divider()
+                        quickRuleSection(for: c)
+
                         if selectedTab == 0 {
                             Divider()
                             Button("断开连接", role: .destructive) {
@@ -207,7 +218,10 @@ struct ConnectionsPage: View {
             Text("这将中断所有正在进行的网络会话")
         }
         .sheet(item: $activeRuleEdit) { ctx in
-            RuleFormView(existingNode: ctx.node, proxyGroups: M.groups.map { $0.name }, contextConn: ctx.conn) { newNode in
+            RuleFormView(existingNode: ctx.node,
+                         proxyGroups: M.groups.map { $0.name },
+                         knownTargets: ctx.knownTargets,
+                         contextConn: ctx.conn) { newNode in
                 if let old = ctx.node, ruleModel.nodes.contains(where: { $0.id == old.id }) {
                     ruleModel.updateNode(id: old.id, with: newNode)
                 } else {
@@ -290,7 +304,122 @@ struct ConnectionsPage: View {
             finalNode = RuleNode(type: type, match: match, action: .proxy, sort: 0, proxyGroup: c.group, note: c.process != "—" ? c.process : "")
         }
 
-        activeRuleEdit = RuleEditContext(node: finalNode, conn: c)
+        activeRuleEdit = RuleEditContext(node: finalNode, conn: c,
+                                         knownTargets: M.ruleTargetNames)
+    }
+
+    // MARK: - 一键「独立制裁」
+    //
+    // 右键直接按这条连接的目标 / 进程写一条规则，写完立刻校验 + reload，
+    // 失败整体回滚（复用 `applyRuleEditorSave` 的备份事务），成功后断开相关连接。
+    // 决策全部在 `QuickRule`（纯逻辑 + 回归套件），这里只做接线。
+
+    private var canWriteQuickRule: Bool {
+        !M.engine.configFilePath.isEmpty && !M.engine.isBusy
+    }
+
+    private func quickContext(_ c: Conn) -> QuickRuleContext {
+        QuickRuleContext(host: c.host,
+                         dstIP: c.dstIP,
+                         remoteDestination: c.remoteDestination,
+                         process: c.process,
+                         group: c.group,
+                         availableGroups: M.groups.map { $0.name })
+    }
+
+    /// 同主机名的活跃连接数——「拉黑」会连坐这些连接，必须先说清数量。
+    private func sameHostCount(_ c: Conn) -> Int {
+        let key = c.host.isEmpty ? c.dstIP : c.host
+        return VM.conns.reduce(into: 0) { n, other in
+            if (other.host.isEmpty ? other.dstIP : other.host) == key { n += 1 }
+        }
+    }
+
+    @ViewBuilder
+    private func quickRuleSection(for c: Conn) -> some View {
+        let ctx = quickContext(c)
+        let direct = QuickRule.plan(.direct, context: ctx, existing: ruleModel.nodes)
+        let reject = QuickRule.plan(.reject, context: ctx, existing: ruleModel.nodes)
+        let process = QuickRule.plan(.processGroup, context: ctx, existing: ruleModel.nodes)
+        let host = c.host.isEmpty ? c.dstIP : c.host
+
+        Button("让 \(host) 直连") { applyQuickRule(.direct, for: c) }
+            .disabled(!canWriteQuickRule || direct == nil)
+
+        Button("拉黑 \(host)（影响 \(sameHostCount(c)) 条连接）") { applyQuickRule(.reject, for: c) }
+            .disabled(!canWriteQuickRule || reject == nil)
+
+        Button(process?.proxyGroup.map { "这个 App 走「\($0)」" } ?? "这个 App 走当前策略组") {
+            applyQuickRule(.processGroup, for: c)
+        }
+        .disabled(!canWriteQuickRule || process == nil)
+    }
+
+    private func applyQuickRule(_ kind: QuickRuleKind, for c: Conn) {
+        let path = M.engine.configFilePath
+        guard !path.isEmpty else {
+            M.showToast("配置尚未加载，无法写入规则", kind: .warn)
+            return
+        }
+        // 以磁盘上的最新内容为基线：页面停留期间配置可能被网关覆盖、profile 切换
+        // 或规则页改写过。
+        guard let current = try? String(contentsOfFile: path, encoding: .utf8) else {
+            M.showToast("读取配置失败，未写入任何规则", kind: .error)
+            return
+        }
+        let existing = YamlRuleASTEngine.extractRules(from: current)
+        guard let plan = QuickRule.plan(kind, context: quickContext(c), existing: existing) else {
+            M.showToast("这条连接缺少可写规则的目标信息", kind: .warn)
+            return
+        }
+        let host = c.host.isEmpty ? c.dstIP : c.host
+
+        guard !plan.isNoop else {
+            closeAfterQuickRule(kind, conn: c, host: host)
+            M.showToast("规则已存在，已按现有规则断开", kind: .ok)
+            return
+        }
+
+        // 手术式写入，而不是 `RuleEditorModel.save()` 的「按节点重建整个规则块」：
+        // 后者会丢掉 rules 块内所有注释与空行（用真实配置实测一次空往返即少 50 行，
+        // 其中 43 行是块内注释）。一键加一条规则不该顺带删掉用户手写的证据注释。
+        // 事务本身仍复用 `applyRuleEditorSave`（备份 → reload → 失败回滚磁盘）。
+        M.applyRuleEditorSave(save: {
+            var text = current
+            for node in existing where plan.replaceIDs.contains(node.id) {
+                text = YamlRuleASTEngine.removeRuleLines(type: node.type, match: node.match, from: text)
+            }
+            let newNode = RuleNode(type: plan.type, match: plan.match, action: plan.action,
+                                   sort: 0, proxyGroup: plan.proxyGroup)
+            guard let next = YamlRuleASTEngine.insertRuleLine(
+                YamlRuleASTEngine.serialize(node: newNode), into: text) else { return false }
+            do {
+                try next.write(toFile: path, atomically: true, encoding: .utf8)
+            } catch {
+                return false
+            }
+            // 与 RuleEditorModel.save 一致：config.yaml 里有 tailnet auth-key 明文。
+            try? FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: path)
+            return true
+        }) { ok in
+            // 无论成败都让页面里的规则快照回到磁盘真实状态。
+            ruleModel.load()
+            if ok {
+                M.logKernel("[连接页] 写入规则 \(plan.type.rawValue),\(plan.match),"
+                    + "\(plan.proxyGroup ?? plan.action.rawValue)"
+                    + (plan.replaceIDs.isEmpty ? "" : "（替换同匹配旧规则 \(plan.replaceIDs.count) 条）"))
+                closeAfterQuickRule(kind, conn: c, host: host)
+            }
+        }
+    }
+
+    /// 拉黑会连坐同域名的所有会话，一并断开；直连/换组只断当前这一条。
+    private func closeAfterQuickRule(_ kind: QuickRuleKind, conn: Conn, host: String) {
+        if kind == .reject {
+            M.closeConnections(host: host)
+        } else {
+            M.closeConnection(id: conn.id)
+        }
     }
 
     /// Build domain-aggregated groups from the *active* connections only —
@@ -561,24 +690,30 @@ struct ConnDetailCard: View {
 
             Divider()
 
-            Grid(alignment: .leading, horizontalSpacing: DS.Spacing.l, verticalSpacing: DS.Spacing.s) {
-                GridRow { Text("ID").foregroundColor(.secondary); Text(conn.id).font(.dsMono).lineLimit(1).truncationMode(.middle) }
-                GridRow { Text("目标域名").foregroundColor(.secondary); Text(conn.host).font(.dsBodyMedium).textSelection(.enabled) }
-                GridRow { Text("目标 IP").foregroundColor(.secondary); Text("\(conn.dstIP):\(conn.port)").font(.dsMono).textSelection(.enabled) }
-                GridRow { Text("源 IP").foregroundColor(.secondary); Text(conn.srcIP).font(.dsMono).textSelection(.enabled) }
-                GridRow { Text("网络类型").foregroundColor(.secondary); Text(conn.network).font(.dsMono) }
-                GridRow { Text("触发进程").foregroundColor(.secondary); Text(conn.process).font(.dsBodyMedium).textSelection(.enabled) }
-                GridRow { Text("匹配规则").foregroundColor(.secondary); Text(conn.rule).font(.dsMono).textSelection(.enabled) }
-                GridRow { Text("命中策略").foregroundColor(.secondary); Text(conn.group).font(.dsBodySemibold) }
-                GridRow { Text("代理节点").foregroundColor(.secondary); Text(conn.node).font(.dsBodyMedium) }
-                GridRow { Text("总上传").foregroundColor(.secondary); Text(fmtBytes(Double(conn.up))).font(.dsMono) }
-                GridRow { Text("总下载").foregroundColor(.secondary); Text(fmtBytes(Double(conn.down))).font(.dsMono) }
-                GridRow { Text("连接时间").foregroundColor(.secondary); Text(formatStartTime(conn.start)).font(.dsMono) }
+            // 四段式「决策链」：来源 → 解析 → 规则 → 出口。
+            // 此前是 12 行扁平 Grid（ID / 域名 / IP / 源 IP / 网络 / 进程 / 规则 /
+            // 策略 / 节点 / 上下行 / 时间），用户得自己在脑子里把因果拼起来。
+            // 现在每一段都是「证据 → 结论」，原始字段收进底部灰字备查。
+            section("来源", primary: origin.title(process: conn.process),
+                    secondary: origin.subtitle(sourceIP: conn.srcIP == "?" ? "" : conn.srcIP))
+            section("解析", primary: dnsText, secondary: sniffText)
+            section("规则", primary: conn.rule.isEmpty ? "未命中规则" : conn.rule, mono: true)
+            section("出口", primary: exitText, secondary: exitNote, color: exitColor)
+
+            Divider()
+
+            VStack(alignment: .leading, spacing: DS.Spacing.xs) {
+                metaRow("目标", endpointText)
+                if let path = processPathText { metaRow("进程", path) }
+                metaRow("网络", conn.network)
+                metaRow("时间", formatStartTime(conn.start))
+                metaRow("流量", "↓ \(fmtBytes(Double(conn.down))) · ↑ \(fmtBytes(Double(conn.up)))")
+                metaRow("ID", conn.id)
             }
-            .font(.dsBody)
+            .font(.dsCaption)
         }
         .padding(DS.Spacing.xl)
-        .frame(width: 340)
+        .frame(width: 380)
         .background(DS.Palette.overlayBg)
         .clipShape(RoundedRectangle(cornerRadius: DS.Radius.panel, style: .continuous))
         .overlay(
@@ -587,6 +722,124 @@ struct ConnDetailCard: View {
         )
         .shadow(color: DS.Palette.cardShadowContact, radius: 2, x: 0, y: 1)
         .shadow(color: DS.Palette.cardShadow, radius: 20, x: 0, y: 8)
+    }
+
+    // MARK: - 四段式辅助
+
+    /// 来源判定。本机地址集合每次求值一次 `getifaddrs`（几十微秒），且
+    /// `updateGatewayDevices` 每拍也在做同样的事；卡片只在选中某行时存在。
+    /// `srcIP == "?"` 是 `Conn` 的「字段缺失」占位，必须当空串交给判定器，
+    /// 否则会被当成一个叫 `?` 的对端地址判成「外部」。
+    private var origin: ConnOrigin {
+        ConnOriginClassifier.classify(
+            inboundName: conn.inboundName,
+            inboundPort: conn.inboundPort,
+            sourceIP: conn.srcIP == "?" ? "" : conn.srcIP,
+            localIPs: Set(NetScanner.interfaces().flatMap { $0.ipv4 })
+        )
+    }
+
+    private var dnsText: String {
+        switch conn.dnsMode {
+        case "fake-ip":    return "Fake-IP · 域名由内核虚拟解析"
+        case "normal":     return "普通 DNS · 真实解析"
+        case "redir-host": return "Redir-Host · 真实解析"
+        case "":           return "内核未提供解析模式"
+        default:           return conn.dnsMode
+        }
+    }
+
+    private var sniffText: String {
+        let s = conn.sniffHost.trimmingCharacters(in: .whitespaces)
+        guard !s.isEmpty, s != conn.host else { return "" }
+        return "嗅探得到真实域名 \(s)"
+    }
+
+    private var exitText: String {
+        switch conn.category {
+        case "direct": return "DIRECT · 直连"
+        case "reject": return "REJECT · 已拒绝"
+        default:
+            let group = conn.group == "?" ? "未知策略" : conn.group
+            return "\(group) → \(conn.node)"
+        }
+    }
+
+    /// 订阅来源只做展示，不作主信息：`providerChains` 在本地节点上常为空串，
+    /// 缺失时留白比猜测「来自某订阅」诚实。
+    private var exitNote: String {
+        conn.providerChain.isEmpty ? "" : "节点来自订阅 \(conn.providerChain)"
+    }
+
+    private var exitColor: Color {
+        switch conn.category {
+        case "direct": return .secondary
+        case "reject": return DS.Palette.error
+        default:       return DS.Palette.accent
+        }
+    }
+
+    /// 域名连接在 fake-ip 下 `destinationIP` 常为空（实测同一刻 72 条连接里 59 条
+    /// 为空、且这 59 条的 `remoteDestination` 都有值），此时用真实远端地址兜底。
+    /// **端口必须一起带上**：`destinationPort` 这 72 条全都有值，而旧卡片里端口只
+    /// 在「目标 IP」那一行出现，兜底路径丢了它等于交出一张查不出端口的详情卡。
+    private var endpointText: String {
+        let target: String
+        if conn.dstIP == "?", !conn.remoteDestination.isEmpty {
+            target = conn.remoteDestination
+        } else {
+            target = conn.dstIP
+        }
+        let endpoint = conn.port.isEmpty ? target : "\(target):\(conn.port)"
+        return "\(conn.host) · \(endpoint)"
+    }
+
+    private var processPathText: String? {
+        let p = conn.processPath.trimmingCharacters(in: .whitespaces)
+        guard !p.isEmpty, p != "—" else { return nil }
+        return p
+    }
+
+    private func section(_ title: String, primary: String, secondary: String = "",
+                         color: Color = .primary, mono: Bool = false) -> some View {
+        HStack(alignment: .top, spacing: DS.Spacing.s) {
+            Text(title)
+                .font(.dsCaption)
+                .foregroundColor(.secondary)
+                .frame(width: 32, alignment: .leading)
+            VStack(alignment: .leading, spacing: DS.Spacing.xs) {
+                Text(primary)
+                    .font(mono ? .dsMono : .dsBodyMedium)
+                    .foregroundColor(color)
+                    .textSelection(.enabled)
+                    .lineLimit(2)
+                    .truncationMode(.middle)
+                if !secondary.isEmpty {
+                    Text(secondary)
+                        .font(.dsCaption)
+                        .foregroundColor(.secondary)
+                        .textSelection(.enabled)
+                        .lineLimit(2)
+                        .truncationMode(.middle)
+                }
+            }
+            Spacer(minLength: 0)
+        }
+    }
+
+    private func metaRow(_ label: String, _ value: String) -> some View {
+        HStack(alignment: .firstTextBaseline, spacing: DS.Spacing.s) {
+            Text(label)
+                .foregroundColor(.secondary)
+                .frame(width: 32, alignment: .leading)
+            Text(value)
+                .font(.dsMono)
+                .foregroundColor(.secondary)
+                .textSelection(.enabled)
+                .lineLimit(1)
+                .truncationMode(.middle)
+            Spacer(minLength: 0)
+        }
     }
 
     private func formatStartTime(_ isoString: String) -> String {
@@ -746,7 +999,18 @@ struct ConnDetailCard: View {
                     ruleType: c.rule,
                     up: c.upload, down: c.download,
                     upRate: upRate, downRate: downRate,
-                    start: c.start
+                    start: c.start,
+                    // 决策链证据：直接取原文，不做逐行字符串变换（热路径每拍要跑
+                    // 几百次）。归一化留给详情卡片按需进行一次。
+                    inboundName: c.metadata.inboundName ?? "",
+                    inboundPort: c.metadata.inboundPort ?? "",
+                    dnsMode: c.metadata.dnsMode ?? "",
+                    sniffHost: c.metadata.sniffHost ?? "",
+                    remoteDestination: c.metadata.remoteDestination ?? "",
+                    // providerChains 与 chains 同序：第 0 位才是叶节点所属订阅。
+                    // 早先用 first(where:) 会跳过空位，把外层策略组的 provider 当成
+                    // 叶节点的来源——位置语义固定，不能顺手「找到第一个非空」。
+                    providerChain: c.providerChains?.first ?? ""
                 )
                 next.append(conn)
             }
