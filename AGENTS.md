@@ -2,7 +2,7 @@
 
 本文件给后续 AI 编码代理使用。进入本仓库后，先读本文件，再按需读 `README.md`、`CHANGELOG.md` 和相关源码。
 
-当前主干：`main`，产品版本 **v1.4.0**（`MARKETING_VERSION`，与 `Sources/Info.plist` 的 `CFBundleShortVersionString` 同源），Helper **1.0.30**（`kSharedHelperVersion`，`Helper-Info.plist` 的 `CFBundleVersion` 同值）。当前构建号 **131**（`CURRENT_PROJECT_VERSION`，`make.sh` 每次打包自增）。
+当前主干：`main`，产品版本 **v1.4.1**（`MARKETING_VERSION`，与 `Sources/Info.plist` 的 `CFBundleShortVersionString` 同源），Helper **1.0.30**（`kSharedHelperVersion`，`Helper-Info.plist` 的 `CFBundleVersion` 同值）。当前构建号 **132**（`CURRENT_PROJECT_VERSION`，`make.sh` 每次打包自增）。
 
 ## 项目概览
 
@@ -196,6 +196,8 @@ bash Scripts/restore-tests.sh            # 套件文件缺失时物化
 - 网络拓扑角色色用 `rolePhysical` / `roleTailscale` / `roleZerotier` / `roleOray` / `roleOther`（`proxyTun` 用 `accent`）
 - 复用 `PageToolbar`（全站唯一顶栏实现）、`Card`、form rows；工具型密度，避免营销式 hero
 - **带初值的表单弹窗必须用 `.sheet(item:)`**：`RuleFormView` 之类把 `@State` 初值写在 `init` 里，而 SwiftUI 只在**视图身份首次出现**时采用初值；用 `.sheet(isPresented:)` 复用同一身份时，第一次若开的是「添加」（空值），之后每次「编辑」都会沿用那次空值——这正是 2026-10-20 规则页「编辑弹窗没带入原匹配内容」的根因。结构体既是弹窗目标就顺手带上 `Identifiable`（每次展示生成新 `UUID()`）。弹窗若要传「打开那一刻的快照」（如 `knownTargets`），放这个目标结构里，别在 content 闭包里现算
+- **`Table` 的单元格与表格本体都要拆出去**：列构造器是一个巨型表达式，连接表加到第 8 列时编译器直接报 `unable to type-check this expression in reasonable time`。做法是每格一个 `@ViewBuilder` 方法、整表一个 `private var connTable: some View`；改表格结构时保持这个形状，别把单元格写回 `TableColumn` 闭包里
+- **可切换的 `Table` 列在这个工程里做不到**：`TableColumnBuilder` 的条件分支（`if`）要 **macOS 14.4+**（`buildIf`），部署目标是 14.0；`TableColumnCustomization` 虽可用，但会在表头右键多出一条控制路径，与自绘开关不同步。要加列就直接加（压窄列宽），不要让「可选列」变成第二份列定义
 - pre-commit 会警告 raw `.font(.system(size: N))` 与字体阶梯漂移
 
 ## 版本与发布
