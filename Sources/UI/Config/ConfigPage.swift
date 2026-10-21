@@ -22,14 +22,34 @@ struct ConfigPage: View {
             }
 
             if M.store.profiles.isEmpty {
-                ContentUnavailable("暂无配置，点击右上角“+”导入", "doc.text")
+                // 空状态不再只是一句话：导入之后还要干什么，由三步卡说完。
+                // 完成度全部由真实状态推导（见 GettingStartedCard），删掉配置会自动回到未完成。
+                VStack {
+                    Spacer(minLength: 0)
+                    // `Card` 内部是 `maxHeight: .infinity`：在这个上下都有 Spacer 的
+                    // 满高容器里它会一路撑满整窗，必须用 fixedSize 锁回内容高度。
+                    GettingStartedCard()
+                        .frame(maxWidth: 620)
+                        .fixedSize(horizontal: false, vertical: true)
+                    Spacer(minLength: 0)
+                }
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                .padding(DS.Layout.pageContentInset)
             } else {
                 ScrollView {
-                    LazyVGrid(
-                        columns: [GridItem(.adaptive(minimum: 280), spacing: DS.Spacing.l)],
-                        spacing: DS.Spacing.l
-                    ) {
-                        ForEach(M.store.profiles) { p in profileCard(p) }
+                    VStack(spacing: DS.Spacing.l) {
+                        // 接管还没开时，把三步清单压在配置列表上方：导入成功后
+                        // 「第 1 步变勾」就在原地可见，接管一开即退场。
+                        if GettingStartedCard.shouldShowAboveProfileList(M) {
+                            GettingStartedCard()
+                                .fixedSize(horizontal: false, vertical: true)
+                        }
+                        LazyVGrid(
+                            columns: [GridItem(.adaptive(minimum: 280), spacing: DS.Spacing.l)],
+                            spacing: DS.Spacing.l
+                        ) {
+                            ForEach(M.store.profiles) { p in profileCard(p) }
+                        }
                     }
                     // 顶距与 pageContentInset 节奏一致，避免卡片贴死 chrome 分割线
                     .padding(.horizontal, DS.Layout.pageContentInset)

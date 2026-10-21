@@ -47,9 +47,28 @@ struct Conn: Identifiable, Equatable {
     var upRate: Int64     // bytes/s (diffed)
     var downRate: Int64
     let start: String
+    // MARK: 决策链证据（来自 `metadata`，此前整体丢弃）
+    //
+    // 这些字段只供连接详情四段式展示，不参与任何判断逻辑；但它们是「这条连接
+    // 从哪来、怎么解析、走哪出去」的唯一证据源：
+    //   - `inboundName`：TUN 下 `sourceIP` 恒为 fake-ip 网关 198.18.0.0，
+    //     只有入站名能区分本机进程与局域网设备（见 `ConnOrigin`）；
+    //   - `dnsMode` / `sniffHost`：解析这一段；
+    //   - `remoteDestination`：域名连接的 `destinationIP` 常为空，真实地址在这里；
+    //   - `providerChain`：节点来自哪个订阅（`providerChains` 首个非空项）。
+    let inboundName: String
+    let inboundPort: String
+    let dnsMode: String
+    let sniffHost: String
+    let remoteDestination: String
+    let providerChain: String
     var category: String {  // direct / proxy / reject
-        if node == "DIRECT" || chain.contains("DIRECT") { return "direct" }
-        if node == "REJECT" || chain.contains("REJECT") { return "reject" }
+        // 只认叶节点（`chains[0]`）的精确名字。此前用的是 `chain.contains("DIRECT")`，
+        // 而 `chain` 是拼接后的 **String**——子串匹配会把名为 `DIRECT-HK` 的节点、
+        // 或域名叫 `direct.example.com` 的链路一并判成直连，在详情卡「出口」段直接
+        // 把结论写错。REJECT 同理（`REJECT-DROP`）。
+        if node == "DIRECT" { return "direct" }
+        if node == "REJECT" || node == "REJECT-DROP" { return "reject" }
         return "proxy"
     }
 }
@@ -71,6 +90,14 @@ struct GatewayDevice: Identifiable, Equatable {
     var totalDownload: Int64
     var firstSeen: Date
     var lastSeen: Date
+    // 身份（来自 `DeviceIdentityResolver`）。拿不到就是 nil——界面显示「未知」，
+    // 而不是留白让人以为坏了。解析与展示格式只有 `DeviceIdentity` 一处实现，
+    // 这里只持有结果，避免两份「（推测）」文案漂移。
+    var identity: DeviceIdentity? = nil
+    var mac: String { identity?.mac ?? "" }
+    var vendor: String { identity?.vendor ?? "" }
+    var deviceType: String { identity?.deviceType ?? "" }
+    var identitySummary: String { identity?.summary ?? "" }
     var durationString: String {
         let secs = Int(lastSeen.timeIntervalSince(firstSeen))
         if secs < 60 { return "\(secs)s" }

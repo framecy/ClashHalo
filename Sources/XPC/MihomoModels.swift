@@ -79,6 +79,9 @@ struct ConnectionItem: Decodable {
     let chains: [String]
     let rule: String
     let rulePayload: String
+    /// 节点来自哪个 proxy-provider，形如 `["US-BWH", "", ""]`；老内核/本地节点为
+    /// `[""]` 或缺失。可选是为了让缺字段的响应仍能整体解码。
+    let providerChains: [String]?
 }
 struct ConnMeta: Decodable {
     let network: String
@@ -89,6 +92,18 @@ struct ConnMeta: Decodable {
     let sourceIP: String?
     let destinationIP: String?
     let destinationPort: String?
+    // 以下字段 mihomo 一直都在返回（实测 25 个关键字段），此前被整体丢弃。
+    // 全部可选：老内核缺失时不能把整条连接解码成 nil。
+    /// 流量从哪条入站进来：`DEFAULT-TUN` / `DEFAULT-MIXED` / listener 的 `name`。
+    /// TUN 下 `sourceIP` 恒为 fake-ip 网关地址，只有它能区分本机与局域网设备。
+    let inboundName: String?
+    let inboundPort: String?
+    /// `fake-ip` / `normal` / `redir-host`
+    let dnsMode: String?
+    /// 嗅探还原出的真实域名，未嗅探时为空串。
+    let sniffHost: String?
+    /// 目标真实地址；`host` 走域名解析时 `destinationIP` 可能为空，值在这里。
+    let remoteDestination: String?
 }
 
 

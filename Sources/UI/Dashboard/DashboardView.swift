@@ -34,6 +34,18 @@ struct DashboardPage: View {
             }
             ScrollView {
                 VStack(alignment: .leading, spacing: DS.Spacing.l) {
+                    // 完全没有配置时先给一条能走通的路：与配置页空状态共用同一张三步卡，
+                    // 避免两处文案各写一遍后慢慢漂移。判据只看「有没有配置」——用
+                    // 「接管是否开启」判会因冷启动同步延迟先闪一张卡，并长期压住
+                    // 只开网关/临时关掉代理的老用户。其余卡片保持原样（现在都是 0）。
+                    if GettingStartedCard.shouldShowOnDashboard(M) {
+                        GettingStartedCard()
+                            .frame(maxWidth: 620, alignment: .leading)
+                            // `Card` 内部是 maxHeight: .infinity；显式锁内容高度，
+                            // 免得它在滚动容器里被拉长或压扁。
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+
                     // Row 1: Top stats bar (4 columns, height 64)
                     HStack(spacing: DS.Spacing.l) {
                         BarStat("总下载", fmtBytes(Double(M.downloadTotal)), "arrow.down.circle.fill", DS.Palette.download)
