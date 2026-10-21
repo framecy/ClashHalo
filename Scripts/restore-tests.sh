@@ -9,9 +9,10 @@
 #   bash Scripts/restore-tests.sh          物化缺失的套件（已存在的不动）
 #   bash Scripts/restore-tests.sh --check  只报告状态，不写文件
 #
-# 注意有两套从未入库：Tests/TUNLoopSentinel（移出之后才加的）与
-# Tests/KernelMemoryGuard。本脚本对它们无能为力，会明确列出——那两套目前
-# 只存在于写它们的那台机器上。
+# 注意：移出之后新增的套件从未入库（TUNLoopSentinel、KernelMemoryGuard、
+# TUNDNSAddress、ApplyDrift、ConfigWriteAudit、ConnOrigin、ProviderProtocols …），
+# 本脚本对它们无能为力，只能明确列出——那些套件目前只存在于写它们的那台机器上。
+# 具体是哪几套由脚本按实际状态报告，不要在这里写死数量。
 set -uo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"

@@ -11,6 +11,8 @@ struct SubscriptionsPage: View {
     @State private var fName = ""
     @State private var fURL = ""
     @State private var confirmDelete: String? = nil
+    /// provider 名 → 被多少个策略组 `use:` 引用。随 reload 一起刷新（读 config.yaml 行扫描）。
+    @State private var usageCounts: [String: Int] = [:]
 
     var body: some View {
         VStack(spacing: 0) {
@@ -90,6 +92,35 @@ struct SubscriptionsPage: View {
                             .buttonStyle(.borderless).foregroundColor(DS.Palette.error).help("删除")
                     }
                 }
+                // 协议分布：一眼看出这份订阅是什么货色（VLESS 61 · HYSTERIA2 25 · SS 2）。
+                // `proxies` 为 nil（provider 还没下载完）或为空时不显示——显示「0」会
+                // 被读成订阅坏了，而事实是还没拉取。
+                if let proxies = p.proxies, !proxies.isEmpty {
+                    let summary = ProviderProtocols.summarize(proxies.map { $0.type })
+                    if !summary.isEmpty {
+                        Text(summary.text)
+                            .font(.dsMono)
+                            .foregroundColor(.secondary)
+                            .lineLimit(1)
+                            .truncationMode(.tail)
+                            .help("按协议统计的节点数，合计 \(summary.total) 个")
+                    }
+                }
+                // 被几个策略组 use: 引用。N=0 时节点不会出现在代理节点页——
+                // 用户删掉引用后只会看到「订阅有节点、代理节点页却没有」，这里先说清。
+                let refs = usageCounts[p.name] ?? 0
+                if refs == 0 {
+                    Label("此订阅尚未被任何策略组使用，节点不会出现在代理节点页",
+                          systemImage: "exclamationmark.triangle.fill")
+                        .font(.dsCaption)
+                        .foregroundColor(DS.Palette.warn)
+                        .lineLimit(2)
+                        .fixedSize(horizontal: false, vertical: true)
+                } else {
+                    Text(ProviderUsage.summary(count: refs) + "，节点会自动进入这些组")
+                        .font(.dsCaption)
+                        .foregroundColor(.secondary)
+                }
                 if let s = p.subscriptionInfo, let total = s.Total, total > 0 {
                     let used = (s.Upload ?? 0) + (s.Download ?? 0)
                     let frac = min(1, Double(used) / Double(total))
@@ -143,6 +174,7 @@ struct SubscriptionsPage: View {
     }
 
     private func reload() async {
+        usageCounts = M.providerUsageCounts()
         guard let p = try? await M.api.fetchProviders() else { return }
         providers = p.providers.values.filter { $0.vehicleType == "HTTP" }.sorted { $0.name < $1.name }
     }

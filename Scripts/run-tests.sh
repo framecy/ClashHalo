@@ -156,6 +156,59 @@ add_suite systemproxy-tests \
   "$ROOT/Sources/XPC/HelperProtocol.swift" \
   "$ROOT/Tests/SystemProxy/main.swift"
 
+# 连接来源判定：TUN 下 sourceIP 恒为 fake-ip 网关 198.18.0.0（实测 98 条中 96 条），
+# 只看源地址会把本机与局域网设备混为一谈；inboundName 为空的老连接必须落到
+# 「未知来源」而不是空白。纯逻辑半边，供连接详情四段式卡片使用。
+add_suite connorigin-tests \
+  "$ROOT/Sources/Model/ConnOrigin.swift" \
+  "$ROOT/Tests/ConnOrigin/main.swift"
+
+# 订阅协议分布：订阅卡「VLESS 61 · HYSTERIA2 25 · SS 2」的口径。分项之和必须等于
+# 节点数（不能与卡上「N 节点」自相矛盾），折叠打的是协议种类数不是节点数，
+# proxies 为 nil/空时不得产出「0」这种看起来像订阅坏了的文案。
+add_suite providerprotocols-tests \
+  "$ROOT/Sources/Model/ProviderProtocols.swift" \
+  "$ROOT/Tests/ProviderProtocols/main.swift"
+
+# 连接页「一键独立制裁」的规则决策：这一键直接改用户 config.yaml。钉住
+# 「裸 IP 必须写 IP-CIDR 而不是 IP-CIDR6、fake-ip 用 remoteDestination 兜底、
+# 目标不明时置灰、指向不存在策略组时拒绝、已有等价规则不重复写盘」。
+add_suite quickrule-tests \
+  "$ROOT/Sources/Model/RuleNode.swift" \
+  "$ROOT/Sources/Model/QuickRule.swift" \
+  "$ROOT/Tests/QuickRule/main.swift"
+
+# 设备身份：arp 行解析（去前导零 / incomplete 跳过）、OUI 厂商表完整性
+# （每键 6 位 hex、无重复键——重复键在字典字面量里会运行时崩溃）、
+# 类型只来自厂商白名单或端口指纹且必须标注「推测」。
+add_suite deviceidentity-tests \
+  "$ROOT/Sources/Model/DeviceIdentity.swift" \
+  "$ROOT/Tests/DeviceIdentity/main.swift"
+
+# 入站端口转发：这一块是**直接暴露到网络的监听端口**。钉住 2026-10-20 实测的三条
+# 内核行为——不写 `listen:` 会绑 `*`（全网卡）、`bind-address` 对 listener 无效、
+# `network` 必须是数组；以及替换块只动 listeners、内联写法交调用方报错。
+add_suite inboundlistener-tests \
+  "$ROOT/Sources/Model/InboundListener.swift" \
+  "$ROOT/Tests/InboundListener/main.swift"
+
+# 订阅引用统计：`use:` 的块状/内联两种写法（真实 config.yaml 两种都在用）、
+# 只统计 proxy-groups 块、重复项去重。订阅卡据此显示「被 N 个策略组引用」，
+# N=0 时警示「节点不会出现在代理节点页」。
+add_suite providerusage-tests \
+  "$ROOT/Sources/Model/ProviderUsage.swift" \
+  "$ROOT/Sources/Core/YamlEditor/YamlScalar.swift" \
+  "$ROOT/Tests/ProviderUsage/main.swift"
+
+# 规则表单保存前的存在性校验：规则指向已被删除的策略组/节点时，内核 reload 会拒绝
+# 整份配置、事务回滚，用户只看到一条英文报错。这里钉住三件事：存在则放行、不存在则
+# 中文拦住并带上原目标名、**拿不到配置（内核未运行 → 空集合）时必须放行**——把
+# 「没有数据」当成「所有目标都失效」会让用户连改都改不了。
+add_suite rulevalidator-tests \
+  "$ROOT/Sources/Model/RuleNode.swift" \
+  "$ROOT/Sources/Core/RuleValidator/RuleValidator.swift" \
+  "$ROOT/Tests/RuleValidator/main.swift"
+
 # ── 执行 ───────────────────────────────────────────────────────────────
 
 FILTER=""
