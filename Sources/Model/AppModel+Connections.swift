@@ -176,6 +176,9 @@ extension AppModel {
         if let trip = loopTrip {
             Task { @MainActor in await self.handleTUNLoopTrip(trip) }
         }
+        // 网关设备身份：ARP 要 fork 进程，只能在网关模式下、按 20 s 限频刷新；
+        // 设备列表本身每拍都从缓存读，不受影响。
+        refreshDeviceIdentitiesIfNeeded(now: watchNow)
         // Opportunistic, and rate-limited inside: a wake or an offline→online
         // flip arms the watch, and the corpses that exposes should go back to
         // the kernel without first waiting for RSS to cross the guard's tier.
@@ -445,6 +448,9 @@ extension AppModel {
         var liveUp = [String: Int64](), liveDown = [String: Int64]()
         var liveConns = [String: Int]()
         var seenIDs = Set<String>()
+        // 设备类型的端口指纹：只有这 5 个端口有明确含义（见 DeviceIdentityResolver），
+        // 用位掩码累计，热路径上每次连接只多一次字典读写，不建 Set。
+        var identityMask = [String: Int]()
 
         for c in items {
             let srcIP = c.metadata.sourceIP ?? ""
@@ -458,6 +464,9 @@ extension AppModel {
             liveDown[srcIP, default: 0] += c.download
             liveConns[srcIP, default: 0] += 1
             gatewayConnBytes[c.id] = (srcIP, c.upload, c.download)
+            if let bit = Self.identityFingerprint(c.metadata.destinationPort) {
+                identityMask[srcIP, default: 0] |= bit
+            }
         }
 
         // Retire connections that were live last tick and are gone now, keeping
@@ -497,6 +506,17 @@ extension AppModel {
             dev.totalUpload = totalUp
             dev.totalDownload = totalDown
             if conns > 0 { dev.lastSeen = nowTime }
+            // 身份：MAC 来自 ARP（由 `refreshDeviceIdentitiesIfNeeded` 限频刷新），
+            // 类型再按端口指纹兜底。拿不到就留 nil，界面显示「未知」。
+            //
+            // 设备空闲那一拍既没有端口指纹、ARP 也可能老化了——此时**保留上一次
+            // 认出来的身份**，而不是把它擦成「未知」：用户看到的是「这台是谁」，
+            // 不是「这一拍查到了什么」。
+            let fresh = DeviceIdentityResolver.identify(
+                mac: gatewayMACs[ip],
+                observedPorts: Self.ports(fromMask: identityMask[ip] ?? 0))
+            let knownNothing = fresh.mac.isEmpty && fresh.deviceType.isEmpty
+            dev.identity = knownNothing ? (dev.identity ?? fresh) : fresh
             newGatewayDevices[ip] = dev
         }
 
@@ -510,6 +530,68 @@ extension AppModel {
         if newGatewayDevices != gatewayDevices {
             gatewayDevices = newGatewayDevices
         }
+    }
+
+    // MARK: - 设备身份（MAC / 厂商 / 类型）
+
+    /// 有明确身份含义的目标端口，顺序即位序号。
+    private static let identityFingerprintPorts = [5223, 5228, 7680, 5353, 1900]
+
+    private static func identityFingerprint(_ port: String?) -> Int? {
+        guard let p = port.flatMap({ Int($0) }) else { return nil }
+        guard let idx = identityFingerprintPorts.firstIndex(of: p) else { return nil }
+        return 1 << idx
+    }
+
+    private static func ports(fromMask mask: Int) -> Set<Int> {
+        var out = Set<Int>()
+        for (idx, port) in identityFingerprintPorts.enumerated() where mask & (1 << idx) != 0 {
+            out.insert(port)
+        }
+        return out
+    }
+
+    /// ARP 刷新间隔。`arp -an` 要 fork 一个进程（约 10–20 ms），绝不能每拍都跑；
+    /// 而 ARP 条目本身也只在设备上线/离线时才变，20 s 足够跟上。
+    static let arpRefreshInterval: TimeInterval = 20
+
+    /// 限频刷新 IP → MAC 缓存。仅在网关模式下运行，且同一时刻只有一个刷新在飞。
+    func refreshDeviceIdentitiesIfNeeded(now: Date) {
+        guard gatewayModeOn, !arpRefreshInFlight else { return }
+        guard now.timeIntervalSince(lastARPRefreshAt) >= Self.arpRefreshInterval else { return }
+        arpRefreshInFlight = true
+        lastARPRefreshAt = now
+        Task { [weak self] in
+            let map = await Task.detached(priority: .utility) { Self.readARPMap() }.value
+            guard let self else { return }
+            self.arpRefreshInFlight = false
+            guard let map else { return }
+            // ARP 表只覆盖同网段最近通信过的设备；跨三层网关时查不到，属正常。
+            // 上限保护：一张局域网 ARP 表不该把内存撑大。
+            self.gatewayMACs = map.count > 1024 ? [:] : map
+        }
+    }
+
+    /// 解析 `/usr/sbin/arp -an`。单独成函数是为了能在后台线程调用。
+    nonisolated static func readARPMap() -> [String: String]? {
+        let proc = Process()
+        proc.executableURL = URL(fileURLWithPath: "/usr/sbin/arp")
+        proc.arguments = ["-an"]
+        let pipe = Pipe()
+        proc.standardOutput = pipe
+        proc.standardError = FileHandle.nullDevice
+        do { try proc.run() } catch { return nil }
+        let data = pipe.fileHandleForReading.readDataToEndOfFile()
+        proc.waitUntilExit()
+        guard proc.terminationStatus == 0,
+              let text = String(data: data, encoding: .utf8) else { return nil }
+        var map: [String: String] = [:]
+        for line in text.split(separator: "\n") {
+            if let entry = DeviceIdentityResolver.parseARPLine(String(line)) {
+                map[entry.ip] = entry.mac
+            }
+        }
+        return map
     }
 
     /// mihomo fake-ip pool is 198.18.0.0/15 by default.

@@ -2067,6 +2067,10 @@ extension AppModel {
             tunStateSettleUntil = .distantPast
             cancelTUNDataPlaneProbe(resetHealth: true)
         }
+        // 记录本次切换是否走了「重启内核」路径：只有它能决定最终提示里该说
+        // 「热切换，未断流」还是「经重启重建」。仅影响文案，不参与任何时序判断。
+        var usedRestartPath = false
+
         if want && !reachable {
             showToast("正在启动核心以启用 TUN…")
             // TUN needs root. Verify helper before forcing isRoot — a stale
@@ -2200,7 +2204,10 @@ extension AppModel {
                 }
             }
 
-            showToast("正在以 Root 权限重启核心…")
+            // 断流预告：这条路径会 stop+start 内核，现有连接会全部断开。文案必须
+            // 说在前面，用户才有机会取消（与 PATCH 热切换的「未断流」形成对照）。
+            usedRestartPath = true
+            showToast("正在以 Root 权限重启内核并重建隧道（约数秒），现有连接会中断…")
             // Bring TUN up as part of the kernel's own initialization rather than
             // PATCHing it in afterwards. mihomo answers `PATCH /configs` with 200
             // before it decides whether it can apply the change, and an update
@@ -2380,7 +2387,8 @@ extension AppModel {
                 // comes up during kernel init, then re-derive from reality.
                 if allowRestartFallback {
                     logKernel("TUN 首次 PATCH 未生成 utun，回退到持久化+重启路径重试…")
-                    showToast("正在重启核心以启用 TUN…")
+                    usedRestartPath = true
+                    showToast("热切换未生成隧道，正在重启内核重建（约数秒），现有连接会中断…")
                     engine.persistTunState(enabled: true, device: pinnedTunDevice)
                     // Same blackout window as the root switch above.
                     await withSystemProxySuspended("TUN 重启重试") {
@@ -2476,7 +2484,8 @@ extension AppModel {
                 // No auto-stopEngine when both proxy faces are off — keep the core
                 // warm so re-enabling TUN is a PATCH, not a full root restart.
                 if want {
-                    showToast("TUN 模式已开启", kind: .ok)
+                    showToast(usedRestartPath ? "TUN 模式已开启（经重启内核重建隧道）"
+                                              : "TUN 模式已开启（热切换，未断流）", kind: .ok)
                     // Gateway rides on TUN: if a teardown took it down with the
                     // tunnel, bring it back now that the tunnel is up again.
                     await restoreGatewayAfterTUNIfPending()
@@ -3753,6 +3762,125 @@ extension AppModel {
         } catch {
             if let b = backup { await restoreConfigSnapshot(b, at: path) }
             showToast("保存失败，已回滚：\(error.localizedDescription)", kind: .error)
+            return false
+        }
+    }
+
+    // MARK: - 端口转发（入站 listeners）
+
+    /// 读当前配置里的 `listeners:` 块。解析口径全在 `InboundListenerStore`，
+    /// 这里只负责取文件内容——不引入第二套 YAML 理解。
+    func inboundListeners() -> [InboundListener] {
+        guard let text = try? String(contentsOfFile: engine.configFilePath, encoding: .utf8) else { return [] }
+        return InboundListenerStore.parse(from: text)
+    }
+
+    /// 每个 proxy-provider（订阅）被多少个策略组的 `use:` 引用。
+    /// 解析口径在 `ProviderUsage`（纯逻辑 + 回归套件），这里只读文件。
+    func providerUsageCounts() -> [String: Int] {
+        guard let text = try? String(contentsOfFile: engine.configFilePath, encoding: .utf8) else { return [:] }
+        return ProviderUsage.groupReferences(in: text)
+    }
+
+    /// 已被其它功能占用的端口 → 可读原因。端口转发撞上这些端口会互相打架，
+    /// 而 `mihomo -t` 查不出来（它只校验配置语义，不校验端口是否已被监听）。
+    func reservedInboundPorts() -> [Int: String] {
+        var map: [Int: String] = [:]
+        let cfg = engine.readConfigFile() ?? [:]
+        func add(_ key: String, _ label: String) {
+            if let n = cfg[key] as? Int ?? (cfg[key] as? String).flatMap({ Int($0) }), n > 0 {
+                map[n] = label
+            }
+        }
+        add("mixed-port", "混合端口")
+        add("socks-port", "SOCKS 端口")
+        add("port", "HTTP 端口")
+        add("redir-port", "Redir 端口")
+        add("tproxy-port", "TProxy 端口")
+        // 控制端口：external-controller 形如 127.0.0.1:9090
+        if let ctrl = cfg["external-controller"] as? String,
+           let port = Int(ctrl.split(separator: ":").last ?? ""), port > 0 {
+            map[port] = "内核控制端口"
+        }
+        return map
+    }
+
+    /// 端口被哪个进程监听（用于「端口冲突要说清是谁占了」）。查不到返回 nil。
+    nonisolated static func portOwnerDescription(_ port: Int) -> String? {
+        let proc = Process()
+        proc.executableURL = URL(fileURLWithPath: "/usr/sbin/lsof")
+        proc.arguments = ["-nP", "-iTCP:\(port)", "-sTCP:LISTEN", "-F", "cn"]
+        let pipe = Pipe()
+        proc.standardOutput = pipe
+        proc.standardError = FileHandle.nullDevice
+        do { try proc.run() } catch { return nil }
+        let data = pipe.fileHandleForReading.readDataToEndOfFile()
+        proc.waitUntilExit()
+        let text = String(data: data, encoding: .utf8) ?? ""
+        let command = text.split(separator: "\n")
+            .first { $0.hasPrefix("c") }
+            .map { String($0.dropFirst()) }
+        return command
+    }
+
+    /// 写 `listeners:` 块并热重载。
+    ///
+    /// 事务与订阅保存一致：备份 → 写盘 → `mihomo -t` 校验 → reload → 任一步失败回滚。
+    /// 不新写裸保存：这个块直接决定哪些端口对网络开放，写坏了是安全问题。
+    ///
+    /// 采用完成回调而不是 async 返回值，是因为串行化必须走 `withEngineBusy`——它是
+    /// fire-and-forget（内部分派 Task），拿不到 body 的返回值。抢锁失败时补一次
+    /// `onFinished(false)`，避免调用方的界面停在「保存中」。
+    func saveInboundListeners(_ listeners: [InboundListener], onFinished: ((Bool) -> Void)? = nil) {
+        let path = engine.configFilePath
+        guard let current = try? String(contentsOfFile: path, encoding: .utf8) else {
+            showToast("读取配置失败，未保存", kind: .error)
+            onFinished?(false)
+            return
+        }
+        guard let next = InboundListenerStore.replaceBlock(in: current, with: listeners) else {
+            showToast("配置里的 listeners 写法无法安全修改（内联数组或重复块），请先在 YAML 里改成块状写法", kind: .error)
+            onFinished?(false)
+            return
+        }
+        guard next != current else { onFinished?(true); return }   // 无变化：不写盘、不重载
+
+        let started = withEngineBusy("正在应用端口转发…") {
+            let ok = await self.commitInboundListeners(next, backup: current, path: path,
+                                                       isEmpty: listeners.isEmpty)
+            onFinished?(ok)
+        }
+        if !started { onFinished?(false) }
+    }
+
+    private func commitInboundListeners(_ next: String, backup: String, path: String,
+                                        isEmpty: Bool) async -> Bool {
+        do {
+            try next.write(toFile: path, atomically: true, encoding: .utf8)
+        } catch {
+            showToast("保存失败：\(error.localizedDescription)", kind: .error)
+            return false
+        }
+        // config.yaml 里有 tailnet auth-key 明文，沿用 0600 承诺。
+        try? FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: path)
+
+        persistTunStateForReload()
+        if let err = await engine.validateConfig() {
+            try? backup.write(toFile: path, atomically: true, encoding: .utf8)
+            noteConfigContentChanged()
+            showToast("转发配置无效，已回滚：\(err)", kind: .error)
+            return false
+        }
+        do {
+            try await api.reloadConfig(path: path)
+            await refreshConfigs()
+            noteConfigContentChanged()
+            showToast(isEmpty ? "端口转发已清空" : "端口转发已保存并重载", kind: .ok)
+            return true
+        } catch {
+            try? backup.write(toFile: path, atomically: true, encoding: .utf8)
+            noteConfigContentChanged()
+            showToast("重载失败，已回滚：\(error.localizedDescription)", kind: .error)
             return false
         }
     }

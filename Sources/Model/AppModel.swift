@@ -143,6 +143,11 @@ struct SystemProxyStatus: Equatable {
     @Published var uploadTotal: Int64 = 0
     @Published var downloadTotal: Int64 = 0
     @Published var gatewayDevices: [String: GatewayDevice] = [:]
+    /// IP → 归一化 MAC，来自 `arp -an`（限频刷新，见 `refreshDeviceIdentitiesIfNeeded`）。
+    /// 不发布：设备列表本身是 `@Published`，身份跟着设备一起刷新。
+    var gatewayMACs: [String: String] = [:]
+    var arpRefreshInFlight = false
+    var lastARPRefreshAt: Date = .distantPast
     /// Last-seen absolute byte counts for every *gateway client* connection,
     /// keyed by connection id. Kept separately from `prevConnBytes` on purpose:
     /// that dictionary is capped, trimmed and cleared by the memory guards, and
@@ -751,6 +756,17 @@ struct SystemProxyStatus: Equatable {
         // deterministically. All these engine fields are low-frequency (uptimeSec
         // is never ticked), so this is not a per-frame re-render source.
         engine.objectWillChange
+            .sink { [weak self] in self?.objectWillChange.send() }
+            .store(in: &cancellables)
+
+        // Same reasoning for the profile store: `store.profiles` / `activeID` are
+        // rendered through `@EnvironmentObject AppModel` on the config page and on
+        // the dashboard's getting-started card, but the store never published
+        // through this model — those views refreshed only when some unrelated
+        // AppModel publish happened to coincide (a toast, a tick). Importing a
+        // profile could therefore leave the empty state on screen. Store writes
+        // are user-frequency (import / delete / activate), not per-frame.
+        store.objectWillChange
             .sink { [weak self] in self?.objectWillChange.send() }
             .store(in: &cancellables)
 
