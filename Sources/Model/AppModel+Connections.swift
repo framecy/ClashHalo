@@ -444,7 +444,10 @@ extension AppModel {
         let hasBaseline = lastGatewaySampleAt != .distantPast
         lastGatewaySampleAt = nowTime
 
-        let localIPs = Set(NetScanner.interfaces().flatMap { $0.ipv4 })
+        // 本机地址集合这一拍只采一次，同时发布给「来源」列/来源判定复用
+        // （逐行调 `getifaddrs` 是纯浪费）；等值短路避免每拍都触发视图刷新。
+        let localIPsThisTick = Set(NetScanner.interfaces().flatMap { $0.ipv4 })
+        if localIPs != localIPsThisTick { localIPs = localIPsThisTick }
         var liveUp = [String: Int64](), liveDown = [String: Int64]()
         var liveConns = [String: Int]()
         var seenIDs = Set<String>()
@@ -457,7 +460,7 @@ extension AppModel {
             guard !srcIP.isEmpty,
                   srcIP != "127.0.0.1",
                   srcIP != "::1",
-                  !localIPs.contains(srcIP),
+                  !localIPsThisTick.contains(srcIP),
                   !Self.isFakeIP(srcIP) else { continue }
             seenIDs.insert(c.id)
             liveUp[srcIP, default: 0] += c.upload
