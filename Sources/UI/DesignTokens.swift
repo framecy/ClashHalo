@@ -304,6 +304,53 @@ struct DSSegmentedControl<Value: Hashable>: View {
     }
 }
 
+/// 紧凑开关（32×18pt）。
+///
+/// 为什么不用系统 `Toggle(.switch)`：当前 macOS 的 `NSSwitch` 固有尺寸是
+/// **54×24pt**（2026-10-20 用原生 NSSwitch 离屏渲染实测，`intrinsicContentSize`
+/// 也是 54×24），滑块本身是扁胶囊。放进 236pt 宽的侧栏 footer、旁边只有 12pt
+/// 文字时，它比整行文字高出一大截，视觉上压过内容——这不是尺寸设置错误，
+/// 系统开关没有可调尺寸（`controlSize` 对它无效）。
+///
+/// 语义仍是「开关」：点击切换、开态填充 `onColor`、关态灰轨、禁用降透明。
+/// 状态由调用方持有（非乐观 UI：点完等真实状态回来才动），所以这里只要一个 action。
+struct DSCompactSwitch: View {
+    let isOn: Bool
+    var onColor: Color = DS.Palette.accent
+    var isEnabled: Bool = true
+    var accessibilityText: String = ""
+    let action: () -> Void
+
+    private let width: CGFloat = 32
+    private let height: CGFloat = 18
+    private let inset: CGFloat = 2
+
+    var body: some View {
+        Button(action: action) {
+            ZStack(alignment: isOn ? .trailing : .leading) {
+                Capsule(style: .continuous)
+                    .fill(isOn ? onColor : Color.secondary.opacity(0.22))
+                Circle()
+                    .fill(Color.white)
+                    .shadow(color: Color.black.opacity(0.18), radius: 1, x: 0, y: 0.5)
+                    .frame(width: height - inset * 2, height: height - inset * 2)
+                    .padding(inset)
+            }
+            .frame(width: width, height: height)
+            .animation(DS.Motion.micro, value: isOn)
+            .contentShape(Capsule(style: .continuous))
+        }
+        .buttonStyle(.plain)
+        .disabled(!isEnabled)
+        .opacity(isEnabled ? 1 : 0.55)
+        .accessibilityElement()
+        .accessibilityLabel(accessibilityText)
+        .accessibilityValue(isOn ? "已开启" : "已关闭")
+        .accessibilityAddTraits(.isButton)
+        .help(accessibilityText.isEmpty ? "" : (isOn ? "\(accessibilityText)：已开启" : "\(accessibilityText)：已关闭"))
+    }
+}
+
 /// Fixed 32pt menu selector. A popover list is used instead of SwiftUI `Menu`,
 /// whose AppKit button cell adds variable 24–33pt native chrome.
 struct DSMenuPicker<Value: Hashable>: View {
