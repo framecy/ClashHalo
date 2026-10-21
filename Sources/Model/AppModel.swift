@@ -143,6 +143,10 @@ struct SystemProxyStatus: Equatable {
     @Published var uploadTotal: Int64 = 0
     @Published var downloadTotal: Int64 = 0
     @Published var gatewayDevices: [String: GatewayDevice] = [:]
+    /// 本机所有非环回网卡地址（`getifaddrs`），随连接快照刷新、等值短路。
+    /// 连接「来源」判定（`ConnOriginClassifier`）要用它把「本机进程」与「局域网设备」
+    /// 分开；连接表可选「来源」列会逐行求值，不能每行调一次 `NetScanner.interfaces()`。
+    @Published var localIPs: Set<String> = []
     /// IP → 归一化 MAC，来自 `arp -an`（限频刷新，见 `refreshDeviceIdentitiesIfNeeded`）。
     /// 不发布：设备列表本身是 `@Published`，身份跟着设备一起刷新。
     var gatewayMACs: [String: String] = [:]

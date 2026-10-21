@@ -55,6 +55,19 @@ struct ConnOrigin: Equatable {
         }
     }
 
+    /// 连接表「来源」列用的短标签：`本机` / `局域网 · 192.168.1.33` / `外部 · 1.2.3.4` / `未知`。
+    ///
+    /// 与 `title(process:)` 的区别只有一个：表格列窄，本机不再跟进程名——进程有自己
+    /// 那一列，重复只会挤掉目标列的宽度。
+    var shortLabel: String {
+        switch kind {
+        case .local:    return "本机"
+        case .lan:      return "局域网 · \(peer)"
+        case .external: return "外部 · \(peer)"
+        case .unknown:  return "未知"
+        }
+    }
+
     /// 第二行：入站证据；未知来源且有源地址时补上源地址（那是它唯一的证据）。
     ///
     /// 局域网/外部不在副标题里重复回显地址——它已经在 `title` 里，重复只会挤占宽度。
