@@ -57,11 +57,11 @@ struct TailscalePage: View {
                     if M.engine.isBusy {
                         ProgressView().controlSize(.mini).scaleEffect(DS.Progress.miniScale)
                     }
-                    Toggle("", isOn: Binding(get: { M.tsEnabled },
-                                             set: { M.setTailscaleEnabled($0) }))
-                        .toggleStyle(.switch).labelsHidden()
-                        .disabled(M.engine.isBusy || M.tsSupported == false)
-                        .opacity(M.engine.isBusy ? 0.55 : 1)
+                    DSCompactSwitch(isOn: M.tsEnabled,
+                                    isEnabled: !M.engine.isBusy && (M.tsSupported != false),
+                                    accessibilityText: "Tailscale") {
+                        M.setTailscaleEnabled(!M.tsEnabled)
+                    }
                 }
                 .padding(.vertical, DS.Spacing.s)
 
@@ -638,7 +638,9 @@ struct TailscalePage: View {
                     .fixedSize(horizontal: false, vertical: true)
             }
             Spacer()
-            Toggle("", isOn: value).toggleStyle(.switch).labelsHidden()
+            DSCompactSwitch(isOn: value.wrappedValue, accessibilityText: label) {
+                value.wrappedValue.toggle()
+            }
         }
         .padding(.vertical, DS.Spacing.s)
     }

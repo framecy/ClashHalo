@@ -32,9 +32,11 @@ struct GeneralPage: View {
                             HStack {
                                 Text("显示策略组选择").font(.dsBody)
                                 Spacer()
-                                Toggle("", isOn: Binding(get: { M.menuBarGroups }, set: { M.menuBarGroups = $0 }))
-                                    .toggleStyle(.switch).labelsHidden()
-                                    .frame(width: DS.Layout.fieldTrailing, alignment: .trailing)
+                                DSCompactSwitch(isOn: M.menuBarGroups,
+                                                accessibilityText: "显示策略组选择") {
+                                    M.menuBarGroups.toggle()
+                                }
+                                .frame(width: DS.Layout.fieldTrailing, alignment: .trailing)
                             }
                             Text("开启后菜单栏面板内可逐组切换节点；策略组较多时可关闭以保持面板紧凑，节点切换仍可在「策略」页操作。")
                                 .font(.dsBody).foregroundColor(.secondary).padding(.top, DS.Spacing.s)
@@ -735,13 +737,12 @@ struct MenuBarPanel: View {
                     .controlSize(.mini)
                     .scaleEffect(DS.Progress.miniScale)
             }
-            Toggle("", isOn: isOn)
-                .toggleStyle(.switch)
-                .controlSize(.mini)
-                .labelsHidden()
-                .tint(accent ? DS.Palette.accent : DS.Palette.ok)
-                .disabled(busy)
-                .opacity(busy ? 0.55 : 1)
+            DSCompactSwitch(isOn: isOn.wrappedValue,
+                            onColor: accent ? DS.Palette.accent : DS.Palette.ok,
+                            isEnabled: !busy,
+                            accessibilityText: label) {
+                isOn.wrappedValue.toggle()
+            }
         }
     }
 
