@@ -5,8 +5,21 @@ struct RulesPage: View {
     @StateObject private var model = RuleEditorModel(targetFilePath: "")
     @State private var q = ""
     @State private var selection = Set<UUID>()
-    @State private var showingForm = false
-    @State private var editingNode: RuleNode? = nil
+    /// 弹窗目标。用 `.sheet(item:)` 而不是 `.sheet(isPresented:)`：
+    /// `RuleFormView` 的 `@State`（type/match/action…）是在 `init` 里赋初值的，
+    /// 而 SwiftUI 只会在**视图身份首次出现**时采用初值。用 isPresented 时弹窗内容
+    /// 身份不变，第一次如果开的是「添加规则」（match 为空），之后每次「编辑」都会
+    /// 沿用那次空值——这就是「编辑弹窗没带入原匹配内容」的根因。
+    /// 每次赋值生成新 UUID → 新身份 → 重新走 init。
+    struct RuleEditTarget: Identifiable {
+        let id = UUID()
+        let node: RuleNode?
+        /// 打开弹窗那一刻的真实目标名快照（策略组 + 节点 + 内置 + config.yaml 里的组）。
+        /// 用快照而不是每次求值：`AppModel.ruleTargetNames` 会读一次 config.yaml，
+        /// 不能放在 body / sheet 闭包的渲染路径上反复执行。
+        let knownTargets: Set<String>
+    }
+    @State private var editTarget: RuleEditTarget? = nil
 
     private func matches(_ r: RuleNode) -> Bool {
         let pg = r.proxyGroup ?? ""
@@ -62,8 +75,7 @@ struct RulesPage: View {
 
 
                 Button(action: {
-                    editingNode = nil
-                    showingForm = true
+                    editTarget = RuleEditTarget(node: nil, knownTargets: M.ruleTargetNames)
                 }) {
                     Label("添加规则", systemImage: "plus")
                 }
@@ -100,9 +112,13 @@ struct RulesPage: View {
         .onChange(of: M.configContentEpoch) { _ in
             reloadModel()
         }
-        .sheet(isPresented: $showingForm) {
-            RuleFormView(existingNode: editingNode, proxyGroups: M.groups.map { $0.name }) { newNode in
-                if editingNode != nil {
+        .sheet(item: $editTarget) { target in
+            // `knownTargets` 供保存前的存在性校验：规则引用了已被删除的策略组/节点时，
+            // 内核 reload 会拒绝整份配置（用户只看到一条英文报错），这里在表单里拦住。
+            RuleFormView(existingNode: target.node,
+                         proxyGroups: M.groups.map { $0.name },
+                         knownTargets: target.knownTargets) { newNode in
+                if target.node != nil {
                     model.updateNode(id: newNode.id, with: newNode)
                 } else {
                     model.addNode(newNode)
@@ -114,14 +130,10 @@ struct RulesPage: View {
 
     private func row(_ r: RuleNode) -> some View {
         HStack(spacing: DS.Spacing.s) {
-            Toggle("", isOn: Binding(
-                get: { r.isEnabled },
-                set: { _ in
-                    model.toggleNode(id: r.id)
-                    saveAndReloadKernel()
-                }
-            ))
-            .labelsHidden()
+            DSCompactSwitch(isOn: r.isEnabled, accessibilityText: "启用规则") {
+                model.toggleNode(id: r.id)
+                saveAndReloadKernel()
+            }
 
             Text(r.type.rawValue).font(.dsBodyMedium)
                 .padding(.horizontal, DS.Spacing.s - 2).padding(.vertical, 2)
@@ -144,8 +156,7 @@ struct RulesPage: View {
         .contentShape(Rectangle())
         .contextMenu {
             Button {
-                editingNode = r
-                showingForm = true
+                editTarget = RuleEditTarget(node: r, knownTargets: M.ruleTargetNames)
             } label: { Label("编辑", systemImage: "pencil") }
 
             Button {

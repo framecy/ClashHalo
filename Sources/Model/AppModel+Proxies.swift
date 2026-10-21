@@ -5,30 +5,12 @@ import Foundation
 
 extension AppModel {
     /// Parse the order of proxy-groups from the active profile's YAML text.
+    ///
+    /// 口径统一到 `ProviderUsage.groupNames(in:)`（同一套行扫描）：这里原先自带一份
+    /// 正则，规则表单的存在性校验又需要同一份「组名从哪来」的理解，两份实现迟早会漂。
+    /// 顺带的差异是现在会剥掉行尾注释——旧正则会把 `# 备注` 一起当成组名的一部分。
     private func parseProxyGroupsOrder(from yaml: String) -> [String] {
-        var order: [String] = []
-        guard let range = yaml.range(of: #"(?m)^proxy-groups:\s*$"#, options: .regularExpression) else {
-            return []
-        }
-        let sub = yaml[range.upperBound...]
-        var groupBlock = ""
-        if let endRange = sub.range(of: #"(?m)^\S+:"#, options: .regularExpression) {
-            groupBlock = String(sub[..<endRange.lowerBound])
-        } else {
-            groupBlock = String(sub)
-        }
-        let pattern = #"-\s*name:\s*["']?([^"'\n\r]+)["']?"#
-        if let regex = try? NSRegularExpression(pattern: pattern, options: []) {
-            let ns = groupBlock as NSString
-            let matches = regex.matches(in: groupBlock, options: [], range: NSRange(location: 0, length: ns.length))
-            for m in matches {
-                if m.numberOfRanges >= 2 {
-                    let name = ns.substring(with: m.range(at: 1)).trimmingCharacters(in: .whitespacesAndNewlines)
-                    order.append(name)
-                }
-            }
-        }
-        return order
+        ProviderUsage.groupNames(in: yaml)
     }
 
     func refreshProxies() async {
@@ -104,6 +86,33 @@ extension AppModel {
 
         if sortedGroups != groups { groups = sortedGroups }
         if ns != nodes { nodes = ns }
+    }
+
+    /// 规则的「目标」在配置里真实可用的名字集合：策略组 + 节点 + 内置策略 + config.yaml 里的组。
+    ///
+    /// 用途：规则表单保存前的存在性校验（`ValidationService.validate(node:knownTargets:)`）。
+    /// 注意目标既可以是策略组名，也可以是节点名（mihomo 允许规则直接指向节点），所以
+    /// `nodes` 必须一并算进去，否则会误伤这类规则。
+    ///
+    /// **为什么要读 config.yaml**：内核 `/proxies` 只反映**运行中**的配置。手改配置新增了
+    /// 策略组、还没 reload 时，新组不在 `/proxies` 里——只信内核的话，编辑那条刚手写的
+    /// 规则会被误判成「目标已失效」。规则最终写进的就是这份 config.yaml，它的组名也算数。
+    ///
+    /// **代价与调用约定**：会读一次盘（当前 ~34 KB）。只在**打开规则弹窗那一刻**调用并
+    /// 把结果存成快照，不要放进 `body` / sheet 闭包里反复求值。
+    ///
+    /// 拿不到任何一组名字（内核没起来 + 配置文件读不到）时返回空集合，调用方据此跳过校验
+    /// ——绝不能把「没有数据」当成「所有目标都不存在」。
+    var ruleTargetNames: Set<String> {
+        var names = Set(groups.map { $0.name })
+        names.formUnion(nodes.keys)
+        let path = engine.configFilePath
+        if !path.isEmpty, let yaml = try? String(contentsOfFile: path, encoding: .utf8) {
+            names.formUnion(ProviderUsage.groupNames(in: yaml))
+        }
+        guard !names.isEmpty else { return [] }
+        names.formUnion(["DIRECT", "REJECT", "REJECT-DROP", "PASS"])
+        return names
     }
 
     func select(group: String, name: String) {

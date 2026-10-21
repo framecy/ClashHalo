@@ -141,7 +141,16 @@ public final class ValidationService {
         }
     }
     
-    public func validate(node: RuleNode) -> ValidationResult {
+    /// 校验一条规则。
+    ///
+    /// - Parameter knownTargets: 当前配置里真实存在的规则目标名（策略组 + 节点 + 内置策略，
+    ///   见 `AppModel.ruleTargetNames`）。传 `nil` 或空集合表示「这一刻拿不到配置里的目标」
+    ///   （典型：内核没运行、`/proxies` 还没拉回来），此时**跳过**存在性校验——否则会在
+    ///   没有数据的时候把所有代理规则都判成失效，把本来能保存的规则也拦下来。
+    ///
+    /// 存在性校验的意义：规则引用一个已被删掉的策略组，`mihomo -t` / reload 会拒绝整份
+    /// 配置，事务回滚后用户只看到一条内核英文报错。这里提前在表单里用中文说清「重新选一个」。
+    public func validate(node: RuleNode, knownTargets: Set<String>? = nil) -> ValidationResult {
         if node.type == .match { return .valid } // MATCH 兜底规则无需 match 参数
         
         let strat = strategy(for: node.type)
@@ -149,8 +158,12 @@ public final class ValidationService {
         if !res.isValid { return res }
         
         if node.action == .proxy {
-            if (node.proxyGroup ?? "").trimmingCharacters(in: .whitespaces).isEmpty {
+            let group = (node.proxyGroup ?? "").trimmingCharacters(in: .whitespaces)
+            if group.isEmpty {
                 return .invalid("策略为 PROXY 时，必须关联目标代理组")
+            }
+            if let known = knownTargets, !known.isEmpty, !known.contains(group) {
+                return .invalid("目标「\(group)」在当前配置里已不存在，请重新选择")
             }
         }
         return .valid
