@@ -2,13 +2,24 @@
 
 本项目所有重要变更记录于此。格式参考 [Keep a Changelog](https://keepachangelog.com/)，版本遵循语义化版本。
 
+## [1.4.1] - 2026-10-22
+
+### Added
+
+- **连接表「来源」列**：`本机` / `局域网 · 192.168.1.33` / `外部 · 1.2.3.4` / `未知`，悬停可看完整证据（归属 + 入站名）。判定与连接详情同一套 `ConnOrigin`（TUN 下 `sourceIP` 恒为 fake-ip 网关，不能只看它）。列**常驻**而不是可开关：条件列在 `TableColumnBuilder` 里需要 macOS 14.4+（本工程部署目标 14.0），而 `TableColumnCustomization` 会多出一条「表头右键」控制路径，与自绘开关不同步。
+- 本机网卡地址集合收敛为 `AppModel.localIPs`（随连接快照刷新、等值短路），表格逐行判定不再调 `getifaddrs`。
+
+### Changed
+
+- 连接表单元格抽成 `@ViewBuilder` 方法、表格本体抽成独立属性：`Table` 的列构造器是巨型表达式，加到 8 列会触发编译器 `unable to type-check in reasonable time`。行为不变。
+
 ## [1.4.0] - 2026-10-22
 
 > 对标优化批次：连接决策链、一键规则、端口转发、设备身份、订阅统计、上手引导，外加两处规则表单修复。**Helper 仍为 1.0.30，本次未改协议，无需重装**。
 
 ### Added
 
-- **连接详情四段式决策链**：来源 / 解析 / 规则 / 出口，用上内核 `/connections` 里原本被丢弃的元数据（`inboundName` / `dnsMode` / `sniffHost` / `providerChains` / `uid` / `remoteDestination`）。判定逻辑在 `ConnOrigin`（纯逻辑，`connorigin-tests`）。方案里「连接表可选『来源』列」这一小项**未做**，表格列保持不变。
+- **连接详情四段式决策链**：来源 / 解析 / 规则 / 出口，用上内核 `/connections` 里原本被丢弃的元数据（`inboundName` / `dnsMode` / `sniffHost` / `providerChains` / `uid` / `remoteDestination`）。判定逻辑在 `ConnOrigin`（纯逻辑，`connorigin-tests`）。
 - **一键「独立制裁」**：连接右键「让 `<host>` 直连」/「拉黑 `<host>`（显示受影响连接数）」/「这个 App 走当前策略组」，决策在 `QuickRule`，写盘复用既有事务（备份 → `mihomo -t` → reload → 失败整体回滚）。同匹配的旧规则会被替换而不是并列。
 - **端口转发（入站 listeners）**：网络 → 入站新增转发管理；默认只监听 `127.0.0.1`（「允许局域网访问」需显式勾选）；改端口走 `PUT /configs?force=true` 热生效，不重启内核、不打断其它转发。写盘约束在 `InboundListener`（`network` 必须是数组、`bind-address` 对 listener 无效、不写 `listen:` 会绑全网卡）。
 - **局域网设备身份**：网关设备卡显示 MAC / 厂商 / 推测类型，`arp -an` 取不到或跨网段时显示「未知」而不是留白；类型只来自厂商白名单或端口指纹（`DeviceIdentity`，「推测」措辞写死）。
