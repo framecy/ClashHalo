@@ -2,7 +2,7 @@
 
 本文件给后续 AI 编码代理使用。进入本仓库后，先读本文件，再按需读 `README.md`、`CHANGELOG.md` 和相关源码。
 
-当前主干：`main`，产品版本 **v1.3.8**（`MARKETING_VERSION`，与 `Sources/Info.plist` 的 `CFBundleShortVersionString` 同源），Helper **1.0.30**（`kSharedHelperVersion`，`Helper-Info.plist` 的 `CFBundleVersion` 同值）。当前构建号 **130**（`CURRENT_PROJECT_VERSION`，`make.sh` 每次打包自增）。
+当前主干：`main`，产品版本 **v1.4.0**（`MARKETING_VERSION`，与 `Sources/Info.plist` 的 `CFBundleShortVersionString` 同源），Helper **1.0.30**（`kSharedHelperVersion`，`Helper-Info.plist` 的 `CFBundleVersion` 同值）。当前构建号 **131**（`CURRENT_PROJECT_VERSION`，`make.sh` 每次打包自增）。
 
 ## 项目概览
 
@@ -61,7 +61,7 @@ bash make.sh
 ### 回归测试
 
 ```bash
-bash Scripts/run-tests.sh                # 13 套全跑，末尾出矩阵
+bash Scripts/run-tests.sh                # 全部套件（当前 24 套）
 bash Scripts/run-tests.sh --only tun     # 只跑名字含 tun 的
 bash Scripts/restore-tests.sh            # 套件文件缺失时物化
 ```
@@ -72,6 +72,7 @@ bash Scripts/restore-tests.sh            # 套件文件缺失时物化
 - `Tests/` **不在版本管理里**（`.gitignore`，自 `291a239` 起移出），新克隆的仓库必须先 `restore-tests.sh` 才能跑回归；脚本会明确列出哪些套件连历史里都取不到、只存在于写它的那台机器上。
 - 新增可测的纯逻辑半边（无 UI、无进程管理、无 MainActor）时，**必须**在 `Scripts/run-tests.sh` 里 `add_suite` 登记一条：未登记的套件等于不存在的套件。`TUNLoopSentinel` 就长期漏登记、从未被跑过。
 - 断言不得依赖开发机的实时状态（网卡、网段、路由、已装应用）。`RouteGuard` 里那条「识别出 en0 的 10.1.1.0/24」曾让整套测试在换网络后必红——测的是笔记本，不是产品。
+- 规则编辑相关的两套：`rulevalidator-tests` 钉住目标存在性校验的三种状态（存在则放行 / 不存在则中文拦住并带上原目标名 / 拿不到数据必须放行）；`providerusage-tests` 同时钉住 `ProviderUsage.groupNames` 的扫描口径（只认 `proxy-groups:` 块里 2 空格缩进的 `- name:`，不把 provider/rules 里的同名文本算进来）。
 
 ## 运行时数据与系统影响
 
@@ -99,6 +100,9 @@ bash Scripts/restore-tests.sh            # 套件文件缺失时物化
 - 任何 `engine.isBusy = true` 后的 `await` 路径都必须 `defer { engine.isBusy = false }`，防止 `CancellationError` 把锁永久卡死（见 `handleNetworkChange`）
 - `MihomoClient.applyController(fromConfigAt:)` 从当前 `config.yaml` 发现 controller；不要硬编码 `127.0.0.1:9092`
 - 配置编辑大量使用轻量行扫描，不是完整 YAML parser。改动时保持 `EngineControl.readConfigFile`、`proxyProviders`、`ConfigStore.preview`、`YamlRuleASTEngine` 行为一致
+- **策略组名的唯一解析是 `ProviderUsage.groupNames(in:)`**（`proxy-groups:` 块行扫描，剥引号与行尾注释）。`parseProxyGroupsOrder`（代理组排序）与规则表单的目标校验都复用它；不要再写第三套「组名从哪来」的正则——旧实现会把行尾 `# 备注` 一起吃进组名
+- **规则目标存在性校验的唯一入口是 `ValidationService.validate(node:knownTargets:)`**，目标名集合唯一来源 `AppModel.ruleTargetNames`（内核 `/proxies` 的策略组与节点 + `config.yaml` 里的组 + 内置 `DIRECT`/`REJECT`/`REJECT-DROP`/`PASS`）。判定权威是**写盘的目标文件**而不只是运行态：手改 `config.yaml` 新增组、还没 reload 时也要能保存。三条不可丢的边界：①集合为空 = 拿不到数据 → **跳过**校验（不是「全都失效」）；②目标可以是节点名（mihomo 允许规则直接指向节点）；③只有 `PROXY` 动作需要目标，`DIRECT`/`REJECT` 上的残留组名不参与判定
+- `AppModel.ruleTargetNames` 会**读一次 `config.yaml`**（约 34 KB 行扫描）。只在**打开规则弹窗那一刻**求值并存成快照（`RulesPage.RuleEditTarget` / `ConnectionsPage.RuleEditContext` 的 `knownTargets`），禁止放进 `body` / sheet 闭包——连接页 1.5 s 一轮刷新会把它变成反复读盘
 - `ConfigStore` 把订阅 URL 存 Keychain，manifest 会清空 URL。禁止把真实订阅/节点/token 写进仓库
 
 ## 性能 / 动效 / 反馈约定
@@ -191,6 +195,7 @@ bash Scripts/restore-tests.sh            # 套件文件缺失时物化
 - 侧栏：自绘导航（不用 `List(.sidebar)`）；图标一律 outline + `monochrome` + 固定 `lg` 槽；导航与 footer 共用 `pageContentInset` + 同结构图标列
 - 网络拓扑角色色用 `rolePhysical` / `roleTailscale` / `roleZerotier` / `roleOray` / `roleOther`（`proxyTun` 用 `accent`）
 - 复用 `PageToolbar`（全站唯一顶栏实现）、`Card`、form rows；工具型密度，避免营销式 hero
+- **带初值的表单弹窗必须用 `.sheet(item:)`**：`RuleFormView` 之类把 `@State` 初值写在 `init` 里，而 SwiftUI 只在**视图身份首次出现**时采用初值；用 `.sheet(isPresented:)` 复用同一身份时，第一次若开的是「添加」（空值），之后每次「编辑」都会沿用那次空值——这正是 2026-10-20 规则页「编辑弹窗没带入原匹配内容」的根因。结构体既是弹窗目标就顺手带上 `Identifiable`（每次展示生成新 `UUID()`）。弹窗若要传「打开那一刻的快照」（如 `knownTargets`），放这个目标结构里，别在 content 闭包里现算
 - pre-commit 会警告 raw `.font(.system(size: N))` 与字体阶梯漂移
 
 ## 版本与发布
