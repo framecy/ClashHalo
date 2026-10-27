@@ -145,6 +145,81 @@ enum ProviderUsage {
         return text.isEmpty ? nil : text
     }
 
+    /// 找出 `proxy-groups:` 块里**没有任何节点来源**的策略组名。
+    ///
+    /// 节点来源 = `proxies:`（内联数组或块状列表）或 `use:`（内联数组或块状列表）
+    /// 至少有一个非空条目。删除订阅后，只靠被删 provider 供血的组会变成空 select，
+    /// `mihomo -t` 校验会失败——但内核报错是英文语法错，用户看不出「组空了」这个
+    /// 真正原因。调用方（`saveProxyProviders`）在写盘后、校验前用它给出中文解释。
+    ///
+    /// 口径与 `groupReferences` 完全一致：同一份行扫描，不解析锚点/多行标量，
+    /// 看不懂的行就跳过。返回顺序即文件顺序。
+    static func groupsMissingMembers(in yaml: String) -> [String] {
+        var missing: [String] = []
+        var inGroups = false
+        var currentName: String?
+        var currentHasMembers = false
+        var inUseBlock = false
+        var inProxiesBlock = false
+
+        func commit() {
+            if let name = currentName, !currentHasMembers { missing.append(name) }
+            currentName = nil
+            currentHasMembers = false
+            inUseBlock = false
+            inProxiesBlock = false
+        }
+
+        for raw in yaml.components(separatedBy: "\n") {
+            let trimmed = raw.trimmingCharacters(in: .whitespaces)
+            let isTopLevelKey = !raw.hasPrefix(" ") && !raw.hasPrefix("\t")
+                && !trimmed.isEmpty && !trimmed.hasPrefix("-") && !trimmed.hasPrefix("#")
+
+            if isTopLevelKey {
+                if inGroups { commit() }
+                inGroups = trimmed.hasPrefix("proxy-groups:")
+                continue
+            }
+            guard inGroups else { continue }
+            if trimmed.isEmpty || trimmed.hasPrefix("#") { continue }
+
+            // 组边界：2 空格缩进的 `- name:`
+            if raw.hasPrefix("  - ") || raw.hasPrefix("  -\t") {
+                commit()
+                let body = String(trimmed.dropFirst(2)).trimmingCharacters(in: .whitespaces)
+                if body.hasPrefix("name:") {
+                    currentName = scalar(String(body.dropFirst("name:".count)))
+                }
+                continue
+            }
+
+            // 组内字段：4 空格缩进
+            guard currentName != nil, raw.hasPrefix("    ") else { continue }
+            if inUseBlock || inProxiesBlock {
+                if trimmed.hasPrefix("- ") {
+                    currentHasMembers = true   // 块状列表里有一个条目就够
+                    continue
+                }
+                inUseBlock = false
+                inProxiesBlock = false         // 新字段出现，列表块结束
+            }
+            guard let colon = trimmed.firstIndex(of: ":") else { continue }
+            let key = String(trimmed[trimmed.startIndex..<colon]).trimmingCharacters(in: .whitespaces)
+            // include-all 家族：成员来自全部节点/provider，本身就有来源，
+            // 不认会把合法配置误判成空组、导致所有订阅保存被回滚。
+            if key.hasPrefix("include-all") { currentHasMembers = true; continue }
+            guard key == "use" || key == "proxies" else { continue }
+            let value = String(trimmed[trimmed.index(after: colon)...]).trimmingCharacters(in: .whitespaces)
+            if value.isEmpty {
+                if key == "use" { inUseBlock = true } else { inProxiesBlock = true }
+            } else {
+                if parseInlineList(value).isEmpty == false { currentHasMembers = true }
+            }
+        }
+        if inGroups { commit() }
+        return missing
+    }
+
     /// 展示文案：`被 2 个策略组引用` / `未被任何策略组引用`。
     static func summary(count: Int) -> String {
         count > 0 ? "被 \(count) 个策略组引用" : "未被任何策略组引用"
