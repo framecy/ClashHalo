@@ -485,6 +485,7 @@ import SystemConfiguration
             if let b = v as? Bool { return b ? "true" : "false" }
             if let i = v as? Int { return "\(i)" }
             if let d = v as? Double { return "\(Int(d))" }
+            if let s = v as? String { return Self.quoteYAMLScalarIfNeeded(s) }
             return "\(v)"
         }
         
@@ -508,11 +509,35 @@ import SystemConfiguration
         writeConfig(lines.joined(separator: "\n"), to: path)
     }
 
+    /// Quote a string scalar when the raw text would not survive a round-trip
+    /// through YAML as a plain scalar. The motivating case is Gateway’s
+    /// `bind-address: "*"` — a bare `*` starts an alias
+    /// node, which is a **parse error**, so every Gateway apply wrote an
+    /// unparseable config.yaml and the reload (then every kernel restart)
+    /// failed. Quote anything whose first character is a YAML indicator, plus
+    /// a few mid-string traps.
+    static func quoteYAMLScalarIfNeeded(_ s: String) -> String {
+        let indicators: Set<Character> = ["*", "&", "!", "|", ">", "%", "@", "`",
+                                          "[", "]", "{", "}", ",", "#", "\"", "'",
+                                          "?", ":", "-", " ", "\t"]
+        let needsQuote = s.isEmpty
+            || indicators.contains(s.first!)
+            || s.contains(": ")
+            || s.contains(" #")
+            || s.hasSuffix(":")
+        guard needsQuote else { return s }
+        let escaped = s
+            .replacingOccurrences(of: "\\", with: "\\\\")
+            .replacingOccurrences(of: "\"", with: "\\\"")
+        return "\"\(escaped)\""
+    }
+
     private func setNestedScalars(parent: String, kv: [String: Any], in lines: inout [String]) {
         func render(_ v: Any) -> String {
             if let b = v as? Bool { return b ? "true" : "false" }
             if let i = v as? Int { return "\(i)" }
             if let d = v as? Double { return "\(Int(d))" }
+            if let s = v as? String { return Self.quoteYAMLScalarIfNeeded(s) }
             if let arr = v as? [Any] {
                 return "[" + arr.map { "\($0)" }.joined(separator: ", ") + "]"
             }
@@ -686,7 +711,12 @@ import SystemConfiguration
         }
 
         // 4. Sync the primary group's use: block.
-        if let pgIdx = lines.firstIndex(where: { $0.hasPrefix("proxy-groups:") }) {
+        // 只在**纯新增/编辑**路径做同步。删除路径（deleted 非空）绝不能重注入：
+        // 这里会把第一个策略组的 use: 整块重写为「当前全部 provider」，用户按订阅
+        // 拆分的组结构（组 A 只用订阅 1、组 B 只用订阅 2）会被静默合并——删除订阅
+        // 时其他组的引用清理已由第 3 步按名精确完成，不需要也不应该在这里动任何
+        // 组的 use:。
+        if deleted.isEmpty, let pgIdx = lines.firstIndex(where: { $0.hasPrefix("proxy-groups:") }) {
             if let firstGroupIdx = lines[(pgIdx+1)...].firstIndex(where: { $0.trimmingCharacters(in: .whitespaces).hasPrefix("- name:") }) {
                 // Find where this group ends
                 var nextGroupIdx = lines.count
