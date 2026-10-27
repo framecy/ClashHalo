@@ -3747,6 +3747,19 @@ extension AppModel {
         let backup = try? String(contentsOfFile: path, encoding: .utf8)
         engine.writeProxyProviders(providers)
         persistTunStateForReload()    // preserve running TUN across reload
+        // 空组预检：删除订阅后，只靠它供血的策略组会失去全部节点来源，
+        // mihomo -t 的英文语法错掩盖了「组空了」这个真正原因。先用行扫描
+        // 说人话，再让内核校验兜底其余语义错误。
+        if let text = try? String(contentsOfFile: path, encoding: .utf8) {
+            let empty = ProviderUsage.groupsMissingMembers(in: text)
+            if let first = empty.first {
+                if let b = backup { await restoreConfigSnapshot(b, at: path) }
+                let list = empty.joined(separator: "、")
+                showToast("操作已回滚：策略组「\(first)」在这次改动后没有任何节点来源（proxies / use 均为空）。请先编辑该策略组或保留订阅；涉及：\(list)", kind: .error)
+                logKernel("[Subscriptions] 回滚：以下策略组将变为空组：\(list)")
+                return false
+            }
+        }
         if let err = await engine.validateConfig() {
             if let b = backup { await restoreConfigSnapshot(b, at: path) }
             showToast("配置无效，已回滚：\(err)", kind: .error)

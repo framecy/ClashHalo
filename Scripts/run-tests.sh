@@ -200,6 +200,14 @@ add_suite providerusage-tests \
   "$ROOT/Sources/Core/YamlEditor/YamlScalar.swift" \
   "$ROOT/Tests/ProviderUsage/main.swift"
 
+# 空组预检：删除订阅后只靠它供血的策略组会变成空 select，mihomo -t 的英文
+# 语法错掩盖真正原因。钉住 groupsMissingMembers 的口径：proxies/use 任一有
+# 非空条目即有来源；内联与块状两种写法都认；组外与注释不算。
+add_suite emptygroup-tests \
+  "$ROOT/Sources/Model/ProviderUsage.swift" \
+  "$ROOT/Sources/Core/YamlEditor/YamlScalar.swift" \
+  "$ROOT/Tests/ProviderEmptyGroup/main.swift"
+
 # 规则表单保存前的存在性校验：规则指向已被删除的策略组/节点时，内核 reload 会拒绝
 # 整份配置、事务回滚，用户只看到一条英文报错。这里钉住三件事：存在则放行、不存在则
 # 中文拦住并带上原目标名、**拿不到配置（内核未运行 → 空集合）时必须放行**——把
