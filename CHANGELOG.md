@@ -2,6 +2,26 @@
 
 本项目所有重要变更记录于此。格式参考 [Keep a Changelog](https://keepachangelog.com/)，版本遵循语义化版本。
 
+## [1.4.2] - 2026-10-29
+
+> 两处「静默把配置写坏」的修复：网关设置里的 `*` 会把整份 `config.yaml` 写成内核解析不了的文件，删订阅会把你按订阅拆分的策略组 `use:` 静默合并。外加删订阅前的空组预检。**Helper 仍为 1.0.30，本次未改协议，无需重装。**
+
+### Fixed
+
+- **应用一次局域网网关设置，之后内核就再也起不来**：`bind-address` 的默认值是 `*`，而裸 `*` 在 YAML 里是别名节点的起始符，属于**语法错误**。`setTopLevelScalars` / `setNestedScalars` 渲染字符串时直接拼裸值，于是每次「应用」都把 `config.yaml` 写成一个连 `mihomo -t` 都读不了的文件——热重载当场失败，之后每次重启内核也一起失败。新增 `quoteYAMLScalarIfNeeded`：首字符命中 YAML indicator（`*`、`&`、`!`、反引号、`#`、引号、方括号/花括号、`-`、`?`、`:` 与空白）、含 `: ` 或 ` #`、以 `:` 结尾、或本身为空串时加双引号，并转义反斜杠与双引号。
+- **删一个订阅，其它策略组的 `use:` 被整块重写**：`writeProxyProviders` 的最后一步会无条件把**第一个**策略组的 `use:` 改成「当前全部 provider」，你按订阅拆分的组结构（组 A 只用订阅 1、组 B 只用订阅 2）被静默合并成两组都用全部。现在只在纯新增/编辑路径做同步；删除路径的引用清理本来已由前面按名精确完成，不需要也不应该再动任何组的 `use:`。
+
+### Added
+
+- **删订阅前的空组预检**：删掉最后一个供血 provider 后，策略组会变成没有任何来源的空 `select`，内核只回一句英文语法错，看不出「组空了」才是真正原因。新增 `ProviderUsage.groupsMissingMembers(in:)`——与 `groupReferences` 同一份行扫描口径，不引入第二套 YAML 理解——在写盘之后、内核校验之前先查，命中就整体回滚并用中文列出涉及哪些组。口径：`proxies:` / `use:` 任一有非空条目即有来源；内联数组与块状列表两种写法都认；`include-all` 家族本身就有来源，不认会把合法配置全判死。
+
+### 验证
+
+- 回归：`bash Scripts/run-tests.sh` → 登记 25 套里 **24 套通过**（新登记 `emptygroup-tests`，9 条断言钉住空组口径）；`dnsledger-tests` 的测试源码不在版本库、git 历史里也取不到，本机无法恢复——如实列出，不当成全绿。
+- Release 构建通过；`make.sh` 版本自检输出 `Version: 1.4.2 (135) ✓`
+- 发版检查：出厂 App、DMG 内嵌 App、DMG 文件名均为 **1.4.2 / build 135**，签名为 ad-hoc。
+- **未覆盖**：`quoteYAMLScalarIfNeeded` 位于 `EngineControl.swift`，该文件依赖 SystemConfiguration 与特权路径，现有回归套件都不编译它，所以这条修复没有自动化断言；它也没有在真机网关上跑过一次完整 apply → reload（需要 Helper 与网关硬件）。改的是「写盘时字符串怎么渲染」这一纯函数级行为，尚未被独立测试钉住——下次动它请先补断言。
+
 ## [1.4.1] - 2026-10-22
 
 ### Added
