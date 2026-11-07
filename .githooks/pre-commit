@@ -4,6 +4,12 @@
 # subscription URLs, IP addresses that look like proxy nodes.
 set -euo pipefail
 
+# 公共文档隐私体检（AgentPreset）：有阻断项就拒绝提交
+DOCS_CHECK="$HOME/AgentPreset/scripts/pre-commit-docs-check.sh"
+if [ -x "$DOCS_CHECK" ]; then
+    "$DOCS_CHECK" || exit 1
+fi
+
 RED='\033[0;31m'; GREEN='\033[0;32m'; NC='\033[0m'
 VIOLATIONS=0
 

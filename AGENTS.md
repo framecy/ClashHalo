@@ -71,7 +71,7 @@ bash Scripts/restore-tests.sh            # 套件文件缺失时物化
 - 退出码：全绿 0，任何 FAIL / COMPILE-ERROR / 缺文件都是 1。**一套红了不会中止其余**（旧版 `set -e` 一红全断，"跑过回归"实际只覆盖了排在最前面那套）。
 - `Tests/` **不在版本管理里**（`.gitignore`，自 `291a239` 起移出），新克隆的仓库必须先 `restore-tests.sh` 才能跑回归；脚本会明确列出哪些套件连历史里都取不到、只存在于写它的那台机器上。
 - 新增可测的纯逻辑半边（无 UI、无进程管理、无 MainActor）时，**必须**在 `Scripts/run-tests.sh` 里 `add_suite` 登记一条：未登记的套件等于不存在的套件。`TUNLoopSentinel` 就长期漏登记、从未被跑过。
-- 断言不得依赖开发机的实时状态（网卡、网段、路由、已装应用）。`RouteGuard` 里那条「识别出 en0 的 10.10.0.0/24」曾让整套测试在换网络后必红——测的是笔记本，不是产品。
+- 断言不得依赖开发机的实时状态（网卡、网段、路由、已装应用）。`RouteGuard` 里那条「识别出 en0 的 10.123.0.0/24」曾让整套测试在换网络后必红——测的是笔记本，不是产品。
 - 规则编辑相关的两套：`rulevalidator-tests` 钉住目标存在性校验的三种状态（存在则放行 / 不存在则中文拦住并带上原目标名 / 拿不到数据必须放行）；`providerusage-tests` 同时钉住 `ProviderUsage.groupNames` 的扫描口径（只认 `proxy-groups:` 块里 2 空格缩进的 `- name:`，不把 provider/rules 里的同名文本算进来）。
 
 ## 运行时数据与系统影响
