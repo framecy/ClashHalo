@@ -60,6 +60,8 @@ Loon/
 !/**/README.md
 !/**/CHANGELOG.md
 !/**/AGENTS.md
+# 性能路线的实测依据：结论要靠它复现，不能只活在聊天记录里
+!/Docs/PerfRoadmap.md
 
 # 本地回归测试套件（开发工具，不入库）
 Tests/

@@ -416,6 +416,10 @@ struct GatewayDeviceRow: View {
 
 struct TunPage: View {
     @EnvironmentObject var M: AppModel
+    @State private var directPlan = DirectExclusionPlan()
+    @State private var directSelection: Set<String> = []
+    @State private var scanned = false
+
     var body: some View {
         VStack(spacing: 0) {
             ScrollView {
@@ -445,8 +449,113 @@ struct TunPage: View {
                         .font(.dsBody).foregroundColor(.secondary).padding(.top, DS.Spacing.s)
                 }
                 }
+                directExclusionCard
                 Spacer(minLength: 0)
             }.padding(DS.Spacing.xl)
+        }
+    }
+}
+
+extension TunPage {
+    /// 直连网段排除：把「规则判 DIRECT 的 IP 段」排除出 TUN。
+    ///
+    /// 为什么值得做：每条新建连接经 TUN 比 native 多付 1 个目标 RTT（代理拨号）
+    /// ＋ 5~8 ms（用户态栈）。国内站点 20~30 ms 的 RTT 意味着 25~35 ms 的真实成本。
+    ///
+    /// 为什么必须由用户逐条采纳：`route-exclude-address` 强于所有规则——某网段一旦
+    /// 被排除，域名/进程/端口规则对它全部失效。自动注入会在用户改规则后悄悄改变
+    /// 代理行为，这是系统级写入最不该有的样子。
+    @ViewBuilder
+    var directExclusionCard: some View {
+        Card(title: "直连网段排除", icon: "arrow.triangle.branch") {
+            VStack(spacing: 2) {
+                HStack {
+                    Text("已采纳 \(M.directExcludeAccepted.count) 条 · 本轮生效 \(M.directExcludeActive.count) 条")
+                        .font(.dsBody)
+                    Spacer()
+                    Button(scanned ? "重新扫描" : "扫描建议") {
+                        directPlan = M.directExclusionPlan()
+                        directSelection = Set(M.directExcludeAccepted)
+                        scanned = true
+                    }
+                    .buttonStyle(.borderless)
+                    .controlSize(.small)
+                }
+                .padding(.vertical, DS.Spacing.s)
+
+                if scanned {
+                    if directPlan.proposals.isEmpty {
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text("当前规则里没有可安全排除的 IP 型 DIRECT 网段。")
+                                .font(.dsCaption).foregroundColor(.secondary)
+                            Text("常见原因：国内直连走的是 ipcidr 型 rule-set（如 china_ip），其网段在 provider 文件里、不在规则行上，无法静态展开；这里的候选只可能来自显式写的 IP-CIDR / IP-CIDR6 规则。")
+                                .font(.dsCaption).foregroundColor(.secondary)
+                        }
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                    } else {
+                        ForEach(directPlan.proposals, id: \.cidr) { p in
+                            HStack(spacing: DS.Spacing.s) {
+                                Toggle("", isOn: Binding(
+                                    get: { directSelection.contains(p.cidr) },
+                                    set: { on in
+                                        if on { directSelection.insert(p.cidr) }
+                                        else { directSelection.remove(p.cidr) }
+                                    }))
+                                    .labelsHidden()
+                                    .toggleStyle(.checkbox)
+                                Text(p.cidr).font(.dsMono).frame(width: 170, alignment: .leading)
+                                Text(p.rule).font(.dsCaption).foregroundColor(.secondary)
+                                Spacer()
+                            }
+                            .padding(.vertical, 1)
+                        }
+                        HStack {
+                            Text("排除后这些网段不再受域名/进程/端口规则约束（共 \(directPlan.blastRadius) 条非 DIRECT 规则）")
+                                .font(.dsCaption).foregroundColor(.secondary)
+                            Spacer()
+                            Button("采纳所选") {
+                                M.applyDirectExclusions(Array(directSelection))
+                            }
+                            .buttonStyle(.borderless).controlSize(.small)
+                            Button("全部撤回") {
+                                directSelection = []
+                                M.applyDirectExclusions([])
+                            }
+                            .buttonStyle(.borderless).controlSize(.small)
+                        }
+                        .padding(.top, DS.Spacing.s)
+                    }
+                    if !directPlan.rejections.isEmpty {
+                        DisclosureGroup("被安全闸门拦下 \(directPlan.rejections.count) 条") {
+                            VStack(alignment: .leading, spacing: 1) {
+                                ForEach(directPlan.rejections, id: \.cidr) { r in
+                                    Text("\(r.cidr) — \(reasonText(r.reason))（\(r.rule)）")
+                                        .font(.dsCaption).foregroundColor(.secondary)
+                                }
+                            }
+                        }
+                        .font(.dsCaption)
+                        .padding(.top, DS.Spacing.s)
+                    }
+                }
+            }
+            Text("被排除的网段直接走物理网卡：省掉 1 个 RTT（代理拨号）与用户态栈开销。规则改动后，已不再成立的条目会自动失效。")
+                .font(.dsBody).foregroundColor(.secondary).padding(.top, DS.Spacing.s)
+            Text("注意：只对「按真实 IP 连接」的流量有效。fake-ip 模式下，浏览器访问域名时连的是 198.18.x 假地址，包一定进 TUN——这类流量不会因为排除网段而变快。")
+                .font(.dsBody).foregroundColor(.secondary).padding(.top, 2)
+        }
+    }
+
+    func reasonText(_ r: DirectExclusionRejection.Reason) -> String {
+        switch r {
+        case .notDirect: return "目标不是 DIRECT"
+        case .defaultRoute: return "整段默认路由"
+        case .fakeIPRange: return "与 fake-ip 段重叠"
+        case .linkOnly: return "链路专用前缀"
+        case .localSubnet: return "本机直连网段"
+        case .shadowed: return "被更早的非 DIRECT 规则覆盖"
+        case .unparsable: return "地址无法解析"
+        case .overCap: return "超过条目上限"
         }
     }
 }

@@ -2,6 +2,37 @@
 
 本项目所有重要变更记录于此。格式参考 [Keep a Changelog](https://keepachangelog.com/)，版本遵循语义化版本。
 
+## [Unreleased]
+
+> 两批改动。**（一）启动不再断两次网**：网关 DNS 的监听探针从解析 `netstat` 文本改成真实 UDP 查询，「探测不到」不再允许重载内核，后台自愈在窗口隐藏后真的会跑起来（外加 App Nap 断言）。**（二）直连链路**：把规则判 DIRECT 的 IP 段排除出 TUN，以及让「运行配置偏离 profile」这件事可见。**Helper 未改协议（1.0.30），无需重装。**
+
+### Added
+
+- **直连网段排除（建议 + 显式采纳）**：TUN 设置页新增「直连网段排除」卡片。扫描规则里显式的 `IP-CIDR`/`IP-CIDR6` + DIRECT，逐条给出建议与理由，用户勾选采纳后写进 `tun.route-exclude-address`，这些目标从此不进用户态协议栈。排除**强于所有规则**（该网段上域名/进程/端口规则全部失效），所以不自动注入；规则改动后已不成立的采纳项自动失效。
+- **`Scripts/tun-exclusion-test.sh`（L1）**：直接编译生产源码断言多源合并/归属记录，并可 `--apply` 真实 PATCH 一轮验证「排除后走 en0、还原后回 utun100」。首次运行就查出归属记录里有 3 条早已不在运行配置的条目（`10.20.30.0/24` 等），已收敛为「记录 ∩ 运行配置」。
+- **配置漂移可见化**：配置页顶部提示「运行配置已偏离当前配置：N 项」，可展开看差异；两个方向都给——「把运行配置存回配置」（回写 profile 并标记已应用）与「以配置为准」（覆盖运行配置）。此前设置页/规则页/DNS 页的改动直接写进运行配置而不回写 profile，实测一台机器上两者差 69 行，重新应用配置会连 API secret 一起覆盖。
+- `Docs/PerfRoadmap.md` + `Scripts/perf-ab.sh`：可复现的直连链路测量基线（native vs TUN 同服务对照、逐阶段打点、每连接 CPU）。
+- `Sources/Model/GatewayDNSHealth.swift`：网关 DNS 体检的判定半边（纯逻辑）+ 唯一的 socket 半边。`Tests/GatewayDNSHealth`（`gatewaydns-tests`，28 条断言）钉住两件事：**探测不到只报告、不重载**；`allowsKernelReload` 是白名单不是黑名单。
+- **隐藏态可观测**：窗口不可见时打一条「后台安全巡检启动」，之后每 15 分钟一条「后台轮询心跳：… 60 s 巡检 N 次，上次网关 DNS 查询 N 秒前」。之所以必须要它：`traffic-history.json` 的 mtime **不能**用来判断巡检有没有跑——`recordHistoryOnly` 为省内存只在 UI 在屏时汇总写盘，文件不动只说明没人在看（2026-11-08 那次排查正是这么误判的）。
+
+### Fixed
+
+- **每次启动都白重载两轮内核、丢掉全部在途连接**：判据是 `netstat -an -f inet -p udp` 的文本匹配找 `*.53`。本机实测（macOS 27.3）从 App 里 fork 出来的 netstat 对这套参数**一个字节都不输出**（同参数在 shell 里有 74 行），于是「53 在监听」被永久判成「没监听」——`app.log` 里 12 次启动对应 12 次「正在重新应用（第 1/2 次）」，而 mihomo 自己在判定前 0.5 s 就打出了 `DNS server(UDP) listening at: [::]:53`。探测改为向本机 53 端口发一次真实 A 查询（`GatewayDNSProbe`，判据复用 `DNSProbe`：只认 NOERROR），一次应答同时证明监听存在、socket 是 DNS、解析路径通。冷启动实测重载 **0 次**（旧版 2 次）。
+- **「探测不到监听」不再触发全量重载**：`PUT /configs?force=true` 会重建 DNS、全部 in/outbound 与 TUN，代价是丢掉全部在途连接，而它修不了这件事的三个真实成因（端口被别的 resolver 占、内核刚起没绑完、上游解析失败）。判定收敛到 `GatewayDNSCheck.evaluate`：只有 `declarationDrift`（`allow-lan` 关 / `dns.listen` 不是 `0.0.0.0:53`，典型成因是切订阅）允许重载，其余结论只报告；失败文案区分「回环正常但 LAN 无应答」与「回环也没应答」，并明说重载修不了。
+- **假的进程级归因**：`53 端口当前无任何 UDP 监听` 这句结论来自同一个失效的 netstat（同一秒 `dig @127.0.0.1` 正常 NOERROR），该探测已删除。现在的失败文案只陈述实测到的事。
+- **放弃复查之后其实没人复查**：旧代码的「每 5 分钟静默复查」挂在一条只在「窗口不可见**且**连接页未激活」才安装的 30 s 定时器上，而连接页的 `onDisappear` 在窗口隐藏时并不保证触发——flag 停在 true，定时器一次都没装上，13:27 隐藏窗口之后整晚没有一次巡检，恢复日志（`网关 DNS 已恢复…`）全日志 0 条。现在：隐藏态无条件起 30 s 轮询；网关体检挂到「不看 UI 也要跑」的 60 s 安全巡检上；两处轮询对「连接页在屏」的豁免补上 `&& isMainWindowVisible`。
+- **后台自愈没有 App Nap 断言**：全仓此前没有任何 `beginActivity`（`grep -rn beginActivity Sources` 为空），隐藏窗口的定时器会被系统合并/挂起。现在网关或 TUN 开启期间按住 `.userInitiatedAllowingIdleSystemSleep`（**不**阻止系统空闲睡眠：那是另一个产品决策，笔记本上是实打实的耗电与发热）。
+- **启动宽限期**：`kernel ready` 只代表控制 API 起来了，DNS 监听随后才 bind。首次体检推迟 20 s（`kGatewayDNSStartupGrace`），避免把「正在起」读成「没起来」。
+- **归属记录在第二次下发时被抹掉**：`commitProvenance` 写的是本轮 `newlyInjected`，第二轮下发时那些条目已经在运行配置里，于是记录变成空——条目被静默升格为「用户手写」，此后任何撤回都删不掉（对端隧道断开后其网段永久留在排除表里）。改为 `nextRecord = (previous ∪ newlyAdded) ∩ desired`。
+- **多源排除互相覆盖**：共存与直连共用同一个归属键，各自 commit 会覆盖对方。合并收敛到 `RouteExclusionMerge` 单点，`reconcileCoexistenceIfChanged` / `applyTUNState` / SDWAN「一键修复」三处统一走它。
+
+### 验证
+
+- 回归：`bash Scripts/run-tests.sh` → **PASS 14 / FAIL 0 / MISSING 13**（新登记 `gatewaydns-tests` 28 条、`directexclude-tests` 28 条；`Tests/` 不入库，其余 13 套需 `restore-tests.sh` 物化，本机缺失如实列出）。
+- 构建：`bash Scripts/build-debug.sh`（Debug + 内置 Helper）通过。
+- 网关 DNS 实测（本机，Debug 版）：冷启动 2 次，`正在重新应用` 增量 **0**（旧版每次 +2）；日志出现 `网关 DNS 监听正常（10.10.0.20 实测 NOERROR 应答）`；关掉主窗口后 30 s 内出现「后台安全巡检启动」与「后台轮询心跳」。
+- 直连链路实测（本机 TUN 开启）：同一家服务 native 首飞 4.0 ms / TUN 14.3 ms；`www.baidu.com` 首飞 45.7 ms、TLS 65.7 ms（TLS 1.2 两个 RTT + 拨号一个 RTT）。
+
 ## [1.4.2] - 2026-10-29
 
 > 两处「静默把配置写坏」的修复：网关设置里的 `*` 会把整份 `config.yaml` 写成内核解析不了的文件，删订阅会把你按订阅拆分的策略组 `use:` 静默合并。外加删订阅前的空组预检。**Helper 仍为 1.0.30，本次未改协议，无需重装。**

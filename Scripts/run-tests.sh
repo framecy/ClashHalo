@@ -121,6 +121,16 @@ add_suite kernelmemoryguard-tests \
   "$ROOT/Sources/Model/KernelMemoryGuard.swift" \
   "$ROOT/Tests/KernelMemoryGuard/main.swift"
 
+# 直连网段排除：顺序语义 + 硬闸门 + 多源归属。route-exclude-address 强于所有
+# 规则，一次错误的排除是静默直连；两个源共用一个归属记录，各写各的会互相删条目。
+add_suite directexclude-tests \
+  "$ROOT/Sources/XPC/HelperProtocol.swift" \
+  "$ROOT/Sources/Model/RuleNode.swift" \
+  "$ROOT/Sources/Model/CoexistenceProvenance.swift" \
+  "$ROOT/Sources/Model/RouteExclusions.swift" \
+  "$ROOT/Sources/Model/DirectExclusionPlanner.swift" \
+  "$ROOT/Tests/DirectExclusionPlanner/main.swift"
+
 # 共存条目归属：只认领真正新增的排除项，不得撤回用户手写条目。
 add_suite coexprovenance-tests \
   "$ROOT/Sources/XPC/HelperProtocol.swift" \
@@ -216,6 +226,16 @@ add_suite rulevalidator-tests \
   "$ROOT/Sources/Model/RuleNode.swift" \
   "$ROOT/Sources/Core/RuleValidator/RuleValidator.swift" \
   "$ROOT/Tests/RuleValidator/main.swift"
+
+# 网关 DNS 体检：判定「局域网客户端能不能解析」，以及**谁有权重载内核**。
+# 2026-11-08 事故：App 里 fork 出来的 netstat 对 `-an -f inet -p udp` 一个字节都
+# 不输出（shell 里有 74 行），于是「53 在监听」被永久判成「没监听」——12 次启动
+# 12 次全量重载，每次丢掉全部在途连接。这里钉住两件事：探测不到只报告、不重载；
+# 只有「配置声明丢了」允许重载。
+add_suite gatewaydns-tests \
+  "$ROOT/Sources/Model/TUNDataPlaneProbe.swift" \
+  "$ROOT/Sources/Model/GatewayDNSHealth.swift" \
+  "$ROOT/Tests/GatewayDNSHealth/main.swift"
 
 # ── 执行 ───────────────────────────────────────────────────────────────
 

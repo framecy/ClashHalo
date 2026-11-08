@@ -119,7 +119,7 @@ struct DNSProbe {
     ///   • RCODE is NOERROR (0).
     /// Returns `never` for empty/truncated packets so a timeout (no bytes at all)
     /// is not confused with a malformed-but-present reply.
-    enum Outcome { case valid, never, malformed, mismatch, refused }
+    enum Outcome: Equatable { case valid, never, malformed, mismatch, refused }
     func validate(response: Data) -> Outcome {
         guard response.count >= 12 else { return response.isEmpty ? .never : .malformed }
         let rTx = (UInt16(response[0]) << 8) | UInt16(response[1])

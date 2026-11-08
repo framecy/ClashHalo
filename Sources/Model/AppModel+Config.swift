@@ -157,6 +157,44 @@ extension AppModel {
         ConfigWriteAudit.drift(before: before, profile: profile)
     }
 
+    /// 运行配置与当前活动 profile 的差异，供配置页显示。
+    ///
+    /// 只在打开页面那一刻求值：两条 30 KB 的行扫描，放进 body 会随每次状态刷新
+    /// 重算（连接页 1.5 s 一轮的教训）。
+    ///
+    /// 存在的理由：config.yaml 有 11 个写入点，设置页/规则页/DNS 页都会就地改写
+    /// 它，而 profile 只在「编辑配置 → 保存并应用」时写。实测一台机器上两者差
+    /// 69 行（log-level、find-process-mode、geodata-mode、secret），而 appliedHash
+    /// 仍认为 profile「已应用」——重新应用会覆盖这些改动，包括 API secret
+    /// （外部工具立刻 401）。差异必须可见，不能靠考古。
+    /// 把运行配置回写成活动 profile 的内容。
+    ///
+    /// 用途：设置页/规则页/DNS 页的改动只写运行配置，profile 还是旧的。用户确认
+    /// 「这些改动就是我要的」之后，回写让 profile 与运行配置重新对齐，否则下一次
+    /// 「切换配置」会把它们整片覆盖。
+    ///
+    /// 回写后必须立刻 markApplied：saveContent 会把 profile 标成「待应用」，
+    /// 但此刻两份内容已经一致，再显示「待应用」就是在说谎。
+    @discardableResult
+    func saveRunningConfigIntoProfile() -> Bool {
+        guard let p = store.profiles.first(where: { $0.id == store.activeID }) else { return false }
+        guard let running = try? String(contentsOfFile: engine.configFilePath, encoding: .utf8),
+              !running.isEmpty else { return false }
+        store.saveContent(p.id, running)
+        store.markApplied(p.id, hash: Sha1.hex(running))
+        logKernel("运行配置已回写进配置「\(p.name)」（\(running.components(separatedBy: .newlines).count) 行）")
+        return true
+    }
+
+    func configDriftAgainstActiveProfile() -> [String] {
+        guard let p = store.profiles.first(where: { $0.id == store.activeID }) else { return [] }
+        let profile = store.content(p.id)
+        guard !profile.isEmpty else { return [] }
+        let running = (try? String(contentsOfFile: engine.configFilePath, encoding: .utf8)) ?? ""
+        guard !running.isEmpty else { return [] }
+        return Self.configDrift(before: running, profile: profile)
+    }
+
     /// Promote an Imported (or re-activate an Applied) profile to the
     /// running kernel: persist → reload → mark applied. Pure side-effects;
     /// the user already consented at the call site (two-stage sheet or
@@ -1296,8 +1334,9 @@ extension AppModel {
         // pending "restore Gateway with TUN" intent so a later TUN enable doesn't
         // turn it back on behind their back.
         if !want { gatewayPendingTunRestore = false }
-        // A hand-thrown switch is also the one signal that re-arms a repair that
-        // gave up — cascaded changes to `gatewayModeOn` deliberately do not.
+        // A hand-thrown switch is also the one signal that re-arms the health
+        // checks (probe now, drop the failure episode and the repair backoff) —
+        // cascaded changes to `gatewayModeOn` deliberately do not.
         resetGatewayRepairBreakers()
 
         // Active Gateway needs TUN, let's enforce it
@@ -1538,6 +1577,11 @@ extension AppModel {
         // Restate the user-owned fields that would otherwise be dropped by the
         // replace semantics. Only when actually present — inventing a key the
         // config never had would be its own kind of surprise.
+        //
+        // 不要把 `processors-per-channel` 加进这张表。`GET /configs` 会把它回显
+        // 出来，但把它原样写回 `PATCH /configs` 会得到 400 "Body invalid"（2026-11-01
+        // 实测：同一个 tun 块去掉它 204、带上它 400）。这张表只收「读回来再写回去
+        // 仍然合法」的字段。
         for key in ["dns-hijack", "route-exclude-address", "mtu", "strict-route",
                     "endpoint-independent-nat", "include-package", "exclude-package",
                     "gso-max-size", "rx-queue-size", "tx-queue-size"] {
@@ -1824,16 +1868,67 @@ extension AppModel {
     /// wrote, and conflating them is what let a teardown delete the user's own
     /// entries — see `Coexistence.newlyInjected`. Callers must commit
     /// provenance with `.injected`, never with the whole plan.
-    func coexistenceRouteBody(_ plan: CoexistencePlan) -> (merged: [String], injected: [String])? {
-        guard !plan.routeExcludes.isEmpty else { return nil }
+    func routeExclusionBody(_ sources: RouteExclusionSources) -> (merged: [String], injected: [String], record: [String])? {
+        guard !sources.isEmpty else { return nil }
         let existing = liveTunBlock()["route-exclude-address"] as? [String] ?? []
-        let merged = Coexistence.mergePreservingUserEntries(
-            field: "route-exclude-address",
-            desired: plan.routeExcludes,
-            in: existing
-        )
-        return (merged, Coexistence.newlyInjected(desired: plan.routeExcludes,
-                                                  existingBefore: existing))
+        return RouteExclusionMerge.merge(sources: sources, existing: existing)
+    }
+
+    /// 排除计划的指纹。**必须同时覆盖两个源**：只哈希对端计划的话，用户采纳/撤回
+    /// 直连网段时指纹不变，reconcile 会认定「拓扑没变」而跳过，改动要等下一次
+    /// 拓扑事件才生效——静默失效正是这个文件里反复出现的那类 bug。
+    static func exclusionFingerprint(_ plan: CoexistencePlan, direct: [String]) -> String {
+        Coexistence.fingerprint(plan) + "|direct:" + direct.sorted().joined(separator: ",")
+    }
+
+    // MARK: - 直连网段排除（IP 型 DIRECT 规则）
+
+    /// 当前规则下的直连网段建议。纯计算，读一次 config.yaml（约 30 KB 行扫描），
+    /// 只在「打开 TUN 设置页 / 开启 TUN / 用户采纳」时求值——不要放进 body。
+    func directExclusionPlan() -> DirectExclusionPlan {
+        guard let text = try? String(contentsOfFile: engine.configFilePath, encoding: .utf8) else {
+            return DirectExclusionPlan()
+        }
+        let rules = YamlRuleASTEngine.extractRules(from: text)
+        let ipSets = DirectExclusionPlanner.ipRuleSetNames(inYAML: text)
+        let localSubnets = Array(PeerRouteGuard.localSubnetOwners().keys)
+        return DirectExclusionPlanner.plan(rules: rules,
+                                           localSubnets: localSubnets,
+                                           ipRuleSetNames: ipSets)
+    }
+
+    /// 用当前规则校验采纳集合，得到本轮真正可以下发的网段。
+    /// 规则改动后旧决定自动失效，不需要用户手动清理。
+    func refreshDirectExclusions() {
+        let plan = directExclusionPlan()
+        let effective = DirectExclusionPlanner.effective(accepted: directExcludeAccepted, plan: plan)
+        if effective != directExcludeActive {
+            directExcludeActive = effective
+            logKernel("直连网段：本轮生效 \(effective.count) 条（采纳 \(directExcludeAccepted.count) 条，规则已变或已遮蔽的不再下发）")
+        }
+    }
+
+    /// 采纳/取消采纳。写 UserDefaults（用户意图）并立刻重算生效集合。
+    /// TUN 已开时由调用方决定是否重新下发 PATCH——这里只改意图，不做系统写入。
+    func setDirectExclusions(_ cidrs: [String]) {
+        let normalized = Array(Set(cidrs.map { $0.trimmingCharacters(in: .whitespaces) })).sorted()
+        directExcludeAccepted = normalized
+        UserDefaults.standard.set(normalized, forKey: kDirectExcludeAcceptedKey)
+        refreshDirectExclusions()
+    }
+
+    /// UI 入口：改采纳集，并在 TUN 已开时立刻让内核跟上。
+    ///
+    /// 不直接拼 PATCH，而是复用 `reconcileCoexistenceIfChanged`——排除表的写入
+    /// 只有一条路（多源合并 + 确认后 commit provenance），第二条路迟早会和这条
+    /// 长出不同的归属语义。
+    func applyDirectExclusions(_ cidrs: [String]) {
+        setDirectExclusions(cidrs)
+        guard tunOn else {
+            showToast("已保存，下次开启 TUN 时生效", kind: .ok)
+            return
+        }
+        Task { await reconcileCoexistenceIfChanged() }
     }
 
     /// Re-apply route coexistence when the set of peer tunnels changes *while TUN
@@ -1859,11 +1954,15 @@ extension AppModel {
         guard !coexistenceReconcileInFlight else { return }
         coexistenceReconcileInFlight = true
         defer { coexistenceReconcileInFlight = false }
+        // 先校验采纳集合再算指纹：反过来的话，本轮刷新改变的生效集合要等下一次
+        // reconcile 才被发现，白白多推一次整块 tun PATCH。
+        refreshDirectExclusions()
         let peers = await Coexistence.detect()
         let plan = Coexistence.plan(peers)
-        let fp = Coexistence.fingerprint(plan)
+        let fp = Self.exclusionFingerprint(plan, direct: directExcludeActive)
         guard fp != lastCoexistenceFingerprint else { return }
-        guard let ex = coexistenceRouteBody(plan) else { return }
+        guard let ex = routeExclusionBody(RouteExclusionSources(peer: plan.routeExcludes,
+                                                                direct: directExcludeActive)) else { return }
 
         logKernel("TUN 共存：检测到网络拓扑变化，正在同步排除规则…")
         let ok = await engine.patchConfig([
@@ -1876,7 +1975,7 @@ extension AppModel {
             logKernel("TUN 共存：同步失败，保留原有排除规则")
             return
         }
-        Coexistence.commitProvenance(field: "route-exclude-address", injected: ex.injected)
+        Coexistence.commitProvenance(field: "route-exclude-address", injected: ex.record)
 
         // The system route table is the other half of the same plan. Leaving it
         // to `staticRoutesInjected` — a latch set once when TUN came up — meant
@@ -1999,7 +2098,7 @@ extension AppModel {
     /// Repoint drifted resolver pins at the right interfaces, then reload.
     ///
     /// User-triggered only. This is the channel the automatic path deliberately
-    /// refuses to take (see `coexistenceRouteBody`): it rewrites the user's file
+    /// refuses to take (see `routeExclusionBody`): it rewrites the user's file
     /// and a reload restarts DNS, dropping in-flight connections. Backed up and
     /// validated first, rolled back on any failure — a bad edit here costs name
     /// resolution outright.
@@ -2109,7 +2208,7 @@ extension AppModel {
 
         // Carve out routing room for every other tunnel on the machine before TUN
         // takes over. (The DNS half cannot ride along here — mihomo ignores a
-        // runtime DNS PATCH; see `coexistenceRouteBody`.)
+        // runtime DNS PATCH; see `routeExclusionBody`.)
         var pendingRouteProvenance: [String]?
         // Fingerprint is staged here and written only after the kernel has
         // actually accepted the change (same gate as provenance). Writing it
@@ -2120,13 +2219,15 @@ extension AppModel {
         var pendingCoexistenceFingerprint: String? = nil
         if want {
             let plan = Coexistence.plan(await Coexistence.detect())
-            if let ex = coexistenceRouteBody(plan) {
+            refreshDirectExclusions()
+            if let ex = routeExclusionBody(RouteExclusionSources(peer: plan.routeExcludes,
+                                                                 direct: directExcludeActive)) {
                 tunOverrideMap["route-exclude-address"] = ex.merged
-                // Only what we added — claiming the user's pre-existing entries
-                // is what made the next teardown delete them.
-                pendingRouteProvenance = ex.injected
-                logKernel("TUN 共存：排除 \(plan.routeExcludes.count) 个网段"
-                          + "（其中本次新增 \(ex.injected.count) 条 · \(plan.peerSummary)）")
+                // 记录的是「至今认领且仍想要」的集合，不是本轮的 newlyAdded——
+                // 后者在第二次下发时恒为空，会把上一轮的认领抹掉。
+                pendingRouteProvenance = ex.record
+                logKernel("TUN 排除：对端 \(plan.routeExcludes.count) 段 + 直连 \(directExcludeActive.count) 段"
+                          + "（本次新增 \(ex.injected.count) 条 · \(plan.peerSummary)）")
             }
             // No `else` needed: with no peer tunnel to carve room for,
             // `tunPatchBody` has already restated the exclusions the config
@@ -2137,7 +2238,7 @@ extension AppModel {
             for line in plan.dnsAdvice {
                 logKernel("TUN 共存（需手动配置）：\(line)")
             }
-            pendingCoexistenceFingerprint = Coexistence.fingerprint(plan)
+            pendingCoexistenceFingerprint = Self.exclusionFingerprint(plan, direct: directExcludeActive)
         } else {
             // Strip what we injected so a peer's prefixes do not outlive the TUN
             // session that needed them. Withdrawal must remove the entries, not
@@ -2147,7 +2248,7 @@ extension AppModel {
             // snapshot: an empty/stale snapshot made withdraw a no-op and left
             // injected exclusions in the running kernel across a TUN-off.
             let existing = liveTunBlock()["route-exclude-address"] as? [String] ?? []
-            let kept = Coexistence.withdraw(field: "route-exclude-address", from: existing)
+            let kept = RouteExclusionMerge.withdraw(existing: existing)
             if kept.count != existing.count { tunOverrideMap["route-exclude-address"] = kept }
             pendingRouteProvenance = []
             pendingCoexistenceFingerprint = ""

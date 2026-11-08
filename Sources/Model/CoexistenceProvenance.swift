@@ -90,6 +90,27 @@ public enum CoexistenceProvenance {
         UserDefaults.standard.set(injected.sorted(), forKey: provenanceKeyPrefix + field)
     }
 
+    /// The record to store after a confirmed apply.
+    ///
+    /// Naively committing `newlyInjected` on every pass is wrong, and wrong in the
+    /// direction that loses data: the second apply sees the first apply's entries
+    /// already in the live list, so "newly added" is empty and the record is
+    /// overwritten with `[]` — silently promoting our own entries to user-owned,
+    /// where no later withdrawal will ever remove them. Observed shape: a peer
+    /// tunnel disconnects, its prefixes stay excluded from TUN forever, and the
+    /// config accretes junk nobody can attribute.
+    ///
+    /// So the record is "everything we have ever claimed that is still wanted":
+    ///
+    ///     record = (previous ∪ newlyAdded) ∩ desired
+    ///
+    /// Entries that dropped out of `desired` are removed from the record too —
+    /// they were just withdrawn from the live list, and keeping them would make
+    /// the next withdrawal target a prefix we no longer own.
+    static func nextRecord(previous: [String], newlyAdded: [String], desired: [String]) -> [String] {
+        Array(Set(previous + newlyAdded).intersection(Set(desired))).sorted()
+    }
+
     /// Entries to strip when coexistence is torn down (TUN off): whatever we
     /// injected last, minus anything the user has since written by hand.
     ///

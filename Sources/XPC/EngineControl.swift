@@ -911,91 +911,13 @@ import SystemConfiguration
         return flag("net.inet.ip.forwarding") && flag("net.inet6.ip6.forwarding")
     }
 
-    /// Whether anything holds the wildcard DNS port (`*:53`) that Gateway mode
-    /// depends on for LAN clients.
-    ///
-    /// This exists because the config-side Gateway check cannot see runtime
-    /// reality. mihomo's `GET /configs` does not report `dns` at all, so
-    /// `AppModel.configs["dns"]` is filled in from config.yaml on disk — meaning
-    /// the check that reads `configs["dns"]["listen"]` compares the file against
-    /// itself and can only ever detect a *file* drift. The failure it cannot
-    /// detect is the one that actually strands LAN clients: the file says
-    /// `0.0.0.0:53`, mihomo tried to bind it, something else already held the
-    /// port, and nothing answers. Gateway then fails silently and the health
-    /// check reports everything fine.
-    ///
-    /// Limitation, stated rather than papered over: this proves *a* listener
-    /// exists, not that it is ours. Distinguishing mihomo's socket from another
-    /// resolver's would need privileged socket inspection. The asymmetry still
-    /// favours the check — an absent listener is unambiguously broken, which is
-    /// the case that was previously invisible.
-    nonisolated static func dnsWildcardPort53Bound() async -> Bool {
-        await Task.detached(priority: .utility) {
-            let p = Process()
-            p.executableURL = URL(fileURLWithPath: "/usr/sbin/netstat")
-            p.arguments = ["-an", "-f", "inet", "-p", "udp"]
-            let pipe = Pipe(); p.standardOutput = pipe; p.standardError = Pipe()
-            do { try p.run() } catch { return true }   // cannot tell → don't cry wolf
-            let data = pipe.fileHandleForReading.readDataToEndOfFile()
-            p.waitUntilExit()
-            guard let out = String(data: data, encoding: .utf8) else { return true }
-            // `udp46      0      0  *.53                   *.*`
-            return out.split(separator: "\n").contains { line in
-                let cols = line.split(whereSeparator: { $0 == " " || $0 == "\t" })
-                return cols.count >= 4 && cols[3] == "*.53"
-            }
-        }.value
-    }
-
-    /// `dnsWildcardPort53Bound()`, but allowed to wait for a listener that is
-    /// still coming up.
-    ///
-    /// A single shot is the right question for the periodic health check and
-    /// the wrong one immediately after a reload. `PUT /configs?force=true`
-    /// answers as soon as mihomo *accepts* the config; tearing down and
-    /// rebuilding the DNS server — and re-binding `0.0.0.0:53`, which needs
-    /// root — happens afterwards. Probing 300 ms later measured the gap, not
-    /// the outcome, and a repair that had in fact worked was recorded as a
-    /// failure. Two of those and the listener check gave up permanently on a
-    /// Gateway that was serving LAN clients perfectly well.
-    ///
-    /// Polls rather than sleeping the full budget so the common case (bound in
-    /// well under a second) stays fast.
-    nonisolated static func dnsWildcardPort53Bound(waitingUpTo budget: TimeInterval) async -> Bool {
-        let deadline = Date().addingTimeInterval(budget)
-        while true {
-            if await dnsWildcardPort53Bound() { return true }
-            guard Date() < deadline else { return false }
-            try? await Task.sleep(nanoseconds: 500_000_000)
-        }
-    }
-
-    /// Every UDP socket bound to port 53, as `netstat` renders the local
-    /// address (`*.53`, `127.0.0.1.53`, …). Empty means nothing holds the port.
-    ///
-    /// Purely diagnostic, and deliberately only called on the failure path: a
-    /// declared-but-absent `0.0.0.0:53` listener has two very different causes
-    /// — the port is already taken by another resolver, or mihomo declined to
-    /// bind it — and the repair loop could not tell them apart. Reporting what
-    /// is actually on the port turns "网关模式无效" from a bare symptom into
-    /// something actionable without attaching a debugger.
-    nonisolated static func udpPort53Bindings() async -> [String] {
-        await Task.detached(priority: .utility) {
-            let p = Process()
-            p.executableURL = URL(fileURLWithPath: "/usr/sbin/netstat")
-            p.arguments = ["-an", "-p", "udp"]
-            let pipe = Pipe(); p.standardOutput = pipe; p.standardError = Pipe()
-            do { try p.run() } catch { return [] }
-            let data = pipe.fileHandleForReading.readDataToEndOfFile()
-            p.waitUntilExit()
-            guard let out = String(data: data, encoding: .utf8) else { return [] }
-            return out.split(separator: "\n").compactMap { line -> String? in
-                let cols = line.split(whereSeparator: { $0 == " " || $0 == "\t" })
-                guard cols.count >= 4, cols[3].hasSuffix(".53") else { return nil }
-                return "\(cols[0]) \(cols[3])"
-            }
-        }.value
-    }
+    // 网关 `*:53` 监听探测曾经在这里：fork `netstat -an -f inet -p udp` 再匹配
+    // `*.53`。2026-11-08 在本机 macOS 27.3 上实测，**从 App 里 fork 出来的 netstat
+    // 对这套参数一个字节都不输出**（同参数从 shell 跑有 74 行），于是「53 在监听」
+    // 被永久判成「没监听」，12 次启动对应 12 次全量重载、每次丢掉全部在途连接。
+    // 探测已改为真实 UDP DNS 查询，见 `Sources/Model/GatewayDNSHealth.swift`
+    // （`GatewayDNSProbe.probe` / `GatewayDNSCheck.evaluate`）。不要再用 netstat
+    // 的 socket 表做健康判定，也不要把「探测不到」当成重载内核的理由。
 
     /// Every enabled network service name on this machine, in service order.
     ///

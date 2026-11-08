@@ -272,6 +272,18 @@ enum NetScanner {
         return .otherTun
     }
 
+    /// 局域网客户端会把 DNS/网关指向的那些地址：物理网卡的 IPv4。
+    ///
+    /// 只用于「这台机器对外暴露的 53 端口到底答不答」这种诊断——网关模式下
+    /// mihomo 绑的是 `0.0.0.0:53`，任何一张物理网卡的地址都应该能解析。
+    /// 排除环回与链路本地（169.254/16：DHCP 失败时的自配地址，客户端不会指向它）。
+    static func lanIPv4Addresses() -> [String] {
+        interfaces()
+            .filter { $0.kind == .physical && $0.isUp }
+            .flatMap(\.ipv4)
+            .filter { !$0.hasPrefix("169.254.") }
+    }
+
     /// 100.64.0.0/10 carrier-grade NAT (Tailscale).
     private static func isCGNAT(_ ip: String) -> Bool {
         let p = ip.split(separator: ".")

@@ -2,7 +2,7 @@
 
 本文件给后续 AI 编码代理使用。进入本仓库后，先读本文件，再按需读 `README.md`、`CHANGELOG.md` 和相关源码。
 
-当前主干：`main`，产品版本 **v1.4.2**（`MARKETING_VERSION`，与 `Sources/Info.plist` 的 `CFBundleShortVersionString` 同源），Helper **1.0.30**（`kSharedHelperVersion`，`Helper-Info.plist` 的 `CFBundleVersion` 同值）。当前构建号 **135**（`CURRENT_PROJECT_VERSION`，`make.sh` 每次打包自增）。
+当前主干：`main`，产品版本 **v1.4.2**（`MARKETING_VERSION`，与 `Sources/Info.plist` 的 `CFBundleShortVersionString` 同源），Helper **1.0.30**（`kSharedHelperVersion`，`Helper-Info.plist` 的 `CFBundleVersion` 同值）。当前构建号 **136**（`CURRENT_PROJECT_VERSION`，`make.sh` 每次打包自增）。
 
 ## 项目概览
 
@@ -64,6 +64,7 @@ bash make.sh
 bash Scripts/run-tests.sh                # 全部套件（当前 25 套）
 bash Scripts/run-tests.sh --only tun     # 只跑名字含 tun 的
 bash Scripts/restore-tests.sh            # 套件文件缺失时物化
+bash Scripts/tun-exclusion-test.sh       # L1：排除表多源合并 + 归属记录（--apply 会真实 PATCH 一轮并还原）
 ```
 
 原则是**直接编译生产源码**，绝不在测试里重新实现一遍规则——复刻逻辑只会让产品坏掉时测试照样通过。每套是一个独立可执行的 `Tests/<名>/main.swift`，用 `swiftc -O` 连同它要钉住的那几个 `Sources/` 文件编成二进制运行。
@@ -149,7 +150,10 @@ bash Scripts/restore-tests.sh            # 套件文件缺失时物化
 - `mihomo` 签名不要随意 hardened runtime；会影响 TUN/utun
 - TUN 是运行时能力：启动时强制 `tun.enable: false`，只应通过 UI/Helper 流程开启
 - **网关开关是用户意图**（`UserDefaults` 镜像 `net.gatewayModeOn`），禁止从 config 残留签名推断开启；开关关时清理残留 `dns.listen: 0.0.0.0:53`
+- **网关 DNS 健康的唯一判据是真实解析，不是 netstat**：`netstat -an -f inet -p udp` 的文本匹配（找 `*.53`）在 macOS 27 上从 App 里 fork 出来**一个字节都不输出**（同参数从 shell 跑有 74 行），于是「53 在监听」被永久判成「没监听」——12 次启动 12 次全量重载，每次丢掉全部在途连接。现在探针是 `GatewayDNSProbe`（真实 UDP A 查询，只认 NOERROR，SERVFAIL/NXDOMAIN 不算健康）+ `GatewayDNSCheck.evaluate`（`Sources/Model/GatewayDNSHealth.swift`，回归 `gatewaydns-tests` 钉住）。**只有 `declarationDrift`（config 里 `allow-lan` / `dns.listen` 丢了）允许重载内核**；「探测不到」只报告——重载修不了端口占用、内核正在起、上游解析失败这三件事。隐藏态自愈挂在 60 s `backgroundSafetyWatch` 上，30 s 隐藏轮询不再被连接页 flag 免签（`connectionsPageLive` 要求窗口可见），网关/TUN 开启期间按住 App Nap 断言（`updateKeepAwakeAssertion`，用 `.userInitiatedAllowingIdleSystemSleep`，不禁系统睡眠）。**判断「隐藏时巡检有没有跑」看日志心跳，不要看 `traffic-history.json` 的 mtime**——`recordHistoryOnly` 为省内存只在 UI 在屏时落盘，文件不动只说明没人在看。
 - **系统 DNS 重定向的记账唯一属主是 `TunnelDNSLedger`**：合法写点有两个属主——TUN（fake-ip 网关 198.18.x，pin 服务）与代理 redir-host 模式（127.0.0.1，独立账本）；**fake-ip 下代理模式禁止写系统 DNS**（fake-ip 应答会把不走代理的应用解析到不可路由的 198.18.x 假地址直接断网；`ensureProxyDNS` 的跳过守卫必须保留），此时域名防污染由 sniffer（parse-pure-ip）承担。写入/清账一律走 Ledger API（`redirect` / `restore` / `restoreAll`），禁止直接读写 `kDNS*Key`——共享账本正是 2026-10-14 断网事故的高-1/高-2 根因；快照只在读取成功时落盘（`currentSystemDNS` 三态，nil ≠ Empty），恢复写确认成功才清账，退出路径超时/失败保留账本交下次启动续修
+- **`tun.route-exclude-address` 只有一个写入入口**：`RouteExclusionMerge`（多源合并 → `newlyInjected` → `nextRecord` → 一次 commit）。现在有两个源——共存（对端隧道网段）与直连（`DirectExclusionPlanner` 建议、用户采纳的 IP 型 DIRECT 网段）。**任何新源都必须并进这个合并点**：各自 commit 会互相覆盖归属记录，一方撤回时删掉另一方的条目；而 `reconcileCoexistenceIfChanged` / `applyTUNState` / SDWAN「一键修复」三处都走它，漏掉一处就等于静默撤回。归属记录必须写 `nextRecord(previous:newlyAdded:desired:)` 的结果，**不能写 `newlyInjected`**——第二轮下发时后者恒为空，会把上一轮的认领抹掉，条目从此变成"用户手写"，再也撤不回来。直连排除**强于所有规则**（域名/进程/端口规则对该网段全部失效），所以只做「建议 + 显式采纳」，禁止自动注入；建议器只收显式 `IP-CIDR`/`IP-CIDR6` 且 DIRECT 的规则，硬拒 fake-ip 段、`/0`、链路专用前缀、本机直连网段与「更早的非 DIRECT IP 规则覆盖」，其余只报爆炸半径。回归套件 `directexclude-tests`。**它只对按真实 IP 连接的流量有效**：fake-ip 下客户端连的是 198.18.x 假地址，包必然进 TUN，排除真实网段对它无效（实测：裸 IP 41.1→28.5ms，域名 40.7→35.9ms 属噪声）。浏览器按域名访问的直连站点在 TUN 模式下永远是 3 个 RTT，文案不得暗示相反
+- **每连接成本随目标 RTT 增长，不是固定值**：实测（`Docs/PerfRoadmap.md`、`Scripts/perf-ab.sh`）TUN 每新建连接比 native 多付「1 × 目标 RTT（代理拨号）+ 5~8 ms（用户态栈）」。会话里「TUN 固定 +7.7ms」是拿 4 ms 的 AliDNS 量的，国内站点 20~30 ms 的 RTT 意味着 25~35 ms。由此：`sniffer.override-destination: false` 省不回 RTT（拨号等待与是否嗅探无关），别再把它当优化项
 - **系统级网络状态的写点必须自证安全前提**：写 DNS/系统代理/路由/转发前，在写入函数内部断言使该写入成立的事实（fake-ip 网关接口存在、目标端口在监听、状态属主归我），不要只依赖上游调用方的门——门会回归。同理，修复「被下游 bug 掩盖的机制」时必须先审它的设计意图在放行后是否本身有害（归属修复让 fake-ip DNS 重定向驻留进而断网即此类）；全局状态尽量单一属主（如系统 DNS 重定向只归 TUN、bypass 只归 `kProxyBypassDomains`）
 - Helper 版本唯一来源是 `kSharedHelperVersion`（`HelperProtocol.swift`），并同步 `Helper-Info.plist` 的 `CFBundleVersion`。需要强制升级旧 Helper 时才 bump
 - 系统代理 bypass 唯一来源是 `kProxyBypassDomains`（约 86 条：localhost/mDNS/RFC1918/link-local/CGNAT）。Helper、本地 fallback、`reconcileProxyBypassIfNeeded`、网络拓扑视图都只引用它

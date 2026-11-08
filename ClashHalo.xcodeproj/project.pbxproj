@@ -30,6 +30,9 @@
 		KCH0 /* KeychainHelper.swift in Sources */ = {isa = PBXBuildFile; fileRef = KCH1 /* KeychainHelper.swift */; };
 		ACX1 /* Coexistence.swift in Sources */ = {isa = PBXBuildFile; fileRef = BCX1 /* Coexistence.swift */; };
 		ACX2AAAA0000000000000002 /* CoexistenceProvenance.swift in Sources */ = {isa = PBXBuildFile; fileRef = BCX2AAAA0000000000000001 /* CoexistenceProvenance.swift */; };
+		ADEP1AAAA0000000000000001 /* DirectExclusionPlanner.swift in Sources */ = {isa = PBXBuildFile; fileRef = BDEP1AAAA0000000000000001 /* DirectExclusionPlanner.swift */; };
+		ADEP2AAAA0000000000000001 /* RouteExclusions.swift in Sources */ = {isa = PBXBuildFile; fileRef = BDEP2AAAA0000000000000001 /* RouteExclusions.swift */; };
+		AGWD1AAAA0000000000000001 /* GatewayDNSHealth.swift in Sources */ = {isa = PBXBuildFile; fileRef = BGWD1AAAA0000000000000001 /* GatewayDNSHealth.swift */; };
 		ATDP1 /* TUNDataPlaneProbe.swift in Sources */ = {isa = PBXBuildFile; fileRef = BTDP1 /* TUNDataPlaneProbe.swift */; };
 		AV6H1 /* TUNIPv6Health.swift in Sources */ = {isa = PBXBuildFile; fileRef = BV6H1 /* TUNIPv6Health.swift */; };
 		ATLS1 /* TUNLoopSentinel.swift in Sources */ = {isa = PBXBuildFile; fileRef = BTLS1 /* TUNLoopSentinel.swift */; };
@@ -110,6 +113,9 @@
 		KCH1 /* KeychainHelper.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Sources/Model/KeychainHelper.swift; sourceTree = SOURCE_ROOT; };
 		BCX1 /* Coexistence.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Coexistence.swift; sourceTree = "<group>"; };
 		BCX2AAAA0000000000000001 /* CoexistenceProvenance.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Sources/Model/CoexistenceProvenance.swift; sourceTree = SOURCE_ROOT; };
+		BDEP1AAAA0000000000000001 /* DirectExclusionPlanner.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Sources/Model/DirectExclusionPlanner.swift; sourceTree = SOURCE_ROOT; };
+		BDEP2AAAA0000000000000001 /* RouteExclusions.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Sources/Model/RouteExclusions.swift; sourceTree = SOURCE_ROOT; };
+		BGWD1AAAA0000000000000001 /* GatewayDNSHealth.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Sources/Model/GatewayDNSHealth.swift; sourceTree = SOURCE_ROOT; };
 		BTDP1 /* TUNDataPlaneProbe.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TUNDataPlaneProbe.swift; sourceTree = "<group>"; };
 		BV6H1 /* TUNIPv6Health.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TUNIPv6Health.swift; sourceTree = "<group>"; };
 		BTLS1 /* TUNLoopSentinel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TUNLoopSentinel.swift; sourceTree = "<group>"; };
@@ -168,6 +174,9 @@
 				KCH1 /* KeychainHelper.swift */,
 				BCX1 /* Coexistence.swift */,
 				BCX2AAAA0000000000000001 /* CoexistenceProvenance.swift */,
+				BDEP1AAAA0000000000000001 /* DirectExclusionPlanner.swift */,
+				BDEP2AAAA0000000000000001 /* RouteExclusions.swift */,
+				BGWD1AAAA0000000000000001 /* GatewayDNSHealth.swift */,
 				BTDP1 /* TUNDataPlaneProbe.swift */,
 				BV6H1 /* TUNIPv6Health.swift */,
 				BTLS1 /* TUNLoopSentinel.swift */,
@@ -383,6 +392,9 @@
 				KCH0 /* KeychainHelper.swift in Sources */,
 				ACX1 /* Coexistence.swift in Sources */,
 				ACX2AAAA0000000000000002 /* CoexistenceProvenance.swift in Sources */,
+				ADEP1AAAA0000000000000001 /* DirectExclusionPlanner.swift in Sources */,
+				ADEP2AAAA0000000000000001 /* RouteExclusions.swift in Sources */,
+				AGWD1AAAA0000000000000001 /* GatewayDNSHealth.swift in Sources */,
 				ATDP1 /* TUNDataPlaneProbe.swift in Sources */,
 				AV6H1 /* TUNIPv6Health.swift in Sources */,
 				ATLS1 /* TUNLoopSentinel.swift in Sources */,
@@ -432,7 +444,7 @@
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
 				CODE_SIGN_ENTITLEMENTS = ClashHalo.entitlements;
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 135;
+				CURRENT_PROJECT_VERSION = 136;
 				ENABLE_HARDENED_RUNTIME = YES;
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_FILE = Sources/Info.plist;
@@ -464,7 +476,7 @@
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
 				CODE_SIGN_ENTITLEMENTS = ClashHalo.entitlements;
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 135;
+				CURRENT_PROJECT_VERSION = 136;
 				ENABLE_HARDENED_RUNTIME = YES;
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_FILE = Sources/Info.plist;

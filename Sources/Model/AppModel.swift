@@ -60,6 +60,9 @@ struct SystemProxyStatus: Equatable {
     var failedServices: [String] = []
 }
 
+/// 直连网段采纳记录的 UserDefaults 键。放在类型外，供属性默认值与测试共用。
+let kDirectExcludeAcceptedKey = "tun.directExclude.accepted"
+
 @MainActor final class AppModel: ObservableObject {
     static let shared = AppModel()
     let api = MihomoClient.shared
@@ -74,25 +77,40 @@ struct SystemProxyStatus: Equatable {
     /// Earliest time the Gateway health check may skip re-asserting sysctl.
     /// Reset to `.distantPast` on failure so a broken state retries at once.
     private var gatewaySysctlRefreshDue: Date = .distantPast
-    /// Earliest time to re-probe the `*:53` listener (one `netstat` fork).
-    private var gatewayListenerProbeDue: Date = .distantPast
-    /// Consecutive repair attempts that did not bring the `*:53` listener up.
-    /// Cleared the moment a probe finds it live.
-    private var gatewayRepairAttempts = 0
-    /// Set once the repair has given up. Suppresses both the probe and the
-    /// repair until Gateway mode is toggled, so a failure the retry cannot fix
-    /// costs nothing instead of reloading the kernel every minute forever.
-    /// See `repairGateway` for why that mattered.
-    private var gatewayRepairAbandoned = false
-    /// How many times `repairGateway` may reload the kernel before declaring
-    /// the listener unfixable. Each reload costs every in-flight connection, so
-    /// this is deliberately small.
-    private static let kGatewayRepairMaxAttempts = 2
+    /// 下一次「网关 DNS 真实查询」体检的时刻。
+    ///
+    /// 一次体检 = 1 次回环查询 + 每个局域网地址 1 次查询，都是 1.2 s 预算的
+    /// UDP 报文——没有 fork、没有特权、不解析任何人类可读输出（旧实现 fork
+    /// `netstat` 再匹配 `*.53`，在 macOS 27 上从这里 fork 出来的 netstat 一个
+    /// 字节都不输出，于是 12 次启动 12 次误判，见 `GatewayDNSHealth.swift`）。
+    ///
+    /// 健康时 60 s 一次；不健康时降到 300 s 但**继续看**——「已停止自动重载」
+    /// 不等于「不再观察」，旧实现把这两件事混成了同一个开关。
+    private var gatewayDNSProbeDue: Date = .distantPast
+    /// 本轮「局域网地址上没有应答」是否已经报告过（日志 + toast 只说一次，
+    /// 恢复时再清掉并打一条恢复记录）。
+    private var gatewayDNSWarned = false
+    /// 健康时的低频心跳，给现场留可核对的痕迹。
+    private var gatewayDNSHeartbeatDue: Date = .distantPast
+    /// 失败日志的节流（同一结论 5 分钟内只说一次）。
+    private var lastGatewayDNSFailLog: Date = .distantPast
+    private var lastGatewayDNSFailKey = ""
+    /// 最近一次网关 DNS 体检结论，给后台心跳一句话用。
+    private var lastGatewayDNSVerdict: GatewayDNSVerdict?
+    /// 最近一次真实查询网关 DNS 的时刻。后台心跳据此说明"自愈链路多久没动过"，
+    /// 这是隐藏窗口期间唯一能证明查询还在跑的量。
+    private var lastGatewayDNSProbeAt: Date?
+    /// 60 s 后台安全巡检的实际执行次数（含隐藏态）。
+    private var backgroundWatchTicks = 0
+    /// 启动后给内核留的绑定期：`kernel ready` 只代表控制 API 起来了，DNS 监听
+    /// 是随后才 bind 的（本机实测两者可以差数百毫秒到数秒）。首次体检排在这个
+    /// 宽限之后，否则「内核正在起」会被读成「监听没了」。
+    static let kGatewayDNSStartupGrace: TimeInterval = 20
     /// Earliest time a *declaration* repair may reload again, and how many in a
-    /// row have failed to stick. Unlike the listener repair this one is never
-    /// abandoned — a profile switch clearing the overrides is both real and
-    /// fixable — but it still must not reload the kernel every minute forever
-    /// if something upstream keeps rewriting the file back.
+    /// row have failed to stick. A profile switch clearing the overrides is both
+    /// real and fixable — and it is the **only** fault allowed to reload the
+    /// kernel — but it still must not reload every minute forever if something
+    /// upstream keeps rewriting the file back.
     private var gatewayDeclareRepairDue: Date = .distantPast
     private var gatewayDeclareRepairFailures = 0
 
@@ -125,6 +143,13 @@ struct SystemProxyStatus: Equatable {
             reconcileActiveStreams()
         }
     }
+    /// 连接页**真的在屏**（窗口可见 + 页面选中的那个）才算活跃。
+    ///
+    /// 这条 `&& isMainWindowVisible` 不是保险丝而是判据修正：`onDisappear` 在
+    /// 窗口隐藏时并不保证触发，flag 会停在 true，而「连接页有自己的 1.5 s 轮询」
+    /// 这句豁免前提是一个能看见的页面。旧实现拿裸 flag 豁免，结果隐藏窗口后
+    /// 前台循环里的 /connections 抓取全被跳过，看板和流量历史一起冻住。
+    var connectionsPageLive: Bool { isConnectionsPageActive && isMainWindowVisible }
     // Connection status
     @Published var reachable = false {
         didSet {
@@ -455,6 +480,16 @@ struct SystemProxyStatus: Equatable {
     /// stage-and-forget on a dropped PATCH or the reconciler will skip forever.
     /// Internal so the `AppModel+Config` extension can access it.
     var lastCoexistenceFingerprint = ""
+    /// 已采纳的直连网段（IP 型 DIRECT 规则 → `tun.route-exclude-address`）。
+    ///
+    /// 这是**用户意图**，存 UserDefaults。下发前一定会用当前规则重新校验
+    /// （`refreshDirectExclusions`）：用户改了规则、或某条被更早的非 DIRECT 规则
+    /// 遮住时，旧决定不能再继续生效——否则规则和路由会各说各话。
+    var directExcludeAccepted: [String] =
+        UserDefaults.standard.stringArray(forKey: kDirectExcludeAcceptedKey) ?? []
+    /// 本轮 TUN 会话里真正生效的直连网段（`directExcludeAccepted` ∩ 当前建议）。
+    /// `reconcileCoexistenceIfChanged` 与 `applyTUNState` 都读它，保证两处口径一致。
+    var directExcludeActive: [String] = []
     /// True while `reconcileCoexistenceIfChanged` is mid-flight. The fingerprint
     /// above cannot do this job: it is written only after the PATCH and the XPC
     /// route push both return, so two path callbacks arriving inside that window
@@ -484,14 +519,17 @@ struct SystemProxyStatus: Equatable {
         }
     }
 
-    /// Re-arm the Gateway repair breakers. Toggling Gateway by hand is the user's
-    /// "I have dealt with it, try again" signal, and is the *only* thing that
-    /// clears a listener repair that gave up — automatic state changes (the TUN
-    /// teardown cascade and its restore) must never count as one.
+    /// Re-arm the Gateway health checks. Toggling Gateway by hand is the user's
+    /// "I have dealt with it, try again" signal: probe now, forget the previous
+    /// failure episode, and drop the declaration-repair backoff. Automatic state
+    /// changes (the TUN teardown cascade and its restore) must never count as
+    /// one — that is why re-arming lives here and not in `gatewayModeOn.didSet`.
     func resetGatewayRepairBreakers() {
-        gatewayRepairAttempts = 0
-        gatewayRepairAbandoned = false
-        gatewayListenerProbeDue = .distantPast
+        gatewayDNSProbeDue = .distantPast
+        gatewayDNSWarned = false
+        gatewayDNSHeartbeatDue = .distantPast
+        lastGatewayDNSFailKey = ""
+        lastGatewayDNSFailLog = .distantPast
         gatewayDeclareRepairFailures = 0
         gatewayDeclareRepairDue = .distantPast
     }
@@ -957,6 +995,11 @@ struct SystemProxyStatus: Equatable {
             // and the guard's 30 s grace window (see enforceAppMemoryGuard)
             // deliberately does not act during it.
             logKernel(String(format: "启动完成：App RSS %.0f MB", Double(Self.residentMemoryBytes()) / 1_000_000))
+            // 网关 DNS 体检推迟到宽限期之后：`kernel ready` 只代表控制 API 起来
+            // 了，DNS 监听是随后才 bind 的。旧实现 0.14 s 后就开判，且判据还是
+            // 一条永远返回空的 netstat（见 GatewayDNSHealth.swift），于是每次
+            // 启动都白重载一轮内核。宽限期把「正在起」与「真的没起来」分开。
+            gatewayDNSProbeDue = Date().addingTimeInterval(Self.kGatewayDNSStartupGrace)
 
             // tsnet is lazy: it only starts on the first dial. If the user had
             // Tailscale enabled in a previous session, the proxy is in the config
@@ -1089,6 +1132,9 @@ struct SystemProxyStatus: Equatable {
     }
 
     private func reconcileActiveStreams() {
+        // 断言要在任何 early return 之前更新：内核暂时不可达、系统正在睡，都不该
+        // 让「后台巡检保持运行」这件事被顺手关掉。
+        updateKeepAwakeAssertion()
         guard reachable && !sleeping else {
             stopStreams()
             return
@@ -1162,9 +1208,15 @@ struct SystemProxyStatus: Equatable {
         pollTimer?.invalidate()
         pollTimer = nil
 
-        // 后台慢速轮询：仅在窗口不可见且连接页未激活时运行
-        // 可见时 startPolling() + ConnectionsViewModel 已覆盖所有数据更新，无需重复
-        if !activeUI && !isConnectionsPageActive {
+        // 后台慢速轮询：只要没有 UI 在屏就跑。
+        //
+        // 旧条件多带了一个 `!isConnectionsPageActive`，而连接页的
+        // `onDisappear` 在「窗口被隐藏」时不一定跑——于是这个 flag 可以一直是
+        // true，这条定时器就一次都没被装上。2026-11-08 现场：13:27 窗口隐藏后
+        // `traffic-history.json` 到晚上 22:00 都没再更新过，网关 DNS 的
+        // 「每 5 分钟静默复查」也就从来没发生过。连接页自己的 1.5 s 轮询覆盖的是
+        // 一个**可见**的页面，不能拿来给「没有 UI」的情况免签。
+        if !activeUI {
             bgTickCount = 0
             pollTimer = Timer.scheduledTimer(withTimeInterval: 30.0, repeats: true) { [weak self] _ in
                 Task { @MainActor in
@@ -1192,6 +1244,19 @@ struct SystemProxyStatus: Equatable {
                         // existing TUN guards are gated on tunOn.
                         await self.sweepZombieTUN()
                         self.bgTickCount = 0
+                    }
+
+                    // 低频心跳（15 分钟）：窗口不可见期间唯一能证明"这套自愈还在
+                    // 跑"的东西。流量历史在这里是写不出去的——`recordHistoryOnly`
+                    // 为了省内存只在 UI 在屏时汇总，所以拿 `traffic-history.json`
+                    // 的 mtime 判断巡检有没有跑是错的（2026-11-08 的排查就是这么
+                    // 误判的：文件不动只说明没人在看，不说明定时器停了）。
+                    if Date() >= self.backgroundHeartbeatDue {
+                        self.backgroundHeartbeatDue = Date().addingTimeInterval(900)
+                        self.logKernel("后台轮询心跳：活动连接 \(self.activeConnectionsCount) 条"
+                                     + "，\(self.gatewayHealthSummary())"
+                                     + "；60 s 巡检 \(self.backgroundWatchTicks) 次"
+                                     + "，上次网关 DNS 查询 \(self.gatewayDNSProbeAgeSeconds()) 秒前")
                     }
                 }
             }
@@ -1309,6 +1374,11 @@ struct SystemProxyStatus: Equatable {
         ) { [weak self] _ in
             Task { @MainActor in await self?.runBackgroundSafetyWatch() }
         }
+        // 边缘触发一条，且每次重建只记一次：这条日志是"隐藏窗口后自愈到底有没有
+        // 上线"的现场证据。2026-11-08 那次排查之所以只能靠推断，是因为整条链路
+        // 在窗口一关之后既不写文件也不写日志，谁在跑、跑了没有，全是猜的。
+        logKernel("后台安全巡检启动：窗口不可见期间 60 s 巡检 + 30 s 数据轮询"
+                + "（网关 DNS 每 60 s 真实查询复查）")
     }
 
     func stopBackgroundSafetyWatch() {
@@ -1325,11 +1395,73 @@ struct SystemProxyStatus: Equatable {
     /// with the visible path in a harmful way — both funnel into the same
     /// `zombieTunRepairInFlight` flag.
     private func runBackgroundSafetyWatch() async {
+        // 每次心跳先确认「这台机器还在替别人干活」的断言没掉——它是唯一一件
+        // 掉了不会报错、只会让上面所有巡检一起变慢的事。
+        updateKeepAwakeAssertion()
+        backgroundWatchTicks += 1
         guard reachable, !sleeping else { return }
         await sweepZombieTUN()
+        // 网关 DNS 的自愈也挂在这条线上，因为它是唯一一条「不看 UI 也要跑」的
+        // 定时器（60 s）。`verifyGatewayConfig` 自带节流与单飞，插一行的成本
+        // 就是一次 sysctl 读（稳态下不到 1 ms），换来的是隐藏窗口时也有人看。
+        if gatewayModeOn {
+            await verifyGatewayConfig()
+        }
+    }
+
+    /// 距上次真实查询网关 DNS 过去多少秒（从没查过返回 -1）。
+    private func gatewayDNSProbeAgeSeconds() -> Int {
+        guard let at = lastGatewayDNSProbeAt else { return -1 }
+        return Int(Date().timeIntervalSince(at))
+    }
+
+    /// 后台心跳里的一句话网关状态（不探测，只复述最近一次结论）。
+    private func gatewayHealthSummary() -> String {
+        guard gatewayModeOn else { return "网关关闭" }
+        switch lastGatewayDNSVerdict {
+        case .healthy(let addrs):
+            return "网关 DNS 正常（\(addrs.joined(separator: "、"))）"
+        case .lanUnanswered(let addrs, _, _):
+            return "网关 DNS 无应答（\(addrs.joined(separator: "、"))），每 5 分钟复查"
+        case .undetermined(let why):
+            return "网关 DNS 未判定（\(why)）"
+        case .declarationDrift:
+            return "网关声明丢失，正在恢复"
+        case nil:
+            return "网关 DNS 待首次体检"
+        }
+    }
+
+    /// App Nap 断言：网关 / TUN 开着就按住，别让系统把定时器节流掉。
+    ///
+    /// 这两个模式的意义就是「App 在后台也替整台机器（或整个局域网）干活」，
+    /// 而 macOS 对后台 App 的定时器合并/挂起正是这条链路最安静的死法：没有
+    /// 报错、没有崩溃，只是每 60 s 的巡检变成每几十分钟一次。全仓此前没有任何
+    /// `beginActivity`（`grep -rn beginActivity Sources` 为空）。
+    ///
+    /// 用 `.userInitiatedAllowingIdleSystemSleep`：只要不 App Nap，同时**不**阻止
+    /// 系统空闲睡眠。禁止睡眠是另一个产品决策（笔记本上是实打实的耗电与发热），
+    /// 何况合盖/空闲睡下去本来就是用户的选择，本轮不擅自改。
+    func updateKeepAwakeAssertion() {
+        let needed = gatewayModeOn || tunOn
+        if needed {
+            guard keepAwakeToken == nil else { return }
+            keepAwakeToken = ProcessInfo.processInfo.beginActivity(
+                options: [.userInitiatedAllowingIdleSystemSleep],
+                reason: "网关 / TUN 开启：后台健康巡检不能被 App Nap 节流")
+            logKernel("已按住 App Nap 断言（网关 / TUN 开启期间后台巡检保持运行）")
+        } else {
+            guard let token = keepAwakeToken else { return }
+            ProcessInfo.processInfo.endActivity(token)
+            keepAwakeToken = nil
+        }
     }
 
     private var backgroundSafetyTimer: Timer?
+    /// 后台心跳的下次落盘时刻（见 30 s 隐藏态轮询）。
+    private var backgroundHeartbeatDue: Date = .distantPast
+    /// `beginActivity` 的令牌（见 `updateKeepAwakeAssertion`）。
+    private var keepAwakeToken: NSObjectProtocol?
 
     /// One RSS reading, pushed to the UI only when it actually changed.
     ///
@@ -1455,7 +1587,7 @@ struct SystemProxyStatus: Equatable {
                 // else (Network page, dashboard, menu bar) we pull a lightweight
                 // snapshot here so 已接入设备 stays live without the heavy
                 // Conn-row conversion. DnsPage reuses cachedConns — no third poller.
-                if self.gatewayModeOn, !self.isConnectionsPageActive, Date() >= gatewayDue {
+                if self.gatewayModeOn, !self.connectionsPageLive, Date() >= gatewayDue {
                     do {
                         let snapshot = try await self.api.fetchConnectionsSnapshot()
                         self.recordHistoryOnly(from: snapshot)
@@ -1469,7 +1601,7 @@ struct SystemProxyStatus: Equatable {
                 // top hosts/rules/nodes, distribution, and active connection count.
                 // Skip when the Connections page is active (it has its own 1.5s
                 // poller) or when gateway mode already polls /connections above.
-                if !self.isConnectionsPageActive, !self.gatewayModeOn, Date() >= dashDue {
+                if !self.connectionsPageLive, !self.gatewayModeOn, Date() >= dashDue {
                     do {
                         let snapshot = try await self.api.fetchConnectionsSnapshot()
                         self.recordHistoryOnly(from: snapshot)
@@ -1955,9 +2087,23 @@ struct SystemProxyStatus: Equatable {
         }
     }
 
-    /// Verify Gateway config integrity and restore if needed.
-    /// Called after network changes and periodically to ensure long-running
-    /// Gateway mode stays healthy (config persists, sysctl stays set).
+    /// 网关体检。三条判据各自回答一个**不同**的问题，混起来就是旧实现的病根。
+    ///
+    ///  1. 配置里还声明着网关吗？（`allow-lan` + `dns.listen == 0.0.0.0:53`，
+    ///     读的是 config.yaml 而不是运行态：mihomo 的 `GET /configs` 根本不报
+    ///     `dns`。）丢了是**真能修**的漂移（切订阅会把它覆盖掉），也只有它能
+    ///     触发内核重载。
+    ///  2. 局域网客户端现在真能解析吗？向本机 53 端口要一次真实解析，见
+    ///     `auditGatewayDNSListener` / `GatewayDNSCheck`。——不能只报告，不动内核。
+    ///  3. IP 转发还开着吗？`sysctl` 只读，必要时经 Helper 补一次。
+    ///
+    /// 为什么「探测不到监听」不再触发重载：全量重载（`PUT /configs?force=true`）
+    /// 会重建 DNS、全部 in/outbound 与 TUN，**丢掉全部在途连接**，而它修不了
+    /// 这个故障的三个真实成因——端口被别的 resolver 占着、内核刚起还没绑完、
+    /// 上游解析失败。2026-11 之前的代码把它当万能修复：本机日志里 12 次启动
+    /// 对应 12 次「正在重新应用（第 1/2 次）」，每次再断一次网，而 mihomo 早在
+    /// 0.5 s 前就打出了 `DNS server(UDP) listening at: [::]:53`——探测本身在说谎
+    /// （失败原因见 `GatewayDNSHealth.swift` 头注释）。
     private func verifyGatewayConfig() async {
         guard gatewayModeOn && reachable else { return }
         // Never audit a Gateway that is still being applied. The write path
@@ -1965,53 +2111,23 @@ struct SystemProxyStatus: Equatable {
         // those reloads sees a config or a listener that is legitimately absent
         // for another second — then "repairs" it with another full reload.
         guard !gatewayApplyInFlight else { return }
-        // N10: three independent triggers (30s foreground tick, 2min background
-        // tick, network change) can overlap — single-flight the whole audit so
-        // overlapping runs don't each reload the kernel and drop connections.
+        // Three independent triggers (30 s foreground tick, 60 s background
+        // safety watch, 2 min hidden tick, network change) can overlap —
+        // single-flight the whole audit.
         guard !gatewayVerifyInFlight else { return }
         gatewayVerifyInFlight = true
         defer { gatewayVerifyInFlight = false }
 
-        // Two independent questions, because two independent things break.
-        //
-        //  * Does the *configuration* still declare Gateway? `allow-lan` comes
-        //    from the running kernel, but `dns.listen` does not: mihomo's
-        //    `GET /configs` omits `dns` entirely, so `refreshConfigs` fills that
-        //    key in from config.yaml on disk. Comparing it is therefore a check
-        //    on the file — worth doing (a profile switch really does drop the
-        //    overrides) but blind to runtime.
-        //  * Is the kernel *actually serving* DNS on the LAN? That is the failure
-        //    that stranded clients with nothing to show for it, and the file
-        //    cannot answer it. Probed separately, on a slow cadence — a fork per
-        //    minute, only while Gateway is on.
         let allowLan = (configs["allow-lan"] as? Bool) == true
         let dnsListen = (configs["dns"] as? [String: Any])?["listen"] as? String
-        let declaresGateway = allowLan && dnsListen == "0.0.0.0:53"
 
-        var listenerLive = true
-        if declaresGateway, Date() >= gatewayListenerProbeDue {
-            // Abandoned means "stop reloading the kernel", not "stop looking".
-            // Those were the same thing, and that is why a Gateway could sit
-            // there working — `dig @<lan-ip>` answering, clients proxying fine —
-            // while the app still showed the give-up message from an hour ago.
-            // Whatever the listener was waiting on (a slow bind, a port briefly
-            // held by another resolver) resolved itself and nothing was left
-            // watching. Keep probing on a slow cadence and let the app notice.
-            gatewayListenerProbeDue = Date().addingTimeInterval(gatewayRepairAbandoned ? 300 : 60)
-            listenerLive = await EngineControl.dnsWildcardPort53Bound()
-            if listenerLive {
-                gatewayRepairAttempts = 0
-                if gatewayRepairAbandoned {
-                    gatewayRepairAbandoned = false
-                    logKernel("网关 DNS 已恢复在 53 端口监听，自动校验重新生效。")
-                }
+        if !(allowLan && dnsListen == kGatewayDNSListen) {
+            if Date() >= gatewayDeclareRepairDue {
+                await repairGatewayDeclaration()
             }
-        }
-
-        // A probe that was skipped this round says nothing; only re-enter the
-        // repair when the listener was actually measured missing.
-        if !declaresGateway || (!listenerLive && !gatewayRepairAbandoned) {
-            await repairGateway(listenerMissing: !listenerLive)
+        } else if Date() >= gatewayDNSProbeDue {
+            let unhealthy = await auditGatewayDNSListener()
+            gatewayDNSProbeDue = Date().addingTimeInterval(unhealthy ? 300 : 60)
         }
 
         // Forwarding already on, and the helper heard from us recently enough:
@@ -2062,44 +2178,104 @@ struct SystemProxyStatus: Equatable {
         }
     }
 
-    /// Bring the Gateway declaration — and the `*:53` listener it promises —
-    /// back in line. Called only when something is measurably wrong.
+    /// 问本机 53 端口要一次真实解析，回答「局域网客户端现在能不能用」。
     ///
-    /// Repairing here means reloading the kernel from disk, and that is not a
-    /// cheap thing to do: `PUT /configs?force=true` rebuilds the DNS server,
-    /// every inbound and outbound, and the TUN interface, and drops every
-    /// in-flight connection with them. A PATCH would be gentler but cannot do
-    /// this job — mihomo answers a runtime `dns` PATCH with 204 and then
-    /// ignores it, which is the same reason `Coexistence` only ever *reports*
-    /// its DNS half.
+    /// 这是替代 netstat 文本匹配的那一步：一个 NOERROR 应答同时证明监听存在、
+    /// socket 属于 DNS、解析路径通；SERVFAIL/NXDOMAIN 一律算不健康（那是断网
+    /// 签名，不是健康签名——同一口径见 `DNSProbe.validate`）。
     ///
-    /// So the reload stays, and the cost is contained by bounding it instead.
-    /// v1.1.10 did neither: it reloaded on every 60 s health check for as long
-    /// as the probe kept failing, and the probe kept failing because a reload
-    /// was never going to fix it. The machine's logs show 113 consecutive
-    /// cycles over three hours, each one logging "网关配置已自动恢复" — that
-    /// line was printed on the HTTP call returning, not on the listener coming
-    /// up, so it stayed true through every failure. Downstream that reads as
-    /// video stalling and pages needing a reload roughly once a minute, with
-    /// the connection count looking perfectly healthy because the table refills
-    /// immediately.
-    ///
-    /// Hence the two rules here: claim success only against a fresh
-    /// measurement, and stop after `kGatewayRepairMaxAttempts` with an
-    /// actionable message rather than retrying something that does not work.
-    private func repairGateway(listenerMissing: Bool) async {
-        // Only the listener repair is abandoned. A dropped declaration is a
-        // different, genuinely fixable fault — a profile switch really does
-        // clear the overrides — and must stay repairable regardless.
-        if listenerMissing {
-            if gatewayRepairAbandoned { return }
-            gatewayRepairAttempts += 1
-            logKernel("网关 DNS 未在 53 端口监听（配置声明为 0.0.0.0:53），正在重新应用"
-                    + "（第 \(gatewayRepairAttempts)/\(Self.kGatewayRepairMaxAttempts) 次）…")
-        } else {
-            guard Date() >= gatewayDeclareRepairDue else { return }
-            logKernel("检测到网关配置丢失，正在恢复…")
+    /// 返回值只影响下次体检的节奏，**不影响要不要重载内核**：这条路径没有
+    /// 任何重载动作。见 `GatewayDNSCheck.evaluate`。
+    @discardableResult
+    private func auditGatewayDNSListener() async -> Bool {
+        let lanIPs = NetScanner.lanIPv4Addresses()
+        let loopback = await GatewayDNSProbe.probe(host: "127.0.0.1")
+        var observations: [GatewayDNSObservation] = []
+        for ip in lanIPs {
+            let outcome = await GatewayDNSProbe.probe(host: ip)
+            observations.append(GatewayDNSObservation(address: ip, outcome: outcome))
         }
+        let verdict = GatewayDNSCheck.evaluate(
+            allowLan: (configs["allow-lan"] as? Bool) == true,
+            dnsListen: (configs["dns"] as? [String: Any])?["listen"] as? String,
+            lan: observations,
+            loopback: loopback)
+
+        lastGatewayDNSVerdict = verdict
+        lastGatewayDNSProbeAt = Date()
+        switch verdict {
+        case .healthy(let addresses):
+            let wasWarned = gatewayDNSWarned
+            gatewayDNSWarned = false
+            let list = addresses.joined(separator: "、")
+            if wasWarned {
+                logKernel("网关 DNS 已恢复在 53 端口监听（\(list) 实测 NOERROR 应答），自动校验重新生效。")
+            } else if Date() >= gatewayDNSHeartbeatDue {
+                gatewayDNSHeartbeatDue = Date().addingTimeInterval(1800)
+                logKernel("网关 DNS 监听正常（\(list) 实测 NOERROR 应答）")
+            }
+            return false
+
+        case .declarationDrift:
+            // 探到一半声明被别人改掉了：交给下一轮走声明修复，不在这里重载。
+            return false
+
+        case .undetermined(let why):
+            logGatewayDNSOnce(key: "undetermined",
+                              "网关 DNS 体检跳过：\(why)（不改节奏、不动内核）")
+            return false
+
+        case .lanUnanswered(let addresses, let gotReply, let loopbackAnswered):
+            let list = addresses.joined(separator: "、")
+            let hint: String
+            if gotReply {
+                hint = "有应答但解析失败（SERVFAIL 等）—— 这是上游或规则的问题，不是监听问题"
+            } else if loopbackAnswered {
+                hint = "回环 127.0.0.1:53 正常应答，说明内核 DNS 活着但局域网地址没有应答 —— 查 dns.listen 是否被改写、或 53 已被其他程序占用"
+            } else {
+                hint = "回环与局域网地址都没有应答 —— 内核 DNS 未起或 53 已被其他程序占用（内核自己的 DNS server 行在 /Library/Logs/ClashHalo/mihomo-root.log）"
+            }
+            logGatewayDNSOnce(key: "unanswered-\(gotReply)-\(loopbackAnswered)",
+                              "网关 DNS 体检未通过：\(list) 没有 NOERROR 应答。\(hint)。"
+                              + "不会自动重载内核 —— 重载修不了这些成因，只会再断一次网；下一轮 5 分钟后复查。")
+            if !gatewayDNSWarned {
+                gatewayDNSWarned = true
+                showToast("网关 DNS 在局域网地址上无应答，客户端可能解析不了（详见日志）", kind: .warn)
+            }
+            return true
+        }
+    }
+
+    /// 同一条结论 5 分钟内只落一次盘，换结论立刻记。
+    private func logGatewayDNSOnce(key: String, _ message: String) {
+        let now = Date()
+        guard key != lastGatewayDNSFailKey || now.timeIntervalSince(lastGatewayDNSFailLog) > 300 else { return }
+        lastGatewayDNSFailKey = key
+        lastGatewayDNSFailLog = now
+        logKernel(message)
+    }
+
+    /// 等网关 DNS 真的能解析，最多 `budget` 秒。给「重载之后监听还没重建完」
+    /// 的那段窗口用——判据是真实查询，不是「HTTP 调用返回了」。
+    private func waitForGatewayDNS(upTo budget: TimeInterval) async -> Bool {
+        let deadline = Date().addingTimeInterval(budget)
+        while true {
+            for ip in NetScanner.lanIPv4Addresses() {
+                if await GatewayDNSProbe.probe(host: ip, timeout: 0.6) == .valid { return true }
+            }
+            guard Date() < deadline else { return false }
+            try? await Task.sleep(nanoseconds: 500_000_000)
+        }
+    }
+
+    /// 把配置里的网关声明写回去。
+    ///
+    /// 这是**唯一**会重载内核的自愈动作，所以两条纪律写死在这里：重载只在声明
+    /// 真的丢了时发生（调用方已经判过，见 `GatewayDNSCheck.evaluate`），且
+    /// 「修好了」必须用一次真实查询确认——v1.1.10 把「HTTP 调用返回」当成修好，
+    /// 于是 113 个连着的周期里一直宣称「网关配置已自动恢复」，而监听根本没起来。
+    private func repairGatewayDeclaration() async {
+        logKernel("检测到网关配置声明丢失（allow-lan / dns.listen 0.0.0.0:53），正在恢复…")
 
         // Re-declare through the access-control reconcile (same as
         // applyGatewayMode): a profile switch drops skip-auth-prefixes along
@@ -2122,44 +2298,30 @@ struct SystemProxyStatus: Equatable {
 
         // Did the declaration actually take? `refreshConfigs` re-reads the file,
         // so this is a real answer rather than a restatement of what we wrote.
-        if !listenerMissing {
-            let allowLan = (configs["allow-lan"] as? Bool) == true
-            let listen = (configs["dns"] as? [String: Any])?["listen"] as? String
-            if allowLan && listen == "0.0.0.0:53" {
-                gatewayDeclareRepairFailures = 0
-                gatewayDeclareRepairDue = .distantPast
-            } else {
-                gatewayDeclareRepairFailures += 1
-                // 2, 4, 8 … minutes, capped. Something else owns this file;
-                // fighting it once a minute helps nobody.
-                let backoff = min(120.0 * pow(2, Double(gatewayDeclareRepairFailures - 1)), 900)
-                gatewayDeclareRepairDue = Date().addingTimeInterval(backoff)
-                logKernel("网关配置写入后未生效，\(Int(backoff / 60)) 分钟后重试"
-                        + "（配置文件可能被订阅更新或配置切换覆盖）")
-            }
-        }
-
-        // Measure, don't assume — but give the kernel time to finish what the
-        // reload only just accepted. `reloadConfig` returns on acceptance; the
-        // DNS server is rebuilt and re-bound afterwards, so an immediate probe
-        // measured the gap and scored a working repair as a failure.
-        let live = await EngineControl.dnsWildcardPort53Bound(waitingUpTo: 8)
-        gatewayListenerProbeDue = Date().addingTimeInterval(60)
-
-        if live {
-            gatewayRepairAttempts = 0
-            logKernel("网关配置已自动恢复（已确认 53 端口正在监听）")
+        let allowLan = (configs["allow-lan"] as? Bool) == true
+        let listen = (configs["dns"] as? [String: Any])?["listen"] as? String
+        if allowLan && listen == kGatewayDNSListen {
+            gatewayDeclareRepairFailures = 0
+            gatewayDeclareRepairDue = .distantPast
+        } else {
+            gatewayDeclareRepairFailures += 1
+            // 2, 4, 8 … minutes, capped. Something else owns this file;
+            // fighting it once a minute helps nobody.
+            let backoff = min(120.0 * pow(2, Double(gatewayDeclareRepairFailures - 1)), 900)
+            gatewayDeclareRepairDue = Date().addingTimeInterval(backoff)
+            logKernel("网关配置写入后未生效，\(Int(backoff / 60)) 分钟后重试"
+                    + "（配置文件可能被订阅更新或配置切换覆盖）")
             return
         }
 
-        if !gatewayRepairAbandoned, gatewayRepairAttempts >= Self.kGatewayRepairMaxAttempts {
-            gatewayRepairAbandoned = true
-            let held = await EngineControl.udpPort53Bindings()
-            let detail = held.isEmpty
-                ? "53 端口当前无任何 UDP 监听 —— 内核未能绑定，请检查内核日志"
-                : "53 端口当前被占用：\(held.joined(separator: "、"))"
-            logKernel("网关 DNS 仍未在 53 端口监听，已停止自动重载 —— 继续反复重载内核会持续中断网络。"
-                    + "\(detail)。仍会每 5 分钟静默复查，一旦监听恢复会自动解除并记录。")
+        // Measure, don't assume — but give the kernel time to finish what the
+        // reload only just accepted (`reloadConfig` returns on acceptance; the
+        // DNS server is rebuilt and re-bound afterwards).
+        gatewayDNSProbeDue = Date().addingTimeInterval(60)
+        if await waitForGatewayDNS(upTo: 8) {
+            gatewayDNSWarned = false
+            let list = NetScanner.lanIPv4Addresses().joined(separator: "、")
+            logKernel("网关配置已自动恢复（\(list.isEmpty ? "本机" : list) 实测 NOERROR 应答）")
         }
     }
 

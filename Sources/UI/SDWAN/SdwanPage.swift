@@ -255,9 +255,15 @@ struct SdwanPage: View {
                                     // the current peer set needs on top.
                                     var fix = M.tunPatchBody(enable: M.tunOn)
                                     var injected: [String] = []
-                                    if let ex = M.coexistenceRouteBody(plan) {
+                                    // 排除表有两个源（对端 + 直连采纳），必须走同一个合并点：
+                                    // 只合并对端会把用户采纳的直连网段判成「上次注入、这次不要」，
+                                    // 静默撤回——点一次"一键修复"就丢一批直连排除。
+                                    M.refreshDirectExclusions()
+                                    if let ex = M.routeExclusionBody(
+                                        RouteExclusionSources(peer: plan.routeExcludes,
+                                                              direct: M.directExcludeActive)) {
                                         fix["route-exclude-address"] = ex.merged
-                                        injected = ex.injected
+                                        injected = ex.record
                                     }
                                     // Claim provenance only for what we actually
                                     // *applied*. Recording on a dropped PATCH

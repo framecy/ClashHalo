@@ -8,6 +8,51 @@ struct ConfigPage: View {
     @State private var showImportRemote = false
     @State private var showAddLocal = false
     @State private var showWipeConfirm = false
+    /// 运行配置与活动 profile 的差异快照。页面出现时算一次，不进 body。
+    @State private var drift: [String] = []
+
+    /// 运行配置已偏离 profile 的提示。
+    ///
+    /// 这不是装饰：设置页/规则页/DNS 页直接改运行配置，而 profile 只有
+    /// 「保存并应用」才写。两者分叉后，用户点一次「切换配置」就会把运行配置里的
+    /// 改动（含 TUN 的 mtu 与排除网段、find-process-mode、API secret）整片覆盖。
+    @ViewBuilder
+    private var driftBanner: some View {
+        Card(title: "运行配置已偏离当前配置", icon: "exclamationmark.triangle") {
+            VStack(alignment: .leading, spacing: DS.Spacing.s) {
+                Text("有 \(drift.count) 项与活动配置不同。设置页、规则页、DNS 页的改动直接写在运行配置里，不会回写到配置。")
+                    .font(.dsBody).foregroundColor(.secondary)
+                DisclosureGroup("查看差异") {
+                    VStack(alignment: .leading, spacing: 2) {
+                        ForEach(drift, id: \.self) { line in
+                            Text(line).font(.dsMono).foregroundColor(.secondary)
+                        }
+                    }
+                }
+                .font(.dsCaption)
+                HStack {
+                    Spacer()
+                    // 两个方向都要给：只给「以配置为准」等于默认运行配置是脏的，
+                    // 而实际上设置页的改动常常才是用户想要的那一份。
+                    Button("把运行配置存回配置") {
+                        if M.saveRunningConfigIntoProfile() { drift = [] }
+                    }
+                    .buttonStyle(.borderless)
+                    .controlSize(.small)
+                    .disabled(M.engine.isBusy)
+                    Button("以配置为准（覆盖运行配置）") {
+                        if let id = M.store.profiles.first(where: { $0.id == M.store.activeID })?.id {
+                            M.selectForApply(id)
+                            drift = []
+                        }
+                    }
+                    .buttonStyle(.borderless)
+                    .controlSize(.small)
+                    .disabled(M.engine.isBusy)
+                }
+            }
+        }
+    }
 
     var body: some View {
         VStack(spacing: 0) {
@@ -38,6 +83,7 @@ struct ConfigPage: View {
             } else {
                 ScrollView {
                     VStack(spacing: DS.Spacing.l) {
+                        if !drift.isEmpty { driftBanner }
                         // 接管还没开时，把三步清单压在配置列表上方：导入成功后
                         // 「第 1 步变勾」就在原地可见，接管一开即退场。
                         if GettingStartedCard.shouldShowAboveProfileList(M) {
@@ -56,6 +102,7 @@ struct ConfigPage: View {
                     .padding(.top, DS.Spacing.l)
                     .padding(.bottom, DS.Spacing.xxl)
                 }
+                .task { drift = M.configDriftAgainstActiveProfile() }
             }
         }
         .confirmationDialog("清空全部 \(M.store.profiles.count) 个配置？",
