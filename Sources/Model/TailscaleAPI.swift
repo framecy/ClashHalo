@@ -93,20 +93,50 @@ enum TailscaleAPI {
     }
 
     /// IPv4 CIDRs only. Drops IPv6 and non-CIDR noise from the routes arrays.
+    /// F24：严格校验——四段十进制 IPv4 + 前缀 0...32（ASCII 数字，拒 `+8`/`1_0`）。
+    /// 旧实现见到 `/` 就原样放行，`1.2.3/8`、`999.1.1.1/8` 这类坏段会一路进
+    /// 设备面板与子网建议。输出统一为规范形 `a.b.c.d/n`。
     static func ipv4CIDRs(_ raw: [String]) -> [String] {
         raw.compactMap { entry in
             let t = entry.trimmingCharacters(in: .whitespacesAndNewlines)
             guard !t.isEmpty, !t.contains(":") else { return nil }
-            if t.contains("/") { return t }
+            if let slash = t.firstIndex(of: "/") {
+                let ip = String(t[..<slash])
+                let pref = String(t[t.index(after: slash)...])
+                guard isIPv4(ip), !pref.isEmpty,
+                      pref.allSatisfy({ $0.isASCII && $0.isNumber }),
+                      let n = Int(pref), (0...32).contains(n) else { return nil }
+                return "\(ip)/\(n)"
+            }
             // Bare IP from a sloppy payload → /32.
-            return t.contains(".") ? "\(t)/32" : nil
+            return isIPv4(t) ? "\(t)/32" : nil
+        }
+    }
+
+    /// 严格四段十进制 IPv4（F24 配套）。本文件独立编译进 tailscale-api-tests
+    /// （编译集只有本文件），不能引用 TailscaleOverlay / DeviceIdentity 的同名
+    /// 判定，故自带一份同口径实现：ASCII 数字、每段 0...255。
+    private static func isIPv4(_ s: String) -> Bool {
+        let parts = s.split(separator: ".", omittingEmptySubsequences: false)
+        guard parts.count == 4 else { return false }
+        return parts.allSatisfy { p in
+            !p.isEmpty && p.count <= 3
+                && p.allSatisfy { $0.isASCII && $0.isNumber }
+                && Int(p).map { (0...255).contains($0) } == true
         }
     }
 
     /// Union of enabled (preferred) then advertised IPv4 routes across devices,
     /// excluding the CGNAT aggregate and default routes. Ready to merge into
     /// `extraCIDRs` after the user confirms.
-    static func suggestedSubnetRoutes(from devices: [TailscaleDevice]) -> [String] {
+    ///
+    /// TS-1：`isForbidden` 是调用方注入的安全闸门（生产侧 = PeerRouteGuard
+    /// 链路专用/本机直连段 + fake-ip 段 + 默认路由）。本文件必须保持纯逻辑、
+    /// 可独立编译（tailscale-api-tests 编译集只有本文件），不能直接引用
+    /// HelperProtocol 的 PeerRouteGuard，所以闸门以谓词传入；默认放行仅用于
+    /// 回归套件的形状断言，生产调用点必须传真实闸门。
+    static func suggestedSubnetRoutes(from devices: [TailscaleDevice],
+                                      isForbidden: (String) -> Bool = { _ in false }) -> [String] {
         var seen = Set<String>()
         var out: [String] = []
         for d in devices {
@@ -117,7 +147,8 @@ enum TailscaleAPI {
                 guard !n.isEmpty,
                       n != "0.0.0.0/0",
                       n != "100.64.0.0/10",
-                      !n.hasSuffix("/32") || !n.hasPrefix("100.") // peer /32s belong elsewhere
+                      !n.hasSuffix("/32") || !n.hasPrefix("100."), // peer /32s belong elsewhere
+                      !isForbidden(n)
                 else { continue }
                 // Keep peer-shaped /32s out of "subnet" suggestions when they
                 // are clearly tailnet node addresses (100.x/32). Broader 100.x

@@ -662,9 +662,16 @@ F0272D Amazon
         return DeviceIdentity(mac: normalized, vendor: "", deviceType: "", evidence: .none)
     }
 
+    /// F23：严格四段十进制。旧实现只靠 `Int(p)` 判定，而 `Int("+1") == 1`、
+    /// `Int("1_0") == 10`、Unicode 数字也能过——ARP 行里这些都不是合法 IPv4。
+    /// 现在每段必须是非空 ASCII 数字且值在 0...255。
     static func isIPv4(_ s: String) -> Bool {
         let parts = s.split(separator: ".", omittingEmptySubsequences: false)
         guard parts.count == 4 else { return false }
-        return parts.allSatisfy { p in !p.isEmpty && Int(p).map { (0...255).contains($0) } == true }
+        return parts.allSatisfy { p in
+            !p.isEmpty && p.count <= 3
+                && p.allSatisfy { $0.isASCII && $0.isNumber }
+                && Int(p).map { (0...255).contains($0) } == true
+        }
     }
 }

@@ -35,7 +35,14 @@ extension AppModel {
         /// Fingerprint of the credentials the *current* on-disk tsnet identity
         /// was registered with. Never the key itself — see `TailscaleIdentity`.
         static let identityFingerprint = "tailscale.identityFingerprint"
+        /// TS-4：上次**成功应用**时的 peerIPs 快照（规范化后）。tsPeerRulesStale
+        /// 与它比较，而不是与 engine plan 同拍比较（后者恒等，指示死掉）。
+        static let appliedPeerIPs = "tailscale.appliedPeerIPs"
     }
+
+    /// F13：浏览器登录等待上限。一次性授权码在服务端也会过期，本地把 watch
+    /// （连同抬高的内核日志级别）无限挂下去没有意义；超时回落 .failed。
+    private static let tsNeedsLoginCapSeconds: TimeInterval = 600
 
     /// When on, online device IPs from the API panel are merged into
     /// `tsSettings.peerIPs` before each overlay render. Off keeps the rule
@@ -118,6 +125,14 @@ extension AppModel {
         guard tsEnabled else { engine.tailscaleSettings = nil; return }
         var s = tsSettings
         s.authKey = KeychainHelper.read(key: kTailscaleAuthKey) ?? ""
+        // TS-1 渲染兜底：extraCIDRs 无论来自哪条路径（API 导入 / 手工添加 /
+        // 旧版本持久化数据），会劫持本机的前缀一律不进 engine plan。入口
+        // （importAdvertisedSubnetRoutes / applyTailscaleSettings）负责带原因
+        // 的 warnings；这里静默防御，保证 autoRules 渲染到的永远是干净输入。
+        let localSubnets = PeerRouteGuard.localAttachedSubnets()
+        s.extraCIDRs = s.extraCIDRs.filter {
+            tsSubnetRejection($0, localSubnets: localSubnets) == nil
+        }
         if tsAutoPeerRules {
             // Online peers only — offline /32s would black-hole until the next
             // refresh, which is worse than falling through to the CGNAT rule.
@@ -198,6 +213,7 @@ extension AppModel {
         // Best case: we own it (kernel never ran as root) — just delete.
         if (try? fm.removeItem(atPath: path)) != nil {
             logKernel("内置 Tailnet：已删除身份目录 \(path)")
+            pruneRetiredTailscaleIdentities()
             return true
         }
         let stamp = Int(Date().timeIntervalSince1970)
@@ -205,10 +221,35 @@ extension AppModel {
         do {
             try fm.moveItem(atPath: path, toPath: aside)
             logKernel("内置 Tailnet：身份目录归 root，已改名让位 → \(aside)")
+            pruneRetiredTailscaleIdentities()
             return true
         } catch {
             logKernel("内置 Tailnet：无法退休身份目录（\(path)）：\(error.localizedDescription)")
             return false
+        }
+    }
+
+    /// F14：`.retired-<stamp>` 目录只保留最近 1 份，其余尽力清理。
+    /// root 属主的 retired 目录在用户态删不掉（与改名让位同一个原因：
+    /// 删除需要目录**内部**的写权限），失败就跳过、不阻塞主流程——
+    /// 下一次退休还会再试。只匹配 `tailscale.retired-` 精确前缀，不碰别的。
+    private func pruneRetiredTailscaleIdentities() {
+        let fm = FileManager.default
+        let path = engine.tailscaleStateDirPath
+        let parent = (path as NSString).deletingLastPathComponent
+        let prefix = (path as NSString).lastPathComponent + ".retired-"
+        guard let entries = try? fm.contentsOfDirectory(atPath: parent) else { return }
+        let retired = entries.filter { $0.hasPrefix(prefix) }
+        guard retired.count > 1 else { return }
+        // 按时间戳降序；非数字后缀视为最旧。最新一份（刚改名让位的）保留。
+        let sorted = retired.sorted {
+            (Int($0.dropFirst(prefix.count)) ?? -1) > (Int($1.dropFirst(prefix.count)) ?? -1)
+        }
+        for name in sorted.dropFirst() {
+            let full = (parent as NSString).appendingPathComponent(name)
+            if (try? fm.removeItem(atPath: full)) != nil {
+                logKernel("内置 Tailnet：已清理过期退休身份目录 \(name)")
+            }
         }
     }
 
@@ -254,7 +295,11 @@ extension AppModel {
             tsDevicesError = nil
             return
         }
-        if !force, Date().timeIntervalSince(tsDevicesFetchedAt) < 30, !tsDevices.isEmpty {
+        // F17：空列表也吃限频。旧条件 `!tsDevices.isEmpty` 让「tailnet 里就是
+        // 没有别的设备」的账号每次开页都打一次真实 API。首次拉取不受影响
+        // （tsDevicesFetchedAt 初值 .distantPast）；失败不更新 fetchedAt，
+        // 错误重试节奏维持原样。
+        if !force, Date().timeIntervalSince(tsDevicesFetchedAt) < 30 {
             return
         }
         guard !tsDevicesLoading else { return }
@@ -386,7 +431,12 @@ extension AppModel {
                 self.tsEnabled = !on
                 self.saveTailscalePrefs()
                 self.engine.applyTailscaleOverlay()
-                self.tsState = self.tsEnabled ? .idle : .disabled
+                // TS-6：reloadWithTailscaleOverlay 已把失败原因置入 .failed
+                // （重载失败 / overlay 注入失败）。回滚开关意图，但保留失败态，
+                // 让 UI 的失败卡片与 warningCard 把原因说出来。
+                if !self.tsState.isTerminalFailure {
+                    self.tsState = self.tsEnabled ? .idle : .disabled
+                }
                 return
             }
             self.tsState = on ? .idle : .disabled
@@ -420,18 +470,47 @@ extension AppModel {
         tsSettings.nodeName = TailscaleName.sanitize(tsSettings.nodeName)
         tsSettings.hostname = TailscaleName.sanitizeHostname(tsSettings.hostname)
         tsSettings.extraCIDRs = TailscaleOverlay.normalizeCIDRs(tsSettings.extraCIDRs)
+        // TS-1：手工 CIDR 与通告导入走同一道安全闸门——链路专用前缀、本机
+        // 直连网段、fake-ip 段、默认路由一律不进 extraCIDRs（否则 IP-CIDR
+        // 规则插在表头，本机 LAN 流量全进 tailnet 黑洞）。被拒条目带原因
+        // 进 warnings；注意 reload / 环境巡检会整份重建 tsWarnings，所以
+        // noteRejectedSubnets 必须放在它们**之后**调用。
+        let localSubnets = PeerRouteGuard.localAttachedSubnets()
+        let rejectedCIDRs = tsSettings.extraCIDRs.compactMap { cidr -> String? in
+            guard let reason = tsSubnetRejection(cidr, localSubnets: localSubnets) else { return nil }
+            return "\(cidr)（\(reason)）"
+        }
+        if !rejectedCIDRs.isEmpty {
+            tsSettings.extraCIDRs.removeAll {
+                tsSubnetRejection($0, localSubnets: localSubnets) != nil
+            }
+        }
         if let normalized = TailscaleOverlay.normalizeControlURL(tsSettings.controlURL) {
             tsSettings.controlURL = normalized
         } else {
             showToast("控制服务器地址无效：需要 http(s):// 开头的完整 URL", kind: .error)
             return
         }
-        guard tsEnabled else { saveTailscalePrefs(); return }
+        // TS-5：controlURL 是身份指纹的一部分——官方 ↔ Headscale 切换就是
+        // 另一个身份，即使 key 文本没变。与换 key 同待遇：退休旧 state 目录，
+        // 否则 tsnet 沿用旧身份、静默忽略新控制面。判定表在 TailscaleIdentity
+        // （无 auth-key 的浏览器登录路径不退休，维持既有契约）。
+        retireTailscaleIdentityIfCredentialsChanged()
+        guard tsEnabled else {
+            saveTailscalePrefs()
+            noteRejectedSubnets(rejectedCIDRs)
+            return
+        }
         withEngineBusy("更新内置 Tailnet") { [weak self] in
             guard let self else { return }
             self.saveTailscalePrefs()
-            if await self.reloadWithTailscaleOverlay() {
+            let ok = await self.reloadWithTailscaleOverlay()
+            if ok {
                 self.refreshTailscaleEnvironmentWarnings()
+            }
+            // 放在 reload / 环境巡检之后，warnings 才不会被整份重建冲掉。
+            self.noteRejectedSubnets(rejectedCIDRs)
+            if ok {
                 self.showToast("内置 Tailnet 配置已更新", kind: .ok)
                 // A reload builds a brand-new `tsnet.Server`, which is lazy
                 // again — wake it so the new settings actually take effect.
@@ -463,6 +542,19 @@ extension AppModel {
             tsState = .failed(reason: r.error ?? "配置重载失败")
             return false
         }
+        // TS-6 / 契约 C6：reload 成功 ≠ 节点注入成功。setConfig 里 overlay
+        // 注入失败只记 warning、不打断 reload——旧实现据此报「已启用」，
+        // 开关亮着但内核根本没有节点。读 C6 字段如实判失败；具体原因已在
+        // 上面拷进 tsWarnings（warningCard 展示）。
+        if tsEnabled && !engine.lastOverlayInjectionOK {
+            showToast("Tailnet 节点注入失败，配置未生效（原因见「需要注意」）", kind: .error)
+            tsState = .failed(reason: "Tailnet 节点注入失败")
+            return false
+        }
+        // TS-4：只有真正应用成功才记录 peerIPs 快照——tsPeerRulesStale 的
+        // 比较基线。注入失败时内核没有节点，不能算「已应用」。
+        tsAppliedPeerIPs = TailscaleOverlay.normalizePeerIPs(
+            engine.tailscaleSettings?.peerIPs ?? [])
         return true
     }
 
@@ -518,7 +610,21 @@ extension AppModel {
     /// hit 应用配置). Returns how many *new* CIDRs were added.
     @discardableResult
     func importAdvertisedSubnetRoutes() -> Int {
-        let suggested = TailscaleAPI.suggestedSubnetRoutes(from: tsDevices)
+        // TS-1：subnet router 通告与本机同段 LAN 时，导入 = 把本机 LAN 劫进
+        // tailnet 黑洞。候选在 API 侧就过闸门（谓词注入，保持 TailscaleAPI
+        // 纯逻辑可独立编译）；被拒条目带原因进 warnings。
+        let localSubnets = PeerRouteGuard.localAttachedSubnets()
+        let gate: (String) -> Bool = {
+            self.tsSubnetRejection($0, localSubnets: localSubnets) != nil
+        }
+        let suggested = TailscaleAPI.suggestedSubnetRoutes(from: tsDevices, isForbidden: gate)
+        let rejected = TailscaleAPI.suggestedSubnetRoutes(from: tsDevices)
+            .compactMap { cidr -> String? in
+                guard let reason = self.tsSubnetRejection(cidr, localSubnets: localSubnets)
+                else { return nil }
+                return "\(cidr)（\(reason)）"
+            }
+        noteRejectedSubnets(rejected)
         guard !suggested.isEmpty else { return 0 }
         var existing = Set(tsSettings.extraCIDRs)
         var added = 0
@@ -537,6 +643,45 @@ extension AppModel {
         return added
     }
 
+    /// TS-1 安全闸门：返回拒绝原因，nil = 放行。判据复用 GUI/Helper 共用的
+    /// `PeerRouteGuard.isForbidden`（链路专用前缀 + 本机直连网段），另拒
+    /// fake-ip 段（198.18.0.0/15 与 v6 默认段 fdfe:dcba:9876::/64，口径同
+    /// DirectExclusionPlanner.hardRejection）与默认路由。
+    /// localSubnets 用现有快照来源 `PeerRouteGuard.localAttachedSubnets()`
+    /// （getifaddrs 直读，与 Coexistence 同源）。
+    /// internal：TailscalePage 预览计数与导入入口同口径过闸（fix-ui 消费）。
+    func tsSubnetRejection(_ cidr: String, localSubnets: [String]) -> String? {
+        if cidr == "0.0.0.0/0" || cidr == "::/0" {
+            return "默认路由，请用出口节点"
+        }
+        if RouteTable.overlaps(cidr, "198.18.0.0/15")
+            || RouteTable.overlaps(cidr, "fdfe:dcba:9876::/64") {
+            return "与 fake-ip 段重叠"
+        }
+        if PeerRouteGuard.isForbidden(cidr, localSubnets: localSubnets) {
+            return "链路专用前缀或本机直连网段"
+        }
+        return nil
+    }
+
+    /// TS-1：被拒子网进 warnings（UI warningCard 已有展示位）+ toast + 日志。
+    /// 调用时机：必须在 reload / refreshTailscaleEnvironmentWarnings 之后——
+    /// 两者都会整份重建 tsWarnings，先 append 会被冲掉。
+    private func noteRejectedSubnets(_ rejected: [String]) {
+        guard !rejected.isEmpty else { return }
+        let w = "已忽略不安全子网：" + rejected.joined(separator: "、")
+        if !tsWarnings.contains(w) { tsWarnings.append(w) }
+        logKernel("内置 Tailnet：\(w)")
+        showToast("已忽略 \(rejected.count) 条不安全子网，详见「需要注意」", kind: .warn)
+    }
+
+    /// TS-4：上次成功应用时的 peerIPs 快照。存 UserDefaults 而非存储属性——
+    /// 本文件是 extension（与 tsAutoPeerRules 同一理由）。
+    private var tsAppliedPeerIPs: [String] {
+        get { UserDefaults.standard.array(forKey: TSKey.appliedPeerIPs) as? [String] ?? [] }
+        set { UserDefaults.standard.set(newValue, forKey: TSKey.appliedPeerIPs) }
+    }
+
     /// Whether the live device list implies peer /32 rules the kernel does not
     /// yet have. Soft signal only — never auto-reloads.
     var tsPeerRulesStale: Bool {
@@ -544,8 +689,11 @@ extension AppModel {
         let live = Set(TailscaleOverlay.normalizePeerIPs(
             tsDevices.filter(\.online).flatMap(\.ips)
         ))
-        let planned = Set(engine.tailscaleSettings?.peerIPs ?? [])
-        return live != planned
+        // TS-4：与「上次成功应用」的快照比。旧实现与 engine plan 比，而
+        // syncTailscaleToEngine 在设备刷新的同一拍就更新 plan——planned 恒等
+        // 于 live，「设备已变化」提示永不出现（死指示）。
+        let applied = Set(tsAppliedPeerIPs)
+        return live != applied
     }
 
     // MARK: - Interactive login
@@ -648,7 +796,25 @@ extension AppModel {
                     // until authLoopState fires or the user starts a fresh
                     // session (which cancels this one first).
                     self.tsState = .needsLogin(url: url)
-                    self.logKernel("内置 Tailnet：登录地址 \(url)")
+                    // F12：URL 里的一次性授权码不入日志，只留域名。
+                    // 完整 URL 仍经 tsState 交给 UI / 浏览器（那是它的用途）。
+                    self.logKernel("内置 Tailnet：需要浏览器登录，登录页主机 "
+                                   + "\(URL(string: url)?.host ?? "未知")（授权码不记录）")
+                    // F13：needsLogin 不能无限等——旧实现里 watch 与抬高的
+                    // 内核日志级别会一直挂着。10 分钟上限，超时回落 .failed。
+                    // 会话身份用 tsLoginDeadline 判定：新会话 / 授权完成都会
+                    // 让它失效，本任务自动 no-op。
+                    Task { [weak self] in
+                        try? await Task.sleep(nanoseconds:
+                            UInt64(Self.tsNeedsLoginCapSeconds * 1_000_000_000))
+                        await MainActor.run {
+                            guard let self, self.tsLoginDeadline == deadline else { return }
+                            guard case .needsLogin = self.tsState else { return }
+                            self.stopTailscaleLoginWatch()
+                            self.tsState = .failed(reason: "浏览器登录超时（10 分钟）")
+                            self.showToast("浏览器登录超时，请重新点「浏览器登录」", kind: .warn)
+                        }
+                    }
                     if openBrowserOnLogin {
                         NSWorkspace.shared.open(URL(string: url) ?? URL(fileURLWithPath: "/"))
                         self.showToast("已打开 Tailscale 登录页面", kind: .info)
@@ -669,11 +835,21 @@ extension AppModel {
         tsLoginWatch = handle
 
         // The dial is the whole point — it is the only thing that runs
-        // `ensureStarted`. Failure is expected and irrelevant here (a
-        // peer-only tailnet has no public egress); we only need tsnet awake.
+        // `ensureStarted`. Failure is expected and irrelevant here; we only
+        // need tsnet awake.
+        // TS-3：peer-only（无 exit-node）不打公网 URL 测速——那次 dial 注定
+        // 失败还平白触碰公网。改经 MagicDNS 解析唤醒（nameserver-policy 把
+        // `+.<suffix>` 指向 `ts://<node>`），dial 同样触发 `ensureStarted`。
+        // 门控复用 TailscaleLatency.usesPublicURLTest，与 refreshProxies 侧
+        // 的哨兵分类同一判据。
         Task { [weak self] in
             guard let self else { return }
-            _ = try? await self.api.testDelay(name: node)
+            if TailscaleLatency.usesPublicURLTest(nodeType: "tailscale",
+                                                  exitNode: self.tsSettings.exitNode) {
+                _ = try? await self.api.testDelay(name: node)
+            } else {
+                await self.wakeTailscaleViaMagicDNS()
+            }
             let remaining = deadline.timeIntervalSinceNow
             if remaining > 0 {
                 try? await Task.sleep(nanoseconds: UInt64(remaining * 1_000_000_000))
@@ -741,22 +917,48 @@ extension AppModel {
         let node = tsSettings.nodeName
         Task { [weak self] in
             guard let self else { return }
+            // TS-3：peer-only 不参与公网 URL 测速（与 refreshProxies 的哨兵
+            // 门控同一判据）。没有出口节点就没有公网出口，URL 测试失败是
+            // 预期结果而非故障——只唤醒会话，不打公网。
+            if !TailscaleLatency.usesPublicURLTest(nodeType: "tailscale",
+                                                   exitNode: self.tsSettings.exitNode) {
+                await self.wakeTailscaleViaMagicDNS()
+                await MainActor.run {
+                    self.showToast("已唤醒 Tailnet 会话（未配置出口节点，URL 测试不适用）",
+                                   kind: .info)
+                    self.refreshTailscaleLocalAddress()
+                }
+                return
+            }
             let delay = try? await self.api.testDelay(name: node)
             await MainActor.run {
                 if let d = delay, d > 0 {
                     self.tsState = .running
                     self.showToast("Tailnet 出口可达（\(d) ms）", kind: .ok)
                 } else {
-                    // Without an exit node there is no Internet egress through
-                    // this policy, so a failed URL test is the *expected*
-                    // result for a peer-to-peer tailnet — not a fault.
-                    self.showToast(self.tsSettings.exitNode.isEmpty
-                                   ? "已唤醒 Tailnet 会话（未配置出口节点，URL 测试不适用）"
-                                   : "Tailnet 出口不可达，请检查出口节点与授权", kind: .info)
+                    self.showToast("Tailnet 出口不可达，请检查出口节点与授权", kind: .info)
                 }
                 self.refreshTailscaleLocalAddress()
             }
         }
+    }
+
+    /// TS-3：peer-only 节点不触碰公网的唤醒 dial。overlay 已把 `+.<suffix>`
+    /// 指向 `ts://<node>`（nameserver-policy），这次解析经 tailnet 解析器
+    /// 发出，dial 本身触发 tsnet 的 `ensureStarted`——唤醒效果与 testDelay
+    /// 等价，但目标始终在 tailnet 内。
+    /// 尽力而为：配置没有可用 dns 段（tailscaleDNSSkipped）时 policy 未注入，
+    /// 唤醒可能不生效，只能等第一条真实 tailnet 流量；日志里说明白。
+    private func wakeTailscaleViaMagicDNS() async {
+        let host = TailscaleName.sanitizeHostname(tsSettings.hostname)
+        let suffix = tsSettings.magicDNSSuffix.trimmingCharacters(
+            in: CharacterSet(charactersIn: ". "))
+        let fqdn = "\(host).\(suffix.isEmpty ? "ts.net" : suffix)"
+        if engine.tailscaleDNSSkipped {
+            logKernel("内置 Tailnet：配置无可用 dns 段，MagicDNS 唤醒尽力而为"
+                      + "（peer-only 节点不做公网 URL 测试）")
+        }
+        _ = try? await api.dnsQuery(name: fqdn, type: "A")
     }
 
     /// Clear the stale identity and immediately retry — the one-button cure for

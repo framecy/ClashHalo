@@ -155,7 +155,18 @@ enum TailscaleOverlay {
 
     /// Remove every fenced region. Runs before each injection so the operation
     /// is idempotent, and on disable so nothing of ours survives.
+    ///
+    /// F16：遇到未闭合 fence（有 begin 无 end）时**拒绝清理、原样返回**——
+    /// 旧实现会从 begin 一路删到文件尾，把用户半个配置吃掉。拒绝原因经
+    /// `stripChecked` 传给 `apply`，由 warnings → 日志链 surfaced。
     static func strip(_ yaml: String) -> String {
+        stripChecked(yaml).yaml
+    }
+
+    /// `strip` 的可判定版本：`refused == true` 表示存在未闭合 fence，
+    /// `yaml` 为原文（一个字节都不动）。纯逻辑，不在此处打日志——
+    /// 调用方（apply / EngineControl）负责把拒绝 surfaced 出去。
+    static func stripChecked(_ yaml: String) -> (yaml: String, refused: Bool) {
         var out: [String] = []
         var inside = false
         var removedAnything = false
@@ -166,8 +177,10 @@ enum TailscaleOverlay {
             if inside { continue }
             out.append(line)
         }
-        guard removedAnything else { return yaml }
-        return out.joined(separator: "\n")
+        // EOF 时仍在 fence 内 = 未闭合。宁可不清理，也不删到文件尾。
+        if inside { return (yaml, true) }
+        guard removedAnything else { return (yaml, false) }
+        return (out.joined(separator: "\n"), false)
     }
 
     // MARK: Apply
@@ -177,7 +190,16 @@ enum TailscaleOverlay {
     /// Always strips first, so calling this repeatedly with the same settings is
     /// a no-op and calling it with new settings never stacks.
     static func apply(to yaml: String, settings: TailscaleSettings) -> Result {
-        var lines = strip(yaml).components(separatedBy: "\n")
+        // F16：未闭合 fence 时拒绝整个注入——在没清理干净的文本上注入会叠出
+        // 第二份 fence，比不注入更糟。原文返回 + warning（经引擎日志链留痕）。
+        let stripped = stripChecked(yaml)
+        guard !stripped.refused else {
+            return Result(yaml: yaml,
+                          warnings: ["检测到未闭合的 tailscale fence，已拒绝清理与注入"
+                                     + "（避免删到文件尾）；请手动修复配置中的 fence 标记"],
+                          injected: false)
+        }
+        var lines = stripped.yaml.components(separatedBy: "\n")
         var warnings: [String] = []
 
         guard TailscaleName.isValid(settings.nodeName) else {
@@ -383,8 +405,14 @@ enum TailscaleOverlay {
         return "\"+.\(suffix)\": \"ts://\(nodeName)\""
     }
 
+    /// F15：先转义反斜杠再转义双引号（顺序不能反，否则刚写入的转义符会被
+    /// 二次转义）。YAML 双引号标量里 `\` 是转义引导符，裸反斜杠会改变后续
+    /// 字符语义甚至让整行解析失败。
     private static func quoted(_ v: String) -> String {
-        "\"" + v.replacingOccurrences(of: "\"", with: "\\\"") + "\""
+        let escaped = v
+            .replacingOccurrences(of: "\\", with: "\\\\")
+            .replacingOccurrences(of: "\"", with: "\\\"")
+        return "\"" + escaped + "\""
     }
 
     // MARK: Sequence insertion
