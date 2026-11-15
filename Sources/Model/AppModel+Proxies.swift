@@ -62,8 +62,18 @@ extension AppModel {
             }
         }
 
-        // Preserve existing measured delays for nodes that report 0 now
-        for (k, v) in nodes where ns[k]?.delay == 0 && v.delay > 0 { ns[k]?.delay = v.delay }
+        // Preserve existing measured delays for nodes that report 0 now.
+        // TS-3：条件是 `!= 0` 而不是 `> 0`——peer-only 哨兵 (-2) 也要保住。
+        for (k, v) in nodes where ns[k]?.delay == 0 && v.delay != 0 { ns[k]?.delay = v.delay }
+
+        // TS-3：重建后对 peer-only Tailscale 节点重新分类（与 test() 同一判据）。
+        // 无 exit node 时它们没有公网出口，URL 测试必红；旧实现每次 refresh 都把
+        // -2 哨兵抹回 0，界面重新显示「未测试」，下一轮测试又把它们打红。
+        let exitNode = tsEnabled ? tsSettings.exitNode : ""
+        for (name, node) in ns
+        where !TailscaleLatency.usesPublicURLTest(nodeType: node.type, exitNode: exitNode) {
+            ns[name]?.delay = TailscaleLatency.peerOnlySentinel
+        }
 
         // Store provider mapping for use by the test engine
         nodeToProvider = n2p

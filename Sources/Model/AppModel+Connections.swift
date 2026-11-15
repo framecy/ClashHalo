@@ -57,21 +57,55 @@ extension AppModel {
         var loopTrip: TUNLoopTrip?
         let watchNow = Date()
         autoreleasepool {
-        // Silence tracking runs ahead of the visibility branch on purpose: the
-        // background branch is exactly where a closed lid accumulates corpses,
-        // so a foreground-only feed would have been blind to the whole failure
-        // mode — the same one-path bug `enforceAppMemoryGuard` documents below.
+        // Silence tracking AND the self-loop sentinel run ahead of the visibility
+        // branch on purpose: the background branch is exactly where a closed lid
+        // accumulates corpses and a zombie TUN loops undetected, so a
+        // foreground-only feed would be blind to both failure modes. (TUN-2: the
+        // sentinel used to sit inside the detailed branch while this comment
+        // claimed otherwise — window hidden + menu bar closed was a config-ON
+        // blind spot.)
+        // CONN-3: the local address set is refreshed here too, unconditionally —
+        // the connections page「来源」列 needs it with the gateway OFF as well.
+        // One getifaddrs pass per tick (no fork); the equal-value short-circuit
+        // keeps the @Published write from invalidating the view tree every tick.
+        let localIPsThisTick = Set(NetScanner.interfaces().flatMap { $0.ipv4 })
+        if localIPs != localIPsThisTick { localIPs = localIPsThisTick }
+
         var liveIDs = Set<String>(minimumCapacity: items.count)
+        // C6: when the snapshot exceeds the 2000-entry cap, remember each row's
+        // tick rate so the trim below keeps the *busiest* rows instead of an
+        // arbitrary hash-order slice. Only populated in the oversized case.
+        let overCap = items.count > 2000
+        var tickRates: [String: Int64] = [:]
+        if overCap { tickRates.reserveCapacity(items.count) }
         for c in items {
             liveIDs.insert(c.id)
             staleConnWatch.observe(id: c.id, bytes: c.upload + c.download,
                                    tcp: c.metadata.network == "tcp", now: watchNow)
+            // TUN self-loop sentinel, fed on EVERY tick including fully hidden
+            // ones. Cheap pre-gate: only rows with a previous sample and a fat
+            // downlink delta touch the watch dictionary at all; the sentinel
+            // re-checks the full fingerprint internally. See `TUNLoopSentinel`
+            // for why this shape is impossible in real traffic.
+            if let prev = prevConnBytes[c.id] {
+                let downRate = max(0, c.download - prev.down)
+                if overCap { tickRates[c.id] = max(0, c.upload - prev.up) + downRate }
+                if loopTrip == nil, downRate >= tunLoopSentinel.minTickDownBytes {
+                    loopTrip = tunLoopSentinel.observe(
+                        id: c.id, chains: c.chains,
+                        host: c.metadata.host ?? "", destinationIP: c.metadata.destinationIP ?? "",
+                        tickDownBytes: downRate, totalUploadBytes: c.upload)
+                }
+            } else if overCap {
+                tickRates[c.id] = 0
+            }
         }
         staleConnWatch.reap(excluding: liveIDs)
+        // Watches for connections that vanished from the snapshot must go too —
+        // a loop that dies between ticks has nothing left to watch.
+        tunLoopSentinel.reap(excluding: liveIDs)
 
         if needDetailedStats {
-            var bytes: [String: (up: Int64, down: Int64)] = [:]
-            bytes.reserveCapacity(items.count)
             var activeIDs = Set<String>(minimumCapacity: items.count)
             // Sum the tick locally and hand `history` a single write — see
             // `TrafficHistory.recordBatch` for why per-connection calls were
@@ -84,19 +118,6 @@ extension AppModel {
                 let prev = prevConnBytes[c.id]
                 let upRate = prev.map { max(0, c.upload - $0.up) } ?? 0
                 let downRate = prev.map { max(0, c.download - $0.down) } ?? 0
-                bytes[c.id] = (c.upload, c.download)
-
-                // TUN self-loop sentinel. Cheap pre-gate first (only rows that
-                // added ≥ one chunk of downlink touch the watch dictionary at
-                // all); the sentinel re-checks the full fingerprint internally.
-                // See `TUNLoopSentinel` for why this shape is impossible in
-                // real traffic.
-                if loopTrip == nil, downRate >= tunLoopSentinel.minTickDownBytes {
-                    loopTrip = tunLoopSentinel.observe(
-                        id: c.id, chains: c.chains,
-                        host: c.metadata.host ?? "", destinationIP: c.metadata.destinationIP ?? "",
-                        tickDownBytes: downRate, totalUploadBytes: c.upload)
-                }
 
                 // attribute this connection's byte delta to its category → history
                 let delta = Double(upRate + downRate)
@@ -119,21 +140,7 @@ extension AppModel {
                 updateGatewayDevices(from: items)
             }
 
-            prevConnBytes = bytes
-
-            // Limit prevConnBytes growth: cap at 2000 entries by keeping only the
-            // active connection IDs (which are already in `bytes`).
-            if prevConnBytes.count > 2000 {
-                let trimmed = prevConnBytes.prefix(2000)
-                prevConnBytes = Dictionary(trimmed.map { ($0.key, $0.value) },
-                                          uniquingKeysWith: { a, _ in a })
-                logKernel("连接追踪字典过大，已裁剪至 2000 条")
-            }
-
             activeConnsSet = activeIDs
-            // Watches for connections that vanished from the snapshot must go
-            // too — a loop that dies between ticks has nothing left to watch.
-            tunLoopSentinel.reap(excluding: activeIDs)
             // Equal-value @Published writes still publish and invalidate the
             // whole view tree every snapshot tick; gate the hot counters.
             if activeConnectionsCount != activeIDs.count {
@@ -153,16 +160,33 @@ extension AppModel {
             }
             if gatewayModeOn {
                 updateGatewayDevices(from: items)
-                // Keep prevConnBytes for the next rate delta; only drop the
-                // heavy active-set bookkeeping while UI is hidden.
-                var bytes: [String: (up: Int64, down: Int64)] = [:]
-                bytes.reserveCapacity(items.count)
-                for c in items { bytes[c.id] = (c.upload, c.download) }
-                prevConnBytes = bytes
-            } else {
-                if !prevConnBytes.isEmpty { prevConnBytes.removeAll(keepingCapacity: false) }
             }
-            if !activeConnsSet.isEmpty { activeConnsSet.removeAll(keepingCapacity: false) }
+            if !activeConnsSet.isEmpty {
+                // CONN-2：清 activeConnsSet 前先扣减基线——否则下一拍 detailed 快照
+                // 会把全部在账连接当「新连接」重新计数，「已关闭」计数跳增。
+                totalConnsCount = max(0, totalConnsCount - activeConnsSet.count)
+                activeConnsSet.removeAll(keepingCapacity: false)
+            }
+        }
+
+        // prevConnBytes is the sentinel's delta baseline, so it is maintained on
+        // EVERY tick now (TUN-2) — the old background branch dropped it whenever
+        // the gateway was off, which silently starved the hidden-state sentinel.
+        // Memory pressure is still handled by `enforceAppMemoryGuard`'s hard tier.
+        var bytes: [String: (up: Int64, down: Int64)] = [:]
+        bytes.reserveCapacity(items.count)
+        for c in items { bytes[c.id] = (c.upload, c.download) }
+        prevConnBytes = bytes
+        // C6: cap at 2000 entries keeping the busiest rows by tick rate (the old
+        // `prefix(2000)` kept an arbitrary hash-order slice). Ties break on id so
+        // the trim is deterministic.
+        if prevConnBytes.count > 2000 {
+            let keep = Set(prevConnBytes.keys.sorted { a, b in
+                let ra = tickRates[a] ?? 0, rb = tickRates[b] ?? 0
+                return ra != rb ? ra > rb : a < b
+            }.prefix(2000))
+            prevConnBytes = prevConnBytes.filter { keep.contains($0.key) }
+            logKernel("连接追踪字典过大，已按速率保留最忙 2000 条")
         }
         }
 
@@ -261,6 +285,9 @@ extension AppModel {
             cachedClosedConnections.removeAll(keepingCapacity: false)
             if includingBookkeeping {
                 prevConnBytes.removeAll(keepingCapacity: false)
+                // CONN-2：清 activeConnsSet 前先扣减基线（与 AppModel.swift 两处同模式），
+                // 否则下一拍 detailed 快照把在账连接全部重新计数，「已关闭」跳增。
+                totalConnsCount = max(0, totalConnsCount - activeConnsSet.count)
                 activeConnsSet.removeAll(keepingCapacity: false)
             }
             return true
@@ -352,8 +379,11 @@ extension AppModel {
     /// relying on — an idle-but-alive SSH shell, a resuming download, an IM push
     /// socket. Only per-id closes, and only ids the watch proved silent.
     ///
-    /// `forget`s the ids before dispatching so a snapshot that still lists them
-    /// cannot propose the same batch twice while the closes are in flight.
+    /// `forget`s an id only **after** its DELETE succeeded (C6): a failed close
+    /// keeps its watch row and its silence clock, so the next round retries the
+    /// same corpse. Forgetting up front let a failed DELETE re-enter the watch
+    /// as a brand-new row on the next snapshot — silence clock reset to zero,
+    /// which made exactly the connections this exists for immortal.
     func reapStaleConnections(now: Date, force: Bool = false) {
         guard !kernelReapInFlight else { return }
         guard force || now.timeIntervalSince(lastStaleReap) >= Self.staleReapInterval
@@ -363,7 +393,8 @@ extension AppModel {
         lastStaleReap = now
 
         let batch = Array(doomed.prefix(Self.staleReapMaxPerRun))
-        staleConnWatch.forget(batch)
+        // No up-front forget: `kernelReapInFlight` already prevents overlapping
+        // rounds, and rows must survive a failed DELETE (see above).
         kernelReapInFlight = true
         Task { [weak self] in
             guard let self else { return }
@@ -376,7 +407,10 @@ extension AppModel {
                     // 计数口径只能到「请求成功送达」：实测 mihomo 对一个不存在
                     // 的 id 也回 204，所以 2xx 不能证明真关掉了什么。真正消失
                     // 与否交给下一拍的 `reap(excluding:)` 收敛，这里不虚报。
-                    if (try? await self.api.closeConnection(id: id)) != nil { sent += 1 }
+                    if (try? await self.api.closeConnection(id: id)) != nil {
+                        sent += 1
+                        self.staleConnWatch.forget([id])
+                    }
                 }
                 index = end
                 if index < batch.endIndex {
@@ -405,9 +439,10 @@ extension AppModel {
 
     /// Aggregate LAN gateway clients from a connections snapshot.
     ///
-    /// Filters out loopback / this host's own IPs, and also the TUN fake-ip
-    /// address range (198.18.0.0/15) which mihomo reports as sourceIP for
-    /// local processes under fake-ip mode.
+    /// Source filtering goes through `ConnOriginClassifier` and keeps only
+    /// `.lan` rows (TS-7) — loopback / this host's own IPs / fake-ip (v4 **and**
+    /// v6) / external public peers are excluded, the same口径 the connections
+    /// page「来源」column uses.
     ///
     /// Two things this deliberately does *not* do any more, because both made
     /// the numbers disagree badly with the kernel's own:
@@ -444,10 +479,8 @@ extension AppModel {
         let hasBaseline = lastGatewaySampleAt != .distantPast
         lastGatewaySampleAt = nowTime
 
-        // 本机地址集合这一拍只采一次，同时发布给「来源」列/来源判定复用
-        // （逐行调 `getifaddrs` 是纯浪费）；等值短路避免每拍都触发视图刷新。
-        let localIPsThisTick = Set(NetScanner.interfaces().flatMap { $0.ipv4 })
-        if localIPs != localIPsThisTick { localIPs = localIPsThisTick }
+        // 本机地址集合由 `recordHistoryOnly` 每拍无条件刷新（CONN-3：网关 OFF 时
+        // 连接页「来源」列也要用），这里直接读发布值，不再自己采 getifaddrs。
         var liveUp = [String: Int64](), liveDown = [String: Int64]()
         var liveConns = [String: Int]()
         var seenIDs = Set<String>()
@@ -457,11 +490,15 @@ extension AppModel {
 
         for c in items {
             let srcIP = c.metadata.sourceIP ?? ""
-            guard !srcIP.isEmpty,
-                  srcIP != "127.0.0.1",
-                  srcIP != "::1",
-                  !localIPsThisTick.contains(srcIP),
-                  !Self.isFakeIP(srcIP) else { continue }
+            // TS-7：与连接页「来源」列同一口径（ConnOriginClassifier），只收 .lan。
+            // 旧手写过滤只挡 127.0.0.1/::1 两个点，漏了 127/8 其余地址与 v6 fake-ip
+            // 段，还会把 external 公网对端混进「已接入设备」。
+            let origin = ConnOriginClassifier.classify(
+                inboundName: c.metadata.inboundName,
+                inboundPort: c.metadata.inboundPort,
+                sourceIP: c.metadata.sourceIP,
+                localIPs: localIPs)
+            guard origin.kind == .lan else { continue }
             seenIDs.insert(c.id)
             liveUp[srcIP, default: 0] += c.upload
             liveDown[srcIP, default: 0] += c.download
@@ -518,8 +555,21 @@ extension AppModel {
             let fresh = DeviceIdentityResolver.identify(
                 mac: gatewayMACs[ip],
                 observedPorts: Self.ports(fromMask: identityMask[ip] ?? 0))
-            let knownNothing = fresh.mac.isEmpty && fresh.deviceType.isEmpty
-            dev.identity = knownNothing ? (dev.identity ?? fresh) : fresh
+            // TS-8：逐字段保留——本拍 MAC 或类型任一缺失就补旧值，而不是只在
+            // 「两者都空」时才保留。否则设备空闲拍（无端口指纹、ARP 老化）类型
+            // 会闪回「未知」，与上面注释的承诺矛盾。
+            var merged = fresh
+            if let old = dev.identity, fresh.mac.isEmpty || fresh.deviceType.isEmpty {
+                let keepMAC = fresh.mac.isEmpty && !old.mac.isEmpty
+                let keepType = fresh.deviceType.isEmpty && !old.deviceType.isEmpty
+                if keepMAC || keepType {
+                    merged = DeviceIdentity(mac: keepMAC ? old.mac : fresh.mac,
+                                            vendor: keepMAC ? old.vendor : fresh.vendor,
+                                            deviceType: keepType ? old.deviceType : fresh.deviceType,
+                                            evidence: keepType ? old.evidence : fresh.evidence)
+                }
+            }
+            dev.identity = merged
             newGatewayDevices[ip] = dev
         }
 
@@ -576,6 +626,11 @@ extension AppModel {
     }
 
     /// 解析 `/usr/sbin/arp -an`。单独成函数是为了能在后台线程调用。
+    ///
+    /// F25：带 5s 超时。旧实现同步 `readDataToEndOfFile` + `waitUntilExit`，
+    /// arp 一旦挂起，`arpRefreshInFlight` 永久锁死，设备身份从此不再刷新。
+    /// 现在后台读 + 限时等待：超时先 SIGTERM、宽限 1s 仍不退就 SIGKILL，
+    /// 返回 nil 交给下一个限频拍重试。
     nonisolated static func readARPMap() -> [String: String]? {
         let proc = Process()
         proc.executableURL = URL(fileURLWithPath: "/usr/sbin/arp")
@@ -584,8 +639,28 @@ extension AppModel {
         proc.standardOutput = pipe
         proc.standardError = FileHandle.nullDevice
         do { try proc.run() } catch { return nil }
-        let data = pipe.fileHandleForReading.readDataToEndOfFile()
+        let lock = NSLock()
+        var buffer = Data()
+        let readDone = DispatchSemaphore(value: 0)
+        let fh = pipe.fileHandleForReading
+        DispatchQueue.global(qos: .utility).async {
+            let d = fh.readDataToEndOfFile()
+            lock.lock()
+            buffer = d
+            lock.unlock()
+            readDone.signal()
+        }
+        guard readDone.wait(timeout: .now() + 5) == .success else {
+            proc.terminate()
+            if readDone.wait(timeout: .now() + 1) != .success {
+                kill(proc.processIdentifier, SIGKILL)
+            }
+            return nil
+        }
         proc.waitUntilExit()
+        lock.lock()
+        let data = buffer
+        lock.unlock()
         guard proc.terminationStatus == 0,
               let text = String(data: data, encoding: .utf8) else { return nil }
         var map: [String: String] = [:]
@@ -595,13 +670,6 @@ extension AppModel {
             }
         }
         return map
-    }
-
-    /// mihomo fake-ip pool is 198.18.0.0/15 by default.
-    private static func isFakeIP(_ ip: String) -> Bool {
-        let parts = ip.split(separator: ".")
-        guard parts.count == 4, let a = Int(parts[0]), let b = Int(parts[1]) else { return false }
-        return a == 198 && (b == 18 || b == 19)
     }
 
     /// Single-pass dashboard aggregation (runs once per connections snapshot,

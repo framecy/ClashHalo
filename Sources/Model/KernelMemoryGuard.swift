@@ -129,8 +129,10 @@ struct StaleConnectionWatch {
         return doomed.sorted { $0.lastGrowth < $1.lastGrowth }.map(\.id)
     }
 
-    /// Forget rows about to be closed, so a snapshot that still lists them
-    /// cannot propose them twice.
+    /// Forget rows whose close was confirmed sent (C6: called **after** a
+    /// successful DELETE, not before). A failed close must keep its row and its
+    /// silence clock so the next round retries it — forgetting up front let the
+    /// next snapshot re-register it as brand-new, resetting the clock to zero.
     mutating func forget(_ ids: some Sequence<String>) {
         for id in ids { rows[id] = nil }
     }

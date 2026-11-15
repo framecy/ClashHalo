@@ -1,6 +1,7 @@
 import Foundation
 import Combine
 import SwiftUI
+import CryptoKit
 
 final class KernelManager: ObservableObject {
     static let shared = KernelManager()
@@ -198,12 +199,48 @@ final class KernelManager: ObservableObject {
         let fm = FileManager.default
         let port = await MainActor.run { AppModel.shared.proxyPort }
         let wasProxyOn = await MainActor.run { AppModel.shared.systemProxyOn }
+        // CONN-5：进入前快照 TUN 意图与 DNS 账本。失败路径不会走 UI 的 reapplyTUN，
+        // 而内核启动强制 tun off——账本里的 fake-ip DNS 重定向若不还原就是无主黑洞
+        // （198.18.x 只在隧道活着时可达）。成功路径不动，reapplyTUN 由 UI 流程负责。
+        let wasTunOn = await MainActor.run { AppModel.shared.tunOn }
+        let hadTunDNSLedger = TunnelDNSLedger.record(for: .tun) != nil
+
+        // CONN-5：失败路径共用的 DNS 还原（幂等：无账即 no-op）。只在停核之后调用；
+        // CONN-6 的「中止切换」路径内核未停、TUN 仍活，绝不能还原。
+        func restoreTunDNSOnFailure(_ reason: String) async {
+            guard wasTunOn || hadTunDNSLedger else { return }
+            await MainActor.run {
+                AppModel.shared.logKernel("内核切换失败（\(reason)）：还原 TUN DNS 重定向，防止无主残留")
+            }
+            let ok = await TunnelDNSLedger.restore(owner: .tun, log: { msg in
+                Task { @MainActor in AppModel.shared.logKernel(msg) }
+            })
+            if !ok {
+                await MainActor.run {
+                    AppModel.shared.logKernel("内核切换失败（\(reason)）：TUN DNS 还原写入失败，账本保留待巡检重试")
+                }
+            }
+        }
 
         // Drop system proxy BEFORE killing the kernel so traffic can fall back
         // to direct while the swap is in flight.
         if wasProxyOn {
             await MainActor.run { AppModel.shared.logKernel("内核切换：临时关闭系统代理以防断网") }
-            _ = await EngineControl.shared.setSystemProxy(enabled: false, port: port)
+            // CONN-6：检查写入结果，失败重试一次；仍失败则中止切换（不停核）。
+            // 系统代理仍指着 127.0.0.1 时停核 = 全机断网，宁可本次不切换。
+            var proxyOff = await EngineControl.shared.setSystemProxy(enabled: false, port: port)
+            if !proxyOff {
+                await MainActor.run { AppModel.shared.logKernel("内核切换：关闭系统代理失败，重试一次") }
+                proxyOff = await EngineControl.shared.setSystemProxy(enabled: false, port: port)
+            }
+            guard proxyOff else {
+                try? fm.removeItem(atPath: stagedPath)
+                await MainActor.run {
+                    AppModel.shared.logKernel("内核切换：系统代理无法关闭，已中止切换（内核未停，网络不受影响）")
+                    self.note = "切换已中止：无法临时关闭系统代理，内核保持运行"
+                }
+                return false
+            }
             await MainActor.run { AppModel.shared.systemProxyOn = false }
         }
 
@@ -232,6 +269,8 @@ final class KernelManager: ObservableObject {
         guard installed else {
             // Best-effort relaunch of whatever is still in bin/ (may be missing).
             await EngineControl.shared.launch()
+            // CONN-5：内核已停过，TUN 不会自己回来——还原 DNS 重定向。
+            await restoreTunDNSOnFailure("替换二进制失败")
             if wasProxyOn {
                 // Unified restore: the port-liveness gate replaces the blind
                 // re-enable — a relaunched-but-not-yet-listening kernel must
@@ -261,6 +300,8 @@ final class KernelManager: ObservableObject {
                 self.note = "\(displayTag) 已安装但启动超时"
                 AppModel.shared.logKernel("内核切换后启动超时（\(displayTag)）")
             }
+            // CONN-5：启动超时同样不会走 UI 的 reapplyTUN，还原 DNS 重定向。
+            await restoreTunDNSOnFailure("启动超时")
         }
 
         // Restore system proxy only if the kernel is actually listening again.
@@ -456,16 +497,17 @@ final class KernelManager: ObservableObject {
         }
     }
 
-    /// Download + decompress into the channel slot, THEN swap the running kernel.
-    /// Download happens while the current kernel is still serving traffic — the
-    /// stop/swap window is only the final install step.
+    /// Download + verify (sha256) + decompress into the channel slot.
+    /// C9 契约：**只下载+校验+暂存，不切换运行中的内核**——切换是独立的用户动作
+    /// （`activate(_:)`），由 UI 流程拿到暂存 tag 后自行发起并负责 reapplyTUN。
+    /// 下载期间当前内核仍在服务流量，本函数不碰 stopKernel / 系统代理。
     ///
-    /// Returns whether the new kernel is reachable after the full flow.
+    /// Returns the staged display tag ("正式版" / "Alpha") on success, nil on failure.
     @discardableResult
-    func download() async -> Bool {
+    func download() async -> String? {
         guard let url = URL(string: assetURL), !latestTag.isEmpty else {
             await MainActor.run { self.note = "请先检查更新" }
-            return false
+            return nil
         }
         await MainActor.run {
             self.downloading = true
@@ -483,7 +525,7 @@ final class KernelManager: ObservableObject {
                     self.progress = 0
                 }
                 try? FileManager.default.removeItem(at: file)
-                return false
+                return nil
             }
             tmp = file
         } catch {
@@ -491,7 +533,34 @@ final class KernelManager: ObservableObject {
                 self.note = "下载失败：\(Self.shortError(error))"
                 self.progress = 0
             }
-            return false
+            return nil
+        }
+
+        // C1：sha256 校验。GitHub release 为每个资产提供 .sha256 校验文件；在解压
+        // 前校验下载到的 .gz。校验文件拿不到时降级为大小检查并打醒目日志（不静默）；
+        // 校验不匹配直接失败——文件可能损坏或被篡改，不能装进 bin。
+        await MainActor.run {
+            self.progress = 0.5
+            self.note = "正在校验 sha256…"
+        }
+        switch await Self.verifyDownloadSHA256(file: tmp, assetURL: url, session: session) {
+        case .verified:
+            await MainActor.run {
+                AppModel.shared.logKernel("内核下载：sha256 校验通过（\(self.latestTag)）")
+            }
+        case let .mismatch(expected, actual):
+            try? FileManager.default.removeItem(at: tmp)
+            await MainActor.run {
+                self.note = "下载失败：sha256 不匹配，文件可能损坏或被篡改"
+                self.progress = 0
+                AppModel.shared.logKernel("内核下载：sha256 不匹配（期望 \(expected.prefix(12))…，实际 \(actual.prefix(12))…），已丢弃下载文件")
+            }
+            return nil
+        case let .unavailable(reason):
+            await MainActor.run {
+                self.note = "校验文件不可用，降级为大小检查…"
+                AppModel.shared.logKernel("⚠️ 内核下载：sha256 校验不可用（\(reason)），降级为大小检查——无法保证文件完整性")
+            }
         }
 
         await MainActor.run {
@@ -536,7 +605,7 @@ final class KernelManager: ObservableObject {
                 self.note = "解压失败（文件不完整或非 gzip）"
                 self.progress = 0
             }
-            return false
+            return nil
         }
 
         try? fm.setAttributes([.posixPermissions: 0o755], ofItemAtPath: out)
@@ -549,18 +618,52 @@ final class KernelManager: ObservableObject {
             }
             self.scanInstalled()
         }
+        // C9：到此为止——只暂存，不 activate。切换由 UI 流程显式发起。
         let tag = channel == "alpha" ? "Alpha" : "正式版"
-        await MainActor.run { self.note = "下载完成，正在切换至 \(tag)…" }
-
-        // Only NOW stop the running kernel and swap — short outage window.
-        let switched = await activate(tag)
         await MainActor.run {
             self.progress = 1
-            if !switched {
-                self.note = "已下载 \(tag)，但切换/启动失败（系统代理已保护）"
-            }
+            self.note = "已下载 \(tag)，点「启用」切换"
         }
-        return switched
+        return tag
+    }
+
+    // MARK: - Download integrity (C1)
+
+    /// sha256 校验的三态结果：通过 / 校验文件不可用（降级） / 不匹配（必须失败）。
+    private enum SHA256Check {
+        case verified
+        case unavailable(String)
+        case mismatch(expected: String, actual: String)
+    }
+
+    /// 下载资产的 `.sha256` 校验文件并比对已下载文件的 SHA256。
+    /// 走同一个直连 session（connectionProxyDictionary=[:]），不经系统代理。
+    private static func verifyDownloadSHA256(file: URL, assetURL: URL,
+                                             session: URLSession) async -> SHA256Check {
+        let sumURL = assetURL.appendingPathExtension("sha256")
+        let data: Data
+        let resp: URLResponse
+        do {
+            (data, resp) = try await session.data(from: sumURL)
+        } catch {
+            return .unavailable("校验文件下载失败：\(shortError(error))")
+        }
+        if let h = resp as? HTTPURLResponse, h.statusCode != 200 {
+            return .unavailable("校验文件 HTTP \(h.statusCode)")
+        }
+        // 内容可能是裸 hash，也可能带文件名（`<hash>  <name>`）——取第一个 token。
+        guard let text = String(data: data, encoding: .utf8),
+              let token = text.split(whereSeparator: { $0 == " " || $0 == "\t" || $0 == "\n" || $0 == "\r" }).first,
+              token.count == 64, token.allSatisfy({ $0.isHexDigit }) else {
+            return .unavailable("校验文件内容无效")
+        }
+        let expected = token.lowercased()
+        let actual: String? = await Task.detached(priority: .userInitiated) {
+            guard let payload = try? Data(contentsOf: file) else { return nil }
+            return SHA256.hash(data: payload).map { String(format: "%02x", $0) }.joined()
+        }.value
+        guard let actual else { return .unavailable("无法读取已下载文件") }
+        return actual == expected ? .verified : .mismatch(expected: expected, actual: actual)
     }
 
     /// Compact, user-facing error text (no huge URLSession dump).

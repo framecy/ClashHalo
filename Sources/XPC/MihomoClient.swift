@@ -49,7 +49,9 @@ private struct SafeDecoder: @unchecked Sendable {
     }
 
     /// Minimal reader for a top-level `key: value` YAML scalar. Ignores indented
-    /// (nested) keys, inline comments, and surrounding quotes. Sufficient for the
+    /// (nested) keys; comment stripping and unquoting go through `YamlScalar`
+    /// (C2/CFG-15：`#` 前须空白才是注释，引号内的 `#` 是数据——旧「第一个 # 截断」
+    /// 口径会把含 # 的自定义 secret 截短，401 且无法自愈). Sufficient for the
     /// flat controller/secret fields; not a general YAML parser.
     private static func yamlScalar(_ key: String, in text: String) -> String? {
         for raw in text.split(separator: "\n", omittingEmptySubsequences: false) {
@@ -57,10 +59,16 @@ private struct SafeDecoder: @unchecked Sendable {
             guard !line.hasPrefix(" "), !line.hasPrefix("\t"), line.hasPrefix(key) else { continue }
             let after = line.dropFirst(key.count)
             guard after.first == ":" else { continue }
-            var val = after.dropFirst().trimmingCharacters(in: .whitespaces)
-            if let hash = val.firstIndex(of: "#") { val = String(val[..<hash]).trimmingCharacters(in: .whitespaces) }
-            val = val.trimmingCharacters(in: CharacterSet(charactersIn: "\"'"))
-            return val.isEmpty ? nil : val
+            let val = after.dropFirst().trimmingCharacters(in: .whitespaces)
+            let parsed = YamlScalar.parse(val)
+            let str: String
+            switch parsed {
+            case let s as String: str = s
+            case let i as Int: str = String(i)      // 纯数字 secret 也是合法字符串
+            case let b as Bool: str = String(b)
+            default: str = YamlScalar.stripInlineComment(val)
+            }
+            return str.isEmpty ? nil : str
         }
         return nil
     }
@@ -109,7 +117,11 @@ private struct SafeDecoder: @unchecked Sendable {
     func healthCheckProvider(_ name: String) async throws {
         let enc = name.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? name
         guard let req = request("/providers/proxies/\(enc)/healthcheck") else { throw MihomoError.badURL }
-        _ = try await session.data(for: req)
+        let (_, resp) = try await session.data(for: req)
+        // C3：401/404 等失败必须可分辨，不能把错误响应当「已触发」。
+        if let h = resp as? HTTPURLResponse, !(200..<300).contains(h.statusCode) {
+            throw MihomoError.http(h.statusCode)
+        }
     }
 
     /// Resolve a name via the kernel's DNS (returns raw JSON).
@@ -141,7 +153,11 @@ private struct SafeDecoder: @unchecked Sendable {
         let enc = group.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? group
         let body = try JSONEncoder().encode(["name": name])
         guard let req = request("/proxies/\(enc)", method: "PUT", body: body) else { throw MihomoError.badURL }
-        _ = try await session.data(for: req)
+        let (_, resp) = try await session.data(for: req)
+        // C3：mihomo 成功回 204；401/400（节点不存在）必须抛错而不是假成功。
+        if let h = resp as? HTTPURLResponse, !(200..<300).contains(h.statusCode) {
+            throw MihomoError.http(h.statusCode)
+        }
     }
 
     /// Latency test for a single proxy/node.
@@ -175,7 +191,12 @@ private struct SafeDecoder: @unchecked Sendable {
     /// Close all active connections.
     func closeAllConnections() async throws {
         guard let req = request("/connections", method: "DELETE") else { throw MihomoError.badURL }
-        _ = try await session.data(for: req)
+        let (_, resp) = try await session.data(for: req)
+        // C3：401 也回错误 JSON 而不是连接错误——旧实现照弹「已断开所有连接」。
+        // 抛错后调用方（AppModel.closeAllConnections）走 catch 弹失败 toast。
+        if let h = resp as? HTTPURLResponse, !(200..<300).contains(h.statusCode) {
+            throw MihomoError.http(h.statusCode)
+        }
     }
 
     /// Close a single connection by ID.
@@ -188,7 +209,12 @@ private struct SafeDecoder: @unchecked Sendable {
     /// Fetch a single snapshot of active connections via HTTP GET.
     func fetchConnectionsSnapshot() async throws -> ConnectionsSnapshot {
         guard let req = request("/connections", method: "GET") else { throw MihomoError.badURL }
-        let (data, _) = try await session.data(for: req)
+        let (data, resp) = try await session.data(for: req)
+        // C3：非 200（典型 401）的 body 是错误 JSON，解码它只会得到一条含糊的
+        // DecodingError；先判状态码，让调用方能分辨「密钥不匹配」与「数据坏了」。
+        if let h = resp as? HTTPURLResponse, h.statusCode != 200 {
+            throw MihomoError.http(h.statusCode)
+        }
         // Largest and most frequent decode in the app (every 1.5 s, one object
         // per live connection). Pool it like the generic `get` path already does
         // so JSONDecoder's temporaries drain here instead of piling up in the
@@ -280,7 +306,12 @@ private struct SafeDecoder: @unchecked Sendable {
     private func wsURL(_ path: String) -> URL? {
         var s = wsBase + path
         if !secret.isEmpty {
-            s += (path.contains("?") ? "&" : "?") + "token=\(secret)"
+            // C2：token 必须百分号编码——裸 `#` 会被当成 URL fragment 截断，
+            // WS 静默鉴权失败、连接页断流。在 urlQueryAllowed 基础上再排除
+            // `&=+`：前两者会拆分查询参数，Go 的 query 解析把 `+` 读成空格。
+            let allowed = CharacterSet.urlQueryAllowed.subtracting(CharacterSet(charactersIn: "&=+"))
+            let enc = secret.addingPercentEncoding(withAllowedCharacters: allowed) ?? secret
+            s += (path.contains("?") ? "&" : "?") + "token=\(enc)"
         }
         return URL(string: s)
     }
@@ -330,14 +361,37 @@ private struct SafeDecoder: @unchecked Sendable {
                 // reachable. After sleep/wake all 4 streams fail at once;
                 // blindly reconnecting creates a storm of parallel WebSocket
                 // connections. The main `reconnect()` flow re-establishes
-                // reachability and calls `startStreams()` which rebuilds all
-                // handles cleanly, so streams whose API is down simply stop.
+                // reachability and rebuilds its own streams; a stream whose
+                // API is down now waits with backoff instead of dying forever
+                // (C8：页面仍活跃时内核恢复后自动重建，不必切走再切回).
                 Task { @MainActor in
                     try? await Task.sleep(nanoseconds: 2_000_000_000)
                     guard !handle.cancelled else { return }
-                    guard self.reachable else { return }
-                    self.connectStream(path, type: T.self, handle: handle, onValue: onValue)
+                    if self.reachable {
+                        self.connectStream(path, type: T.self, handle: handle, onValue: onValue)
+                    } else {
+                        self.retryWhenReachable(handle: handle, delay: 5) {
+                            self.connectStream(path, type: T.self, handle: handle, onValue: onValue)
+                        }
+                    }
                 }
+            }
+        }
+    }
+
+    /// C8：指数退避等待内核恢复（5s 起步、翻倍、60s 封顶），恢复即重建流。
+    /// 只在 handle 未取消时循环；`reconnect()` / 页面 `stop()` 重建或回收流时
+    /// 会 cancel 旧 handle，本循环下一次醒来即退出，不会与新流叠加。
+    private func retryWhenReachable(handle: WSHandle, delay: TimeInterval,
+                                    reconnect: @escaping @MainActor () -> Void) {
+        Task { @MainActor [weak self] in
+            try? await Task.sleep(nanoseconds: UInt64(delay * 1_000_000_000))
+            guard let self, !handle.cancelled else { return }
+            if self.reachable {
+                reconnect()
+            } else {
+                self.retryWhenReachable(handle: handle, delay: min(delay * 2, 60),
+                                        reconnect: reconnect)
             }
         }
     }
@@ -368,11 +422,18 @@ private struct SafeDecoder: @unchecked Sendable {
                 }
                 self.receiveLoopRaw(task: task, path: path, handle: handle, onValue: onValue)
             case .failure:
+                // C8：与 receiveLoop 同一形状——可达即重建，不可达退避等待，
+                // 不再永久放弃（连接页的 raw 流正是「降级后无重建」的受害者）。
                 Task { @MainActor in
                     try? await Task.sleep(nanoseconds: 2_000_000_000)
                     guard !handle.cancelled else { return }
-                    guard self.reachable else { return }
-                    self.connectStreamRaw(path, handle: handle, onValue: onValue)
+                    if self.reachable {
+                        self.connectStreamRaw(path, handle: handle, onValue: onValue)
+                    } else {
+                        self.retryWhenReachable(handle: handle, delay: 5) {
+                            self.connectStreamRaw(path, handle: handle, onValue: onValue)
+                        }
+                    }
                 }
             }
         }

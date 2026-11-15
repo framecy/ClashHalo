@@ -30,8 +30,11 @@ import SwiftUI
     private var cachedDayStart = Date.distantPast
     private var todayKey: String {
         let now = Date()
-        if now < cachedDayStart || now.timeIntervalSince(cachedDayStart) >= 86_400 {
-            cachedDayStart = Calendar.current.startOfDay(for: now)
+        // C5：用日历日界（startOfDay）判翻转，而不是固定 86400s——DST 切换日
+        // 一天是 23/25 小时，旧判断会把日键翻转推迟/提前一小时，流量劈进两天。
+        let start = Calendar.current.startOfDay(for: now)
+        if start != cachedDayStart {
+            cachedDayStart = start
             cachedDayKey = Self.dayDF.string(from: now)
         }
         return cachedDayKey

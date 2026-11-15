@@ -22,8 +22,9 @@ import Foundation
 ///    connection caches the guard can shed. **This has now been fixed at the
 ///    source**: `residentMemoryBytes()` was switched from `phys_footprint` to
 ///    `task_basic_info.resident_size` (BSD RSS), and thresholds recalibrated
-///    to RSS scale (soft=150 MB / hard=250 MB, matching the ~87–94 MB idle RSS
-///    and ~130–150 MB active-use RSS measured in the field).
+///    to RSS scale (soft=260 MB / hard=380 MB, matching the ~146 MB idle
+///    plateau and ~220–235 MB active-use RSS measured in the field — see the
+///    calibration notes on `softLimit` / `hardLimit` below).
 ///
 /// A guard that fires forever without effect is not a safety net — it is a
 /// 15-second cache-thrash loop plus 463 lines of log noise. So the policy now
