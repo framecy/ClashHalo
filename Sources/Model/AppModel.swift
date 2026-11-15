@@ -160,7 +160,22 @@ let kDirectExcludeAcceptedKey = "tun.directExclude.accepted"
             // reconnect that completes while the window is already visible,
             // and the dashboard shows all-zero cards until a manual route
             // change or window visibility toggle.
-            if oldValue != reachable { reconcileActiveStreams() }
+            if oldValue != reachable {
+                // LIFE-11（AppModel 半边）：不可达期间重开主窗口时，UI 侧的
+                // didBecomeKey 断言被 `if M.reachable` 门挡住，flag 停在 false；
+                // 恢复可达时按真实窗口状态补一次。只在「titled 主窗口确实在屏
+                // 而 flag 为假」时置真——置假仍归 UI 事件（onDisappear / 最小化 /
+                // ⌘W），这里不碰，避免与 UI 域的判定半边冲突。本 App 只有一个
+                // titled 窗口（Window("ClashHalo", id: "main")），与 activateApp
+                // 的窗口枚举同一口径。
+                if reachable && !isMainWindowVisible {
+                    let mainOnScreen = NSApp.windows.contains {
+                        $0.styleMask.contains(.titled) && $0.isVisible && !$0.isMiniaturized
+                    }
+                    if mainOnScreen { isMainWindowVisible = true }
+                }
+                reconcileActiveStreams()
+            }
         }
     }
     @Published var version = "?"
@@ -296,7 +311,15 @@ let kDirectExcludeAcceptedKey = "tun.directExclude.accepted"
     /// timing bug after the fact. The Helper has had `helper.log` all along;
     /// this is its GUI counterpart, and the two interleave by wall clock.
     /// Truncated at ~2 MB — diagnostics, not an audit trail.
+    /// F15：appendAppLog 是 nonisolated——主线程的 logKernel 与退出清理 /
+    /// 信号处理所在的全局队列会并发进来，而「开文件→判大小→截断→seek→写」
+    /// 不是原子序列，交错会写出撕裂的行甚至互相截断。一把进程内锁串行化
+    /// 整段（锁只护文件操作，不护调用方状态）。
+    private static let appLogLock = NSLock()
+
     nonisolated static func appendAppLog(_ line: String) {
+        appLogLock.lock()
+        defer { appLogLock.unlock() }
         let dir = NSHomeDirectory() + "/Library/Logs/ClashHalo"
         let path = dir + "/app.log"
         let fm = FileManager.default
@@ -321,7 +344,14 @@ let kDirectExcludeAcceptedKey = "tun.directExclude.accepted"
     @Published var systemProxyOn = false
     /// Coverage detail behind `systemProxyOn` — see `SystemProxyStatus`.
     @Published var systemProxyStatus = SystemProxyStatus()
-    @Published var tunOn = false
+    @Published var tunOn = false {
+        didSet {
+            guard tunOn != oldValue else { return }
+            // F17：意图翻转立刻按住/释放 App Nap 断言，不再只靠 reconcile
+            // 与 60s 巡检补——断言晚到一拍，巡检就可能被节流一拍。
+            updateKeepAwakeAssertion()
+        }
+    }
     var staticRoutesInjected = false
     /// `staticRoutesInjected` 的“到期复查”时间戳。
     ///
@@ -509,6 +539,8 @@ let kDirectExcludeAcceptedKey = "tun.directExclude.accepted"
         didSet {
             guard oldValue != gatewayModeOn else { return }
             UserDefaults.standard.set(gatewayModeOn, forKey: "net.gatewayModeOn")
+            // F17：与 tunOn 同理，意图翻转立刻更新 App Nap 断言。
+            updateKeepAwakeAssertion()
             // NOTE: re-arming the repair breakers used to live here. It cannot:
             // this property is written by cascades, not just by the user — a TUN
             // teardown sets it false and the follow-up restore sets it true
@@ -693,8 +725,14 @@ let kDirectExcludeAcceptedKey = "tun.directExclude.accepted"
     private var preSleepTunOn = false
     private var preSleepSystemProxyOn = false
     private var preSleepGatewayOn = false
+    /// F16：唤醒恢复任务。再次入睡时取消（prepareForSleep），流程内也查
+    /// sleeping 兜底——睡-醒-睡快循环里旧恢复流程不得与新状态竞态。
+    private var wakeRecoveryTask: Task<Void, Never>?
     /// One-shot guard — `start()` must run exactly once per app lifetime.
     private var started = false
+    /// LIFE-7：启动期 helper check 是否已结束（成败都算）。kernelBoot 的
+    /// 身份决策据此做 bounded await（最多 10 s，见 start()）。
+    private var startupHelperCheckDone = false
     /// Combine subscriptions owned by this model (e.g. engine → UI forwarding).
     private var cancellables = Set<AnyCancellable>()
     /// System proxy was auto-disabled by the network-offline handler; restore on reconnect.
@@ -878,7 +916,21 @@ let kDirectExcludeAcceptedKey = "tun.directExclude.accepted"
         // several `networksetup`) → restoring DNS (another fork). The kernel's
         // own initialization is ~170 ms, so nearly all of the cold-start wait was
         // queueing behind privileged housekeeping. None of that is a precondition
-        // for a *user-mode* start, so it now runs concurrently.
+        // for a *user-mode* start, so it now runs concurrently. The one piece
+        // that gates the *identity* decision is the helper check below — bounded
+        // to 10 s (LIFE-7), not the unbounded serial chain of old.
+        //
+        // LIFE-7：helper check 单飞先行。身份决策（kernelBoot 内）最多等它
+        // 10 s：升级窗口里旧 Helper 正被替换，此刻白起一个用户态内核，几秒后
+        // 就要为 TUN/网关做一次 root 升级重启（全量重载、丢全部在途连接，还有
+        // 数据目录属主撕裂风险）。但 check 可能弹密码框挂几分钟，不能无限挡住
+        // 启动——超时按既有 best-effort 继续，check 在后台跑完后，若 Helper
+        // 可用且 TUN/网关意图在开，既有开启流程自会升级。
+        let helperCheck = Task { @MainActor in
+            let ok = await engine.checkAndUpgradeHelperIfNeeded()
+            startupHelperCheckDone = true
+            return ok
+        }
         let kernelBoot = Task { @MainActor in
             // hardenControllerConfig() (inside ensureInstalled above) may have just
             // swapped a secret it judged weak — but a kernel from a previous session
@@ -961,9 +1013,18 @@ let kDirectExcludeAcceptedKey = "tun.directExclude.accepted"
                 // also makes enabling TUN a pure config change instead of a
                 // privilege-switch restart.
                 //
-                // `isRoot` may not have been determined yet (the helper check runs
-                // in parallel), so establish it here — one handshake, and
-                // verifyConnectivity caches a success for 2 s.
+                // LIFE-7：身份决策前 bounded await helper check（最多 10 s）。
+                // check 单飞先行（见 start() 顶部），这里只轮询完成标志，不重复
+                // 调用它；100 ms 一跳让出 MainActor，check 的密码框/安装流程照常
+                // 推进。超时不取消 check——它继续在后台跑，这里按既有 best-effort
+                // 握手决定身份（Helper 若只是升级中短暂不可达，随后 TUN/网关开启
+                // 流程会按可用性升级重启）。
+                let helperWaitDeadline = Date().addingTimeInterval(10)
+                while !startupHelperCheckDone && Date() < helperWaitDeadline {
+                    try? await Task.sleep(nanoseconds: 100_000_000)
+                }
+                // `isRoot` 以一次真实握手为准——check 成功时 verifyConnectivity
+                // 有 2 s 缓存，这里几乎零成本。
                 engine.isRoot = await XPCManager.shared.verifyConnectivity()
                 await engine.ensureRunningAsync(preferRoot: engine.isRoot)
                 mark("kernel spawned(root=\(engine.isRoot))")
@@ -983,9 +1044,16 @@ let kDirectExcludeAcceptedKey = "tun.directExclude.accepted"
 
         Task {
             // Helper install/upgrade still gates *privileged* features (root TUN,
-            // gateway), but no longer gates the kernel: it runs alongside the
-            // boot task above. The pre-auth dialog still lands early.
-            await engine.checkAndUpgradeHelperIfNeeded()
+            // gateway). LIFE-7 后它也 bounded 地挡在身份决策前（最多 10 s，见
+            // kernelBoot 内的轮询），不再是完全并行的旁观者；预授权说明框仍尽早
+            // 弹出。这里 await 的是上面单飞任务的值，不会二次触发安装/升级。
+            //
+            // F18：网关 DNS 启动宽限**先装上再等 check**。密码框可能挂几十秒，
+            // 若等 check 结束才装宽限，期间事件驱动的网关体检（网络变化/reconnect）
+            // 会把「内核 DNS 还没 bind 完」读成「监听没了」——误报 + 300 s 退避。
+            // 宽限期把「正在起」与「真的没起来」分开（判据演进见 GatewayDNSHealth.swift）。
+            gatewayDNSProbeDue = Date().addingTimeInterval(Self.kGatewayDNSStartupGrace)
+            _ = await helperCheck.value
             mark("helper check")
 
             _ = await kernelBoot.value
@@ -995,11 +1063,6 @@ let kDirectExcludeAcceptedKey = "tun.directExclude.accepted"
             // and the guard's 30 s grace window (see enforceAppMemoryGuard)
             // deliberately does not act during it.
             logKernel(String(format: "启动完成：App RSS %.0f MB", Double(Self.residentMemoryBytes()) / 1_000_000))
-            // 网关 DNS 体检推迟到宽限期之后：`kernel ready` 只代表控制 API 起来
-            // 了，DNS 监听是随后才 bind 的。旧实现 0.14 s 后就开判，且判据还是
-            // 一条永远返回空的 netstat（见 GatewayDNSHealth.swift），于是每次
-            // 启动都白重载一轮内核。宽限期把「正在起」与「真的没起来」分开。
-            gatewayDNSProbeDue = Date().addingTimeInterval(Self.kGatewayDNSStartupGrace)
 
             // tsnet is lazy: it only starts on the first dial. If the user had
             // Tailscale enabled in a previous session, the proxy is in the config
@@ -1083,7 +1146,9 @@ let kDirectExcludeAcceptedKey = "tun.directExclude.accepted"
             // keep the UI consistent (tunOn is normally driven by
             // refreshConfigs, which won't run while disconnected, leaving the
             // toggle stuck "on").
-            tunOn = false
+            // LIFE-9：等值短路——不可达期间这段每 3 s 跑一次，@Published 的
+            // 等值写也会触发 objectWillChange，白刷新整棵视图树。
+            if tunOn { tunOn = false }
             // gatewayModeOn is the user's intent — the toggle is persisted to
             // UserDefaults via didSet (AGENTS: never inferred from config).
             // Clearing it here would (a) rewrite the persisted intent on every
@@ -1093,7 +1158,7 @@ let kDirectExcludeAcceptedKey = "tun.directExclude.accepted"
             // re-derived from config; the gateway's actual state is
             // reconciled by verifyGatewayConfig on the 30 s health tick once
             // the core is reachable again.
-            gatewayDevices.removeAll(keepingCapacity: false)
+            if !gatewayDevices.isEmpty { gatewayDevices.removeAll(keepingCapacity: false) }
 
             // Only auto-disable proxy/DNS if the kernel WAS reachable and just crashed,
             // NOT when it's just intentionally turned off by the user.
@@ -1135,8 +1200,25 @@ let kDirectExcludeAcceptedKey = "tun.directExclude.accepted"
         // 断言要在任何 early return 之前更新：内核暂时不可达、系统正在睡，都不该
         // 让「后台巡检保持运行」这件事被顺手关掉。
         updateKeepAwakeAssertion()
-        guard reachable && !sleeping else {
+        guard !sleeping else {
             stopStreams()
+            return
+        }
+        guard reachable else {
+            // LIFE-6 集成：内核不可达 ≠ 巡检停摆。停掉依赖 API 的数据流，但僵尸
+            // 巡检必须活着——内核假死 + utun 残留正是幽灵流量事故形态，合盖时
+            // 最常发生。可见态由前台循环负责 sweep（它自带不可达退避重探，
+            // P0-4）；隐藏态由 60 s 安全巡检负责（sweep 内部区分可达/不可达）。
+            trafficWS?.cancel(); trafficWS = nil
+            pollTimer?.invalidate(); pollTimer = nil
+            stopAppMemorySampling()
+            if isMainWindowVisible || isMenuBarVisible {
+                if pollTask == nil { startPolling() }
+                stopBackgroundSafetyWatch()
+            } else {
+                pollTask?.cancel(); pollTask = nil
+                startBackgroundSafetyWatch()
+            }
             return
         }
 
@@ -1205,9 +1287,6 @@ let kDirectExcludeAcceptedKey = "tun.directExclude.accepted"
             startBackgroundSafetyWatch()
         }
 
-        pollTimer?.invalidate()
-        pollTimer = nil
-
         // 后台慢速轮询：只要没有 UI 在屏就跑。
         //
         // 旧条件多带了一个 `!isConnectionsPageActive`，而连接页的
@@ -1216,56 +1295,69 @@ let kDirectExcludeAcceptedKey = "tun.directExclude.accepted"
         // `traffic-history.json` 到晚上 22:00 都没再更新过，网关 DNS 的
         // 「每 5 分钟静默复查」也就从来没发生过。连接页自己的 1.5 s 轮询覆盖的是
         // 一个**可见**的页面，不能拿来给「没有 UI」的情况免签。
+        //
+        // LIFE-10：合并制——已在跑就不 cancel+重建。reconcile 在路由/焦点/
+        // 连接页切换等事件上都会跑，旧实现每次把 30 s 倒计时清零，频繁事件能把
+        // 巡检无限顺延（与探针「合并调度、禁止 cancel+重建」同一条纪律）。
+        // 仅缺失时创建；UI 在屏时停掉，交回前台循环。
         if !activeUI {
-            bgTickCount = 0
-            pollTimer = Timer.scheduledTimer(withTimeInterval: 30.0, repeats: true) { [weak self] _ in
-                Task { @MainActor in
-                    guard let self else { return }
-                    guard !self.sleeping && self.networkOnline else { return }
+            if pollTimer == nil {
+                bgTickCount = 0
+                pollTimer = Timer.scheduledTimer(withTimeInterval: 30.0, repeats: true) { [weak self] _ in
+                    Task { @MainActor in
+                        guard let self else { return }
+                        guard !self.sleeping && self.networkOnline else { return }
 
-                    // Record traffic history
-                    do {
-                        let snapshot = try await self.api.fetchConnectionsSnapshot()
-                        await self.recordHistoryOnly(from: snapshot)
-                    } catch { }
+                        // Record traffic history
+                        do {
+                            let snapshot = try await self.api.fetchConnectionsSnapshot()
+                            await self.recordHistoryOnly(from: snapshot)
+                        } catch { }
 
-                    // Health check every 2 minutes (every 4 ticks at 30s interval)
-                    self.bgTickCount += 1
-                    if self.bgTickCount >= 4 {
-                        if self.gatewayModeOn && self.reachable {
-                            await self.verifyGatewayConfig()
+                        // Health check every 2 minutes (every 4 ticks at 30s interval)
+                        self.bgTickCount += 1
+                        if self.bgTickCount >= 4 {
+                            if self.gatewayModeOn && self.reachable {
+                                await self.verifyGatewayConfig()
+                            }
+                            if self.tunOn && self.reachable {
+                                await self.verifyTUNConfig()
+                                await self.auditAndRepairPeerRoutes()
+                            }
+                            // The complement: tunOn == false only *now* has a
+                            // watchdog (config-off zombie holding routes) — all
+                            // existing TUN guards are gated on tunOn.
+                            await self.sweepZombieTUN()
+                            self.bgTickCount = 0
                         }
-                        if self.tunOn && self.reachable {
-                            await self.verifyTUNConfig()
-                            await self.auditAndRepairPeerRoutes()
-                        }
-                        // The complement: tunOn == false only *now* has a
-                        // watchdog (config-off zombie holding routes) — all
-                        // existing TUN guards are gated on tunOn.
-                        await self.sweepZombieTUN()
-                        self.bgTickCount = 0
-                    }
 
-                    // 低频心跳（15 分钟）：窗口不可见期间唯一能证明"这套自愈还在
-                    // 跑"的东西。流量历史在这里是写不出去的——`recordHistoryOnly`
-                    // 为了省内存只在 UI 在屏时汇总，所以拿 `traffic-history.json`
-                    // 的 mtime 判断巡检有没有跑是错的（2026-11-08 的排查就是这么
-                    // 误判的：文件不动只说明没人在看，不说明定时器停了）。
-                    if Date() >= self.backgroundHeartbeatDue {
-                        self.backgroundHeartbeatDue = Date().addingTimeInterval(900)
-                        self.logKernel("后台轮询心跳：活动连接 \(self.activeConnectionsCount) 条"
-                                     + "，\(self.gatewayHealthSummary())"
-                                     + "；60 s 巡检 \(self.backgroundWatchTicks) 次"
-                                     + "，上次网关 DNS 查询 \(self.gatewayDNSProbeAgeSeconds()) 秒前")
+                        // 低频心跳（15 分钟）：窗口不可见期间唯一能证明"这套自愈还在
+                        // 跑"的东西。流量历史在这里是写不出去的——`recordHistoryOnly`
+                        // 为了省内存只在 UI 在屏时汇总，所以拿 `traffic-history.json`
+                        // 的 mtime 判断巡检有没有跑是错的（2026-11-08 的排查就是这么
+                        // 误判的：文件不动只说明没人在看，不说明定时器停了）。
+                        if Date() >= self.backgroundHeartbeatDue {
+                            self.backgroundHeartbeatDue = Date().addingTimeInterval(900)
+                            self.logKernel("后台轮询心跳：活动连接 \(self.activeConnectionsCount) 条"
+                                         + "，\(self.gatewayHealthSummary())"
+                                         + "；60 s 巡检 \(self.backgroundWatchTicks) 次"
+                                         + "，上次网关 DNS 查询 \(self.gatewayDNSProbeAgeSeconds()) 秒前")
+                        }
                     }
                 }
             }
+        } else {
+            pollTimer?.invalidate()
+            pollTimer = nil
         }
         
         if !isMainWindowVisible {
             cachedConns.removeAll(keepingCapacity: false)
             cachedClosedConnections.removeAll(keepingCapacity: false)
             prevConnBytes.removeAll(keepingCapacity: false)
+            // CONN-2：清 activeConnsSet 前先扣减基线——否则下一拍 detailed 快照
+            // 会把全部在账连接当「新连接」重新计数，「已关闭」计数跳增。
+            totalConnsCount = max(0, totalConnsCount - activeConnsSet.count)
             activeConnsSet.removeAll(keepingCapacity: false)
             logKernel("主窗口不可见，已释放 AppModel 内存缓存")
         }
@@ -1307,10 +1399,10 @@ let kDirectExcludeAcceptedKey = "tun.directExclude.accepted"
         _ = await proxies
         _ = await configs
         if let s = await snapshot {
+            // recordHistoryOnly 在 detailed 与后台两个分支里都已按 gatewayModeOn
+            // 调过 updateGatewayDevices——这里不再调第二遍：同一份快照连采两次，
+            // 第二次的时间差≈0，会把刚算出的设备速率清零。
             recordHistoryOnly(from: s)
-            if gatewayModeOn, let items = s.connections {
-                updateGatewayDevices(from: items)
-            }
         }
     }
 
@@ -1366,17 +1458,21 @@ let kDirectExcludeAcceptedKey = "tun.directExclude.accepted"
     /// its slow config fallback.
     static let backgroundSafetyInterval: TimeInterval = 60
 
-    /// Start (or restart) the always-on guard timer. Idempotent.
+    /// Start the always-on guard timer. 合并制（LIFE-10）：已在跑就不动它——
+    /// cancel+重建会清零 60 s 倒计时，频繁 reconcile（路由/焦点/连接页切换）
+    /// 能把巡检无限顺延，与探针被禁的反模式同形。仅缺失时创建。
     func startBackgroundSafetyWatch() {
-        backgroundSafetyTimer?.invalidate()
+        guard backgroundSafetyTimer == nil else { return }
         backgroundSafetyTimer = Timer.scheduledTimer(
             withTimeInterval: Self.backgroundSafetyInterval, repeats: true
         ) { [weak self] _ in
             Task { @MainActor in await self?.runBackgroundSafetyWatch() }
         }
-        // 边缘触发一条，且每次重建只记一次：这条日志是"隐藏窗口后自愈到底有没有
-        // 上线"的现场证据。2026-11-08 那次排查之所以只能靠推断，是因为整条链路
+        // 只在真正创建时记一条：这条日志是"隐藏窗口后自愈到底有没有上线"的
+        // 现场证据。2026-11-08 那次排查之所以只能靠推断，是因为整条链路
         // 在窗口一关之后既不写文件也不写日志，谁在跑、跑了没有，全是猜的。
+        // （旧实现每次 reconcile 重建都打一条，日志成对出现反而掩盖了
+        // 倒计时被反复清零的事实。）
         logKernel("后台安全巡检启动：窗口不可见期间 60 s 巡检 + 30 s 数据轮询"
                 + "（网关 DNS 每 60 s 真实查询复查）")
     }
@@ -1390,22 +1486,36 @@ let kDirectExcludeAcceptedKey = "tun.directExclude.accepted"
     /// on screen. Today that is only the zombie-TUN sweep, which is the one
     /// guard whose subject is invisible to every `tunOn`-gated check.
     ///
-    /// `sweepZombieTUN` carries its own guards (reachable, not busy, settle
-    /// window, upDetachedMihomoTun), so calling it from here cannot double-fire
-    /// with the visible path in a harmful way — both funnel into the same
-    /// `zombieTunRepairInFlight` flag.
+    /// `sweepZombieTUN` carries its own guards (not busy, settle window,
+    /// upDetachedMihomoTun, and — since LIFE-6 — an internal reachable/unreachable
+    /// split), so calling it from here cannot double-fire with the visible path
+    /// in a harmful way — both funnel into the same `zombieTunRepairInFlight`
+    /// flag. It runs even when the kernel API is unreachable: that is exactly
+    /// when a zombie TUN outlives its kernel.
     private func runBackgroundSafetyWatch() async {
         // 每次心跳先确认「这台机器还在替别人干活」的断言没掉——它是唯一一件
         // 掉了不会报错、只会让上面所有巡检一起变慢的事。
         updateKeepAwakeAssertion()
         backgroundWatchTicks += 1
-        guard reachable, !sleeping else { return }
+        guard !sleeping else { return }
+        // LIFE-6 集成：僵尸巡检不再依赖 reachable——「内核假死 + utun 残留持路由」
+        // 正是幽灵流量事故形态，且最常发生在合盖隐藏期。sweepZombieTUN 内部区分
+        // 两态（不可达 + 配置关 + pin 残留 → 两击确认后 heal；可达 → 原判据），
+        // 所以这里先跑它，再让网关 DNS 等依赖 API 的自愈留在 reachable 门后。
         await sweepZombieTUN()
+        guard reachable else { return }
         // 网关 DNS 的自愈也挂在这条线上，因为它是唯一一条「不看 UI 也要跑」的
         // 定时器（60 s）。`verifyGatewayConfig` 自带节流与单飞，插一行的成本
         // 就是一次 sysctl 读（稳态下不到 1 ms），换来的是隐藏窗口时也有人看。
         if gatewayModeOn {
             await verifyGatewayConfig()
+        }
+        // F13：bypass 对账也挂上这条 60 s 线。隐藏窗口期间系统代理的 bypass
+        // 列表被外部改写（旧版 Helper / 其他工具）时，原来只有 reconnect 才修。
+        // 只在系统代理开着时查（与 syncSystemProxyState 同一道门）；函数内部
+        // 自带「缺了才写」的幂等门，稳态零写入，日志在函数内限频。
+        if systemProxyOn {
+            reconcileProxyBypassIfNeeded()
         }
     }
 
@@ -1554,9 +1664,9 @@ let kDirectExcludeAcceptedKey = "tun.directExclude.accepted"
             while let self, !Task.isCancelled, self.isMainWindowVisible || self.isMenuBarVisible {
                 if !self.reachable {
                     if Date() >= healthDue {
-                        // 僵尸巡检自带 `guard reachable`：这一拍只会留下盲区诊断
-                        // 记录，不会误杀健康 TUN（`upDetachedMihomoTun` 对健康
-                        // TUN 同样返回 utun100，裸判会误报）。
+                        // LIFE-6：僵尸巡检内部区分可达/不可达——不可达 + 配置关 +
+                        // pin 残留仍 UP 持路由时走两击确认自愈，不再只留盲区日志。
+                        // 健康 TUN 不会误杀（upDetachedMihomoTun 判据 + !tunOn 门控）。
                         await self.sweepZombieTUN()
                         healthDue = Date().addingTimeInterval(30)
                     }
@@ -1715,9 +1825,16 @@ let kDirectExcludeAcceptedKey = "tun.directExclude.accepted"
         stopStreams()       // cancel WS — avoids 4× reconnect race on wake
         reconnectTask?.cancel()
         reconnectTask = nil
+        // F16：上一轮唤醒恢复若还在跑（睡-醒-睡快循环），取消它——
+        // 它的恢复动作针对的是上一次唤醒的状态，继续跑会与新状态竞态。
+        wakeRecoveryTask?.cancel()
+        wakeRecoveryTask = nil
 
         // Proactively free memory: clear large connection tracking maps
         prevConnBytes.removeAll(keepingCapacity: false)
+        // CONN-2：先扣基线再清集合，唤醒后首拍 detailed 快照重新计数时
+        // 「已关闭」才不会跳增（与隐藏态/离线两处同一模式）。
+        totalConnsCount = max(0, totalConnsCount - activeConnsSet.count)
         activeConnsSet.removeAll(keepingCapacity: false)
         cachedConns.removeAll(keepingCapacity: false)
         cachedClosedConnections.removeAll(keepingCapacity: false)
@@ -1737,9 +1854,14 @@ let kDirectExcludeAcceptedKey = "tun.directExclude.accepted"
 
         logKernel("系统唤醒，正在恢复连接与服务...")
 
-        Task {
+        // F16：存下唤醒恢复任务，再次入睡时取消（prepareForSleep）——旧实现
+        // 裸 Task，睡-醒-睡快循环里上一轮恢复会与新状态竞态。流程内也在关键
+        // 节点查 sleeping/取消，兜住取消尚未送达的窗口。
+        wakeRecoveryTask?.cancel()
+        wakeRecoveryTask = Task {
             // Network interfaces need a moment to re-associate after wake (reduced from 2s to 1s)
             try? await Task.sleep(nanoseconds: 1_000_000_000)
+            guard !Task.isCancelled, !sleeping else { return }
 
             // Probe kernel health
             await api.probe(timeout: 1.0)
@@ -1759,6 +1881,7 @@ let kDirectExcludeAcceptedKey = "tun.directExclude.accepted"
 
             // Reconnect and restore state
             await reconnect()
+            guard !Task.isCancelled, !sleeping else { return }
 
             // Restore TUN if it was active before sleep. applyTUNState's
             // contract is "caller owns engine.isBusy" — this path used to call
@@ -1793,37 +1916,50 @@ let kDirectExcludeAcceptedKey = "tun.directExclude.accepted"
 
             // Restore Gateway config overrides if it was active before sleep.
             // A kernel restart during sleep re-reads config.yaml from disk,
-            // which has the original profile values — the Gateway overrides
-            // (allow-lan + dns.listen=0.0.0.0:53) are lost. Re-inject them
-            // and reload so Gateway clients keep working.
+            // which may have lost the Gateway overrides (allow-lan +
+            // dns.listen=0.0.0.0:53) — e.g. an auto-teardown restored the
+            // pre-gateway snapshot. Re-inject them so Gateway clients keep working.
+            //
+            // LIFE-4：加门 + 手工持锁 + 失败不改写意图。
+            // · 只有「开关被级联关掉」或「config 声明真的丢了」才重载；健康时
+            //   一次 PUT force 会丢掉全部在途连接，而唤醒本身不改 config。
+            // · 声明读盘而不是读 configs：睡眠期间内核若重启过，configs 还是
+            //   睡前快照；磁盘才是重启内核实际加载的那份（drift 的判据本体）。
+            // · 手工持 isBusy + defer（对齐上面 TUN 恢复的锁纪律）。
+            // · 失败只日志（事务自带错误 toast），不再 gatewayModeOn=false——
+            //   意图不可被瞬态故障改写（同 reconnect 不可达分支写下的原则），
+            //   30s/60s 巡检会继续对账重试。
+            guard !Task.isCancelled, !sleeping else { return }
             if preSleepGatewayOn && reachable {
-                logKernel("恢复网关中枢配置...")
-                engine.setTopLevelScalars(AppModel.gatewayOverrides)
-
-                // Retry reload up to 3 times with exponential backoff
-                var restored = false
-                for attempt in 1...3 {
-                    do {
-                        try await api.reloadConfig(path: engine.configFilePath)
-                        await refreshConfigs()
+                let disk = engine.readConfigFile() ?? [:]
+                let declaresGateway = (disk["allow-lan"] as? Bool) == true
+                    && (disk["dns"] as? [String: Any])?["listen"] as? String == kGatewayDNSListen
+                if gatewayModeOn && declaresGateway {
+                    logKernel("唤醒恢复：网关声明完好，跳过重载（保留在途连接）")
+                } else if engine.isBusy {
+                    logKernel("唤醒恢复：网关开关操作进行中，跳过（30s 巡检会对账）")
+                } else {
+                    logKernel("恢复网关中枢配置...")
+                    engine.isBusy = true
+                    defer { engine.isBusy = false }
+                    // 与 selectForApply 的网关级联同一条事务（备份→写盘→
+                    // mihomo -t 校验→重载→失败回滚），不再裸写 + 盲目重试三轮。
+                    let patched = await patchPersistentTransactional(AppModel.gatewayOverrides)
+                    if patched {
+                        // 声明已确认写回：恢复睡前意图（这是成功路径，不是瞬态改写）。
+                        gatewayModeOn = true
                         // Only enable sysctl IP forwarding after config is confirmed reloaded
                         let ok = await engine.setGatewayMode(enabled: true)
-                        gatewayModeOn = ok
-                        restored = ok
-                        logKernel(ok ? "网关中枢已恢复" : "网关中枢恢复失败")
-                        break
-                    } catch {
-                        logKernel("网关配置重载失败（尝试 \(attempt)/3）：\(error.localizedDescription)")
-                        if attempt < 3 {
-                            try? await Task.sleep(nanoseconds: UInt64(attempt) * 1_000_000_000)
+                        logKernel(ok ? "网关中枢已恢复"
+                                     : "网关中枢配置已恢复，IP 转发启用失败（巡检会继续重试）")
+                        if !ok {
+                            showToast("网关配置已恢复，但 IP 转发启用失败，请检查特权服务", kind: .warn)
                         }
+                    } else {
+                        // 事务内部已弹过具体失败原因并回滚了文件，这里只补一条
+                        // 日志说明后果，不叠加 toast、不改写开关意图。
+                        logKernel("网关中枢恢复失败：保留开关意图，健康巡检会继续重试")
                     }
-                }
-
-                if !restored {
-                    logKernel("网关中枢恢复失败，已放弃重试")
-                    gatewayModeOn = false
-                    gatewayDevices.removeAll(keepingCapacity: false)
                 }
             }
 
@@ -1929,6 +2065,8 @@ let kDirectExcludeAcceptedKey = "tun.directExclude.accepted"
             }
             // Proactively free memory when going offline
             prevConnBytes.removeAll(keepingCapacity: false)
+            // CONN-2：先扣基线再清集合（同隐藏态/睡前两处）。
+            totalConnsCount = max(0, totalConnsCount - activeConnsSet.count)
             activeConnsSet.removeAll(keepingCapacity: false)
             logKernel("网络离线，已释放连接追踪缓存")
         }
@@ -2066,7 +2204,14 @@ let kDirectExcludeAcceptedKey = "tun.directExclude.accepted"
             guard missing else { return }
 
             await MainActor.run {
-                self.logKernel("检测到系统代理 bypass 缺少局域网网段，正在本地直接补齐（不经过 Helper）...")
+                // F13：60 s 后台巡检也会走到这里——同一条结论 5 分钟内只说
+                // 一次，外部反复改写 bypass 时日志不被刷满（与 logGatewayDNSOnce
+                // 同一纪律）。写入本身不受限频影响：缺了就补。
+                let now = Date()
+                if now.timeIntervalSince(self.throttleStamps["bypassReconcileDetected"] ?? .distantPast) > 300 {
+                    self.throttleStamps["bypassReconcileDetected"] = now
+                    self.logKernel("检测到系统代理 bypass 缺少局域网网段，正在本地直接补齐（不经过 Helper）...")
+                }
             }
             // Write directly via `networksetup` on the GUI side (the user can
             // change their own network services without root), NOT through the
@@ -2082,7 +2227,11 @@ let kDirectExcludeAcceptedKey = "tun.directExclude.accepted"
                 try? p.run(); p.waitUntilExit()
             }
             await MainActor.run {
-                self.logKernel("系统代理 bypass 已本地补齐局域网网段（共 \(svcs.count) 个网络服务）")
+                let now = Date()
+                if now.timeIntervalSince(self.throttleStamps["bypassReconcileDone"] ?? .distantPast) > 300 {
+                    self.throttleStamps["bypassReconcileDone"] = now
+                    self.logKernel("系统代理 bypass 已本地补齐局域网网段（共 \(svcs.count) 个网络服务）")
+                }
             }
         }
     }
@@ -2484,10 +2633,17 @@ let kDirectExcludeAcceptedKey = "tun.directExclude.accepted"
             // Gateway cascade: reload re-reads config.yaml from disk, which
             // has the original profile values. If Gateway was on, re-inject
             // the overrides (allow-lan + dns.listen=0.0.0.0:53) so it keeps working.
+            //
+            // LIFE-4：与 selectForApply 的级联同一条事务（备份→写盘→mihomo -t
+            // 校验→重载→失败回滚），不再裸写 setTopLevelScalars + reload——
+            // 那份重复实现既不校验也不回滚，失败时文件已改过却无人还原。
             if gatewayModeOn {
-                engine.setTopLevelScalars(AppModel.gatewayOverrides)
-                try await api.reloadConfig(path: engine.configFilePath)
-                await refreshConfigs()
+                let gatewayOK = await patchPersistentTransactional(AppModel.gatewayOverrides)
+                if !gatewayOK {
+                    // 事务内部已经弹出具体失败原因并回滚了文件，这里只补一条
+                    // 日志说明后果，不再叠加 toast 盖掉那条更有信息量的提示。
+                    logKernel("网关级联：网关配置未能重新应用（已按事务回滚），请检查「网络」页网关状态")
+                }
             }
 
             noteConfigContentChanged()
@@ -2699,6 +2855,16 @@ final class AppUpdater: ObservableObject {
     private var lastLoggedProgress = -1
     private var downloadContinuation: CheckedContinuation<URL?, Never>?
 
+    /// LIFE-12：更新检查必须直连 GitHub（对齐 KernelManager 的纪律）。
+    /// 系统代理开着而内核已死时，经代理的更新请求会跟着一起死——更新自救
+    /// 通道不能依赖它要修复的东西。ephemeral + 空代理字典 = 忽略系统代理/PAC。
+    private let directSession: URLSession = {
+        let config = URLSessionConfiguration.ephemeral
+        config.timeoutIntervalForRequest = 15
+        config.connectionProxyDictionary = [:]
+        return URLSession(configuration: config)
+    }()
+
     var onLog: ((String) -> Void)?
 
     private init() {}
@@ -2744,7 +2910,7 @@ final class AppUpdater: ObservableObject {
             request.setValue("application/vnd.github.v3+json", forHTTPHeaderField: "Accept")
             request.timeoutInterval = 15
 
-            let (data, response) = try await URLSession.shared.data(for: request)
+            let (data, response) = try await directSession.data(for: request)
 
             guard let httpResponse = response as? HTTPURLResponse,
                   httpResponse.statusCode == 200 else {
@@ -2888,9 +3054,12 @@ final class AppUpdater: ObservableObject {
                 }
             )
 
-            let config = URLSessionConfiguration.default
+            // LIFE-12：下载同样直连（ephemeral + 空代理字典，同 directSession /
+            // KernelManager）——代理开且内核死时，经系统代理的下载会一起死。
+            let config = URLSessionConfiguration.ephemeral
             config.timeoutIntervalForRequest = 45
             config.timeoutIntervalForResource = 600
+            config.connectionProxyDictionary = [:]
 
             let session = URLSession(configuration: config, delegate: delegate, delegateQueue: OperationQueue())
             let task = session.downloadTask(with: url)

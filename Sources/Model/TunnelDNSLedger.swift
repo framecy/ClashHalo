@@ -256,10 +256,12 @@ enum TunnelDNSLedger {
     /// 1. 解析目标服务（调用方未指定则取当前默认服务）；
     /// 2. **服务漂移**：本属主已 pin 的服务 ≠ 目标服务 → 先按快照还原旧服务，
     ///    再作废旧账（下面会对新服务重新快照）；
-    /// 3. **属主接管**：另一属主在同一服务上在账 → 继承其快照、清其账；
+    /// 3. **属主接管**：另一属主在同一服务上在账 → 继承其快照（清其账延迟到
+    ///    步骤 5 写入确认成功之后，TUN-4）；
     /// 4. 取快照：本属主已有同服务快照则沿用（保住最初真值），否则读系统 DNS，
     ///    **读取失败即放弃本轮、不写系统 DNS**；
-    /// 5. 落 pending → 写系统 DNS → 成功转正 / 失败回滚删账。
+    /// 5. 落 pending → 写系统 DNS → 成功转正并清被接管属主的账 / 失败回滚删账
+    ///    （被接管属主的账本原样保留，下一拍仍可按原快照恢复）。
     ///
     /// - Returns: 系统 DNS 是否确实被写成 `servers`。false 时账本已回滚，
     ///   调用方可以下一拍重试，不会留下「有账无写」或「有写无账」。
@@ -300,15 +302,22 @@ enum TunnelDNSLedger {
         // 步骤 3：属主接管（高-2）。系统 DNS 是一份全局状态，两个属主同时在账
         // 只会让「还原到哪一份快照」变成猜谜。接管时继承原快照，保证最终能还原
         // 到「任何重定向之前」的真值。
+        //
+        // TUN-4：这里只登记接管 + 继承快照，**不清对方账本**——清账延迟到
+        // 步骤 5 applyDNS 确认成功之后。旧实现在写入前就 clear(other)：写入
+        // 失败（或步骤 4 读取失败提前返回）时对方账本已清、继承快照只存在于
+        // 局部变量，系统 DNS 却仍是对方写的重定向 → 无主残留 + 用户真值丢失。
+        // 现在失败路径保留对方账本，下一拍仍可按原快照恢复。
         var inherited: String? = nil
+        var takeoverOwners: [DNSRedirectOwner] = []
         for other in DNSRedirectOwner.allCases where other != owner {
             guard let rec = record(for: other) else { continue }
             // 只在「同一处系统状态」上才算接管：服务相同，或对方未 pin
             // （旧版本代理写点的历史形态，它写的就是当时的默认服务）。
             guard rec.service.isEmpty || rec.service == (target ?? "") else { continue }
             inherited = rec.snapshot
+            takeoverOwners.append(other)
             emit("\(owner.label) 接管 \(other.label) 的重定向（\(rec.summary)），继承其快照以保证可还原到任何重定向之前", log)
-            clear(owner: other)
         }
 
         // 步骤 4：快照。已有同服务快照则沿用 —— 重新快照会把我们自己写进去的
@@ -358,6 +367,13 @@ enum TunnelDNSLedger {
             return false
         }
         commit(owner: owner)
+        // TUN-4：写入已确认，此刻才清被接管属主的账本。顺序在 commit 之后：
+        // 先确立新属主的已确认记录，再作废对方——即使两步之间崩溃，两账并存
+        // 也是安全的（两份快照指向同一份真值，restoreAll 幂等）；反过来的
+        // 窗口（对方已清、自己未确认）才是旧实现的无主残留来源。
+        for other in takeoverOwners {
+            clear(owner: other)
+        }
         emit("\(owner.label)：系统 DNS 已重定向到 \(servers.joined(separator: ","))（\(record(for: owner)?.summary ?? "记账缺失")）", log)
         return true
     }
