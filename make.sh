@@ -8,13 +8,19 @@ echo "[1/4] Building Helper Tool…"
 
 # Auto-increment build number
 BUILD_NUM=$(grep -oE 'CURRENT_PROJECT_VERSION = [0-9]+' "$ROOT/ClashHalo.xcodeproj/project.pbxproj" | head -1 | awk '{print $3}' | tr -d ';')
+ORIG_BUILD_NUM="$BUILD_NUM" # rollback anchor if the pre-DMG verification fails
 NEW_BUILD=$((BUILD_NUM + 1))
 sed -i '' "s/CURRENT_PROJECT_VERSION = $BUILD_NUM;/CURRENT_PROJECT_VERSION = $NEW_BUILD;/g" "$ROOT/ClashHalo.xcodeproj/project.pbxproj"
 echo "      Bumped build number: $BUILD_NUM -> $NEW_BUILD"
 
-# Note: Embed Info.plist into the binary for proper identification
+# Note: Embed Info.plist into the binary for proper identification.
+# -target pins the Helper's minimum OS to the product deployment target
+# (macOS 14.0): without it swiftc defaults to the BUILD machine's OS version
+# (e.g. minos 27.3) and dyld refuses to load the Helper on macOS 14–26.
+# -O matches the Release optimization of the App build.
 swiftc \
     "$ROOT/Sources/Helper/main.swift" "$ROOT/Sources/XPC/ProxyManager.swift" "$ROOT/Sources/XPC/HelperProtocol.swift" \
+    -target arm64-apple-macosx14.0 -O \
     -o "$BUILD/com.clashhalo.helper" \
     -Xlinker -sectcreate -Xlinker __TEXT -Xlinker __info_plist -Xlinker "$ROOT/Helper-Info.plist"
 echo "      Helper compiled and Info.plist embedded."
@@ -23,10 +29,14 @@ echo "[2/4] Building GUI (xcodebuild Release, sign later)…"
 # Clean build when MARKETING_VERSION changed: incremental builds reuse cached
 # Info.plist and the bundled CFBundleShortVersionString goes stale.
 # Toggle the line below if you need a fast incremental build for testing.
-xcodebuild -project "$ROOT/ClashHalo.xcodeproj" -scheme ClashHalo \
+if ! xcodebuild -project "$ROOT/ClashHalo.xcodeproj" -scheme ClashHalo \
     -configuration Release -derivedDataPath "$BUILD/dd" \
     -destination 'platform=macOS,arch=arm64' \
-    CODE_SIGNING_ALLOWED=NO build >/dev/null
+    CODE_SIGNING_ALLOWED=NO build > "$BUILD/build.log" 2>&1; then
+    echo "❌ xcodebuild failed — last 40 lines of $BUILD/build.log:"
+    tail -40 "$BUILD/build.log"
+    exit 1
+fi
 APP="$BUILD/dd/Build/Products/Release/ClashHalo.app"
 [ -d "$APP" ] || { echo "GUI build not found"; exit 1; }
 
@@ -99,7 +109,9 @@ if [ -n "$MIHOMO_SRC" ]; then
 else
     echo "      Downloading pinned mihomo $MIHOMO_VERSION (darwin-arm64)…"
     TMPGZ="$(mktemp -t mihomo)"
-    trap 'rm -f "$TMPGZ"' RETURN 2>/dev/null || true
+    # EXIT (not RETURN): a RETURN trap never fires in the main script body,
+    # so the temp file leaked on every early exit. EXIT covers all paths.
+    trap 'rm -f "$TMPGZ"' EXIT
     if curl -fsSL "$MIHOMO_URL" -o "$TMPGZ"; then
         ACTUAL=$(shasum -a 256 "$TMPGZ" | awk '{print $1}')
         if [ "$ACTUAL" != "$MIHOMO_SHA256" ]; then
@@ -111,6 +123,8 @@ else
         fi
         echo "      Checksum verified ✓"
         gunzip -c "$TMPGZ" > "$MIHOMO_DST"
+    else
+        echo "      WARN: mihomo download FAILED ($MIHOMO_URL)"
     fi
     rm -f "$TMPGZ"
 fi
@@ -126,7 +140,10 @@ if [ -s "$MIHOMO_DST" ]; then
     fi
     echo "      mihomo kernel bundled ✓ ($MIHOMO_VERSION)"
 else
-    echo "      WARN: no mihomo bundled; app will download on first run."
+    echo "      ============================================================"
+    echo "      ⚠️  WARN: mihomo 内核未内置！App 将在首次启动时自动下载。"
+    echo "      ⚠️  WARN: no mihomo bundled — app will download on first run."
+    echo "      ============================================================"
 fi
 
 echo "[4/4] Ad-hoc signing + DMG…"
@@ -141,7 +158,11 @@ if [ -f "$APP/Contents/MacOS/mihomo" ]; then
 fi
 # Sign the app bundle WITHOUT --deep (--deep would re-sign mihomo with runtime,
 # breaking TUN). Pre-signed nested binaries are preserved in the bundle seal.
-codesign --force --options runtime --sign - "$APP"
+# --entitlements is required here: CODE_SIGNING_ALLOWED=NO above means the
+# pbxproj's CODE_SIGN_ENTITLEMENTS never lands in the product, and hardened
+# runtime without disable-library-validation/allow-unsigned-executable-memory
+# diverges from the Debug build (build-debug.sh).
+codesign --force --options runtime --entitlements "$ROOT/ClashHalo.entitlements" --sign - "$APP"
 # Assemble DMG staging: the app + an /Applications shortcut + a usage guide,
 # so users can drag-install and read how to bypass Gatekeeper (ad-hoc signed).
 STAGE="$BUILD/dmg"
@@ -188,13 +209,40 @@ if [ ! -d "$SRC" ]; then
     exit 1
 fi
 
+if pgrep -x ClashHalo >/dev/null 2>&1; then
+    echo "⚠️ ClashHalo 正在运行。请先完全退出（⌘Q），再重新双击本脚本。"
+    echo ""
+    read -n 1 -s -r -p "按任意键关闭窗口..."
+    echo ""
+    exit 1
+fi
+
 echo "正在安装到「应用程序」文件夹…"
 rm -rf "$DST" 2>/dev/null
+# rm -rf 失败（权限/占用）时 DST 仍在：继续 cp 会把 App 拷进旧 App 里形成
+# /Applications/ClashHalo.app/ClashHalo.app 嵌套且 cp 返回 0 → 假成功。
+if [ -e "$DST" ]; then
+    echo "❌ 旧版本未能删除：$DST 仍然存在。"
+    echo "   请手动删除「应用程序」里的 ClashHalo 后重新运行本脚本。"
+    echo ""
+    read -n 1 -s -r -p "按任意键关闭窗口..."
+    echo ""
+    exit 1
+fi
 if ! cp -R "$SRC" "$DST" 2>/dev/null; then
     echo ""
     echo "⚠️ 复制到「应用程序」失败（可能没有写入权限）。"
     echo "   请手动把 ClashHalo 拖入「应用程序」文件夹，再执行："
     echo "   xattr -dr com.apple.quarantine /Applications/ClashHalo.app"
+    echo ""
+    read -n 1 -s -r -p "按任意键关闭窗口..."
+    echo ""
+    exit 1
+fi
+
+if [ ! -f "$DST/Contents/MacOS/ClashHalo" ]; then
+    echo "❌ 安装不完整：$DST 里找不到主程序 ClashHalo。"
+    echo "   请手动把 ClashHalo.app 拖入「应用程序」后重试。"
     echo ""
     read -n 1 -s -r -p "按任意键关闭窗口..."
     echo ""
@@ -241,11 +289,26 @@ ClashHalo 使用说明
 方法三（终端，效果等同第一步的脚本）：
        xattr -dr com.apple.quarantine /Applications/ClashHalo.app
 
+GUIDE
+# 【内核】段落按实际是否内置了内核生成：下载失败时不能继续承诺「开箱即用」。
+if [ -s "$MIHOMO_DST" ]; then
+    cat >> "$STAGE/使用说明.txt" <<'GUIDE'
 【内核】
 本应用已内置官方 mihomo (Clash.Meta) 内核，开箱即用，无需额外配置。
 如需更新或切换版本，在「网络 → 内核」下载并启用，
 亦可随时切回内置内核。
 
+GUIDE
+else
+    cat >> "$STAGE/使用说明.txt" <<'GUIDE'
+【内核】
+本应用未内置 mihomo (Clash.Meta) 内核：首次启动会自动下载内核，
+需要能访问 GitHub 的网络环境；下载完成后即可正常使用。
+也可在「网络 → 内核」手动下载并启用。
+
+GUIDE
+fi
+cat >> "$STAGE/使用说明.txt" <<'GUIDE'
 【基本使用】
 1. 打开应用后会自动启动内核并连接（控制端口绑定回环 127.0.0.1）。
 2. 在「配置编辑 / 订阅」导入你的 YAML 配置或订阅链接。
@@ -270,6 +333,35 @@ VERSION=$(grep -oE 'MARKETING_VERSION = [0-9.]+' "$ROOT/ClashHalo.xcodeproj/proj
 BUILD_NUM=$(grep -oE 'CURRENT_PROJECT_VERSION = [0-9]+' "$ROOT/ClashHalo.xcodeproj/project.pbxproj" | head -1 | awk '{print $3}')
 DMG_NAME="ClashHalo_v${VERSION}_build_${BUILD_NUM}_mac"
 DMG="$BUILD/${DMG_NAME}.dmg"
+
+# --- Pre-DMG verification (fail-fast BEFORE hdiutil / Desktop copy) ---
+# A mismatched build must never reach the Desktop as a usable-looking DMG.
+# On failure, roll back the auto-incremented CURRENT_PROJECT_VERSION so a
+# failed packaging attempt does not pollute the build-number baseline.
+BUNDLED_VER=$(/usr/libexec/PlistBuddy -c "Print :CFBundleShortVersionString" "$APP/Contents/Info.plist" 2>/dev/null || echo "?")
+BUNDLED_BUILD=$(/usr/libexec/PlistBuddy -c "Print :CFBundleVersion" "$APP/Contents/Info.plist" 2>/dev/null || echo "?")
+if [ "$BUNDLED_VER" != "$VERSION" ] || [ "$BUNDLED_BUILD" != "$NEW_BUILD" ]; then
+    echo ""
+    echo "❌ VERSION MISMATCH! pbxproj=$VERSION ($NEW_BUILD) but Info.plist=$BUNDLED_VER ($BUNDLED_BUILD)"
+    echo "   Stale incremental build — run with clean: rm -rf \"$BUILD/dd\" && bash make.sh"
+    sed -i '' "s/CURRENT_PROJECT_VERSION = $NEW_BUILD;/CURRENT_PROJECT_VERSION = $ORIG_BUILD_NUM;/g" "$ROOT/ClashHalo.xcodeproj/project.pbxproj"
+    echo "   Rolled back CURRENT_PROJECT_VERSION: $NEW_BUILD -> $ORIG_BUILD_NUM"
+    exit 1
+fi
+# Helper minos gate: the Helper is compiled by bare swiftc outside Xcode, so
+# the pbxproj deployment target does not apply to it. minos > 14.0 means dyld
+# refuses to load it on macOS 14–26 (the product's supported range) — the
+# build machine itself (newer OS) can never surface this at runtime.
+HELPER_MINOS=$(otool -l "$APP/Contents/MacOS/com.clashhalo.helper" | awk '/LC_BUILD_VERSION/{f=1} f&&/minos/{print $2; exit}')
+if [ -z "$HELPER_MINOS" ] || ! awk -v v="$HELPER_MINOS" 'BEGIN{split(v,a,"."); ok=(a[1]+0<14)||(a[1]+0==14&&a[2]+0<=0); exit ok?0:1}'; then
+    echo ""
+    echo "❌ HELPER MINOS: com.clashhalo.helper minos='${HELPER_MINOS:-unreadable}' — must be <= 14.0"
+    echo "   Check the swiftc -target arm64-apple-macosx14.0 flag in make.sh."
+    sed -i '' "s/CURRENT_PROJECT_VERSION = $NEW_BUILD;/CURRENT_PROJECT_VERSION = $ORIG_BUILD_NUM;/g" "$ROOT/ClashHalo.xcodeproj/project.pbxproj"
+    echo "   Rolled back CURRENT_PROJECT_VERSION: $NEW_BUILD -> $ORIG_BUILD_NUM"
+    exit 1
+fi
+
 rm -f "$DMG"
 hdiutil create -volname "ClashHalo v${VERSION}" -srcfolder "$STAGE" -ov -format UDZO "$DMG" >/dev/null
 # Deliver a copy to the Desktop for convenience.
@@ -283,14 +375,4 @@ if [ -s "$APP/Contents/MacOS/mihomo" ]; then
 else
     echo "Kernel: NONE bundled — app will download on first run"
 fi
-
-# --- Version verification (fail-fast: catches stale Info.plist from incremental builds) ---
-BUNDLED_VER=$(/usr/libexec/PlistBuddy -c "Print :CFBundleShortVersionString" "$APP/Contents/Info.plist" 2>/dev/null || echo "?")
-BUNDLED_BUILD=$(/usr/libexec/PlistBuddy -c "Print :CFBundleVersion" "$APP/Contents/Info.plist" 2>/dev/null || echo "?")
-if [ "$BUNDLED_VER" != "$VERSION" ] || [ "$BUNDLED_BUILD" != "$NEW_BUILD" ]; then
-    echo ""
-    echo "❌ VERSION MISMATCH! pbxproj=$VERSION ($NEW_BUILD) but Info.plist=$BUNDLED_VER ($BUNDLED_BUILD)"
-    echo "   Stale incremental build — run with clean: rm -rf \"$BUILD/dd\" && bash make.sh"
-    exit 1
-fi
-echo "Version: $BUNDLED_VER ($BUNDLED_BUILD) ✓"
+echo "Version: $BUNDLED_VER ($BUNDLED_BUILD) ✓  Helper minos: $HELPER_MINOS ✓"

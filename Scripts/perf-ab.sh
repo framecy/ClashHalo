@@ -79,7 +79,16 @@ if [[ $FULL -eq 1 ]]; then
   echo "── 每连接 CPU（各 200 次新建连接，取 mihomo 累计 CPU 差）──"
   PID=$(pgrep -f "ClashHalo/bin/mihomo" | head -1)
   if [[ -n "${PID:-}" ]]; then
-    cpu() { /bin/ps -o time= -p "$PID" | awk -F'[:.]' '{print ($1*60+$2)*1000+$3}'; }
+    # ps TIME 兼容两种形态：MM:SS.hh（分钟可 >59，实测如 108:36.22）与
+    # HH:MM:SS.hh，按冒号段数自适应。小数是百分之一秒（.22 = 220ms，
+    # 旧实现把它当 22ms，少算 10 倍）。
+    cpu() { /bin/ps -o time= -p "$PID" | awk '{
+      n=split($1, p, ":"); split(p[n], s, ".");
+      ms=(s[1]+0)*1000 + (s[2]+0)*10;
+      if (n>=2) ms+=p[n-1]*60000;
+      if (n>=3) ms+=p[n-2]*3600000;
+      printf "%d", ms;
+    }'; }
     run_batch() { local url=$1 n=$2 t0 t1; t0=$(cpu)
       for ((i=0;i<n;i++)); do /usr/bin/curl -s -o /dev/null --max-time 5 "$url"; done
       t1=$(cpu); echo $((t1-t0)); }

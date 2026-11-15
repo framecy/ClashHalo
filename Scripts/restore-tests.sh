@@ -21,16 +21,19 @@ cd "$ROOT" || exit 2
 CHECK_ONLY=0
 [ "${1:-}" = "--check" ] && CHECK_ONLY=1
 
-# 找到最后一次删除 Tests/ 内容的提交，再从它的父提交取文件。
+# 找到所有删除过 Tests/ 内容的提交（不止最近一次）：不同套件可能在不同时间
+# 被移出，只取最近一次的父快照会漏掉更早删除的套件。逐个尝试各删除提交的
+# 父快照，取第一个仍含该文件的版本（git log 默认新→旧，即最近版本优先）。
 # 不写死 sha：仓库再整理一次，写死的 sha 就悄悄失效了。
-DELETE_COMMIT="$(git log --all --diff-filter=D --format=%H -- 'Tests/*' | head -1)"
-if [ -z "$DELETE_COMMIT" ]; then
+DELETE_COMMITS="$(git log --all --diff-filter=D --format=%H -- 'Tests/*')"
+if [ -z "$DELETE_COMMITS" ]; then
   echo "仓库历史里找不到 Tests/ 的删除记录，无需恢复。"
   exit 0
 fi
+NEWEST_DELETE="$(printf '%s\n' "$DELETE_COMMITS" | head -1)"
 
-echo "Tests/ 于 $(git log -1 --format='%h %ad %s' --date=short "$DELETE_COMMIT") 移出仓库"
-echo "从 $(git rev-parse --short "$DELETE_COMMIT^") 物化："
+echo "Tests/ 于 $(git log -1 --format='%h %ad %s' --date=short "$NEWEST_DELETE") 移出仓库（最近一次）"
+echo "逐个尝试各删除提交的父快照物化："
 echo ""
 
 restored=0
@@ -47,18 +50,23 @@ while IFS= read -r f; do
     printf "  已存在   %s\n" "$f"
     continue
   fi
-  if git cat-file -e "$DELETE_COMMIT^:$f" 2>/dev/null; then
+  SRC_REV=""
+  while IFS= read -r dc; do
+    [ -n "$dc" ] || continue
+    if git cat-file -e "$dc^:$f" 2>/dev/null; then SRC_REV="$dc^"; break; fi
+  done <<< "$DELETE_COMMITS"
+  if [ -n "$SRC_REV" ]; then
     if [ "$CHECK_ONLY" = 1 ]; then
       printf "  可恢复   %s\n" "$f"
     else
       mkdir -p "$(dirname "$f")"
-      git show "$DELETE_COMMIT^:$f" > "$f"
+      git show "$SRC_REV:$f" > "$f"
       printf "  已恢复   %s\n" "$f"
     fi
     restored=$((restored+1))
   else
-    # 在 DELETE_COMMIT 之后才加入又再删掉的路径，历史里取不到。
-    printf "  取不到   %s（%s 里没有该文件，无法恢复）\n" "$f" "$(git rev-parse --short "$DELETE_COMMIT^")"
+    # 所有删除提交的父快照里都没有该路径：从未入库，历史里取不到。
+    printf "  取不到   %s（所有删除提交的父快照里都没有该文件，无法恢复）\n" "$f"
   fi
 done <<< "$paths"
 

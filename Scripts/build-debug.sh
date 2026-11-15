@@ -18,10 +18,14 @@ osascript -e 'tell application "ClashHalo" to quit' >/dev/null 2>&1 || true
 
 echo "[debug] Building Helper…"
 mkdir -p "$BUILD"
+# -target pins the Helper's minimum OS to the product deployment target
+# (macOS 14.0); without it swiftc defaults to the build machine's OS and the
+# Helper won't load on macOS 14–26. -O matches make.sh's Release Helper.
 swiftc \
     "$ROOT/Sources/Helper/main.swift" \
     "$ROOT/Sources/XPC/ProxyManager.swift" \
     "$ROOT/Sources/XPC/HelperProtocol.swift" \
+    -target arm64-apple-macosx14.0 -O \
     -o "$BUILD/com.clashhalo.helper" \
     -Xlinker -sectcreate -Xlinker __TEXT -Xlinker __info_plist -Xlinker "$ROOT/Helper-Info.plist"
 codesign --force --sign - "$BUILD/com.clashhalo.helper" >/dev/null

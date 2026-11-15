@@ -1,7 +1,9 @@
 #!/bin/bash
-# pre-commit hook: scan for potential secrets before allowing commit.
+# pre-commit hook: scan STAGED content for potential secrets before commit.
 # Blocks commits containing: API keys, passwords, tokens, private keys,
-# subscription URLs, IP addresses that look like proxy nodes.
+# subscription URLs, proxy node links.
+# Install once per clone (hooks do not propagate with git clone):
+#   git config core.hooksPath .githooks
 set -euo pipefail
 
 # 公共文档隐私体检（AgentPreset）：有阻断项就拒绝提交
@@ -13,20 +15,38 @@ fi
 RED='\033[0;31m'; GREEN='\033[0;32m'; NC='\033[0m'
 VIOLATIONS=0
 
-echo "🔍 Scanning for potential secrets..."
+echo "🔍 Scanning staged content for potential secrets..."
 
-# Files to scan: staged swift, go, yaml, yml, json, plist, sh, py, js files
-FILES=$(git diff --cached --name-only --diff-filter=ACM | grep -E '\.(swift|go|ya?ml|json|plist|sh|py|js|md)$' || true)
+# Files to scan: the STAGED (index) content, not the working tree — what gets
+# committed is the index. NUL-separated so filenames with spaces survive.
+# Vendored panel dist (minified third-party JS) is excluded: upstream code
+# like `token:new e(...)` is not our secret, and scanning it would block
+# every legitimate zashboard update.
+FILES=""
+while IFS= read -r -d '' f; do
+    FILES+="$f"$'\n'
+done < <(git diff --cached --name-only -z --diff-filter=ACM \
+         | grep -zE '\.(swift|go|ya?ml|json|plist|sh|py|js|md|txt|conf|command|entitlements|pbxproj)$' \
+         | grep -zvE '^Resources/Panels/[^/]+/dist/' || true)
+FILES="${FILES%$'\n'}"
 
 if [ -z "$FILES" ]; then
     echo "  No relevant files to scan."
     exit 0
 fi
 
-# ── Pattern checks ──────────────────────────────────────────────
-check_pattern() {
-    local pattern="$1"; local label="$2"; local severity="${3:-ERROR}"
-    local matches=$(grep -nE "$pattern" $FILES 2>/dev/null || true)
+# grep the staged blob of each listed file; prefix matches with the filename.
+scan_files() { # $1=pattern $2=newline-separated file list -> file:line:content
+    local f
+    while IFS= read -r f; do
+        [ -n "$f" ] || continue
+        git show ":$f" 2>/dev/null | grep -nE -H --label="$f" "$1" 2>/dev/null || true
+    done <<< "$2"
+}
+scan_staged() { scan_files "$1" "$FILES"; }
+
+report_matches() { # $1=matches $2=label $3=severity
+    local matches="$1" label="$2" severity="$3"
     if [ -n "$matches" ]; then
         echo -e "  ${RED}[${severity}]${NC} ${label}:"
         echo "$matches" | while IFS= read -r line; do
@@ -40,6 +60,13 @@ check_pattern() {
     fi
 }
 
+check_pattern() {
+    local matches
+    matches="$(scan_staged "$1")"
+    report_matches "$matches" "$2" "${3:-ERROR}"
+}
+
+# ── Pattern checks ──────────────────────────────────────────────
 # BLOCK: hard blocks — cannot commit
 check_pattern 'secret\s*[:=]\s*"[^"]{3,}"' 'Hardcoded secret string' BLOCK
 check_pattern 'password\s*[:=]\s*"[^"]{3,}"' 'Hardcoded password' BLOCK
@@ -50,16 +77,35 @@ check_pattern 'Authorization\s*[:=]\s*"[^"]{8,}"' 'Hardcoded Authorization heade
 check_pattern 'ssh-rsa|ssh-ed25519|-----BEGIN' 'SSH/private key' BLOCK
 check_pattern 'ghp_[A-Za-z0-9]{36}' 'GitHub personal access token' BLOCK
 check_pattern 'gho_[A-Za-z0-9]{36}' 'GitHub OAuth token' BLOCK
+check_pattern 'github_pat_[A-Za-z0-9_]{20,}' 'GitHub fine-grained PAT' BLOCK
+check_pattern 'ghs_[A-Za-z0-9]{36}' 'GitHub server-to-server token' BLOCK
+check_pattern 'glpat-[A-Za-z0-9_-]{20}' 'GitLab personal access token' BLOCK
+check_pattern '\bsk-[A-Za-z0-9_-]{20,}' 'OpenAI-style API key' BLOCK
+check_pattern 'AKIA[0-9A-Z]{16}' 'AWS access key ID' BLOCK
+# Real Tailscale keys carry a long tail; {12,} skips masked doc examples
+# like `tskey-auth-xxxxxBLOWUP` (11 chars) in KeychainHelper comments.
+check_pattern 'tskey-(auth|api)-[A-Za-z0-9]{12,}' 'Tailscale auth/API key' BLOCK
+check_pattern '(vmess|vless|trojan|ss|hysteria2?|tuic)://' 'Proxy node link' BLOCK
+# Subscription URL shapes (real hostname required, so UI placeholders like
+# "https://…/clash" do not hit). The bare word 订阅 stays WARN below — it is
+# part of the product's own UI strings and cannot be a blocking signal.
+check_pattern 'https?://[A-Za-z0-9.-]+[^[:space:]"'"'"']*(/clash|/link/|subscribe|token=)' 'Subscription URL' BLOCK
 check_pattern '[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}' 'UUID (potential node UUID)' BLOCK
 
-# WARN: warns but allows commit
-check_pattern 'https?://[^/]+/clash|订阅|sub[^a-z]' 'Possible subscription URL' WARN
-check_pattern '\b([0-9]{1,3}\.){3}[0-9]{1,3}\b' 'IP address' WARN
+# Bare (unquoted) YAML-style values: `secret: abc123` / `password = hunter2`.
+# Filters drop Swift/JS/Python type annotations, keywords, argument-label
+# echoes and variable references (String / nil / new / token: token /
+# api.secret / oldSecret). They are anchored to the key name so the
+# "file:line:" prefix cannot fake a match.
+BARE_MATCHES="$(scan_staged '(secret|password|token)\s*[:=]\s*[A-Za-z0-9][A-Za-z0-9_+/.-]{2,}' \
+    | grep -vE '(secret|password|token)\s*[:=]\s*(String|NSString|Int|Bool|Double|Float|Data|URL|UUID|Any|nil|true|false|self|Self|secret|password|token|new|function|return|typeof|void|this|class|const|let|var|None|True|False)([^A-Za-z0-9_]|$)' \
+    | grep -vE '(secret|password|token)\s*[:=]\s*[a-z][A-Za-z0-9]*[A-Z]' \
+    | grep -vE '(secret|password|token)\s*[:=]\s*[A-Za-z_][A-Za-z0-9_]*\.' || true)"
+report_matches "$BARE_MATCHES" 'Hardcoded secret/password/token (bare value)' BLOCK
 
-# Skip known-safe files
-# Allow 127.0.0.1, 0.0.0.0, 198.18.x.x (fake-ip range), 10.x.x.x, 192.168.x.x
-# These are filtered in the grep above — but as a WARN, they pass through
-# with a message. The developer can review and decide.
+# WARN: warns but allows commit
+check_pattern '订阅|sub[^a-z]' 'Possible subscription reference (text heuristic)' WARN
+check_pattern '\b([0-9]{1,3}\.){3}[0-9]{1,3}\b' 'IP address' WARN
 
 # ── Design-system lint (WARN) ───────────────────────────────────
 # UI should read from DesignTokens, not raw font/literals. Flags re-introduced
@@ -67,10 +113,10 @@ check_pattern '\b([0-9]{1,3}\.){3}[0-9]{1,3}\b' 'IP address' WARN
 UI_FILES=$(echo "$FILES" | grep -E '^Sources/(UI|App)/.*\.swift$' || true)
 if [ -n "$UI_FILES" ]; then
     ds_check() {
-        local pattern="$1"; local label="$2"
-        local matches=$(grep -nE "$pattern" $UI_FILES 2>/dev/null || true)
+        local matches
+        matches="$(scan_files "$1" "$UI_FILES")"
         if [ -n "$matches" ]; then
-            echo -e "  ${RED}[DS-WARN]${NC} ${label} — 请改用 DesignTokens (Font.ds* / DS.*):"
+            echo -e "  ${RED}[DS-WARN]${NC} ${2} — 请改用 DesignTokens (Font.ds* / DS.*):"
             echo "$matches" | while IFS= read -r line; do
                 if [ ${#line} -gt 120 ]; then line="${line:0:120}..."; fi
                 echo "    $line"
@@ -87,9 +133,9 @@ fi
 if [ "$VIOLATIONS" -gt 0 ]; then
     echo ""
     echo -e "${RED}╔══════════════════════════════════════════════════════════════╗${NC}"
-    echo -e "${RED}║  COMMIT BLOCKED: ${VIOLATIONS} potential secret(s) found.  ║${NC}"
-    echo -e "${RED}║  Review the findings above. If they are false positives,  ║${NC}"
-    echo -e "${RED}║  use: git commit --no-verify                              ║${NC}"
+    echo -e "${RED}║  COMMIT BLOCKED: ${VIOLATIONS} potential secret(s) found.║${NC}"
+    echo -e "${RED}║  请把命中内容改成示例值（如 <YOUR_SECRET>）、空值或变量引用 ║${NC}"
+    echo -e "${RED}║  后再提交。不要用 --no-verify 绕过。                         ║${NC}"
     echo -e "${RED}╚══════════════════════════════════════════════════════════════╝${NC}"
     exit 1
 else

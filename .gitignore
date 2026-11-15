@@ -54,14 +54,12 @@ loadtest*/
 netwatch*/
 *.pid
 
-# 参考文档，非发布内容
-Loon/
-*.md
-!/**/README.md
-!/**/CHANGELOG.md
-!/**/AGENTS.md
-# 性能路线的实测依据：结论要靠它复现，不能只活在聊天记录里
-!/Docs/PerfRoadmap.md
+# 本地参考与审计文档，不入库（显式列出；其余 .md 正常可入库，
+# 不再用全局 *.md —— 那会让新增文档被静默忽略）
+/Loon/
+/Docs/AuditFixPlan.md
+/Docs/Audit-2026-11-15.md
+/Docs/TailscaleIntegration.md
 
 # 本地回归测试套件（开发工具，不入库）
 Tests/

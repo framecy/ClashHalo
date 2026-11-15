@@ -3,7 +3,13 @@
 
 set -e
 
-VERSION="1.1.1"
+ROOT="$(cd "$(dirname "$0")" && pwd)"
+# 版本号与 make.sh 同源：从 pbxproj 读 MARKETING_VERSION，不再硬编码。
+VERSION=$(grep -oE 'MARKETING_VERSION = [0-9.]+' "$ROOT/ClashHalo.xcodeproj/project.pbxproj" | head -1 | awk '{print $3}')
+if [ -z "$VERSION" ]; then
+    echo "❌ 错误: 无法从 pbxproj 读取 MARKETING_VERSION"
+    exit 1
+fi
 APP_NAME="ClashHalo"
 DMG_NAME="${APP_NAME}-${VERSION}.dmg"
 TEMP_DMG="${DMG_NAME}.temp.dmg"
@@ -19,9 +25,9 @@ if [ ! -d "$SOURCE_DIR" ]; then
 fi
 
 # 删除旧的 DMG
-if [ -f "/Users/developer/Desktop/$DMG_NAME" ]; then
+if [ -f "$HOME/Desktop/$DMG_NAME" ]; then
     echo "🗑️  删除旧的 DMG..."
-    rm "/Users/developer/Desktop/$DMG_NAME"
+    rm "$HOME/Desktop/$DMG_NAME"
 fi
 
 # 创建临时 DMG
@@ -75,13 +81,13 @@ sleep 2
 echo "🗜️  压缩 DMG..."
 hdiutil convert "$TEMP_DMG" \
     -format UDZO \
-    -o "/Users/developer/Desktop/$DMG_NAME"
+    -o "$HOME/Desktop/$DMG_NAME"
 
 # 删除临时文件
 rm "$TEMP_DMG"
 
 # 显示结果
-DMG_SIZE=$(du -h "/Users/developer/Desktop/$DMG_NAME" | cut -f1)
+DMG_SIZE=$(du -h "$HOME/Desktop/$DMG_NAME" | cut -f1)
 echo "✅ 完成！"
-echo "📍 位置: /Users/developer/Desktop/$DMG_NAME"
+echo "📍 位置: $HOME/Desktop/$DMG_NAME"
 echo "📊 大小: $DMG_SIZE"

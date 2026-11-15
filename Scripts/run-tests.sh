@@ -89,6 +89,7 @@ add_suite dnsledger-tests \
 # 之类凭据必须脱敏但仍留痕。
 add_suite configwriteaudit-tests \
   "$ROOT/Sources/Model/ConfigWriteAudit.swift" \
+  "$ROOT/Sources/Core/YamlEditor/YamlScalar.swift" \
   "$ROOT/Tests/ConfigWriteAudit/main.swift"
 
 # 重新激活 profile 的短路判定：appliedHash 哈希的是 profile 自身，而设置页把
@@ -97,6 +98,7 @@ add_suite configwriteaudit-tests \
 # 阻断短路，同时刻意加固键（secret/external-controller）不得算作漂移。
 add_suite applydrift-tests \
   "$ROOT/Sources/Model/ConfigWriteAudit.swift" \
+  "$ROOT/Sources/Core/YamlEditor/YamlScalar.swift" \
   "$ROOT/Tests/ApplyDrift/main.swift"
 
 # 规则编辑器引擎：值内 `#` 是数据而非注释（旧版截断导致保存即删规则）。

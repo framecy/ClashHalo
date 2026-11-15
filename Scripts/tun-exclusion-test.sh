@@ -146,11 +146,23 @@ for k in ("file-descriptor","inet4-address","processors-per-channel"): t.pop(k,N
 print(json.dumps({"tun":t}))
 PY
   PROBE_IP=$(echo "$PROBE" | /usr/bin/cut -d/ -f1 | /usr/bin/awk -F. '{print $1"."$2"."$3".73"}')
+  # 主接口运行时探测，不硬编码 en0（换网络/换机器 en0 未必是主网卡）。
+  # 注意：TUN 开启时默认路由走 utun，`route -n get 1.1.1.1` 实测返回 utun100，
+  # 不能直接当物理接口；此时退回 SystemConfiguration 的主接口（mihomo 的 utun
+  # 不是 SC 服务，PrimaryInterface 仍是物理网卡，TUN 开启态实测为 en0）。
+  MAIN_IF=$(/sbin/route -n get 1.1.1.1 2>/dev/null | /usr/bin/awk '/interface:/{print $2}')
+  case "$MAIN_IF" in
+    utun*|"") MAIN_IF=$(printf 'show State:/Network/Global/IPv4\n' | /usr/sbin/scutil | /usr/bin/awk '/PrimaryInterface/{print $3}') ;;
+  esac
   code=$(httpcode PATCH "$TMP/tun-add.json" /configs)
   [[ "$code" == "204" ]] && ok "PATCH 接受（204）" || bad "PATCH 被拒：$code $(head -c 120 /tmp/tex.out)"
   sleep 1
   iface=$(/sbin/route -n get "$PROBE_IP" 2>/dev/null | /usr/bin/awk '/interface:/{print $2}')
-  [[ "$iface" == "en0" ]] && ok "$PROBE_IP 已绕出隧道（en0）" || bad "$PROBE_IP 仍走 $iface"
+  if [[ -z "$MAIN_IF" ]]; then
+    bad "探测不到主接口（route/scutil 都失败），无法判定 $PROBE_IP 是否绕出隧道"
+  else
+    [[ "$iface" == "$MAIN_IF" ]] && ok "$PROBE_IP 已绕出隧道（$MAIN_IF）" || bad "$PROBE_IP 仍走 $iface（期望 $MAIN_IF）"
+  fi
   code=$(httpcode PATCH "$TMP/tun-restore.json" /configs)
   [[ "$code" == "204" ]] && ok "还原 PATCH 接受（204）" || bad "还原被拒：$code"
   sleep 1
