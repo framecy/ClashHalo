@@ -35,9 +35,11 @@ import SystemConfiguration
     /// True when the helper is installed and reachable but reports a version
     /// below the one this app expects — i.e. a forced upgrade is pending. Single
     /// source for the settings action and the sidebar attention badge.
+    /// F13：与 checkAndUpgradeHelperIfNeeded 同口径——仅旧于预期才算待更新，
+    /// 装着更新版 Helper 时不再亮「需更新」徽标（旧 `!=` 会误报）。
     var helperNeedsUpdate: Bool {
         isRoot && helperVersion != "?" && !helperVersion.isEmpty
-            && helperVersion != Self.kExpectedHelperVersion
+            && helperVersion.localizedStandardCompare(Self.kExpectedHelperVersion) == .orderedAscending
     }
     private var userProcess: Process?
 
@@ -158,11 +160,11 @@ import SystemConfiguration
         if !fm.fileExists(atPath: configPath) {
             let initial = """
             mixed-port: 7890
-            allow-lan: true
+            allow-lan: false
             mode: rule
             log-level: info
             external-controller: 127.0.0.1:9092
-            secret: clashhalo
+            secret: ""
             external-ui: ui
             external-ui-name: zashboard
             external-ui-url: https://github.com/Zephyruso/zashboard/releases/latest/download/dist.zip
@@ -477,9 +479,12 @@ import SystemConfiguration
     /// Set/insert top-level scalar keys in the on-disk config (bool/int/string).
     /// For load-time-only settings (geodata-*, unified-delay, keep-alive…) that
     /// mihomo silently ignores on a runtime `/configs` PATCH — write + reload instead.
-    func setTopLevelScalars(_ kv: [String: Any]) {
+    /// CFG-3：返回写盘是否成功（读失败/写失败都返回 false）。调用方必须把失败
+    /// 上浮，否则磁盘满/权限坏时设置页会弹「配置已更新」而磁盘纹丝不动。
+    @discardableResult
+    func setTopLevelScalars(_ kv: [String: Any]) -> Bool {
         let path = configFilePath
-        guard let text = try? String(contentsOfFile: path, encoding: .utf8) else { return }
+        guard let text = try? String(contentsOfFile: path, encoding: .utf8) else { return false }
         var lines = text.components(separatedBy: "\n")
         func render(_ v: Any) -> String {
             if let b = v as? Bool { return b ? "true" : "false" }
@@ -506,7 +511,7 @@ import SystemConfiguration
                 if !found { lines.insert("\(key): \(val)", at: 0) }
             }
         }
-        writeConfig(lines.joined(separator: "\n"), to: path)
+        return writeConfig(lines.joined(separator: "\n"), to: path)
     }
 
     /// Quote a string scalar when the raw text would not survive a round-trip
@@ -584,6 +589,31 @@ import SystemConfiguration
 
     // MARK: - proxy-providers (config.yaml editing)
 
+    /// 剥行尾注释，口径与 `YamlScalar.stripInlineComment` 一致：# 前须空白、
+    /// 引号内的 # 是数据。差别只在引号保护按开合跟踪整段文本——provider 键行
+    /// `"name": # 备注` 与 url 值 `"https://…" # 备注` 的引号在注释之前就闭合，
+    /// YamlScalar「整串以引号开头才保护」的规则在这两种形状上不适用。
+    /// 传入已 trim 的文本；整段都是注释时返回空串。
+    private static func stripLineComment(_ s: String) -> String {
+        if s.hasPrefix("#") { return "" }
+        var quote: Character? = nil
+        var prev: Character? = nil
+        var i = s.startIndex
+        while i < s.endIndex {
+            let c = s[i]
+            if let q = quote {
+                if c == q { quote = nil }
+            } else if c == "\"" || c == "'" {
+                quote = c
+            } else if c == "#", prev == " " || prev == "\t" {
+                return String(s[..<i]).trimmingCharacters(in: .whitespaces)
+            }
+            prev = c
+            i = s.index(after: i)
+        }
+        return s
+    }
+
     /// Parse the `proxy-providers:` block into (name, url) pairs. Only the
     /// provider's own 4-space `url:` is read (health-check's 6-space url ignored).
     func proxyProviders() -> [(name: String, url: String)] {
@@ -596,7 +626,9 @@ import SystemConfiguration
             }
             guard inBlock else { continue }
             if line.hasPrefix("  ") && !line.hasPrefix("   ") {       // 2-space provider name
-                let t = line.trimmingCharacters(in: .whitespacesAndNewlines)
+                // CFG-12：`  "sub": # 机场` 也是 provider 键行——先剥行尾注释
+                // 再判冒号结尾，否则带注释的 provider 整个隐身。
+                let t = Self.stripLineComment(line.trimmingCharacters(in: .whitespacesAndNewlines))
                 if t.hasSuffix(":") { 
                     let name = String(t.dropLast()).replacingOccurrences(of: "\"", with: "").replacingOccurrences(of: "'", with: "")
                     if !name.isEmpty {
@@ -605,7 +637,9 @@ import SystemConfiguration
                     }
                 }
             } else if curIdx >= 0 && line.hasPrefix("    url:") {     // 4-space own url
-                let url = line.trimmingCharacters(in: .whitespacesAndNewlines).dropFirst(4).trimmingCharacters(in: .whitespacesAndNewlines)
+                // CFG-12：url 值同样剥行尾注释（# 前须空白，URL 里的 #fragment
+                // 不受影响），否则编辑框拿到脏 URL、订阅更新必失败。
+                let url = Self.stripLineComment(line.trimmingCharacters(in: .whitespacesAndNewlines).dropFirst(4).trimmingCharacters(in: .whitespacesAndNewlines))
                 result[curIdx].1 = url.replacingOccurrences(of: "\"", with: "").replacingOccurrences(of: "'", with: "")
             }
         }
@@ -797,8 +831,9 @@ import SystemConfiguration
             j -= 1
         }
 
-        writeConfig(lines.joined(separator: "\n"), to: configFilePath)
-        return true
+        // CFG-3：写盘失败必须返回 false——旧实现恒 return true，订阅页会在
+        // 磁盘未变时弹「已保存」。
+        return writeConfig(lines.joined(separator: "\n"), to: configFilePath)
     }
 
     /// The BSD name of the current default-route interface (e.g. `en0`), or nil.
@@ -1027,8 +1062,22 @@ import SystemConfiguration
             p.executableURL = URL(fileURLWithPath: "/usr/sbin/networksetup")
             p.arguments = ["-setdnsservers", svc] + (servers.isEmpty ? ["Empty"] : servers)
             p.standardOutput = Pipe(); p.standardError = Pipe()
-            do { try p.run(); p.waitUntilExit(); return p.terminationStatus == 0 }
-            catch { return false }
+            // XPC-6：对齐读侧 currentSystemDNS 的 5s 超时。旧实现裸
+            // waitUntilExit，networksetup 卡死 → Ledger/isBusy 永久挂死。
+            // 超时被 terminate 时退出码非零 → false，与真失败同判。
+            let timer = DispatchSource.makeTimerSource(queue: DispatchQueue.global())
+            timer.schedule(deadline: .now() + 5.0)
+            timer.setEventHandler { if p.isRunning { p.terminate() } }
+            do {
+                try p.run()
+                timer.resume()
+                p.waitUntilExit()
+                timer.cancel()
+                return p.terminationStatus == 0
+            } catch {
+                timer.cancel()
+                return false
+            }
         }.value
     }
 
@@ -1092,9 +1141,12 @@ import SystemConfiguration
             guard !line.hasPrefix(" "), !line.hasPrefix("\t"), line.hasPrefix(key) else { return nil }
             let after = line.dropFirst(key.count)
             guard after.first == ":" else { return nil }
-            var v = after.dropFirst().trimmingCharacters(in: .whitespaces)
-            if let h = v.firstIndex(of: "#") { v = String(v[..<h]).trimmingCharacters(in: .whitespaces) }
-            return v.trimmingCharacters(in: CharacterSet(charactersIn: "\"'"))
+            let v = after.dropFirst().trimmingCharacters(in: .whitespaces)
+            // CFG-15：与 YamlScalar 同口径——# 前须空白才是注释（含 # 的自定义
+            // secret 不再被读短），引号内的 # 是数据。整段值都是注释时按空值
+            // 处理（YAML 语义，与 readConfigFile 的整行注释判定一致）。
+            let stripped = v.hasPrefix("#") ? "" : YamlScalar.stripInlineComment(v)
+            return stripped.trimmingCharacters(in: CharacterSet(charactersIn: "\"'"))
         }
 
         for i in lines.indices {
@@ -1207,8 +1259,10 @@ import SystemConfiguration
     /// The controller binds loopback, so the threat model is any local process:
     /// a secret that ships as a known constant lets anything on the machine
     /// drive the kernel (switch nodes, rewrite config, read every connection).
-    /// That is worth fixing automatically — nobody chose `clashhalo`, it is just
-    /// what the initial config template writes.
+    /// That is worth fixing automatically — nobody chose a shipped placeholder
+    /// (the initial template now writes an empty secret; legacy installs may
+    /// still carry `clashhalo`), and harden replaces it with a random strong
+    /// secret before the kernel ever starts.
     ///
     /// What is NOT worth fixing automatically is a secret the user deliberately
     /// configured. A shape-based "too short / too few character classes" rule
@@ -1347,7 +1401,28 @@ import SystemConfiguration
                 // the helper itself is unreachable (nil). Fall back to user-mode
                 // so the app isn't stuck with a dead core.
                 if result == nil {
-                    onLog?("⚠️ Root 模式启动无响应，回退到用户模式")
+                    // XPC-8：超时 ≠ 没启动。Helper 可能只是慢（start 前的
+                    // chown -R 无上限），root 内核其实已在跑。先按 canonical
+                    // 路径取证（managedKernels 只认本 App 管理的内核二进制）：
+                    // 有 root mihomo 就等它就绪，而不是回退用户态 spawn 出第二
+                    // 个内核——那会与迟到的 root 启动竞态并撕裂数据目录属主。
+                    if await Self.managedKernels(at: kernelPath).contains(where: { $0.root }) {
+                        onLog?("Root 启动应答超时，但检测到 root 内核已在运行，等待其就绪…")
+                        let deadline = Date().addingTimeInterval(10)
+                        while Date() < deadline {
+                            await api.probe(timeout: 0.5)
+                            if api.reachable {
+                                runningAsRoot = true
+                                return
+                            }
+                            // 进程已退出（spawn 最终失败）就不必等满预算。
+                            if await Self.managedKernels(at: kernelPath).isEmpty { break }
+                            try? await Task.sleep(nanoseconds: 300_000_000)
+                        }
+                        onLog?("⚠️ Root 内核等待就绪超时，回退到用户模式")
+                    } else {
+                        onLog?("⚠️ Root 模式启动无响应，回退到用户模式")
+                    }
                     isRoot = false
                 } else {
                     onLog?("⚠️ Root 模式启动失败，回退到用户模式")
@@ -1579,7 +1654,10 @@ import SystemConfiguration
             if let v = await fetchHelperVersion() { helperVersion = v }
         }
         guard helperVersion != "?", !helperVersion.isEmpty else { return true }
-        guard helperVersion != Self.kExpectedHelperVersion else { return true }
+        // F13：语义化比较——仅 installed < expected 才升级。旧 `!=` 会把装着
+        // 更新版 Helper 的机器也拖进「升级」（实为降级）。localizedStandardCompare
+        // 对数字段按数值比较：1.0.9 < 1.0.30，1.0.31 > 1.0.30。
+        guard helperVersion.localizedStandardCompare(Self.kExpectedHelperVersion) == .orderedAscending else { return true }
 
         let from = helperVersion
         let to = Self.kExpectedHelperVersion
@@ -1685,12 +1763,18 @@ import SystemConfiguration
 
     func setConfig(_ yaml: String) async -> (ok: Bool, error: String?) {
         let path = configFilePath
+        // CFG-3：写盘失败必须传播。旧实现忽略 writeConfig 的 Bool，磁盘满/权限
+        // 坏时照样 reload 旧文件并报「已切换」——假成功。
+        guard writeConfig(yaml, to: path) else {
+            return (false, "写入 config.yaml 失败（权限或磁盘空间），配置未应用")
+        }
         do {
-            writeConfig(yaml, to: path)
             hardenControllerConfig()   // ensure controller binds loopback + strong secret
             forceTUNDisabled()         // TUN is runtime-only — don't let a profile auto-enable it
             injectMemoryOptimization() // Apply kernel memory optimization settings
-            applyTailscaleOverlay()    // re-inject the built-in tailnet node (or strip it)
+            // C6：记录 overlay 注入（含写盘）结果，Tailscale 启用流程读它判定
+            // 「开关亮了但内核没节点」的假成功（TS-6）。
+            lastOverlayInjectionOK = applyTailscaleOverlay()
             try await api.reloadConfig(path: path)
             return (true, nil)
         } catch {
@@ -1717,6 +1801,10 @@ import SystemConfiguration
     /// True when the last application could not write the MagicDNS resolver
     /// policy (no `dns:` block, or DNS disabled).
     private(set) var tailscaleDNSSkipped = false
+    /// C6：最近一次 `setConfig` 中 overlay 注入（含写盘）是否成功。
+    /// Tailscale 启用流程（AppModel+Tailscale）读它判定启用成败；
+    /// 初值 true = 尚未有失败的注入记录。
+    private(set) var lastOverlayInjectionOK: Bool = true
 
     /// Rewrite the on-disk config so it matches `tailscaleSettings`.
     /// Idempotent: strips any previous injection first, so repeated calls and
@@ -1743,15 +1831,15 @@ import SystemConfiguration
         }
 
         guard updated != text else { return true }
-        do {
-            // writeConfig enforces atomic + 0600 (the file now carries an
-            // auth key; it already held subscription secrets).
-            writeConfig(updated, to: path)
-            return true
-        } catch {
-            onLog?("内置 Tailnet 写入配置失败：\(error.localizedDescription)")
+        // writeConfig enforces atomic + 0600 (the file now carries an
+        // auth key; it already held subscription secrets).
+        // CFG-3：writeConfig 不 throw，旧 do/catch 是死代码——写失败被吞成
+        // return true。现在把失败如实返回（setConfig 记入 lastOverlayInjectionOK）。
+        guard writeConfig(updated, to: path) else {
+            onLog?("内置 Tailnet 写入配置失败：config.yaml 不可写（权限或磁盘空间）")
             return false
         }
+        return true
     }
 
     /// Does this kernel binary actually carry the tailscale outbound?
@@ -2241,8 +2329,11 @@ import SystemConfiguration
         // helper() proxy silently dropped these calls — the helper never logged
         // them — so the toggle reported "系统代理设置失败". A nil result means the
         // helper was unreachable / errored / timed out; fall back to osascript.
-        if let ok = await XPCManager.shared.callSystemProxy(enabled: enabled, port: port) {
-            return ok
+        // XPC-9：Helper 明确回 false（写命令半提交/失败，见 helper.err.log
+        // 11-06 案例）与 nil 一样走本地 networksetup 回退——旧实现只兜 nil，
+        // false 直接把失败抛给 UI，全链路无重试。
+        if let ok = await XPCManager.shared.callSystemProxy(enabled: enabled, port: port), ok {
+            return true
         }
         return await Self.setSystemProxyFallback(enabled: enabled, port: port)
     }
@@ -2393,6 +2484,64 @@ import SystemConfiguration
                 do { try p.run(); p.waitUntilExit(); cont.resume(returning: p.terminationStatus == 0) }
                 catch { cont.resume(returning: false) }
             }
+        }
+    }
+
+    /// C2（LIFE-1 退出兜底）：Helper 缺席时，`performCleanup` 用的**同步**本地
+    /// 关系统代理。服务选择复用 `setSystemProxyFallback` 的 `ProxyServicePlan`
+    /// （同一份目标清单），off 命令序列与 `applySystemProxyLocally` 一致。
+    ///
+    /// 约束：整体限时 ~3s（退出不能挂住）；**不弹管理员授权**——退出时无人可点，
+    /// 非管理员账号写失败就返回 false，交 Helper 死亡看门狗与下次启动续修。
+    /// 超时返回 false，但后台的 off 命令继续尽力完成（每条按服务原子，进程退出
+    /// 后 networksetup 子进程由 launchd 收养跑完，写 off 正是退出意图）。
+    /// 可从任意线程调用：不依赖 MainActor，信号处理路径也安全。
+    nonisolated static func clearSystemProxyLocalSync() -> Bool {
+        final class Outcome { var ok = false }
+        let outcome = Outcome()
+        let sema = DispatchSemaphore(value: 0)
+        DispatchQueue.global(qos: .userInitiated).async {
+            defer { sema.signal() }
+            let services = ProxyServicePlan.liveTargetServices()
+            guard !services.isEmpty else { return }
+            let deadline = Date().addingTimeInterval(2.5)
+            var allOK = true
+            for svc in services {
+                for cmd in [["-setwebproxystate", svc, "off"],
+                            ["-setsecurewebproxystate", svc, "off"],
+                            ["-setsocksfirewallproxystate", svc, "off"]] {
+                    let remaining = deadline.timeIntervalSinceNow
+                    guard remaining > 0 else { outcome.ok = false; return }
+                    if !Self.runNetworkSetupSync(cmd, timeout: min(1.0, remaining)) {
+                        allOK = false
+                    }
+                }
+            }
+            outcome.ok = allOK
+        }
+        guard sema.wait(timeout: .now() + 3.0) == .success else { return false }
+        return outcome.ok
+    }
+
+    /// 同步版 networksetup runner，仅供 `clearSystemProxyLocalSync` 在后台队列
+    /// 上使用。与 `runNetworkSetup` 同一套 terminate 兜底；每条命令独立限时。
+    private static func runNetworkSetupSync(_ args: [String], timeout: TimeInterval) -> Bool {
+        let p = Process()
+        p.executableURL = URL(fileURLWithPath: "/usr/sbin/networksetup")
+        p.arguments = args
+        p.standardOutput = Pipe(); p.standardError = Pipe()
+        let timer = DispatchSource.makeTimerSource(queue: DispatchQueue.global())
+        timer.schedule(deadline: .now() + timeout)
+        timer.setEventHandler { if p.isRunning { p.terminate() } }
+        do {
+            try p.run()
+            timer.resume()
+            p.waitUntilExit()
+            timer.cancel()
+            return p.terminationStatus == 0
+        } catch {
+            timer.cancel()
+            return false
         }
     }
 
@@ -2602,7 +2751,12 @@ import SystemConfiguration
                 let parts = line.split(separator: ":", maxSplits: 1)
                 let key = String(parts[0]).trimmingCharacters(in: .whitespaces)
                 if parts.count > 1 {
-                    let value = String(parts[1]).trimmingCharacters(in: .whitespaces)
+                    let raw = String(parts[1]).trimmingCharacters(in: .whitespaces)
+                    // CFG-7：`dns: # 注释` 是块键不是标量。先按 YamlScalar 口径
+                    // 剥行尾注释（# 前须空白、引号内 # 是数据）；整段值都是注释
+                    // 时同样视为空。否则 currentSection 不更新，dns 的子键会整段
+                    // 误归属进上一个 section（如 tun），喂坏 TUN 自愈判定。
+                    let value = raw.hasPrefix("#") ? "" : YamlScalar.stripInlineComment(raw)
                     if value.isEmpty {
                         currentSection = key
                     } else {
