@@ -17,6 +17,9 @@ private final class ResumeBox {
 public class XPCManager {
     public static let shared = XPCManager()
 
+    /// F12: `connection` 被多线程读写——helper() 调用方、XPC 中断/失效回调、
+    /// resetConnection、安装/升级/卸载流程。所有读写统一走 connectionLock。
+    private let connectionLock = NSLock()
     private var connection: NSXPCConnection?
     /// Injected log sink (set by AppModel). Lets this layer report XPC events
     /// without referencing AppModel directly (decouples helper layer from GUI).
@@ -31,32 +34,51 @@ public class XPCManager {
     private init() {}
 
     public func helper() -> HelperProtocol? {
+        connectionLock.lock()
         if connection == nil {
             let conn = NSXPCConnection(machServiceName: "com.clashhalo.helper", options: .privileged)
             conn.remoteObjectInterface = NSXPCInterface(with: HelperProtocol.self)
             conn.interruptionHandler = { [weak self] in
                 self?.onLog?("XPC 通讯中断")
-                self?.connection?.invalidate()
-                self?.connection = nil
+                self?.takeConnection()?.invalidate()
             }
             conn.invalidationHandler = { [weak self] in
                 self?.onLog?("XPC 通讯失效")
-                self?.connection = nil
+                self?.clearConnection()
             }
             conn.resume()
             connection = conn
         }
-        return connection?.remoteObjectProxyWithErrorHandler({ [weak self] error in
+        let conn = connection
+        connectionLock.unlock()
+        return conn?.remoteObjectProxyWithErrorHandler({ [weak self] error in
             self?.onLog?("XPC 错误: \(error.localizedDescription)")
-            self?.connection = nil
+            self?.clearConnection()
         }) as? HelperProtocol
+    }
+
+    /// F12: 锁内取出并清空当前连接。invalidate() 由调用方在**锁外**执行——
+    /// 它可能触发 invalidationHandler，而 NSLock 不可重入，持锁调用会死锁。
+    private func takeConnection() -> NSXPCConnection? {
+        connectionLock.lock()
+        let conn = connection
+        connection = nil
+        connectionLock.unlock()
+        return conn
+    }
+
+    /// F12: 只丢弃缓存连接、不 invalidate（错误/失效回调路径——连接已死或
+    /// 正在死，重复 invalidate 无意义）。
+    private func clearConnection() {
+        connectionLock.lock()
+        connection = nil
+        connectionLock.unlock()
     }
 
     /// Force-invalidate the cached connection. Called before sleep or after
     /// wake to ensure stale Mach ports are torn down cleanly.
     public func resetConnection() {
-        connection?.invalidate()
-        connection = nil
+        takeConnection()?.invalidate()
         lastVerifiedAt = .distantPast
     }
     
@@ -292,6 +314,14 @@ public class XPCManager {
         }
     }
 
+    /// XPC-2: POSIX shell 单引号转义。`'…'` 内一切字符（$、反引号、双引号、
+    /// 反斜杠、换行）都是字面量，唯一要处理的是单引号本身，写成 `'\''`。
+    /// runAdmin 只转义 AppleScript 层（\ 与 "），往返无损——已用无提权
+    /// osascript 回环探针验证（含 $(…)/反引号/引号/反斜杠的恶意路径样本）。
+    private static func shellQuote(_ s: String) -> String {
+        "'" + s.replacingOccurrences(of: "'", with: "'\\''") + "'"
+    }
+
     /// Install / replace the privileged helper LaunchDaemon.
     /// - Parameter prompt: Optional explanation shown before the admin password sheet.
     public func installDaemon(prompt: PrivilegedPromptContent? = nil) async -> Bool {
@@ -329,42 +359,49 @@ public class XPCManager {
         </plist>
         """
 
-        let tempPlist = NSTemporaryDirectory() + "com.clashhalo.helper.plist"
-        try? plistContent.write(toFile: tempPlist, atomically: true, encoding: .utf8)
+        // XPC-3: plist 不再写用户可写的 NSTemporaryDirectory() 固定名临时文件
+        // （旧实现在密码框挂起的整个窗口内可被同用户进程替换 → root 装入攻击者
+        // LaunchDaemon）。内容全是常量，直接在 root script 内用引号 heredoc
+        // 生成到 stage 目标，不经任何用户可写中间文件。
 
         // Stage the new binary/plist first; only bootout the old service after
         // the destination files are in place. `set -e` aborts on any hard error
         // so a failed cp never reaches bootout.
         // This path also covers upgrades: replace-in-place needs no separate uninstall.
+        //
+        // XPC-2: 所有插值路径经 shellQuote 单引号转义——bundle 路径（DMG 卷名/
+        // 文件夹名）携带 $(…)/反引号/引号时不再能向 root shell 注入命令。
         let script = """
-        set -e; \
-        test -f "\(helperSrc)"; \
-        mkdir -p /Library/PrivilegedHelperTools; \
-        mkdir -p /Library/Logs/ClashHalo; \
-        chmod 755 /Library/Logs/ClashHalo; \
-        cp "\(helperSrc)" "\(helperDst).new"; \
-        xattr -rd com.apple.quarantine "\(helperDst).new" 2>/dev/null || true; \
-        xattr -cr "\(helperDst).new" 2>/dev/null || true; \
-        chown root:wheel "\(helperDst).new"; \
-        chmod 755 "\(helperDst).new"; \
-        cp "\(tempPlist)" "\(plistDst).new"; \
-        xattr -rd com.apple.quarantine "\(plistDst).new" 2>/dev/null || true; \
-        xattr -cr "\(plistDst).new" 2>/dev/null || true; \
-        chown root:wheel "\(plistDst).new"; \
-        chmod 644 "\(plistDst).new"; \
-        launchctl bootout system "\(legacyPlistDst)" 2>/dev/null || true; \
-        rm -f "\(legacyPlistDst)" "\(legacyHelperDst)"; \
-        launchctl bootout system "\(plistDst)" 2>/dev/null || true; \
-        mv -f "\(helperDst).new" "\(helperDst)"; \
-        mv -f "\(plistDst).new" "\(plistDst)"; \
-        launchctl enable system/com.clashhalo.helper; \
-        launchctl bootstrap system "\(plistDst)"; \
+        set -e
+        test -f \(Self.shellQuote(helperSrc))
+        mkdir -p /Library/PrivilegedHelperTools
+        mkdir -p /Library/Logs/ClashHalo
+        chmod 755 /Library/Logs/ClashHalo
+        cp \(Self.shellQuote(helperSrc)) \(Self.shellQuote(helperDst + ".new"))
+        xattr -rd com.apple.quarantine \(Self.shellQuote(helperDst + ".new")) 2>/dev/null || true
+        xattr -cr \(Self.shellQuote(helperDst + ".new")) 2>/dev/null || true
+        chown root:wheel \(Self.shellQuote(helperDst + ".new"))
+        chmod 755 \(Self.shellQuote(helperDst + ".new"))
+        cat > \(Self.shellQuote(plistDst + ".new")) <<'EOF'
+        \(plistContent)
+        EOF
+        xattr -rd com.apple.quarantine \(Self.shellQuote(plistDst + ".new")) 2>/dev/null || true
+        xattr -cr \(Self.shellQuote(plistDst + ".new")) 2>/dev/null || true
+        chown root:wheel \(Self.shellQuote(plistDst + ".new"))
+        chmod 644 \(Self.shellQuote(plistDst + ".new"))
+        launchctl bootout system \(Self.shellQuote(legacyPlistDst)) 2>/dev/null || true
+        rm -f \(Self.shellQuote(legacyPlistDst)) \(Self.shellQuote(legacyHelperDst))
+        launchctl bootout system \(Self.shellQuote(plistDst)) 2>/dev/null || true
+        mv -f \(Self.shellQuote(helperDst + ".new")) \(Self.shellQuote(helperDst))
+        mv -f \(Self.shellQuote(plistDst + ".new")) \(Self.shellQuote(plistDst))
+        launchctl enable system/com.clashhalo.helper
+        launchctl bootstrap system \(Self.shellQuote(plistDst))
         launchctl kickstart -k system/com.clashhalo.helper
         """
 
         let ok = await EngineControl.runAdmin(script, prompt: prompt ?? Self.defaultInstallPrompt)
         if ok {
-            connection = nil // Force reconnect
+            clearConnection() // Force reconnect
         }
         lastVerifiedAt = .distantPast   // freshly (re)installed — force a real handshake
         return ok
@@ -412,7 +449,7 @@ public class XPCManager {
             onLog?("升级特权服务失败：App 内未找到 Helper 二进制。请用 Scripts/build-debug.sh 或 make.sh 构建后再升级。")
             return false
         }
-        connection = nil
+        clearConnection()
         return await installDaemon(prompt: prompt)
     }
 
@@ -426,7 +463,10 @@ public class XPCManager {
         // service into launchd's disabled database, after which a later
         // bootstrap loads the plist but launchd refuses to start it. bootout
         // tears down without poisoning future installs.
+        // F13: set -e——bootout 带 || true 不受影响，rm -f 对不存在文件不报错；
+        // 真实删除失败（如权限异常）不再被静默吞掉、不再假报卸载成功。
         let script = """
+        set -e; \
         launchctl bootout system "\(plistDst)" 2>/dev/null || true; \
         launchctl bootout system "\(legacyPlistDst)" 2>/dev/null || true; \
         rm -f "\(plistDst)"; \
@@ -449,7 +489,7 @@ public class XPCManager {
 
         let ok = await EngineControl.runAdmin(script, prompt: uninstallPrompt)
         if ok {
-            connection = nil
+            clearConnection()
         }
         lastVerifiedAt = .distantPast
         return ok

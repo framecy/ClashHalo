@@ -79,14 +79,25 @@ public class ProxyManager {
         return ProxyServicePlan.enabledServices(listOutput: output)
     }
 
-    /// Per-command timeout. Keep well under the GUI XPC budget (15s for proxy).
-    /// DNS 恢复类命令不适用 1.2s：networksetup 写入被中途 terminate 会留下
-    /// 半提交状态且账本已丢（2026-10-14 审查中-5）。恢复路径统一走 5s。
+    /// 读命令超时。Keep well under the GUI XPC budget (15s for proxy).
+    /// 写命令不适用 1.2s：networksetup 写入被中途 terminate 会留下半提交状态
+    /// （2026-11-06 helper.err.log 唯一真实失败即此形态；DNS 恢复路径同理，
+    /// 2026-10-14 审查中-5）。写统一走 writeCmdTimeout。
     private static let cmdTimeout: TimeInterval = 1.2
+    /// XPC-9: 写命令 5s——与 DNS 恢复路径同一口径，给 SC 动态存储锁竞争留足余量。
+    private static let writeCmdTimeout: TimeInterval = 5.0
     private static let restoreCmdTimeout: TimeInterval = 5.0
 
+    /// 写命令执行器（XPC-9）：5s 超时 + 失败立即重试一次。networksetup 写入
+    /// 幂等（重复写同值无副作用），重试安全；读命令走 runOutput，保持 1.2s。
     @discardableResult
-    private static func run(_ args: [String], timeout: TimeInterval = cmdTimeout) -> Bool {
+    private static func run(_ args: [String], timeout: TimeInterval = writeCmdTimeout) -> Bool {
+        if runOnce(args, timeout: timeout) { return true }
+        log("networksetup 写入失败，重试一次: \(args.first ?? "?")")
+        return runOnce(args, timeout: timeout)
+    }
+
+    private static func runOnce(_ args: [String], timeout: TimeInterval) -> Bool {
         let p = Process()
         p.executableURL = URL(fileURLWithPath: "/usr/sbin/networksetup")
         p.arguments = args
@@ -339,8 +350,9 @@ public class ProxyManager {
     }
 
     /// Clean up TUN residual after mihomo exits: delete default routes pointing
-    /// to utun interfaces bearing mihomo's 198.18.x.x addresses, bring those
-    /// interfaces down, and remove their IP addresses. macOS utun interfaces
+    /// to utun interfaces bearing mihomo's fake-ip addresses (198.18.x/198.19.x,
+    /// 198.18.0.0/15), bring those interfaces down, and remove their IP
+    /// addresses. macOS utun interfaces
     /// created via AF_SYSTEM sockets cannot be destroyed with `ifconfig destroy`
     /// — they persist until their controlling socket FD is closed. Bringing them
     /// down + removing addresses neutralizes their Supplemental DNS resolvers
@@ -349,9 +361,14 @@ public class ProxyManager {
     ///   flags no longer carry UP — i.e. true zombie residue. Client-death
     ///   cleanup passes true so a *healthy* co-resident VPN tunnel sharing the
     ///   198.18.x space (e.g. Shadowrocket, still UP) is never torn down.
+    /// - Returns: XPC-7——无残留可清、或所有「目标已确证存在」的清理命令都成功
+    ///   才返回 true；枚举失败或确证目标的 route/ifconfig 命令失败返回 false
+    ///   （旧实现恒 return true，失败也报成功）。尽力而为的探测性删除（目标可能
+    ///   本就不存在）不计入失败，见各步注释。
     @discardableResult
     public static func cleanupTUNResidual(downedOnly: Bool = false) -> Bool {
-        // 1. Find utun interfaces with 198.18.x.x addresses (mihomo TUN signature)
+        // 1. Find utun interfaces with fake-ip addresses (198.18.x/198.19.x —
+        //    mihomo TUN signature)
         let ifconfigOut = runGeneric("/sbin/ifconfig", ["-a"])
         guard let output = ifconfigOut else {
             log("cleanupTUNResidual: ifconfig failed")
@@ -374,9 +391,11 @@ public class ProxyManager {
                     currentIfaceUp = false
                 }
             }
-            // inet line with 198.18.x.x → this is mihomo's TUN
+            // inet line in 198.18.0.0/15 → this is mihomo's TUN.
+            // XPC-7: fake-ip 段是 /15（198.18.x 与 198.19.x 两半），只认 198.18
+            // 会漏掉 198.19 半段；restoreDNSIfTunnelPinned 早已两段都认，对齐。
             if let iface = currentIface, iface.hasPrefix("utun"),
-               s.contains("198.18."), s.contains("inet ") {
+               (s.contains("198.18.") || s.contains("198.19.")), s.contains("inet ") {
                 // 清理资格（2026-10-14 审查低-6 修复）。198.18.0.0/15 是共享地址
                 // 段，共存 VPN（Shadowrocket 等）也在用，所以按「接口状态 + 设备名」
                 // 两条证据判归属，对齐 GUI 侧既有纪律：
@@ -417,6 +436,12 @@ public class ProxyManager {
         let ifaceNames = mihomoUtuns.map(\.iface)
         log("cleanupTUNResidual: found mihomo utun interfaces: \(ifaceNames)")
 
+        // XPC-7: 聚合「目标已确证存在」的清理命令失败。确证目标 = 刚从
+        // ifconfig -a 枚举出的接口/地址、route -n get 确认归属的全局 default。
+        // 探测性删除（接口作用域 default、/15 网段路由）目标可能本就不存在，
+        // "not in table" 是常态，不计入失败——否则正常清理永远返回 false。
+        var cleanupFailed = false
+
         // 2. Delete default routes pointing to these utun interfaces.
         //    2026-10-14（审查低-4 后续）：原先这里的两条 `-interface` 变体是
         //    死代码——`man route` 核验 delete 只认 `-ifscope` 作用域修饰符
@@ -429,30 +454,41 @@ public class ProxyManager {
         let v4DefaultOwner = currentDefaultRouteInterface(inet6: false)
         let v6DefaultOwner = currentDefaultRouteInterface(inet6: true)
         for (iface, _) in mihomoUtuns {
-            // 接口作用域 default：无条件尝试，只可能命中绑定到该接口的条目
+            // 接口作用域 default：无条件尝试，只可能命中绑定到该接口的条目。
+            // 尽力而为——条目可能不存在，失败不计入聚合（见上）。
             _ = runGeneric("/sbin/route", ["-n", "delete", "default", "-ifscope", iface])
             _ = runGeneric("/sbin/route", ["-n", "delete", "-inet6", "default", "-ifscope", iface])
-            // 全局 default：仅在归属确证后删除（route 成功时 stdout 含 "delete"）
+            // 全局 default：仅在归属确证后删除。目标已确证存在，删除失败
+            // （含超时被 terminate）是真实失败，计入聚合（XPC-7）。
             if v4DefaultOwner == iface {
-                let out = runGeneric("/sbin/route", ["-n", "delete", "default"]) ?? ""
-                log("cleanupTUNResidual: global default pointed at \(iface), delete \(out.contains("delete") ? "ok" : "FAILED")")
+                let ok = runGenericChecked("/sbin/route", ["-n", "delete", "default"]).ok
+                if !ok { cleanupFailed = true }
+                log("cleanupTUNResidual: global default pointed at \(iface), delete \(ok ? "ok" : "FAILED")")
             }
             if v6DefaultOwner == iface {
-                let out = runGeneric("/sbin/route", ["-n", "delete", "-inet6", "default"]) ?? ""
-                log("cleanupTUNResidual: global IPv6 default pointed at \(iface), delete \(out.contains("delete") ? "ok" : "FAILED")")
+                let ok = runGenericChecked("/sbin/route", ["-n", "delete", "-inet6", "default"]).ok
+                if !ok { cleanupFailed = true }
+                log("cleanupTUNResidual: global IPv6 default pointed at \(iface), delete \(ok ? "ok" : "FAILED")")
             }
         }
 
-        // 3. Delete any residual 198.18.0.0/15 routes (mihomo fake-ip range)
+        // 3. Delete any residual 198.18.0.0/15 routes (mihomo fake-ip range).
+        //    尽力而为：网段路由可能不存在，失败不计入聚合。
         _ = runGeneric("/sbin/route", ["-n", "delete", "198.18.0.0/15"])
 
         // 4. Bring interfaces down and remove their IP addresses to neutralize
         //    Supplemental DNS resolvers. utun can't be `destroy`ed, but down +
         //    address removal makes the system stop using it for DNS/routing.
+        //    接口与地址刚从 ifconfig -a 确证存在，命令失败即真实失败（XPC-7）。
         for (iface, addr) in mihomoUtuns {
-            _ = runGeneric("/sbin/ifconfig", [iface, "down"])
-            _ = runGeneric("/sbin/ifconfig", [iface, "inet", addr, "delete"])
-            log("cleanupTUNResidual: \(iface) down + deleted \(addr)")
+            let downOK = runGenericChecked("/sbin/ifconfig", [iface, "down"]).ok
+            let deleteOK = runGenericChecked("/sbin/ifconfig", [iface, "inet", addr, "delete"]).ok
+            if downOK && deleteOK {
+                log("cleanupTUNResidual: \(iface) down + deleted \(addr)")
+            } else {
+                cleanupFailed = true
+                log("cleanupTUNResidual: \(iface) FAILED (down=\(downOK), delete \(addr)=\(deleteOK))")
+            }
         }
 
         // 5. 2026-10-14（审查低-4 修复）：不再执行全局 `route -n flush`——它冲掉
@@ -465,6 +501,7 @@ public class ProxyManager {
         //    直达，gateway 为本机在该网络上的地址"），放进 delete 不参与匹配、只会
         //    静默失败。无作用域的那条 198.18.0.0/15 第 3 步已经删过，这里不需要
         //    第二条形式，留着等于死代码。
+        //    尽力而为：作用域条目可能不存在，失败不计入聚合（XPC-7）。
         for (iface, _) in mihomoUtuns {
             _ = runGeneric("/sbin/route", ["-n", "delete", "198.18.0.0/15", "-ifscope", iface])
         }
@@ -480,7 +517,9 @@ public class ProxyManager {
         // 「表脏」不值得换「半途而废」。
         log("cleanupTUNResidual: split 路由残留（如有）依赖 if_down 清 RTF_UP 惰性化，不逐条删除（已知设计限制）")
 
-        return true
+        // XPC-7: 如实回报——确证目标的清理命令有失败就返回 false，交 GUI 侧
+        // sweep 下轮续修；「无残留可清」的 true 语义在函数前段已保留。
+        return !cleanupFailed
     }
 
     /// 解析 `route -n get default` 的 `interface:` 行，判定当前全局默认路由
@@ -502,6 +541,13 @@ public class ProxyManager {
 
     /// Run an arbitrary command and return its stdout (nil on failure). 5s timeout.
     private static func runGeneric(_ executable: String, _ args: [String]) -> String? {
+        runGenericChecked(executable, args).stdout
+    }
+
+    /// XPC-7: 同 runGeneric，但同时回报退出状态——清理结果聚合需要区分
+    /// 「命令失败」与「命令成功但无输出」（ifconfig down 成功时 stdout 为空，
+    /// 旧实现只看 stdout 无法判失败）。超时被 terminate 同样计为失败。
+    private static func runGenericChecked(_ executable: String, _ args: [String]) -> (stdout: String?, ok: Bool) {
         let p = Process()
         p.executableURL = URL(fileURLWithPath: executable)
         p.arguments = args
@@ -522,10 +568,10 @@ public class ProxyManager {
             let data = pipe.fileHandleForReading.readDataToEndOfFile()
             p.waitUntilExit()
             timer.cancel()
-            return String(data: data, encoding: .utf8)
+            return (String(data: data, encoding: .utf8), p.terminationStatus == 0)
         } catch {
             timer.cancel()
-            return nil
+            return (nil, false)
         }
     }
 }
