@@ -4,7 +4,7 @@
 
 ## [Unreleased]
 
-> 两批改动。**（一）启动不再断两次网**：网关 DNS 的监听探针从解析 `netstat` 文本改成真实 UDP 查询，「探测不到」不再允许重载内核，后台自愈在窗口隐藏后真的会跑起来（外加 App Nap 断言）。**（二）直连链路**：把规则判 DIRECT 的 IP 段排除出 TUN，以及让「运行配置偏离 profile」这件事可见。**Helper 未改协议（1.0.30），无需重装。**
+> 三批改动。**（一）启动不再断两次网**：网关 DNS 的监听探针从解析 `netstat` 文本改成真实 UDP 查询，「探测不到」不再允许重载内核，后台自愈在窗口隐藏后真的会跑起来（外加 App Nap 断言）。**（二）直连链路**：把规则判 DIRECT 的 IP 段排除出 TUN，以及让「运行配置偏离 profile」这件事可见。**（三）全量审计修复（2026-11-15）**：独立审计（P0×4 / P1×23 / P2×66 / P3×67）后的集中修复，覆盖发布阻断、本地提权、退出断网、配置数据丢失四类 P0 与全部 P1。**Helper 升级 1.0.31**（第三批鉴权收紧 + 死亡清理补 v6 转发 + 日志尺寸闸；启动时自动升级，单次授权）。前两批未改协议。
 
 ### Added
 
@@ -14,6 +14,8 @@
 - `Docs/PerfRoadmap.md` + `Scripts/perf-ab.sh`：可复现的直连链路测量基线（native vs TUN 同服务对照、逐阶段打点、每连接 CPU）。
 - `Sources/Model/GatewayDNSHealth.swift`：网关 DNS 体检的判定半边（纯逻辑）+ 唯一的 socket 半边。`Tests/GatewayDNSHealth`（`gatewaydns-tests`，28 条断言）钉住两件事：**探测不到只报告、不重载**；`allowsKernelReload` 是白名单不是黑名单。
 - **隐藏态可观测**：窗口不可见时打一条「后台安全巡检启动」，之后每 15 分钟一条「后台轮询心跳：… 60 s 巡检 N 次，上次网关 DNS 查询 N 秒前」。之所以必须要它：`traffic-history.json` 的 mtime **不能**用来判断巡检有没有跑——`recordHistoryOnly` 为省内存只在 UI 在屏时汇总写盘，文件不动只说明没人在看（2026-11-08 那次排查正是这么误判的）。
+- **（审计批次）回归套件补齐 13 套**：loop-sentinel / tundnsaddress / configwriteaudit / applydrift / kernelmemoryguard / connorigin / providerprotocols / quickrule / deviceidentity / inboundlistener / providerusage / emptygroup / rulevalidator——全部直接编译生产源码、合成 fixture、不依赖开发机实时状态，钉住本轮修复点（MATCH 校验、v6 /128、剥端口、内联 rules 拒绝、secret 指纹留痕、include-all: false 空组等）。登记 27 套全部可跑。
+- **（审计批次）发布防线**：make.sh 末尾自检 Helper 最低系统版本（>14.0 拦截）；版本自检前移到 DMG 生成之前，失败回滚已自增的 build 号；pre-commit 改扫 staged 内容，订阅 URL / 节点链接 / tskey / YAML 裸值凭据全 BLOCK；最终签名带上 entitlements；安装器检测 App 正在运行、删除失败不再嵌套安装。
 
 ### Fixed
 
@@ -25,13 +27,36 @@
 - **启动宽限期**：`kernel ready` 只代表控制 API 起来了，DNS 监听随后才 bind。首次体检推迟 20 s（`kGatewayDNSStartupGrace`），避免把「正在起」读成「没起来」。
 - **归属记录在第二次下发时被抹掉**：`commitProvenance` 写的是本轮 `newlyInjected`，第二轮下发时那些条目已经在运行配置里，于是记录变成空——条目被静默升格为「用户手写」，此后任何撤回都删不掉（对端隧道断开后其网段永久留在排除表里）。改为 `nextRecord = (previous ∪ newlyAdded) ∩ desired`。
 - **多源排除互相覆盖**：共存与直连共用同一个归属键，各自 commit 会覆盖对方。合并收敛到 `RouteExclusionMerge` 单点，`reconcileCoexistenceIfChanged` / `applyTUNState` / SDWAN「一键修复」三处统一走它。
+- **（审计批次 P0）macOS 14~26 装完 TUN 特权功能全废**：Helper 用裸 swiftc 编译没传部署目标，二进制最低系统版本跟着构建机走（实测 27.3），旧系统 dyld 拒载。固定 `-target arm64-apple-macosx14.0`，打包自检拦截。
+- **（审计批次 P0）本机任意进程可提权到 root**：Helper 鉴权 identifier 通过即放行，路径锚定层被短路跳过；内核路径只查末段软链、不锚定用户。现在路径锚定与 identifier 双必经，内核路径解析软链并锚定控制台用户 home，挂载卷只认一层。
+- **（审计批次 P0）拒装 Helper 的用户退出 App 后断网**：开启侧有本地 networksetup 回退、退出侧没有，代理仍指死端口。退出清理补本地同步关代理（限时 3s、不弹授权框）。
+- **（审计批次 P0）编辑活动配置失败后编辑内容丢失**：回滚把旧运行配置写进 profile 文件。现在同 id 失败只还原运行配置，profile 保持用户内容。
+- **（审计批次 P1）连接页速率恒 0**：共享字节基线被 recordHistoryOnly 先覆盖，VM 再读它算差恒 0，按速率排序截断随之失效。VM 自持基线先算差再交共享路径。
+- **（审计批次 P1）重点击活动配置后内核失联**：短路分支把 profile 原文写盘剥掉加固 secret 又不补加固，下次 reconnect 全量 401。短路后补 hardenControllerConfig。
+- **（审计批次 P1）IPv6 断供保护被静默覆盖**：`2000::/3` 排除在多源合并时被覆盖丢失且永不恢复（mini-pro 事故形态）。移到合并之后追加，SDWAN 一键修复同口径。
+- **（审计批次 P1）内核假死 + 隧道残留时隐藏态零巡检**：僵尸巡检依赖 reachable，不可达即空转，盲区日志还是死分支。sweep 增加不可达分支（两击确认自愈），隐藏态巡检在不可达时保住，前台循环不再被 reachable 翻转杀掉。
+- **（审计批次 P1）端口转发编辑弹窗沿用上次未保存值**：稳定 id + loaded 闩锁复用视图身份（2026-10-20 事故同根因残留）。每次展示新 UUID。
+- **（审计批次 P1）本地导入配置点了没反应**：非沙箱 App 的 security-scoped 守卫恒 false 吞掉整个导入分支。移出条件链。
+- **（审计批次 P1）连接/日志页内核未就绪打开永久空白**：start 只调一次且 guard reachable。reachable 恢复时补 start。
+- **（审计批次 P1）通告子网导入可把本机 LAN 劫进 tailnet**：导入候选无本机网段闸门。过 PeerRouteGuard + fake-ip 双段 + 默认路由拒绝，被拒条目带原因进 warnings；预览计数同口径。
+- **（审计批次 P1）TUN 排除表手工编辑固化自动条目**：NList 整块写盘把自动注入条目升格「用户手写」，撤回后从磁盘复活。改走唯一合并入口（用户增删作为一个源）。
+- **（审计批次 P1）安装特权服务可被注入 / 替换**：bundle 路径进 root shell 双引号（卷名含 `$(…)` 即注入）；临时 plist 在密码框窗口可被同用户替换。路径单引号转义，plist 改 root script 内 heredoc 生成。
+- **（审计批次 P1）写盘失败假成功 / MATCH 校验洞 / v6 前缀 / 内联 rules / 注释误归属**：writeConfig 返回值四处传播；MATCH 只豁免 match 参数、PROXY 目标照校；v6 单 IP 统一 /128、一键制裁剥端口；内联 rules 保存显式报错不再产生重复键；块键带行尾注释不再整段误归属（readConfigFile / proxyProviders / 审计三处同口径）。
+- **（审计批次 P1）事务竞态与锁缺口**：设置页事务专用串行队列互斥；heal/reconcile 补 isBusy 入门守卫与 await 后复查；唤醒网关恢复加漂移门、持锁、失败不再抹用户意图。
+- **（审计批次 P2 批量）审计日志隐私与权限**：secret 变更留指纹对痕、序列内嵌字段不再泄进扁平视图、内联 provider URL 脱敏；profiles 0600、回滚路径保 0600；Keychain 删除失败不再留可复活镜像。
+- **（审计批次 P2 批量）内核切换与更新**：下载补 sha256 校验；临时关代理查返回值失败即中止；切换失败还原 TUN DNS；下载与切换拆锁（下载不持锁、切换持锁）；自动更新改直连不经系统代理。
+- **（审计批次 P2 批量）状态与展示**：哨兵后台照喂；「已关闭」计数基线重建；来源列网关 OFF 不再误判；设备身份空闲拍不闪烁；聚合 tab 计数取对源；订阅/日志/仪表盘区分不可达/加载/空态；日志导出失败不再报成功；删规则/删配置加确认；菜单栏面板可滚动；Helper 检查读刷新后状态；TUN/网关开启时拒卸 Helper。
+- **（审计批次 P3 批量）**：Helper 日志尺寸闸、死亡清理补关 v6 转发、cleanupTUNResidual 认 198.19 且如实返回、系统代理写超时 5s+重试、DNS 写超时、隐藏态定时器合并制、bypass 挂 60s 巡检、日志锁、死代码清理（NSConnTable 等）、设计令牌漂移收敛、表单回车提交、API 密钥改密码控件、出厂模板 allow-lan:false + 空 secret（启动即加固）。
 
 ### 验证
 
 - 回归：`bash Scripts/run-tests.sh` → **PASS 14 / FAIL 0 / MISSING 13**（新登记 `gatewaydns-tests` 28 条、`directexclude-tests` 28 条；`Tests/` 不入库，其余 13 套需 `restore-tests.sh` 物化，本机缺失如实列出）。
 - 构建：`bash Scripts/build-debug.sh`（Debug + 内置 Helper）通过。
-- 网关 DNS 实测（本机，Debug 版）：冷启动 2 次，`正在重新应用` 增量 **0**（旧版每次 +2）；日志出现 `网关 DNS 监听正常（10.10.0.20 实测 NOERROR 应答）`；关掉主窗口后 30 s 内出现「后台安全巡检启动」与「后台轮询心跳」。
+- 网关 DNS 实测（本机，Debug 版）：冷启动 2 次，`正在重新应用` 增量 **0**（旧版每次 +2）；日志出现 `网关 DNS 监听正常（本机 LAN 地址实测 NOERROR 应答）`；关掉主窗口后 30 s 内出现「后台安全巡检启动」与「后台轮询心跳」。
 - 直连链路实测（本机 TUN 开启）：同一家服务 native 首飞 4.0 ms / TUN 14.3 ms；`www.baidu.com` 首飞 45.7 ms、TLS 65.7 ms（TLS 1.2 两个 RTT + 拨号一个 RTT）。
+- （审计批次）构建：Debug 与 Release（clean）均 **BUILD SUCCEEDED**；Helper 同 make.sh 新参数独立编译实测 **minos 14.0**（修复前 27.3），版本 1.0.31 两处一致。
+- （审计批次）回归：`bash Scripts/run-tests.sh` → **PASS 27 / FAIL 0 / MISSING 0**（1321 条断言；13 套缺失补齐后首次全量可跑）。
+- （审计批次）未做：真机 TUN 开/关与 Helper 安装/升级密码框流程、UI 真机截图（宿主无屏幕录制权限）——涉及这些路径的修复为代码级判定 + 回归钉住，发版前需真机过一遍。
 
 ## [1.4.2] - 2026-10-29
 
