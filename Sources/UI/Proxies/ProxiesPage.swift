@@ -96,6 +96,11 @@ struct ProxiesPage: View {
                 await M.refreshProxies()
             }
         }
+        // P3：配置切换后组 id 集合会变，collapsed 里的陈旧 id 会让
+        // 「全部折叠/展开」的计数判断（collapsed.count == groups.count）失真。
+        .onChange(of: M.groups) { _, groups in
+            collapsed.formIntersection(Set(groups.map(\.id)))
+        }
     }
 
     private func groupIcon(_ type: String) -> String {
@@ -119,7 +124,7 @@ struct ProxiesPage: View {
             VStack(alignment: .leading, spacing: DS.Spacing.s) {
                 HStack(spacing: DS.Spacing.s) {
                     Image(systemName: groupIcon(g.type)).font(.dsBody).foregroundColor(c).frame(width: DS.Icon.sm)
-                    Text(g.name).font(.dsBodySemibold).lineLimit(1)
+                    Text(g.name).font(.dsBodySemibold).lineLimit(1).truncationMode(.middle)
                     Spacer(minLength: 0)
                     Button { M.testGroup(g) } label: { Image(systemName: "bolt") }
                         .buttonStyle(.borderless).controlSize(.small).font(.dsBody)
@@ -131,6 +136,10 @@ struct ProxiesPage: View {
                         set: { if g.selectable { M.select(group: g.id, name: $0) } }
                     ), choices: g.all.map { DSChoice($0, $0) })
                     .frame(maxWidth: .infinity)
+                    // UI-13：URLTest/LoadBalance 等不可选组禁止点开下拉——
+                    // 旧实现能点、选了又被 set 里的 guard 静默回弹。
+                    .disabled(!g.selectable)
+                    .opacity(g.selectable ? 1 : 0.55)
                     if curDelay == TailscaleLatency.peerOnlySentinel {
                         Text("对等").font(.dsMono).foregroundColor(delayColor(curDelay))
                     } else if curDelay > 0 {
@@ -163,7 +172,10 @@ struct ProxiesPage: View {
                         Image(systemName: groupIcon(g.type)).font(.dsBody).foregroundColor(DS.Palette.accent).frame(width: DS.Icon.lg)
                         VStack(alignment: .leading, spacing: DS.Spacing.xs / 2) {
                             HStack(spacing: DS.Spacing.s) {
+                                // UI-15：255 字组名不撑破卡片头。
                                 Text(g.name).font(.dsBodySemibold)
+                                    .lineLimit(1)
+                                    .truncationMode(.middle)
                                 Text(g.type).font(.dsBody).foregroundColor(.secondary)
                                     .padding(.horizontal, DS.Spacing.xs)
                                     .padding(.vertical, 1)

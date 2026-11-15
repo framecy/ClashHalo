@@ -198,6 +198,9 @@ enum DS {
         static let sidebarRowVInset: CGFloat = Spacing.s
         /// Extra gap under app header before the first section ("监控").
         static let sidebarSectionTop: CGFloat = Spacing.m
+        /// Menu-bar panel scroll-area cap (UI-12): with 20 groups + 10 profiles
+        /// the middle scrolls while header / bottom action row stay reachable.
+        static let menuBarPanelMaxHeight: CGFloat = 560
     }
 
     // MARK: Shapes

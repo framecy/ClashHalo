@@ -14,7 +14,11 @@ private func cfgBool(_ c: [String: Any], _ k: String) -> Bool { (c[k] as? Bool) 
 
 struct PortForwardingCard: View {
     @EnvironmentObject var M: AppModel
-    @State private var editing: InboundListener? = nil
+    /// UI-3：弹窗目标直接存 box（每次点「编辑」构造新 UUID），不在 sheet 的
+    /// Binding get 里现算——那样每次 body 求值都生成新身份，弹窗会被反复重建。
+    /// 新身份让 ListenerEditorSheet 的 loadOnce 闩锁自然重置，
+    /// 「编辑→取消→再编辑」不再沿用上次未保存的值（2026-10-20 事故同根因）。
+    @State private var editingBox: ListenerBox? = nil
     @State private var showingNew = false
     @State private var confirmingDelete: InboundListener? = nil
     /// 缓存的解析结果。`body` 里同步读 70 KB 的 config.yaml 会随每次重绘发生，
@@ -50,9 +54,8 @@ struct PortForwardingCard: View {
         .sheet(isPresented: $showingNew) {
             ListenerEditorSheet(existing: listeners, editing: nil) { showingNew = false }
         }
-        .sheet(item: Binding(get: { editing.map { ListenerBox(listener: $0) } },
-                             set: { editing = $0?.listener })) { box in
-            ListenerEditorSheet(existing: listeners, editing: box.listener) { editing = nil }
+        .sheet(item: $editingBox) { box in
+            ListenerEditorSheet(existing: listeners, editing: box.listener) { editingBox = nil }
         }
         .confirmationDialog("删除转发「\(confirmingDelete?.name ?? "")」？",
                             isPresented: Binding(get: { confirmingDelete != nil },
@@ -69,8 +72,10 @@ struct PortForwardingCard: View {
     }
 
     struct ListenerBox: Identifiable {
+        /// 每次展示生成新 UUID（构造时赋值）：sheet(item:) 以 id 认身份，
+        /// 稳定 id（旧实现用 listener.id = 名字）会让 loadOnce 闩锁跨次残留。
+        let id = UUID()
         let listener: InboundListener
-        var id: String { listener.id }
     }
 
     private func row(_ l: InboundListener) -> some View {
@@ -102,7 +107,7 @@ struct PortForwardingCard: View {
             }
             Spacer(minLength: 0)
 
-            Button { editing = l } label: { Image(systemName: "pencil") }
+            Button { editingBox = ListenerBox(listener: l) } label: { Image(systemName: "pencil") }
                 .buttonStyle(.borderless).help("编辑")
                 .disabled(M.engine.isBusy)
             Button { confirmingDelete = l } label: { Image(systemName: "trash") }
@@ -144,7 +149,8 @@ struct ListenerEditorSheet: View {
     @State private var listen = InboundListener.loopback
     @State private var tcp = true
     @State private var udp = false
-    @State private var error = ""
+    /// UI-11：nil = 无错误；错误行固定占位，出现/消失不挤动底部按钮（§6.4）。
+    @State private var error: String? = nil
     @State private var loaded = false
 
     var body: some View {
@@ -155,6 +161,7 @@ struct ListenerEditorSheet: View {
                 Text("名称").font(.dsBody).foregroundColor(.secondary)
                 TextField("如 fwd-nas（会显示在连接页的「来源」里）", text: $name)
                     .inputStyle().font(.dsMono)
+                    .onSubmit { Task { await save() } }
 
                 Text("类型").font(.dsBody).foregroundColor(.secondary)
                 DSMenuPicker(selection: $type, choices: ListenerType.allCases.map {
@@ -164,10 +171,12 @@ struct ListenerEditorSheet: View {
 
                 Text("监听端口").font(.dsBody).foregroundColor(.secondary)
                 TextField("如 18080", text: $port).inputStyle().font(.dsMono)
+                    .onSubmit { Task { await save() } }
 
                 if type.needsTarget {
                     Text("目标地址（IP:端口）").font(.dsBody).foregroundColor(.secondary)
                     TextField("如 192.168.1.233:8080", text: $target).inputStyle().font(.dsMono)
+                        .onSubmit { Task { await save() } }
                 }
 
                 Text("协议").font(.dsBody).foregroundColor(.secondary)
@@ -192,10 +201,11 @@ struct ListenerEditorSheet: View {
                     .fixedSize(horizontal: false, vertical: true)
             }
 
-            if !error.isEmpty {
-                Text(error).font(.dsBody).foregroundColor(DS.Palette.error)
-                    .fixedSize(horizontal: false, vertical: true)
-            }
+            Text(error ?? " ")
+                .font(.dsBody)
+                .foregroundColor(error == nil ? .clear : DS.Palette.error)
+                .lineLimit(2)
+                .fixedSize(horizontal: false, vertical: true)
 
             HStack {
                 Button("取消") { onClose(); dismiss() }.dsButton()
@@ -203,6 +213,7 @@ struct ListenerEditorSheet: View {
                 Button("保存") { Task { await save() } }
                     .dsButton(.prominent)
                     .disabled(M.engine.isBusy)
+                    .keyboardShortcut(.defaultAction)
             }
         }
         .padding(DS.Spacing.xl)
@@ -224,7 +235,7 @@ struct ListenerEditorSheet: View {
     }
 
     private func save() async {
-        error = ""
+        error = nil
         var network: Set<ListenerNetwork> = []
         if tcp { network.insert(.tcp) }
         if udp { network.insert(.udp) }
@@ -443,7 +454,10 @@ struct TunPage: View {
                         NToggle("自动路由", "tun", "auto-route")
                         NToggle("自动检测网卡", "tun", "auto-detect-interface")
                         NList("DNS 劫持", "tun", "dns-hijack", placeholder: "any:53")
-                        NList("路由排除网段", "tun", "route-exclude-address", placeholder: "192.168.0.0/16")
+                        // TS-2：路由排除表走唯一合并入口（C1），用户增删作为
+                        // 一个源并入 RouteExclusionMerge，不再整块 patchPersistent。
+                        NList("路由排除网段", "tun", "route-exclude-address", placeholder: "192.168.0.0/16",
+                              commitOverride: { desired in await M.commitUserRouteExclusions(desired) })
                     }
                     Text("用户态 UTUN (AF_SYSTEM)，不占 VPN 插槽。在「网络拓扑」中排除虚拟网段，可避免抢占其路由。")
                         .font(.dsBody).foregroundColor(.secondary).padding(.top, DS.Spacing.s)
@@ -659,7 +673,7 @@ struct NumRow: View {
         HStack {
             Text(label).font(.dsBody)
             Spacer()
-            HStack(spacing: 8) {
+            HStack(spacing: DS.Spacing.s) {
                 TextField("0", text: $text)
                     .inputStyle()
                     .font(.dsMono)
@@ -774,6 +788,54 @@ struct TextRow: View {
         hasChanges = false
         Task {
             let ok = persistent ? await M.patchPersistent([key: text]) : await M.patch([key: text])
+            // 失败回弹：输入框里的草稿不能比磁盘更“新”。
+            if !ok { text = (M.configs[key] as? String) ?? "" }
+        }
+    }
+}
+
+/// API 密钥专用行（P3 / 旧审计 §9.1）：SecureField 掩码输入。
+/// 禁止用 TextRow / NText 渲染密钥——它们明文显示（NText 契约见其注释）。
+/// 交互与 TextRow 完全同构：失焦或回车提交、失败回弹到内核真值。
+struct SecretRow: View {
+    @EnvironmentObject var M: AppModel
+    let label: String; let key: String; let placeholder: String
+    @State private var text = ""
+    @State private var hasChanges = false
+    @FocusState private var isFocused: Bool
+
+    var body: some View {
+        HStack {
+            Text(label).font(.dsBody)
+            Spacer()
+            HStack(spacing: DS.Spacing.s) {
+                SecureField(placeholder, text: $text)
+                    .inputStyle()
+                    .font(.dsMono)
+                    .focused($isFocused)
+                    .onSubmit { commit() }
+                    .onChange(of: text) { _, _ in
+                        hasChanges = text != ((M.configs[key] as? String) ?? "")
+                    }
+                    .onChange(of: isFocused) { _, focused in
+                        if !focused && hasChanges { commit() }
+                    }
+
+                if hasChanges {
+                    Button("应用") { commit() }
+                        .dsButton(.prominent)
+                }
+            }
+            .frame(width: DS.Layout.fieldTrailing, alignment: .trailing)
+        }
+        .padding(.vertical, DS.Spacing.s)
+        .onAppear { text = (M.configs[key] as? String) ?? "" }
+        .onChange(of: M.configs[key] as? String) { _, _ in text = (M.configs[key] as? String) ?? ""; hasChanges = false }
+    }
+    private func commit() {
+        hasChanges = false
+        Task {
+            let ok = await M.patchPersistent([key: text])
             // 失败回弹：输入框里的草稿不能比磁盘更“新”。
             if !ok { text = (M.configs[key] as? String) ?? "" }
         }
@@ -1025,8 +1087,15 @@ struct NText: View {
 struct NList: View {
     @EnvironmentObject var M: AppModel
     let parent: String; let sub: String; let label: String; let placeholder: String; let persistent: Bool
-    init(_ label: String, _ parent: String, _ sub: String, placeholder: String = "", persistent: Bool = true) {
+    /// TS-2：可选的写路径覆盖。`tun.route-exclude-address` 的唯一写入入口是
+    /// RouteExclusionMerge（多源合并 + 归属记录），不能走默认的 patchPersistent
+    /// 整块写盘——那会把自动注入条目升格成「用户手写」、撤回时磁盘复活。
+    /// nil = 默认路径，其他 NList 行为不变。
+    let commitOverride: (([String]) async -> Bool)?
+    init(_ label: String, _ parent: String, _ sub: String, placeholder: String = "", persistent: Bool = true,
+         commitOverride: (([String]) async -> Bool)? = nil) {
         self.label = label; self.parent = parent; self.sub = sub; self.placeholder = placeholder; self.persistent = persistent
+        self.commitOverride = commitOverride
     }
     @State private var items: [String] = []
     @State private var draft = ""
@@ -1063,7 +1132,12 @@ struct NList: View {
     }
     private func commit() {
         Task {
-            let ok = persistent ? await M.patchPersistent([parent: [sub: items]]) : await M.patch([parent: [sub: items]])
+            let ok: Bool
+            if let commitOverride {
+                ok = await commitOverride(items)
+            } else {
+                ok = persistent ? await M.patchPersistent([parent: [sub: items]]) : await M.patch([parent: [sub: items]])
+            }
             // 失败回弹到真实列表，避免界面比配置多/少一条。
             if !ok { items = configItems }
         }
@@ -1083,7 +1157,7 @@ struct KernelMgmtPage: View {
                     Card(title: "API 控制 (外部面板)", icon: "server.rack") {
                         VStack(spacing: 2) {
                             TextRow("API 监听地址", key: "external-controller", placeholder: "127.0.0.1:9090", persistent: true)
-                            TextRow("API 密钥 (Secret)", key: "secret", placeholder: "留空即无密码", persistent: true)
+                            SecretRow(label: "API 密钥 (Secret)", key: "secret", placeholder: "留空即无密码")
                             TextRow("本地面板目录", key: "external-ui", placeholder: "zashboard", persistent: true)
                             TextRow("面板解压目录名", key: "external-ui-name", placeholder: "zashboard", persistent: true)
                             TextRow("面板下载地址", key: "external-ui-url", placeholder: "https://github.com/Zephyruso/zashboard/releases/latest/download/dist-no-fonts.zip", persistent: true)
@@ -1093,7 +1167,7 @@ struct KernelMgmtPage: View {
                     }
 
                     Card(title: "启动日志", icon: "terminal") {
-                        VStack(alignment: .leading, spacing: 4) {
+                        VStack(alignment: .leading, spacing: DS.Spacing.xs) {
                             if M.kernelLogs.isEmpty {
                                 Text("暂无启动日志").font(.dsBody).foregroundColor(.secondary)
                             } else {
@@ -1119,7 +1193,7 @@ struct KernelCard: View {
     @StateObject private var km = KernelManager.shared
     var body: some View {
         Card(title: "内核管理", icon: "cpu") {
-            VStack(spacing: 10) {
+            VStack(spacing: DS.Spacing.m) {
                 HStack {
                     let connecting = M.engine.isBusy && !M.reachable
                     Circle()
@@ -1180,7 +1254,7 @@ struct KernelCard: View {
                         Text("点击检查可用内核版本").font(.dsBody).foregroundColor(.secondary)
                     }
                     Spacer()
-                    HStack(spacing: 8) {
+                    HStack(spacing: DS.Spacing.s) {
                         Button("检查更新") {
                             Task { await km.check() }
                         }
@@ -1188,26 +1262,32 @@ struct KernelCard: View {
                             .disabled(km.checking || km.downloading)
                         if !km.assetURL.isEmpty {
                             Button {
-                                // Download while kernel still serves traffic (no isBusy).
-                                // Only the final swap/restart holds the engine busy lock.
+                                // CONN-4（C9）：下载+校验+暂存不持锁，内核继续服务
+                                // 流量；只有 activate/swap 阶段（停核→换 bin→启动→
+                                // 等就绪→恢复代理）持 withEngineBusy，防止切换窗口被
+                                // 并发闯入。旧注释声称「只有 swap 持锁」，实现却是
+                                // 裸 Task 全程无锁——现在注释与实现一致。
                                 Task {
-                                    let wasTUN = M.tunOn
-                                    let switched = await km.download()
-                                    if switched {
-                                        // activate already waited for readiness + restored proxy
-                                        await M.reconnect()
-                                        if M.reachable {
-                                            await M.reapplyTUN(wasOn: wasTUN)
-                                        }
-                                        M.showToast(km.note.isEmpty ? "内核已更新" : km.note, kind: .ok)
-                                    } else {
+                                    guard let tag = await km.download() else {
                                         await M.reconnect()
                                         M.showToast(km.note.isEmpty ? "内核更新失败" : km.note, kind: .error)
+                                        return
+                                    }
+                                    M.withEngineBusy("切换内核") {
+                                        let wasTUN = M.tunOn
+                                        let ok = await km.activate(tag)
+                                        await M.reconnect()
+                                        if ok {
+                                            await M.reapplyTUN(wasOn: wasTUN)
+                                            M.showToast(km.note.isEmpty ? "内核已更新" : km.note, kind: .ok)
+                                        } else {
+                                            M.showToast(km.note.isEmpty ? "启用 \(tag) 失败" : km.note, kind: .error)
+                                        }
                                     }
                                 }
                             } label: {
                                 if km.downloading {
-                                    HStack(spacing: 6) {
+                                    HStack(spacing: DS.Spacing.xs) {
                                         ProgressView().controlSize(.small)
                                         Text(km.progress > 0 ? String(format: "%.0f%%", km.progress * 100) : "…")
                                             .font(.dsMono)

@@ -385,8 +385,14 @@ struct TailscalePage: View {
                 }
             }
 
-            let suggested = TailscaleAPI.suggestedSubnetRoutes(from: M.tsDevices)
-                .filter { !M.tsSettings.extraCIDRs.contains($0) }
+            // TS-1 配套：预览计数与导入入口走同一安全闸门（同
+            // importAdvertisedSubnetRoutes 的谓词构造），否则「N 条尚未导入」
+            // 会把被闸门拒绝的网段也算进去，计数偏大、点了导入却加不进来。
+            let localSubnets = PeerRouteGuard.localAttachedSubnets()
+            let suggested = TailscaleAPI.suggestedSubnetRoutes(from: M.tsDevices) { cidr in
+                M.tsSubnetRejection(cidr, localSubnets: localSubnets) != nil
+            }
+            .filter { !M.tsSettings.extraCIDRs.contains($0) }
             if !suggested.isEmpty {
                 HStack {
                     Text("设备通告了 \(suggested.count) 条尚未导入的子网")

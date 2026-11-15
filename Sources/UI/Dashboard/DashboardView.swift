@@ -34,6 +34,27 @@ struct DashboardPage: View {
             }
             ScrollView {
                 VStack(alignment: .leading, spacing: DS.Spacing.l) {
+                    // UI-6：内核不可达时明确说出来并给重试，而不是让整页 0 值
+                    // 被读成「今天没有流量」。历史统计仍展示（它们是磁盘数据）。
+                    if !M.reachable {
+                        HStack(spacing: DS.Spacing.m) {
+                            Image(systemName: "exclamationmark.triangle")
+                                .font(DS.Icon.font(DS.Icon.md, weight: .medium))
+                                .symbolRenderingMode(.monochrome)
+                                .foregroundStyle(DS.Palette.warn)
+                            Text("内核未连接，实时数据不可用；以下为历史统计。")
+                                .font(.dsBody)
+                                .foregroundStyle(.secondary)
+                            Spacer(minLength: 0)
+                            Button { Task { await M.reconnect() } } label: {
+                                Label("重试", systemImage: "arrow.clockwise")
+                            }
+                            .dsButton()
+                        }
+                        .padding(DS.Spacing.m)
+                        .dsCardChrome()
+                    }
+
                     // 完全没有配置时先给一条能走通的路：与配置页空状态共用同一张三步卡，
                     // 避免两处文案各写一遍后慢慢漂移。判据只看「有没有配置」——用
                     // 「接管是否开启」判会因冷启动同步延迟先闪一张卡，并长期压住
@@ -226,7 +247,7 @@ struct TrafficDistributionView: View, Equatable {
             TrafficSlice(name: "拦截", value: Double(reject), color: DS.Palette.error)
         ]
 
-        return HStack(spacing: 32) {
+        return HStack(spacing: DS.Spacing.xxxl) {
             ZStack {
                 Canvas { context, size in
                     let total = direct + proxy + reject
@@ -355,29 +376,6 @@ struct RankList: View, Equatable {
     }
 }
 
-struct StatBox: View {
-    let label, value: String; var unit: String? = nil; let sub: String; var accent = false
-    @EnvironmentObject var M: AppModel
-    var body: some View {
-        VStack(alignment: .leading, spacing: 4) {
-            Text(label).font(.dsBody).foregroundColor(.secondary)
-            HStack(alignment: .firstTextBaseline, spacing: 2) {
-                Text(value).font(.dsStatValue)
-                    .foregroundColor(accent ? DS.Palette.accent : .primary)
-                if let unit { Text(unit).font(.dsBodySemibold).foregroundColor(.secondary) }
-            }
-            Text(sub).font(.dsBody).foregroundColor(.secondary).lineLimit(1)
-        }
-        .padding(DS.Spacing.l)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .dsCardChrome()
-        .overlay(
-            RoundedRectangle(cornerRadius: DS.Radius.card, style: .continuous)
-                .stroke(accent ? DS.Palette.accent.opacity(0.28) : Color.clear, lineWidth: 1)
-        )
-    }
-}
-
 struct BarStat: View {
     let label, value, icon: String; let color: Color
     init(_ l: String, _ v: String, _ i: String, _ c: Color) { label = l; value = v; icon = i; color = c }
@@ -423,30 +421,6 @@ struct MiniStat: View {
         .padding(.horizontal, DS.Spacing.l).padding(.vertical, DS.Spacing.m)
         // Same tier as neighboring Card / BarStat — Radius.card via dsCardChrome.
         .dsCardChrome()
-    }
-}
-
-struct HourlyBars: View, Equatable {
-    let values: [Double]
-    let accent: Color
-
-    static func == (lhs: Self, rhs: Self) -> Bool {
-        lhs.values == rhs.values && lhs.accent == rhs.accent
-    }
-
-    var body: some View {
-        let mx = max(values.max() ?? 1, 1)
-        GeometryReader { g in
-            let bw = (g.size.width - CGFloat(values.count - 1) * 4) / CGFloat(values.count)
-            HStack(alignment: .bottom, spacing: 4) {
-                ForEach(values.indices, id: \.self) { i in
-                    RoundedRectangle(cornerRadius: DS.Radius.bar, style: .continuous)
-                        .fill(LinearGradient(colors: [accent, accent.opacity(0.5)], startPoint: .top, endPoint: .bottom))
-                        .frame(width: max(2, bw), height: max(2, g.size.height * CGFloat(values[i]/mx)))
-                }
-            }
-            .frame(maxHeight: .infinity, alignment: .bottom)
-        }
     }
 }
 
@@ -533,8 +507,9 @@ struct MemoryLiveColumn: View {
 
     var body: some View {
         VStack(spacing: DS.Spacing.l) {
+            // P3：核心内存是中性数据，用 info；roleOray 是网络角色色（语义漂移）。
             MiniStat("核心内存", fmtBytes(Double(live.memory)), sub: nil,
-                     icon: "memorychip", color: DS.Palette.roleOray)
+                     icon: "memorychip", color: DS.Palette.info)
                 .frame(maxHeight: .infinity)
             MiniStat("应用内存", String(format: "%.0f MB", live.appMemoryMB), sub: nil,
                      icon: "app.dashed", color: DS.Palette.warn)

@@ -47,8 +47,21 @@ struct LogsPage: View {
                     Text("\(rows.count) 行").font(.dsMono).foregroundColor(.secondary)
                 }
             })
-            if source.isEmpty {
-                ContentUnavailable("等待日志流…", "doc.text.magnifyingglass")
+            // UI-6：不可达 ≠ 空态。内核没连上时给「重试」而不是让用户对着
+            // 「等待日志流…」干等；loading（已订阅、日志还没到）与真空态分开。
+            if !M.reachable {
+                ContentUnavailable("内核未连接，无法订阅日志流", "doc.text.magnifyingglass") {
+                    Task { await M.reconnect(); VM.start() }
+                }
+            } else if source.isEmpty {
+                VStack(spacing: DS.Spacing.m) {
+                    ProgressView().controlSize(.small)
+                    Text(paused ? "暂停中，暂无日志" : "等待日志流…")
+                        .font(.dsBody).foregroundStyle(.secondary)
+                }
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+            } else if rows.isEmpty {
+                ContentUnavailable("无匹配日志", "magnifyingglass")
             } else {
                 ScrollViewReader { sp in
                     ScrollView {
@@ -82,6 +95,11 @@ struct LogsPage: View {
         .onDisappear {
             VM.stop()
         }
+        // UI-1：内核未就绪时打开本页，start() 的 reachable guard 直接返回，
+        // 内核恢复后必须补一次 start，否则页面永久失联（start 内 guard 保留）。
+        .onChange(of: M.reachable) { _, up in
+            if up { VM.start() }
+        }
     }
 
     private func exportLogs(_ rows: [Log]) {
@@ -90,8 +108,13 @@ struct LogsPage: View {
         panel.nameFieldStringValue = "clashhalo-logs.txt"
         panel.allowedContentTypes = [.plainText]
         if panel.runModal() == .OK, let url = panel.url {
-            try? text.write(to: url, atomically: true, encoding: .utf8)
-            M.showToast("已导出 \(rows.count) 行日志", kind: .ok)
+            // UI-7：写盘失败（权限/磁盘满/路径失效）不能吞掉再报成功。
+            do {
+                try text.write(to: url, atomically: true, encoding: .utf8)
+                M.showToast("已导出 \(rows.count) 行日志", kind: .ok)
+            } catch {
+                M.showToast("导出失败：\(error.localizedDescription)", kind: .error)
+            }
         }
     }
     private func logColor(_ l: String) -> Color {
@@ -122,6 +145,9 @@ struct LogsPage: View {
 
     func start() {
         guard api.reachable else { return }
+        // UI-1：reachable 翻转会让 onChange 再调 start()；幂等守卫防止
+        // 重复订阅与 flush Timer 泄漏（stop() 会把两者都清掉）。
+        guard logFlushTimer == nil else { return }
 
         logs.removeAll()
         logBuffer.removeAll()

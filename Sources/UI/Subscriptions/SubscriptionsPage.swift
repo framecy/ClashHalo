@@ -6,6 +6,10 @@ struct SubscriptionsPage: View {
     @EnvironmentObject var M: AppModel
     @State private var providers: [ProviderEntry] = []
     @State private var busy: Set<String> = []
+    /// UI-6：loading ≠ empty——首次 reload 完成前不画「无订阅」空态。
+    @State private var loaded = false
+    /// P3：「全部刷新节点」重入守卫，防两条更新链并行互相覆盖 reload。
+    @State private var updatingAll = false
     @State private var showSheet = false
     @State private var editName: String? = nil   // nil = add
     @State private var fName = ""
@@ -21,10 +25,23 @@ struct SubscriptionsPage: View {
                 // 磁盘配置文件（那是配置页的事）。文案必须让两者分得开。
                 Button { Task { await updateAll() } } label: { Label("全部刷新节点", systemImage: "arrow.clockwise") }
                     .dsButton()
+                    .disabled(updatingAll)
                 Button { editName = nil; fName = ""; fURL = ""; showSheet = true } label: { Label("添加订阅", systemImage: "plus") }
                     .dsButton(.prominent)
             }
-            if providers.isEmpty {
+            // UI-6：不可达给重试，而不是把「内核没连上」画成「没有订阅」。
+            if !M.reachable {
+                ContentUnavailable("内核未连接，无法读取订阅", "icloud.slash") {
+                    Task { await M.reconnect(); await reload() }
+                }
+            } else if !loaded {
+                VStack(spacing: DS.Spacing.m) {
+                    ProgressView().controlSize(.small)
+                    Text("正在加载订阅…")
+                        .font(.dsBody).foregroundStyle(.secondary)
+                }
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+            } else if providers.isEmpty {
                 ContentUnavailable("无 HTTP 订阅 · 点右上角「添加订阅」", "icloud")
             } else {
                 ScrollView {
@@ -38,6 +55,10 @@ struct SubscriptionsPage: View {
             }
         }
         .task { await reload() }
+        // UI-6：内核恢复后自动重取，不需要切走再切回。
+        .onChange(of: M.reachable) { _, up in
+            if up { Task { await reload() } }
+        }
         .sheet(isPresented: $showSheet) { providerSheet }
         .confirmationDialog("删除订阅「\(confirmDelete ?? "")」？", isPresented: Binding(get: { confirmDelete != nil }, set: { if !$0 { confirmDelete = nil } }), titleVisibility: .visible) {
             Button("删除", role: .destructive) { if let n = confirmDelete { Task { await delete(n) } }; confirmDelete = nil }
@@ -53,10 +74,12 @@ struct SubscriptionsPage: View {
                 TextField("如 US-Premium（不含空格）", text: $fName)
                     .inputStyle()
                     .font(.dsMono)
+                    .onSubmit { Task { await save() } }
                 Text("订阅链接").font(.dsBody).foregroundColor(.secondary)
                 TextField("https://…", text: $fURL)
                     .inputStyle()
                     .font(.dsMono)
+                    .onSubmit { Task { await save() } }
             }
             HStack {
                 Button("取消") { showSheet = false }
@@ -66,6 +89,7 @@ struct SubscriptionsPage: View {
                 Button("保存") { Task { await save() } }
                     .dsButton(.prominent)
                     .disabled(fName.trimmingCharacters(in: .whitespaces).isEmpty || !fURL.hasPrefix("http"))
+                    .keyboardShortcut(.defaultAction)
             }
         }.padding(DS.Spacing.xl).frame(width: 460)
     }
@@ -175,6 +199,7 @@ struct SubscriptionsPage: View {
 
     private func reload() async {
         usageCounts = M.providerUsageCounts()
+        defer { loaded = true }
         guard let p = try? await M.api.fetchProviders() else { return }
         providers = p.providers.values.filter { $0.vehicleType == "HTTP" }.sorted { $0.name < $1.name }
     }
@@ -195,7 +220,14 @@ struct SubscriptionsPage: View {
         await reload(); busy.remove(name)
         M.showToast("内核节点「\(name)」已刷新", kind: .ok)
     }
-    private func updateAll() async { for p in providers { await update(p.name) } }
+    private func updateAll() async {
+        // P3：重入守卫——全部刷新进行中再点一次会并行跑两条更新链，
+        // toast 互相覆盖、reload 互相打架。
+        guard !updatingAll else { return }
+        updatingAll = true
+        defer { updatingAll = false }
+        for p in providers { await update(p.name) }
+    }
     private func dateStr(_ unix: Int64) -> String {
         let d = Date(timeIntervalSince1970: TimeInterval(unix))
         let f = DateFormatter(); f.dateFormat = "yyyy-MM-dd"; return f.string(from: d)

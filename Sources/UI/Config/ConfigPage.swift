@@ -8,6 +8,8 @@ struct ConfigPage: View {
     @State private var showImportRemote = false
     @State private var showAddLocal = false
     @State private var showWipeConfirm = false
+    /// UI-10：删单个配置的确认目标（对齐删订阅的 confirmationDialog 范式）。
+    @State private var confirmDeleteProfile: Profile? = nil
     /// 运行配置与活动 profile 的差异快照。页面出现时算一次，不进 body。
     @State private var drift: [String] = []
 
@@ -114,6 +116,20 @@ struct ConfigPage: View {
                  + "并自动关闭系统代理与 TUN、停止内核。此操作不可撤销；"
                  + "重新导入配置后需手动开启系统代理 / TUN。")
         }
+        // UI-10：删单个配置也要确认（此前右键「删除」直接执行，其余破坏性
+        // 操作都有确认弹窗）。活动/草稿配置在菜单里已 disabled，这里只兜非活动。
+        .confirmationDialog("删除配置「\(confirmDeleteProfile?.name ?? "")」？",
+                            isPresented: Binding(get: { confirmDeleteProfile != nil },
+                                                 set: { if !$0 { confirmDeleteProfile = nil } }),
+                            titleVisibility: .visible) {
+            Button("删除", role: .destructive) {
+                if let p = confirmDeleteProfile { M.store.remove(p.id) }
+                confirmDeleteProfile = nil
+            }
+            Button("取消", role: .cancel) { confirmDeleteProfile = nil }
+        } message: {
+            Text("将删除该配置文件与其订阅链接，此操作不可撤销。")
+        }
         .sheet(isPresented: $showImportRemote) { ImportRemoteSheet() }
         .sheet(isPresented: $showAddLocal) { AddLocalSheet() }
         .sheet(item: Binding(get: { editingID.map { IDBox(id: $0) } }, set: { editingID = $0?.id })) { box in
@@ -130,10 +146,6 @@ struct ConfigPage: View {
         // profiles: amber outline + a small badge instead of the empty
         // circle + "设为活动" CTA used by inactive applied ones.
         let draft = p.needsApply && !active
-        let stroke: Color = active ? DS.Palette.accent.opacity(0.4)
-            : draft ? DS.Palette.warn.opacity(0.5)
-            : DS.Palette.border
-        let strokeWidth: CGFloat = (active || draft) ? 1.5 : 1
 
         return VStack(alignment: .leading, spacing: 0) {
             // Header row — fixed height so badges don't stretch cards unevenly
@@ -204,14 +216,16 @@ struct ConfigPage: View {
         }
         .padding(DS.Spacing.l)
         .frame(maxWidth: .infinity, minHeight: DS.Layout.profileCardMinHeight, alignment: .topLeading)
-        .background(
-            RoundedRectangle(cornerRadius: DS.Radius.card, style: .continuous)
-                .fill(DS.Palette.cardBg)
-        )
-        .overlay(
-            RoundedRectangle(cornerRadius: DS.Radius.card, style: .continuous)
-                .stroke(stroke, lineWidth: strokeWidth)
-        )
+        // P3：页面网格上的兄弟卡一律 dsCardChrome（Light 双层阴影 / Dark 抬升色），
+        // 不再手写 background+stroke 分叉；活动/草稿的状态环叠在标准 chrome 之上。
+        .dsCardChrome()
+        .overlay {
+            if active || draft {
+                RoundedRectangle(cornerRadius: DS.Radius.card, style: .continuous)
+                    .stroke(active ? DS.Palette.accent.opacity(0.4) : DS.Palette.warn.opacity(0.5),
+                            lineWidth: 1.5)
+            }
+        }
         .contentShape(Rectangle())
         .onTapGesture { if !active && !pendingApply { M.selectForApply(p.id) } }
         .contextMenu {
@@ -247,7 +261,7 @@ struct ConfigPage: View {
                 .disabled(M.engine.isBusy)
             }
             Divider()
-            Button(role: .destructive) { M.store.remove(p.id) } label: { Label("删除", systemImage: "trash") }
+            Button(role: .destructive) { confirmDeleteProfile = p } label: { Label("删除", systemImage: "trash") }
                 .disabled(active || draft || M.engine.isBusy)
         }
     }
@@ -282,7 +296,9 @@ struct ImportRemoteSheet: View {
     @State private var name = ""
     @State private var url = ""
     @State private var busy = false
-    @State private var err = ""
+    /// UI-11：nil = 无错误。错误行固定占位（Text(err ?? " ")），出现/消失
+    /// 不改变表单高度、不挤动底部按钮（design.md §6.4）。
+    @State private var err: String? = nil
     @State private var stage: Stage = .pick
     @State private var previewContent = ""
     @State private var preview = YAMLPreview()
@@ -293,8 +309,14 @@ struct ImportRemoteSheet: View {
             if stage == .pick {
                 Text("导入远程配置或订阅").font(.dsCardLabel)
                 TextField("名称", text: $name).inputStyle()
+                    .onSubmit { Task { await fetchPreview() } }
                 TextField("https://…/clash 或订阅链接", text: $url).inputStyle().font(.dsMono)
-                if !err.isEmpty { Text(err).font(.dsBody).foregroundColor(DS.Palette.error) }
+                    .onSubmit { Task { await fetchPreview() } }
+                Text(err ?? " ")
+                    .font(.dsBody)
+                    .foregroundColor(err == nil ? .clear : DS.Palette.error)
+                    .lineLimit(2)
+                    .fixedSize(horizontal: false, vertical: true)
                 HStack {
                     Button("取消") { dismiss() }.dsButton()
                     Spacer()
@@ -302,18 +324,24 @@ struct ImportRemoteSheet: View {
                         if busy { ProgressView().controlSize(.small) } else { Text("下载预览") }
                     }
                     .dsButton(.prominent).disabled(url.isEmpty || busy)
+                    .keyboardShortcut(.defaultAction)
                 }
 
             } else {
                 Text("导入预览").font(.dsCardLabel)
                 previewSummary
-                if !err.isEmpty { Text(err).font(.dsBody).foregroundColor(DS.Palette.error) }
+                Text(err ?? " ")
+                    .font(.dsBody)
+                    .foregroundColor(err == nil ? .clear : DS.Palette.error)
+                    .lineLimit(2)
+                    .fixedSize(horizontal: false, vertical: true)
                 HStack {
                     Button("放弃") { stage = .pick }.dsButton()
                     Spacer()
                     Button("添加到配置列表") { Task { await saveOnly() } }.dsButton()
                     Button("导入并应用") { Task { await saveAndApply() } }
                         .dsButton(.prominent).disabled(name.isEmpty || busy)
+                        .keyboardShortcut(.defaultAction)
                 }
 
             }
@@ -321,7 +349,7 @@ struct ImportRemoteSheet: View {
     }
 
     private var previewSummary: some View {
-        VStack(alignment: .leading, spacing: 6) {
+        VStack(alignment: .leading, spacing: DS.Spacing.s) {
             Text("检测到 \(preview.nodeCount) 个节点、\(preview.groupCount) 个分组、\(preview.ruleCount) 条规则")
                 .font(.dsBody).foregroundColor(.secondary)
             Text("文件大小：\(preview.bytes) 字节")
@@ -334,7 +362,7 @@ struct ImportRemoteSheet: View {
     }
 
     private func fetchPreview() async {
-        busy = true; err = ""
+        busy = true; err = nil
         guard let u = URL(string: url) else { err = "链接无效"; busy = false; return }
         do {
             let (data, _) = try await URLSession.shared.data(from: u)
@@ -413,6 +441,7 @@ struct AddLocalSheet: View {
                         .disabled(name.isEmpty)
                     Button("导入并应用") { Task { await saveDraft(apply: true) } }
                         .dsButton(.prominent).disabled(name.isEmpty)
+                        .keyboardShortcut(.defaultAction)
                 }
 
             }
@@ -423,14 +452,21 @@ struct AddLocalSheet: View {
         let panel = NSOpenPanel()
         panel.allowedContentTypes = [.yaml, .plainText]
         panel.allowsMultipleSelection = false
-        if panel.runModal() == .OK, let url = panel.url,
-           url.startAccessingSecurityScopedResource(),
-           let content = try? String(contentsOf: url, encoding: .utf8) {
-            defer { url.stopAccessingSecurityScopedResource() }
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+        // UI-2：本 App 非沙箱（app-sandbox=false），NSOpenPanel 返回的 URL 不是
+        // security-scoped——startAccessingSecurityScopedResource() 返回 false。
+        // 旧实现把它放进条件链，整个导入分支被静默跳过、无任何报错。
+        // 现在直接读文件；仅当返回 true 时才配对 stop（将来若沙箱化也成立）。
+        let scoped = url.startAccessingSecurityScopedResource()
+        defer { if scoped { url.stopAccessingSecurityScopedResource() } }
+        do {
+            let content = try String(contentsOf: url, encoding: .utf8)
             draftContent = content
             preview = M.store.previewOfContent(content)
             if name.isEmpty { name = url.deletingPathExtension().lastPathComponent }
             stage = .preview
+        } catch {
+            M.showToast("读取文件失败：\(error.localizedDescription)", kind: .error)
         }
     }
 
@@ -447,71 +483,48 @@ struct ProfileEditSheet: View {
     @Environment(\.dismiss) var dismiss
     let profileID: String
     @State private var text = ""
+    /// UI-14：写盘失败时保留弹窗并报错，不再拿旧内容去「保存并应用」。
+    @State private var saveError: String? = nil
     var body: some View {
         VStack(spacing: 0) {
             HStack {
                 Text("编辑配置").font(.dsCardLabel)
                 Spacer()
                 Button("取消") { dismiss() }.dsButton()
-                Button("保存并应用") {
-                    M.store.saveContent(profileID, text)
-                    if M.store.activeID == profileID { M.activateProfile(profileID) }
-                    dismiss()
-                }.dsButton(.prominent)
+                Button("保存并应用") { saveAndApply() }
+                    .dsButton(.prominent)
+                    .keyboardShortcut(.defaultAction)
             }
-
             .padding(DS.Spacing.m)
+
+            // 错误行固定占位（§6.4）：出现/消失不挤动编辑器与按钮。
+            Text(saveError ?? " ")
+                .font(.dsBody)
+                .foregroundColor(saveError == nil ? .clear : DS.Palette.error)
+                .lineLimit(2)
+                .fixedSize(horizontal: false, vertical: true)
+                .padding(.horizontal, DS.Spacing.m)
+
             Divider()
-            YAMLEditor(text: $text, onChange: {})
+            // 输入过程中只清除错误，不新报错（§6.4）。
+            YAMLEditor(text: $text, onChange: { saveError = nil })
         }
         .frame(minWidth: 680, idealWidth: 720, maxWidth: 900, minHeight: 560, idealHeight: 620, maxHeight: 800)
         .onAppear { text = M.store.content(profileID) }
     }
-}
 
-// MARK: - Structured form (editable common fields)
-
-private struct FormEditor: View {
-    let configs: [String: Any]
-    let accent: Color
-    var body: some View {
-        ScrollView {
-            VStack(spacing: DS.Spacing.l) {
-                Card(title: "入站端口") {
-                    VStack(spacing: 9) {
-                        kv("混合端口", str(configs["mixed-port"]))
-                        kv("SOCKS 端口", str(configs["socks-port"]))
-                        kv("运行模式", str(configs["mode"]))
-                        kv("日志级别", str(configs["log-level"]))
-                    }
-                }
-                Card(title: "TUN") {
-                    let tun = configs["tun"] as? [String: Any] ?? [:]
-                    VStack(spacing: 9) {
-                        kv("启用", bool(tun["enable"]))
-                        kv("协议栈", str(tun["stack"]))
-                        kv("自动路由", bool(tun["auto-route"]))
-                    }
-                }
-                Card(title: "DNS") {
-                    let dns = configs["dns"] as? [String: Any] ?? [:]
-                    VStack(spacing: 9) {
-                        kv("启用", bool(dns["enable"]))
-                        kv("增强模式", str(dns["enhanced-mode"]))
-                        kv("Fake-IP 段", str(dns["fake-ip-range"]))
-                    }
-                }
-                Text("结构化表单为只读概览；如需修改请用 YAML 源码模式编辑后「应用并热重载」。")
-                    .font(.dsBody).foregroundColor(.secondary)
-                Spacer(minLength: 0)
-            }.padding(DS.Spacing.xl)
+    private func saveAndApply() {
+        M.store.saveContent(profileID, text)
+        // UI-14：saveContent 目前吞掉写盘错误（配置域将把返回值改为 Bool，
+        // 届时直接消费返回值）。签名未变前先读回验证：磁盘内容不等于提交
+        // 内容 = 写入未生效，保留弹窗报错，绝不继续 apply 旧内容。
+        guard M.store.content(profileID) == text else {
+            saveError = "保存失败：磁盘写入未生效，请检查磁盘空间与权限后重试"
+            return
         }
+        if M.store.activeID == profileID { M.activateProfile(profileID) }
+        dismiss()
     }
-    private func kv(_ l: String, _ v: String) -> some View {
-        HStack { Text(l).font(.dsBody).foregroundColor(.secondary); Spacer(); Text(v).font(.dsMono) }
-    }
-    private func str(_ v: Any?) -> String { v.map { "\($0)" } ?? "—" }
-    private func bool(_ v: Any?) -> String { (v as? Bool) == true ? "是" : "否" }
 }
 
 // MARK: - YAML syntax-highlighting editor (NSTextView)
@@ -570,6 +583,9 @@ struct YAMLEditor: NSViewRepresentable {
         }
 
         // Lightweight line-based YAML highlighter.
+        // P3：颜色走 DS.Palette（Light/Dark 动态色），不再用 raw 系统色。
+        // NSColor(Color) 对 Color(nsColor:) 取回原动态 NSColor，主题切换仍自适应；
+        // 注释走系统语义灰（design.md §3.1 文本优先系统语义）。
         func highlight() {
             guard let tv = textView, let storage = tv.textStorage else { return }
             let full = tv.string as NSString
@@ -577,11 +593,11 @@ struct YAMLEditor: NSViewRepresentable {
             storage.beginEditing()
             storage.addAttribute(.foregroundColor, value: NSColor.textColor, range: NSRange(location: 0, length: full.length))
             storage.addAttribute(.font, value: NSFont.monospacedSystemFont(ofSize: 12, weight: .regular), range: NSRange(location: 0, length: full.length))
-            apply(#"#[^\n]*"#, .systemGray, full, storage)                       // comments
-            apply(#"^\s*[-]?\s*[\w.\-]+(?=\s*:)"#, .systemTeal, full, storage)    // keys
-            apply(#":\s*[\"'][^\"'\n]*[\"']"#, .systemGreen, full, storage)       // quoted values
-            apply(#":\s*-?\d+(\.\d+)?\b"#, .systemOrange, full, storage)          // numbers
-            apply(#"\b(true|false|null)\b"#, .systemPurple, full, storage)        // literals
+            apply(#"#[^\n]*"#, .secondaryLabelColor, full, storage)                  // comments
+            apply(#"^\s*[-]?\s*[\w.\-]+(?=\s*:)"#, NSColor(DS.Palette.info), full, storage)      // keys
+            apply(#":\s*[\"'][^\"'\n]*[\"']"#, NSColor(DS.Palette.download), full, storage)      // quoted values
+            apply(#":\s*-?\d+(\.\d+)?\b"#, NSColor(DS.Palette.warn), full, storage)             // numbers
+            apply(#"\b(true|false|null)\b"#, NSColor(DS.Palette.accent), full, storage)         // literals
             storage.endEditing()
             tv.setSelectedRange(sel)
         }

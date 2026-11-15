@@ -9,8 +9,13 @@ struct RuleFormView: View {
     /// 来自 `AppModel.ruleTargetNames`（打开弹窗时取一次快照，它会读盘）。
     /// 空集合 = 拿不到配置（内核未运行且配置文件读不到），此时跳过存在性校验。
     let knownTargets: Set<String>
+    /// 同一刻的节点名快照（内存态，无读盘）。CFG-17：目标下拉并入节点名与
+    /// 文件独有组，节点标「（节点）」后缀——只有 knownTargets 推不出类型。
+    let nodeNames: Set<String>
     let contextConn: Conn?
-    let onSave: (RuleNode) -> Void
+    /// UI-9：保存结果回调。true → 表单自己 dismiss；false（写入被拒 / reload
+    /// 回滚 / 抢不到锁）→ 弹窗保留、错误行提示，编辑内容不丢。
+    let onSave: (RuleNode, @escaping (Bool) -> Void) -> Void
 
     @State private var type: MihomoRuleType = .domain
     @State private var match: String = ""
@@ -23,11 +28,13 @@ struct RuleFormView: View {
     init(existingNode: RuleNode? = nil,
          proxyGroups: [String],
          knownTargets: Set<String> = [],
+         nodeNames: Set<String> = [],
          contextConn: Conn? = nil,
-         onSave: @escaping (RuleNode) -> Void) {
+         onSave: @escaping (RuleNode, @escaping (Bool) -> Void) -> Void) {
         self.existingNode = existingNode
         self.proxyGroups = proxyGroups
         self.knownTargets = knownTargets
+        self.nodeNames = nodeNames
         self.contextConn = contextConn
         self.onSave = onSave
 
@@ -68,6 +75,7 @@ struct RuleFormView: View {
                         TextField(matchPlaceholder, text: $match)
                             .inputStyle()
                             .font(.dsMono)
+                            .onSubmit { save() }
                     }
                 }
 
@@ -99,6 +107,7 @@ struct RuleFormView: View {
                     TextField("", text: $note)
                         .inputStyle()
                         .font(.dsMono)
+                        .onSubmit { save() }
                 }
             }
 
@@ -119,12 +128,14 @@ struct RuleFormView: View {
 
                 Button("保存") { save() }
                     .dsButton(.prominent)
+                    .keyboardShortcut(.defaultAction)
             }
         }
         .padding(DS.Spacing.xl)
-        // 500 而不是 420：动作选「代理」时会多出「目标代理组」一行（约 66pt），
-        // 420 会把底部按钮挤出去。固定高度 + 中间 Spacer，行数变化时按钮位置不动。
-        .frame(width: 480, height: 500)
+        // UI-15：固定 height 500 改 minHeight——大字号 / 多行错误提示时表单
+        // 可以长高，不再裁切底部按钮；行数少时仍保持 500 的稳定按钮位置。
+        .frame(width: 480)
+        .frame(minHeight: 500)
         // 兜底：SwiftUI 的 `@State` 初值只在视图身份首次出现时生效，若调用方用
         // `.sheet(isPresented:)` 复用身份，弹窗会沿用上一次的字段值（表现就是
         // 「编辑时没带入原匹配内容」）。这里在每次出现时把状态对齐到传入节点，
@@ -145,7 +156,9 @@ struct RuleFormView: View {
                 case .domainRegex:
                     newMatch = c.host != c.dstIP ? "^" + c.host.replacingOccurrences(of: ".", with: "\\.") + "$" : c.dstIP
                 case .ipCidr, .ipCidr6, .srcIpCidr:
-                    newMatch = newType == .srcIpCidr ? "\(c.srcIP)/32" : "\(c.dstIP)/32"
+                    // CFG-5：v6 单 IP 写 /128——/32 在 v6 是 2^96 地址的巨段。
+                    let ip = newType == .srcIpCidr ? c.srcIP : c.dstIP
+                    newMatch = ip.contains(":") ? "\(ip)/128" : "\(ip)/32"
                 case .ipSuffix:
                     newMatch = c.dstIP
                 case .port, .dstPort:
@@ -247,11 +260,19 @@ struct RuleFormView: View {
         return proxyGroup
     }
 
-    /// 下拉选项：正常就是现有策略组；目标失效时把原值也列进去并标「已失效」，
+    /// 下拉选项（CFG-17）：运行态策略组 + knownTargets 快照里的文件独有组 +
+    /// 节点名（标「（节点）」后缀区分）。此前只有运行态组：校验放行节点/文件组
+    /// 目标，选择器却显示「—」，一动就丢目标。目标失效时把原值列进来标「已失效」，
     /// 让用户看见「原来指向的是谁」而不是一个空白的「—」。
     private var targetChoices: [DSChoice<String>] {
         var choices = proxyGroups.map { DSChoice($0, $0) }
-        if let stale = staleTarget, !proxyGroups.contains(stale) {
+        let builtins: Set<String> = ["DIRECT", "REJECT", "REJECT-DROP", "PASS"]
+        let extras = knownTargets.subtracting(proxyGroups).subtracting(builtins)
+        // 文件独有组（config.yaml 里有、运行态没有）：原样列出。
+        choices.append(contentsOf: extras.subtracting(nodeNames).sorted().map { DSChoice($0, $0) })
+        // 节点名：mihomo 允许规则直接指向节点，加后缀与策略组区分。
+        choices.append(contentsOf: extras.intersection(nodeNames).sorted().map { DSChoice("\($0)（节点）", $0) })
+        if let stale = staleTarget, !choices.contains(where: { $0.value == stale }) {
             choices.insert(DSChoice("\(stale)（已失效）", stale), at: 0)
         }
         return choices
@@ -286,8 +307,15 @@ struct RuleFormView: View {
 
         let res = ValidationService.shared.validate(node: node, knownTargets: knownTargets)
         if res.isValid {
-            onSave(node)
-            dismiss()
+            // UI-9：校验通过只是第一关；磁盘写入 / 内核 reload 仍可能失败。
+            // 结果回来之前不 dismiss——失败时弹窗保留，编辑内容不丢。
+            onSave(node) { ok in
+                if ok {
+                    dismiss()
+                } else {
+                    errorMessage = "保存未生效（写入失败或内核拒绝，磁盘已回滚），编辑已保留，请调整后重试"
+                }
+            }
         } else {
             errorMessage = res.errorMsg ?? "校验失败"
         }

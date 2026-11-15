@@ -52,8 +52,15 @@ struct ContentView: View {
         .onReceive(NotificationCenter.default.publisher(for: NSWindow.didDeminiaturizeNotification)) { _ in
             M.isMainWindowVisible = true
         }
-        .onReceive(NotificationCenter.default.publisher(for: NSWindow.didBecomeKeyNotification)) { _ in
-            if M.reachable { M.isMainWindowVisible = true }
+        .onReceive(NotificationCenter.default.publisher(for: NSWindow.didBecomeKeyNotification)) { note in
+            // LIFE-11：只认主窗口。菜单栏面板（MenuBarExtra）、特权授权提示、
+            // 打开/保存面板都是 NSPanel——它们成为 key 不代表主窗口可见，
+            // 旧实现会把「点开菜单栏」误判成主窗口在前台。
+            // 同时去掉 reachable 门：窗口可见性是 UI 事实，与内核是否可达无关；
+            // 内核不可达时重开主窗口也必须让前台轮询恢复（不可达分支的重评估
+            // 在 AppModel 侧另有处理）。
+            guard let window = note.object as? NSWindow, !(window is NSPanel) else { return }
+            M.isMainWindowVisible = true
         }
     }
 
@@ -184,8 +191,11 @@ struct ContentView: View {
             if M.engine.helperNeedsUpdate {
                 Button { M.route = "general" } label: {
                     HStack(spacing: DS.Spacing.s) {
-                        Image(systemName: "exclamationmark.shield.fill")
+                        // P3：侧栏图标一律 outline + monochrome（design.md §6.1），
+                        // footer 状态图标同规，不再混用 .fill。
+                        Image(systemName: "exclamationmark.shield")
                             .font(DS.Icon.font(DS.Icon.md, weight: .medium))
+                            .symbolRenderingMode(.monochrome)
                             .foregroundStyle(DS.Palette.warn)
                             .frame(width: DS.Icon.lg, height: DS.Icon.lg)
                         Text("特权服务待更新")
@@ -343,9 +353,9 @@ struct ContentView: View {
     /// sibling of the toast capsule (accent stroke instead of status color).
     private func busyBanner(_ text: String) -> some View {
         HStack(spacing: DS.Spacing.s) {
-            ProgressView()
-                .controlSize(.small)
-                .scaleEffect(DS.Progress.miniScale)
+            // P3：密集 chrome 统一 mini + miniScale（dsMiniProgress），
+            // 不再 small + miniScale 的混合规格。
+            EmptyView().dsMiniProgress()
             Text(text)
                 .font(.dsBody)
                 .foregroundStyle(.primary)

@@ -15,6 +15,9 @@ struct ConnectionsPage: View {
         /// 用快照而不是每次求值：`AppModel.ruleTargetNames` 会读一次 config.yaml，
         /// 不能放在 body / sheet 闭包的渲染路径上反复执行。
         let knownTargets: Set<String>
+        /// 同一刻的节点名快照（内存态，无读盘）。CFG-17：目标下拉要把节点名
+        /// 与文件独有组区分开（节点标「（节点）」），只有 knownTargets 推不出类型。
+        let nodeNames: Set<String>
     }
 
     /// Domain-aggregated row for "聚合" view: folds every active Conn sharing
@@ -64,7 +67,11 @@ struct ConnectionsPage: View {
     }
 
     var body: some View {
-        VStack(spacing: 0) {
+        // UI-4：聚合 tab 的计数与列表必须同源。filteredRows 在 tab=2 时落到
+        // VM.closedConnections（聚合只统计活跃连接），拿它计数会显示已关闭条数。
+        // 这里算一次，顶栏计数与聚合视图共用，避免 body 每拍重复聚合两遍。
+        let aggGroups = selectedTab == 2 ? aggregateGroups() : []
+        return VStack(spacing: 0) {
             // P2-3：文档列了 5 页手搓顶栏，这里是第 6 处（同一契约的复制品）。
             // 不一起收进来，“顶栏只有一处实现”就仍然不成立。
             PageToolbar(leading: {
@@ -95,7 +102,8 @@ struct ConnectionsPage: View {
                         .help("系统代理模式下，不遵守代理设置的应用、UDP/QUIC 与绕过列表流量不经过内核，不计入本页统计。开启 TUN 可获得更完整的接管与统计。")
                 }
             }, actions: {
-                Text("\(filteredRows.count) 匹配").font(.dsBody).foregroundColor(.secondary)
+                Text(selectedTab == 2 ? "\(aggGroups.count) 匹配" : "\(filteredRows.count) 匹配")
+                    .font(.dsBody).foregroundColor(.secondary)
 
                 Button(role: .destructive) { showConfirmDisconnect = true } label: {
                     Label("全部断开", systemImage: "xmark.circle")
@@ -105,7 +113,7 @@ struct ConnectionsPage: View {
 
             if selectedTab == 2 {
                 ConnAggregateView(
-                    groups: aggregateGroups(),
+                    groups: aggGroups,
                     query: q,
                     onDisconnectOne: { id in M.closeConnection(id: id) },
                     onDisconnectHost: { host in M.closeConnections(host: host) },
@@ -148,6 +156,12 @@ struct ConnectionsPage: View {
         .onChange(of: sortOrder) { _, _ in recomputeFilteredRowsIfNeeded() }
         .onChange(of: VM.conns) { _, _ in recomputeFilteredRowsIfNeeded() }
         .onChange(of: VM.closedConnections) { _, _ in recomputeFilteredRowsIfNeeded() }
+        // UI-1：内核未就绪时打开本页，start() 的 reachable guard 会直接返回，
+        // 之后内核恢复也没有人再调 start —— 页面永久失联，只能切走再切回。
+        // reachable 变真时补一次 start（start 内部的 guard 保留，幂等）。
+        .onChange(of: M.reachable) { _, up in
+            if up { VM.start() }
+        }
         .overlay(alignment: .bottomTrailing) {
             if let id = selection, let c = (VM.conns + VM.closedConnections).first(where: { $0.id == id }) {
                 ConnDetailCard(conn: c) { selection = nil }
@@ -163,7 +177,8 @@ struct ConnectionsPage: View {
             RuleFormView(existingNode: ctx.node,
                          proxyGroups: M.groups.map { $0.name },
                          knownTargets: ctx.knownTargets,
-                         contextConn: ctx.conn) { newNode in
+                         nodeNames: ctx.nodeNames,
+                         contextConn: ctx.conn) { newNode, finished in
                 if let old = ctx.node, ruleModel.nodes.contains(where: { $0.id == old.id }) {
                     ruleModel.updateNode(id: old.id, with: newNode)
                 } else {
@@ -177,6 +192,9 @@ struct ConnectionsPage: View {
                     if ok {
                         M.closeConnection(id: ctx.conn.id)
                     }
+                    // UI-9：保存失败（写入被拒 / reload 回滚 / 抢不到锁）时
+                    // 弹窗保留，编辑内容不丢；成功才由表单自己 dismiss。
+                    finished(ok)
                 }
             }
         }
@@ -297,7 +315,7 @@ struct ConnectionsPage: View {
 
     @ViewBuilder
     private func chainCell(_ c: Conn) -> some View {
-        HStack(spacing: 4) {
+        HStack(spacing: DS.Spacing.xs) {
             Text(c.chain)
                 .font(.dsBodySemibold)
                 .foregroundColor(c.category == "proxy" ? DS.Palette.accent : .secondary)
@@ -355,6 +373,12 @@ struct ConnectionsPage: View {
         return "\(o.title(process: c.process)) · \(o.subtitle(sourceIP: src))"
     }
 
+    /// CFG-5：单 IP → CIDR 的唯一口径：v4 写 /32，v6 写 /128。
+    /// v6 的 /32 是 2^96 个地址的巨段——DIRECT 时整段绕过代理，REJECT 时整段断网。
+    static func singleIPCIDR(_ ip: String) -> (type: MihomoRuleType, match: String) {
+        ip.contains(":") ? (.ipCidr6, "\(ip)/128") : (.ipCidr, "\(ip)/32")
+    }
+
     private func prepareRuleEdit(for c: Conn) {
         let parts = c.rule.components(separatedBy: ",")
         var matchedExisting: RuleNode? = nil
@@ -380,10 +404,16 @@ struct ConnectionsPage: View {
                 switch type {
                 case .domain, .domainSuffix, .domainKeyword, .domainWildcard, .domainRegex:
                     match = c.host != c.dstIP ? c.host : c.dstIP
-                case .ipCidr, .ipCidr6, .ipSuffix, .ipAsn:
+                case .ipCidr, .ipCidr6:
+                    // CFG-5：单 IP 的 CIDR 前缀按地址 family 走——v6 写 /32 是
+                    // 2^96 个地址的巨段（DIRECT 整段绕过代理、REJECT 整段断网）。
+                    let cidr = Self.singleIPCIDR(c.dstIP)
+                    type = cidr.type
+                    match = cidr.match
+                case .ipSuffix, .ipAsn:
                     match = "\(c.dstIP)/32"
                 case .srcIpCidr:
-                    match = "\(c.srcIP)/32"
+                    match = Self.singleIPCIDR(c.srcIP).match
                 case .port, .dstPort, .inPort:
                     match = c.port
                 case .srcPort:
@@ -399,20 +429,33 @@ struct ConnectionsPage: View {
                 case .geosite, .geoip, .srcGeoip, .dscp, .ruleSet, .subRule, .match:
                     // For these types, it's usually better to create a direct rule for the host/ip
                     let isIP = c.host == c.dstIP
-                    type = isIP ? .ipCidr : .domainSuffix
-                    match = isIP ? "\(c.dstIP)/32" : c.host
+                    if isIP {
+                        let cidr = Self.singleIPCIDR(c.dstIP)
+                        type = cidr.type
+                        match = cidr.match
+                    } else {
+                        type = .domainSuffix
+                        match = c.host
+                    }
                 }
             } else {
                 let isIP = c.host == c.dstIP
-                type = isIP ? .ipCidr : .domainSuffix
-                match = isIP ? "\(c.dstIP)/32" : c.host
+                if isIP {
+                    let cidr = Self.singleIPCIDR(c.dstIP)
+                    type = cidr.type
+                    match = cidr.match
+                } else {
+                    type = .domainSuffix
+                    match = c.host
+                }
             }
 
             finalNode = RuleNode(type: type, match: match, action: .proxy, sort: 0, proxyGroup: c.group, note: c.process != "—" ? c.process : "")
         }
 
         activeRuleEdit = RuleEditContext(node: finalNode, conn: c,
-                                         knownTargets: M.ruleTargetNames)
+                                         knownTargets: M.ruleTargetNames,
+                                         nodeNames: Set(M.nodes.keys))
     }
 
     // MARK: - 一键「独立制裁」
@@ -600,6 +643,11 @@ struct ConnectionsPage: View {
 }
 
 // MARK: - Aggregate View (per-host collapse)
+//
+// UI-5：按 design.md §6.9 的分组折叠行契约重写，与 SdwanPage 的
+// SdwanAggregateRow 同形——头与展开体裹在同一层嵌套控件表面
+// （NestedControlSurface：cardBg + 角色色描边，无 ambient 阴影）、
+// 头部整行命中、计数走 14% 着色胶囊（不是实心徽章）、角色由描边承载。
 struct ConnAggregateView: View {
     let groups: [ConnectionsPage.ConnGroup]
     let query: String
@@ -617,28 +665,21 @@ struct ConnAggregateView: View {
             )
         } else {
             ScrollView {
-                LazyVStack(spacing: 0) {
+                LazyVStack(spacing: DS.Spacing.s) {
                     ForEach(groups) { g in
-                        VStack(spacing: 0) {
-                            groupHeader(g)
-                            if expanded.contains(g.id) {
-                                // Inline member rows — not a Table, to keep things
-                                // compact and avoid a second scroll surface.
-                                VStack(spacing: 0) {
-                                    ForEach(g.members) { c in
-                                        memberRow(c, inGroup: g)
-                                        if c.id != g.members.last?.id {
-                                            Rectangle().fill(DS.Palette.separator).frame(height: 0.5)
-                                        }
-                                    }
+                        ConnAggregateRow(
+                            group: g,
+                            isExpanded: expanded.contains(g.id),
+                            onToggle: {
+                                withAnimation(DS.Motion.micro) {
+                                    if expanded.contains(g.id) { expanded.remove(g.id) }
+                                    else { expanded.insert(g.id) }
                                 }
-                                .background(DS.Palette.cardBg)
-                                .overlay(alignment: .leading) {
-                                    Rectangle().fill(DS.Palette.accent).frame(width: 2)
-                                }
-                            }
-                            Rectangle().fill(DS.Palette.separator).frame(height: 0.5)
-                        }
+                            },
+                            onDisconnectOne: onDisconnectOne,
+                            onDisconnectHost: onDisconnectHost,
+                            onPrepareRuleEdit: onPrepareRuleEdit
+                        )
                     }
                 }
                 .padding(.horizontal, DS.Layout.pageContentInset)
@@ -646,80 +687,104 @@ struct ConnAggregateView: View {
             }
         }
     }
+}
 
-    private func groupHeader(_ g: ConnectionsPage.ConnGroup) -> some View {
-        HStack(spacing: DS.Spacing.m) {
-            Button {
-                if #available(macOS 14.0, *) {
-                    withAnimation(DS.Motion.micro) {
-                        if expanded.contains(g.id) { expanded.remove(g.id) } else { expanded.insert(g.id) }
+/// 单个 host 分组行：头部整行可点展开，成员行内联在同一个嵌套表面里。
+private struct ConnAggregateRow: View {
+    let group: ConnectionsPage.ConnGroup
+    let isExpanded: Bool
+    let onToggle: () -> Void
+    let onDisconnectOne: (String) -> Void
+    let onDisconnectHost: (String) -> Void
+    let onPrepareRuleEdit: (Conn) -> Void
+
+    /// 角色色：直连走 info（design.md §3.2），代理走 accent；由描边承载，
+    /// 不再额外占一个文字 chip。
+    private var tint: Color { group.isDirect ? DS.Palette.info : DS.Palette.accent }
+
+    var body: some View {
+        VStack(spacing: 0) {
+            header
+            if isExpanded {
+                // 展开体与头部共用同一层表面（§6.9），不是第二张卡。
+                VStack(spacing: 0) {
+                    Rectangle().fill(tint.opacity(0.25)).frame(height: 0.6)
+                    ForEach(group.members) { c in
+                        memberRow(c)
+                        if c.id != group.members.last?.id {
+                            Rectangle().fill(DS.Palette.separator).frame(height: 0.5)
+                        }
                     }
-                } else {
-                    if expanded.contains(g.id) { expanded.remove(g.id) } else { expanded.insert(g.id) }
                 }
-            } label: {
-                HStack(spacing: DS.Spacing.xs) {
-                    Image(systemName: expanded.contains(g.id) ? "chevron.down" : "chevron.right")
-                        .font(.dsBody)
-                        .foregroundColor(.secondary)
-                        .frame(width: 14)
-                    Text(g.host)
-                        .font(.dsBodyMedium)
-                        .lineLimit(1)
-                        .truncationMode(.middle)
-                }
+                .padding(.bottom, DS.Spacing.xs)
             }
-            .buttonStyle(.plain)
+        }
+        .modifier(NestedControlSurface(tint: tint, dashed: false))
+    }
 
-            // Connection count pill — a near-1 entry shows nothing, dozens show
-            // immediately why this row exists.
-            if g.count > 1 {
-                Text("\(g.count)")
+    /// 头部整行命中：contentShape 与表面同形状（Radius.control），
+    /// 禁止只让 chevron 可点。Menu 是控件，在自己的区域内优先于整行 tap。
+    private var header: some View {
+        HStack(spacing: DS.Spacing.m) {
+            Image(systemName: isExpanded ? "chevron.down" : "chevron.right")
+                .font(.dsBody)
+                .foregroundColor(.secondary)
+                .frame(width: 14)
+            Text(group.host)
+                .font(.dsBodyMedium)
+                .lineLimit(1)
+                .truncationMode(.middle)
+                // UI-15：host 是行的身份，窄窗口下优先保它。
+                .layoutPriority(1)
+
+            // 计数胶囊：14% 着色底 + 着色文字（§6.9），不是实心高饱和徽章。
+            if group.count > 1 {
+                Text("\(group.count)")
                     .font(.dsMono)
-                    .foregroundColor(.white)
+                    .foregroundColor(tint)
                     .padding(.horizontal, DS.Spacing.s)
                     .padding(.vertical, 1)
-                    .background(Capsule().fill(DS.Palette.accent.opacity(0.85)))
+                    .background(Capsule().fill(tint.opacity(0.14)))
             }
 
             Spacer(minLength: 0)
 
-            Text(g.processes)
+            // UI-15：固定宽改弹性（minWidth 保底 + maxWidth 封顶 + 截断），
+            // 940pt 最小窗口下不再把整行挤出内容宽。
+            Text(group.processes)
                 .font(.dsBody)
                 .foregroundColor(.secondary)
                 .lineLimit(1)
                 .truncationMode(.middle)
-                .frame(maxWidth: 220, alignment: .trailing)
+                .frame(minWidth: 60, maxWidth: 220, alignment: .trailing)
 
-            // Rule badge
-            Text(g.rule)
+            Text(group.rule)
                 .font(.dsMono)
                 .foregroundColor(.secondary)
                 .lineLimit(1)
                 .truncationMode(.middle)
-                .frame(maxWidth: 140, alignment: .leading)
+                .frame(minWidth: 60, maxWidth: 140, alignment: .leading)
 
-            // Chain
-            HStack(spacing: DS.Spacing.xs) {
-                Text(g.chain)
-                    .font(.dsBodySemibold)
-                    .foregroundColor(g.isDirect ? .secondary : DS.Palette.accent)
-                    .lineLimit(1)
-                    .truncationMode(.middle)
-            }
-            .frame(maxWidth: 160, alignment: .leading)
+            Text(group.chain)
+                .font(.dsBodySemibold)
+                .foregroundColor(group.isDirect ? .secondary : DS.Palette.accent)
+                .lineLimit(1)
+                .truncationMode(.middle)
+                .frame(minWidth: 60, maxWidth: 160, alignment: .leading)
 
-            // Aggregate rates
-            Text(fmtRate(Double(g.downRate))).font(.dsMono)
+            // 速率是数据列，保持定宽对齐。
+            Text(fmtRate(Double(group.downRate))).font(.dsMono)
                 .frame(width: 70, alignment: .leading)
-            Text(fmtRate(Double(g.upRate))).font(.dsMono)
+            Text(fmtRate(Double(group.upRate))).font(.dsMono)
                 .foregroundColor(.secondary)
                 .frame(width: 70, alignment: .leading)
 
-            // Row-level actions
             Menu {
-                Button("断开该域名全部", role: .destructive) { onDisconnectHost(g.host) }
-                Button("添加/修改分流规则...") { onPrepareRuleEdit(g.members.first!) }
+                Button("断开该域名全部", role: .destructive) { onDisconnectHost(group.host) }
+                Button("添加/修改分流规则...") {
+                    // P3：members 由聚合构造保证非空，但不做 force unwrap。
+                    if let first = group.members.first { onPrepareRuleEdit(first) }
+                }
             } label: {
                 Image(systemName: "ellipsis.circle")
                     .foregroundColor(.secondary)
@@ -727,13 +792,14 @@ struct ConnAggregateView: View {
             .menuStyle(.borderlessButton)
             .frame(width: 28)
         }
-        .padding(.horizontal, DS.Spacing.s)
+        .padding(.horizontal, DS.Spacing.m)
         .padding(.vertical, DS.Spacing.s)
-        .contentShape(Rectangle())
-        .background(DS.Palette.windowBg)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .contentShape(RoundedRectangle(cornerRadius: DS.Radius.control, style: .continuous))
+        .onTapGesture(perform: onToggle)
     }
 
-    private func memberRow(_ c: Conn, inGroup g: ConnectionsPage.ConnGroup) -> some View {
+    private func memberRow(_ c: Conn) -> some View {
         HStack(spacing: DS.Spacing.m) {
             Text("")
                 .frame(width: 14) // indent under chevron column
@@ -748,19 +814,19 @@ struct ConnAggregateView: View {
                 .foregroundColor(.secondary)
                 .lineLimit(1)
                 .truncationMode(.middle)
-                .frame(maxWidth: 160, alignment: .trailing)
+                .frame(minWidth: 60, maxWidth: 160, alignment: .trailing)
             Text(c.rule)
                 .font(.dsMono)
                 .foregroundColor(.secondary)
                 .lineLimit(1)
                 .truncationMode(.middle)
-                .frame(maxWidth: 140, alignment: .leading)
+                .frame(minWidth: 60, maxWidth: 140, alignment: .leading)
             Text(c.chain)
                 .font(.dsMono)
                 .foregroundColor(.secondary)
                 .lineLimit(1)
                 .truncationMode(.middle)
-                .frame(maxWidth: 160, alignment: .leading)
+                .frame(minWidth: 60, maxWidth: 160, alignment: .leading)
             Text(fmtRate(Double(c.downRate))).font(.dsMono)
                 .frame(width: 70, alignment: .leading)
             Text(fmtRate(Double(c.upRate))).font(.dsMono)
@@ -774,7 +840,7 @@ struct ConnAggregateView: View {
             .help("断开此连接")
             .frame(width: 28)
         }
-        .padding(.horizontal, DS.Spacing.s)
+        .padding(.horizontal, DS.Spacing.m)
         .padding(.vertical, DS.Spacing.xs)
     }
 }
@@ -989,8 +1055,17 @@ struct ConnDetailCard: View {
     /// rebuild 14 strings per connection when only the byte counters changed.
     private var prevConnById: [String: Conn] = [:]
 
+    /// CONN-1：VM 自持的上一拍字节基线。`M.prevConnBytes` 现在每拍都在
+    /// `recordHistoryOnly` 内被无条件写成本拍字节（TUN-2 配套），调用之后再读
+    /// 它算差恒为 0——↓/↑ 列永远 0 B/s，按速率排序截断的约定也被击穿。
+    /// 因此差值必须在 recordHistoryOnly **之前**、用 VM 自己的上一拍快照算。
+    private var vmPrevBytes: [String: (up: Int64, down: Int64)] = [:]
+
     func start() {
         guard api.reachable else { return }
+        // UI-1：reachable 在页面在屏期间可能反复翻转，onChange 会再调 start()。
+        // 幂等守卫：已在跑就不重复建 WS / fallbackTimer（否则旧 Timer 泄漏）。
+        guard wsHandle == nil else { return }
 
         M.isConnectionsPageActive = true
 
@@ -1021,6 +1096,7 @@ struct ConnDetailCard: View {
         conns.removeAll(keepingCapacity: false)
         closedConnections.removeAll(keepingCapacity: false)
         prevConnById.removeAll(keepingCapacity: false)
+        vmPrevBytes.removeAll(keepingCapacity: false)
         lastPayloadFingerprint = 0
     }
 
@@ -1061,12 +1137,26 @@ struct ConnDetailCard: View {
     }
 
     private func onConnections(_ s: ConnectionsSnapshot) {
+        let items = s.connections ?? []
+
+        // CONN-1：先用 VM 自持的上一拍字节算本拍速率，再交给共享路径。
+        // 顺序不可换：recordHistoryOnly 会把 M.prevConnBytes 覆盖成本拍字节。
+        var rates: [String: (up: Int64, down: Int64)] = [:]
+        var nextPrev: [String: (up: Int64, down: Int64)] = [:]
+        rates.reserveCapacity(items.count)
+        nextPrev.reserveCapacity(items.count)
+        for c in items {
+            if let prev = vmPrevBytes[c.id] {
+                rates[c.id] = (max(0, c.upload - prev.up), max(0, c.download - prev.down))
+            }
+            nextPrev[c.id] = (c.upload, c.download)
+        }
+        vmPrevBytes = nextPrev
+
         // Delegate the heavy shared work (byte diff, history, gateway, dashboard,
         // memory guard) to the single canonical path. This eliminates the
         // duplicate processing that used to run here AND in recordHistoryOnly.
         M.recordHistoryOnly(from: s)
-
-        let items = s.connections ?? []
 
         autoreleasepool {
             // Build a lookup of the previous frame so we can reuse the
@@ -1082,9 +1172,10 @@ struct ConnDetailCard: View {
 
             for c in items {
                 activeIDs.insert(c.id)
-                let prev = M.prevConnBytes[c.id]
-                let upRate = prev.map { max(0, c.upload - $0.up) } ?? 0
-                let downRate = prev.map { max(0, c.download - $0.down) } ?? 0
+                // CONN-1：速率来自 recordHistoryOnly 之前算好的差值，
+                // 不再读 M.prevConnBytes（那里已是本拍字节，差值恒 0）。
+                let upRate = rates[c.id]?.up ?? 0
+                let downRate = rates[c.id]?.down ?? 0
 
                 // Reuse string transforms from the previous frame when the
                 // connection is not new — chains/rule rarely change for a

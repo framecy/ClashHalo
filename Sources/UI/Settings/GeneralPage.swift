@@ -5,9 +5,6 @@ import SwiftUI
 struct GeneralPage: View {
     @EnvironmentObject var M: AppModel
     @ObservedObject private var engine = EngineControl.shared
-    @State private var host = ""
-    @State private var port = ""
-    @State private var secret = ""
     @State private var selectedTab = "general" // "general", "advanced", "privilege", "about"
     @State private var helperBusy = false
 
@@ -56,8 +53,8 @@ struct GeneralPage: View {
 
                         // 外部面板
                         Card(title: "外部面板", icon: "macwindow.on.rectangle") {
-                            VStack(spacing: 12) {
-                                VStack(alignment: .leading, spacing: 4) {
+                            VStack(spacing: DS.Spacing.m) {
+                                VStack(alignment: .leading, spacing: DS.Spacing.xs) {
                                     Text("Zashboard URL").font(.dsBody).foregroundColor(.secondary)
                                     TextField("https://board.zash.run.place/", text: $M.zashboardURL)
                                         .inputStyle()
@@ -127,7 +124,8 @@ struct GeneralPage: View {
                                         }
                                     }
                                     .dsButton(helperNeedsUpdate ? .warning : (engine.isRoot ? .destructive : .prominent))
-                                    .disabled(helperBusy)
+                                    .disabled(helperBusy || uninstallBlocked)
+                                    .help(uninstallBlocked ? "TUN 或网关正在运行，请先关闭后再卸载特权服务" : "")
                                 }
 
                                 Divider()
@@ -149,8 +147,22 @@ struct GeneralPage: View {
                                             .foregroundColor(.secondary)
                                     }
                                     Button("检查") {
-                                        engine.refreshHelperVersion()
-                                        M.showToast(engine.isRoot ? "Helper 连通正常 · v\(engine.helperVersion)" : "Helper 未连通", kind: engine.isRoot ? .ok : .error)
+                                        Task {
+                                            // UI-8：等真实探测结果回来再弹 toast。旧实现
+                                            // fire-and-forget，toast 读的是刷新前的状态。
+                                            let v = await engine.fetchHelperVersion()
+                                            if let v {
+                                                engine.helperVersion = v
+                                                // 握手成功 = 已安装且可达（pollStatus 同语义）；
+                                                // busy 期间 isRoot 归操作流所有，不越权写。
+                                                if !engine.isBusy { engine.isRoot = true }
+                                                M.showToast("Helper 连通正常 · v\(v)", kind: .ok)
+                                            } else {
+                                                // 超时不等于没安装：isRoot 交给 pollStatus 对账，
+                                                // 这里只如实报告本次探测失败。
+                                                M.showToast("Helper 未连通", kind: .error)
+                                            }
+                                        }
                                     }
                                     .dsButton()
 
@@ -417,6 +429,11 @@ struct GeneralPage: View {
     /// True when helper is installed but its version is below the expected version.
     private var helperNeedsUpdate: Bool { engine.helperNeedsUpdate }
 
+    /// XPC-4：卸载会让 root 内核失去托管——TUN/网关开启时禁止卸载。
+    private var uninstallBlocked: Bool {
+        engine.isRoot && !helperNeedsUpdate && (M.tunOn || M.gatewayModeOn)
+    }
+
     /// Install / uninstall / upgrade the privileged helper with progress + clear feedback.
     /// - Installed + outdated → upgrade (uninstall then reinstall, full cycle)
     /// - Installed + current  → uninstall
@@ -431,6 +448,13 @@ struct GeneralPage: View {
             await M.reconnect()
             M.showToast("特权服务已更新 ✓", kind: .ok)
         } else if engine.isRoot {
+            // XPC-4：TUN/网关开启时内核以 root 运行、由 Helper 托管。此时卸载
+            // 会留下无主 root 内核（GUI 无法 signal 它），utun/路由/DNS/转发
+            // 全部残留。拒绝并说明先关闭，而不是卸载后再补救。
+            if M.tunOn || M.gatewayModeOn {
+                M.showToast("TUN 或网关正在运行，请先关闭后再卸载特权服务", kind: .warn)
+                return
+            }
             M.showToast("正在请求授权卸载特权服务…")
             let ok = await engine.uninstallPrivileged()
             await M.reconnect()
@@ -494,6 +518,11 @@ struct MenuBarPanel: View {
             .padding(.horizontal, DS.Spacing.xs).padding(.top, DS.Spacing.xs)
             .animation(DS.Motion.resolve(DS.Motion.toast, reduce: reduceMotion), value: M.toast)
 
+            // UI-12：中部包 ScrollView——20 组 + 10 配置时内容远超屏幕高度，
+            // 旧实现没有滚动容器，底部「退出」键不可达。头部（toast 面）与
+            // 底部动作行固定在滚动区外，任何内容长度下都可见可点。
+            ScrollView {
+                VStack(alignment: .leading, spacing: DS.Spacing.s) {
             // Switches card
             card {
                 switchRow("Proxy", icon: "globe",
@@ -620,6 +649,9 @@ struct MenuBarPanel: View {
                 switchRow("显示 Dock 图标", icon: "dock.rectangle",
                           isOn: Binding(get: { M.showDock }, set: { M.setShowDock($0) }))
             }
+                }
+            }
+            .frame(maxHeight: DS.Layout.menuBarPanelMaxHeight)
 
             Divider().padding(.vertical, DS.Spacing.xs)
             // Action row — open the external Zashboard panel / quit
@@ -772,10 +804,16 @@ struct MenuBarPanel: View {
 struct ContentUnavailable: View {
     let text: String
     let icon: String
+    /// UI-6：不可达态给一条能走通的路（重试），而不是把「内核没连上」
+    /// 画成「列表是空的」。可选，默认无动作，既有调用点不受影响。
+    var actionTitle: String
+    var action: (() -> Void)?
 
-    init(_ text: String, _ icon: String) {
+    init(_ text: String, _ icon: String, actionTitle: String = "重试", action: (() -> Void)? = nil) {
         self.text = text
         self.icon = icon
+        self.actionTitle = actionTitle
+        self.action = action
     }
 
     var body: some View {
@@ -789,6 +827,10 @@ struct ContentUnavailable: View {
                 .foregroundStyle(.secondary)
                 .multilineTextAlignment(.center)
                 .fixedSize(horizontal: false, vertical: true)
+            if let action {
+                Button(actionTitle, action: action)
+                    .dsButton()
+            }
         }
         .padding(.horizontal, DS.Spacing.xxl)
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .center)
@@ -832,8 +874,10 @@ struct MenuBarMemoryRow: View {
     var body: some View {
         HStack(spacing: 0) {
             VStack(alignment: .leading, spacing: 2) {
-                HStack(spacing: 4) {
-                    Image(systemName: "memorychip").font(.dsBody).foregroundColor(DS.Palette.roleOray)
+                HStack(spacing: DS.Spacing.xs) {
+                    // P3：核心内存是中性数据，用 info；roleOray 是网络角色色，
+                    // 挪用到这里属于语义漂移。
+                    Image(systemName: "memorychip").font(.dsBody).foregroundColor(DS.Palette.info)
                     Text("核心内存").font(.dsBodyMedium).foregroundColor(.secondary)
                 }
                 Text(fmtBytes(Double(live.memory))).font(.dsCardLabel)
@@ -844,7 +888,7 @@ struct MenuBarMemoryRow: View {
                 .padding(.horizontal, DS.Spacing.m)
 
             VStack(alignment: .leading, spacing: 2) {
-                HStack(spacing: 4) {
+                HStack(spacing: DS.Spacing.xs) {
                     Image(systemName: "app.dashed").font(.dsBody).foregroundColor(DS.Palette.warn)
                     Text("应用内存").font(.dsBodyMedium).foregroundColor(.secondary)
                 }

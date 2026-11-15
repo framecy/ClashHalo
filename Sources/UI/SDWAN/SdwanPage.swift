@@ -93,7 +93,7 @@ struct SdwanTopologyView: View {
                 }
 
                 // Nodes
-                VStack(spacing: 4) {
+                VStack(spacing: DS.Spacing.xs) {
                     Image(systemName: "laptopcomputer").font(DS.Icon.font(DS.Icon.sm))
                     Text("本机 (Host)").font(.dsBodyBold)
                 }
@@ -106,7 +106,7 @@ struct SdwanTopologyView: View {
                     let iface = activeIfaces[idx]
                     let pt = ifacePoints[idx].1
                     let color = lineColor(for: iface.kind)
-                    HStack(spacing: 8) {
+                    HStack(spacing: DS.Spacing.s) {
                         Image(systemName: iconName(for: iface.kind))
                             .foregroundColor(color)
                             .font(.dsLabel)
@@ -127,7 +127,7 @@ struct SdwanTopologyView: View {
                 ForEach(0..<dests.count, id: \.self) { idx in
                     let dest = dests[idx]
                     let pt = destPoints[idx].1
-                    HStack(spacing: 6) {
+                    HStack(spacing: DS.Spacing.s) {
                         Image(systemName: "arrow.up.right.circle.fill").foregroundColor(.secondary).font(.dsBody)
                         Text(dest).font(.dsMono).lineLimit(1)
                         Spacer(minLength: 0)
@@ -142,9 +142,10 @@ struct SdwanTopologyView: View {
         }
         .frame(height: calculatedHeight)
         .padding(DS.Spacing.m - 2)
-        .background(VisualEffectView(material: .underWindowBackground, blendingMode: .withinWindow).clipShape(RoundedRectangle(cornerRadius: DS.Radius.card, style: .continuous)))
-        .overlay(RoundedRectangle(cornerRadius: DS.Radius.card, style: .continuous).stroke(DS.Palette.fill))
+        // P3：拓扑画布是页面网格上的兄弟卡，一律 dsCardChrome（Light 双层
+        // 阴影 / Dark 抬升色），不再手写 material + fill 描边分叉。
         .clipped()
+        .dsCardChrome()
     }
 
     private func lineColor(for k: IfaceKind) -> Color {
@@ -209,7 +210,7 @@ struct SdwanPage: View {
                     HStack(spacing: DS.Spacing.m) {
                         Image(systemName: "shield.lefthalf.filled").font(DS.Icon.font(DS.Icon.lg))
                             .foregroundColor(hasConflicts ? DS.Palette.warn : DS.Palette.accent)
-                        VStack(alignment: .leading, spacing: 3) {
+                        VStack(alignment: .leading, spacing: DS.Spacing.xs / 2) {
                             Text(hasConflicts ? "检测到路由冲突" : "智能路由隔离已生效").font(.dsLabelBold)
                             if let holder = defaultRouteHolder {
                                 Text("接口 \(holder) 持有全局默认路由（非作用域限定），与本机 TUN 争夺出口。"
@@ -234,6 +235,10 @@ struct SdwanPage: View {
                         }
                         Spacer()
                         if hasConflicts {
+                            // TS-9：仅 defaultRouteHolder 冲突（无遮蔽冲突）时，
+                            // 一键修复修不了——排除条目改变不了默认路由归属。
+                            // 禁用并说明，而不是让用户点了没反应、banner 永红。
+                            let repairable = !conflicts.isEmpty
                             Button("一键修复") {
                                 Task {
                                     // Same planner the automatic path uses.
@@ -265,6 +270,10 @@ struct SdwanPage: View {
                                         fix["route-exclude-address"] = ex.merged
                                         injected = ex.record
                                     }
+                                    // C8（TUN-1 的 UI 半边）：IPv6 断供排除 2000::/3
+                                    // 必须在多源合并**之后**追加——ex.merged 来自运行时
+                                    // 快照，首开 TUN 时不含它，先写会被整块覆盖丢掉。
+                                    M.applyIPv6ExclusionIfNeeded(&fix)
                                     // Claim provenance only for what we actually
                                     // *applied*. Recording on a dropped PATCH
                                     // mis-attributes the user's own entries as
@@ -283,6 +292,8 @@ struct SdwanPage: View {
                                 }
                             }
                             .dsButton(.warning)
+                            .disabled(!repairable)
+                            .help(repairable ? "" : "全局默认路由由 \(defaultRouteHolder ?? "其他隧道") 持有，需在该隧道一侧处理，本应用无法代为修复")
                         } else {
                             VStack {
                                 Text("0").font(.dsStatValue)
@@ -303,9 +314,9 @@ struct SdwanPage: View {
                     if let r = M.lastRouteRepair {
                         Card(title: "自动路由修复 · \(Self.clock.string(from: r.at))",
                              icon: "wrench.and.screwdriver.fill") {
-                            VStack(alignment: .leading, spacing: 4) {
+                            VStack(alignment: .leading, spacing: DS.Spacing.xs) {
                                 ForEach(r.fixed, id: \.self) { line in
-                                    HStack(spacing: 8) {
+                                    HStack(spacing: DS.Spacing.s) {
                                         Image(systemName: "checkmark.circle.fill")
                                             .foregroundColor(DS.Palette.accent).font(.dsBody).frame(width: 20)
                                         Text(line).font(.dsMono)
@@ -317,7 +328,7 @@ struct SdwanPage: View {
                                     }
                                 }
                                 ForEach(r.remaining, id: \.self) { line in
-                                    HStack(spacing: 8) {
+                                    HStack(spacing: DS.Spacing.s) {
                                         Image(systemName: "xmark.circle.fill")
                                             .foregroundColor(DS.Palette.warn).font(.dsBody).frame(width: 20)
                                         Text(line).font(.dsBody).foregroundColor(DS.Palette.warn)
@@ -329,7 +340,7 @@ struct SdwanPage: View {
                                 }
                                 Text("修复在路由表上逐条执行（route delete/add），不重载内核、不中断既有连接。"
                                      + "完整过程见\u{201C}日志\u{201D}页。")
-                                    .font(.dsBody).foregroundColor(.secondary).padding(.top, 4)
+                                    .font(.dsBody).foregroundColor(.secondary).padding(.top, DS.Spacing.xs)
                             }
                         }
                     }
@@ -337,10 +348,10 @@ struct SdwanPage: View {
                     // Conflict detail card (shown when prefix-shadowing detected)
                     if !conflicts.isEmpty {
                         Card(title: "路由遮蔽冲突 · \(conflicts.count)", icon: "exclamationmark.triangle.fill") {
-                            VStack(spacing: 4) {
+                            VStack(spacing: DS.Spacing.xs) {
                                 ForEach(conflicts.indices, id: \.self) { idx in
                                     let c = conflicts[idx]
-                                    HStack(spacing: 8) {
+                                    HStack(spacing: DS.Spacing.s) {
                                         Image(systemName: "point.3.connected.trianglepath.dotted")
                                             .foregroundColor(DS.Palette.roleTailscale).font(.dsBody).frame(width: 20)
                                         VStack(alignment: .leading, spacing: 2) {
@@ -358,7 +369,7 @@ struct SdwanPage: View {
                                     if idx < conflicts.count - 1 { Divider() }
                                 }
                                 Text("建议：点击\u{201C}一键修复\u{201D}将上述网络拓扑前缀注入 tun.route-exclude-address，防止 TUN 抢占。")
-                                    .font(.dsBody).foregroundColor(.secondary).padding(.top, 4)
+                                    .font(.dsBody).foregroundColor(.secondary).padding(.top, DS.Spacing.xs)
                             }
                         }
                     }
@@ -370,9 +381,9 @@ struct SdwanPage: View {
                     // shadowing conflicts above.
                     if !subnetGaps.isEmpty {
                         Card(title: "对端网段不可达 · \(subnetGaps.count)", icon: "exclamationmark.triangle.fill") {
-                            VStack(spacing: 4) {
+                            VStack(spacing: DS.Spacing.xs) {
                                 ForEach(subnetGaps) { g in
-                                    HStack(spacing: 8) {
+                                    HStack(spacing: DS.Spacing.s) {
                                         Image(systemName: "point.3.connected.trianglepath.dotted")
                                             .foregroundColor(DS.Palette.warn).font(.dsBody).frame(width: 20)
                                         VStack(alignment: .leading, spacing: 2) {
@@ -389,7 +400,7 @@ struct SdwanPage: View {
                                 }
                                 Text("路由由对端隧道自行下发，本页只做检测不代为安装——代装会与它的路由管理相互覆盖。"
                                      + "请检查该隧道是否开启「接受子网路由」，或重连以让它重新下发。")
-                                    .font(.dsBody).foregroundColor(.secondary).padding(.top, 4)
+                                    .font(.dsBody).foregroundColor(.secondary).padding(.top, DS.Spacing.xs)
                             }
                         }
                     }
@@ -400,9 +411,9 @@ struct SdwanPage: View {
                     // never by the runtime PATCH the route repair uses.
                     if !dnsDrift.isEmpty {
                         Card(title: "DNS 出口绑定漂移 · \(dnsDrift.count)", icon: "arrow.triangle.branch") {
-                            VStack(spacing: 4) {
+                            VStack(spacing: DS.Spacing.xs) {
                                 ForEach(dnsDrift) { d in
-                                    HStack(spacing: 8) {
+                                    HStack(spacing: DS.Spacing.s) {
                                         Image(systemName: "questionmark.circle")
                                             .foregroundColor(DS.Palette.warn).font(.dsBody).frame(width: 20)
                                         VStack(alignment: .leading, spacing: 2) {
@@ -429,7 +440,7 @@ struct SdwanPage: View {
                                     .dsButton(.warning)
                                     .disabled(repairingDNS)
                                 }
-                                .padding(.top, 4)
+                                .padding(.top, DS.Spacing.xs)
                             }
                         }
                     }
@@ -472,7 +483,7 @@ struct SdwanPage: View {
                         }
                     }
 
-                    Label("进程级分流 (SO_USER_COOKIE + PF) 与路由注入需特权 Helper（代码签名后于 v1.0 启用）",
+                    Label("路由注入由特权 Helper 执行（v1.0 起已启用）；进程级分流由内核 find-process-mode 实现（设置 → 高级设置）。",
                           systemImage: "lock.shield").font(.dsBody).foregroundColor(.secondary)
                     Spacer(minLength: 0)
                 }
@@ -794,7 +805,9 @@ struct SdwanAggregateRow<Dest: View>: View {
 /// egress's role color ("角色色描边"), no ambient shadow so the parent Card
 /// keeps breathing. Replaces the textual role chip in the header — the border
 /// now carries the "which egress am I" signal at a glance.
-private struct NestedControlSurface: ViewModifier {
+/// 共享组件（design.md §6.9）：连接页聚合行 `ConnAggregateRow` 复用同一形状，
+/// 不要在各页再手写第二份嵌套表面。
+struct NestedControlSurface: ViewModifier {
     let tint: Color
     /// Dashed border for leaf egresses (no bundled routes below):
     /// visually signals "terminal endpoint, nothing to expand".

@@ -65,6 +65,12 @@ struct DnsPage: View {
                                         Text(c.dstIP).font(.dsMono).foregroundColor(DS.Palette.accent)
                                     }
                                 }
+                                // P3：截断必须说出来，否则用户以为映射只有 50 条。
+                                if fakeip.count > 50 {
+                                    Text("仅显示前 50 条（共 \(fakeip.count) 条）")
+                                        .font(.dsCaption).foregroundColor(.secondary)
+                                        .frame(maxWidth: .infinity, alignment: .leading)
+                                }
                             }
                         }
                     }

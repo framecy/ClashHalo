@@ -187,8 +187,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
 
         // 1. System proxy OFF (privileged, fresh connection).
-        _ = callHelperSync { helper, done in
+        let proxyCleared = callHelperSync { helper, done in
             helper.setSystemProxy(enabled: false, port: 0) { _ in done() }
+        }
+        if !proxyCleared {
+            // LIFE-1：Helper 缺席/超时（拒装 Helper、Debug 构建）时 callHelperSync
+            // 直接返回 false。开启侧 setSystemProxy 有本地 networksetup fallback，
+            // 退出侧也必须有——否则下面 killall 杀掉内核后，系统代理仍指向
+            // 127.0.0.1:死端口，用户退出即全网断网。同步本地关闭，不走 XPC。
+            _ = EngineControl.clearSystemProxyLocalSync()
         }
 
         // 2. Restore system DNS if TUN had redirected it into the (now dying)
