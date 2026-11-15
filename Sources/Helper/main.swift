@@ -7,15 +7,58 @@ let kHelperVersion = kSharedHelperVersion
 private let kClientRequirement = "identifier \"com.clashhalo.app\""
 
 /// Validate that an incoming XPC peer is the ClashHalo app.
-/// Three layers, each more permissive than the last, to handle all signing variants:
-///   1. Security framework: identifier check with basic-validate-only flags
-///   2. SecCodeCopyPath: bundle-root URL check (must be inside the .app bundle)
-///   3. proc_pidpath: raw executable path check (must be inside .app/Contents/MacOS/)
+///
+/// 结构（XPC-1 修复，2026-11-15 审计）：路径锚定与 identifier 检查是 AND 关系，
+/// 对**所有**客户端生效，没有任何一层可以单独放行——
+///   1. 路径锚定（必经）：SecCodeCopyPath 取 bundle 根路径，拿不到时退回
+///      proc_pidpath 的可执行路径；归一化（折叠 `..` + 解软链）后必须落在
+///      允许的安装根内（见 canonicalClientPath / isAllowedBundleParent）。
+///   2. identifier 检查（必经）：Security framework requirement 匹配
+///      com.clashhalo.app，保留 ad-hoc 豁免 flag（取舍见下）。
+/// 旧结构是三层逐级放宽：Layer1 identifier 通过即 return true，路径锚定只在
+/// Layer1 失败时才跑——本机任意进程 `codesign -s - -i com.clashhalo.app` 即可
+/// 绕过全部路径校验提权到 root（审计 XPC-1 / 主审复核 verified-core F1）。
 func isAuthorizedClient(_ conn: NSXPCConnection) -> Bool {
     let pid = conn.processIdentifier
     guard pid > 0 else { return false }
 
-    // Layer 1: Security framework requirement check.
+    var code: SecCode?
+    let attrs = [kSecGuestAttributePid: pid] as CFDictionary
+    let haveCode = SecCodeCopyGuestWithAttributes(nil, attrs, [], &code) == errSecSuccess && code != nil
+
+    // 第一步：路径锚定。SecCodeCopyPath 给的是 .app bundle 根；拿不到 code
+    // 对象或 bundle 路径时退回 proc_pidpath 的可执行路径（ad-hoc 构建下
+    // Security framework 可能给不出路径，但可执行路径仍须落在允许的安装根）。
+    var pathOK = false
+    var clientPath = ""
+    if haveCode, let code {
+        var staticCode: SecStaticCode?
+        if SecCodeCopyStaticCode(code, SecCSFlags(rawValue: 0), &staticCode) == errSecSuccess,
+           let sc = staticCode {
+            var pathURL: CFURL?
+            if SecCodeCopyPath(sc, SecCSFlags(rawValue: 0), &pathURL) == errSecSuccess,
+               let path = (pathURL as URL?)?.path, isClashAppBundlePath(path) {
+                pathOK = true
+                clientPath = path
+            }
+        }
+    }
+    if !pathOK {
+        var pathBuf = [Int8](repeating: 0, count: 4096)
+        if proc_pidpath(pid, &pathBuf, 4096) > 0 {
+            let path = String(cString: pathBuf)
+            if isClashExecutablePath(path) {
+                pathOK = true
+                clientPath = path
+            }
+        }
+    }
+    guard pathOK else {
+        log("isAuthorizedClient: REJECTED pid \(pid) — 路径未锚定到允许的安装根")
+        return false
+    }
+
+    // 第二步：identifier 检查。
     // kSecCSDoNotValidateExecutable | kSecCSDoNotValidateResources (== kSecCSBasicValidateOnly)
     // skips hash and seal verification — only the code-signing metadata (identifier) is
     // checked. This handles developer-signed and most ad-hoc builds.
@@ -27,46 +70,25 @@ func isAuthorizedClient(_ conn: NSXPCConnection) -> Bool {
     // 是发布链路统一走 Developer ID + 公证，并为 Debug 构建单开一条可判定的放行规则——
     // 那是发布策略决定，不在本次修复范围内。
     // 代价必须写清楚：identifier-only 的元数据检查可以被本机任意用户用
-    // `codesign -s - -i com.clashhalo.app` 伪造，因此 Layer 2/3 的归一化路径锚定是
-    // 目前唯一还能提高门槛的一层（见 canonicalClientPath / isAllowedBundleParent）。
-    var code: SecCode?
-    let attrs = [kSecGuestAttributePid: pid] as CFDictionary
-    if SecCodeCopyGuestWithAttributes(nil, attrs, [], &code) == errSecSuccess, let code {
+    // `codesign -s - -i com.clashhalo.app` 伪造。XPC-1 修复后它不再是单独的门：
+    // 伪造者还必须把可执行文件放进上面路径锚定认可的安装根（/Applications、
+    // 控制台用户 ~/Applications、挂载卷根一层、Xcode 产物目录）才能通过。
+    var identifierOK = false
+    if haveCode, let code {
         var req: SecRequirement?
         if SecRequirementCreateWithString(kClientRequirement as CFString, [], &req) == errSecSuccess,
            let req {
             let flags = SecCSFlags(rawValue: kSecCSDoNotValidateExecutable | kSecCSDoNotValidateResources)
-            if SecCodeCheckValidity(code, flags, req) == errSecSuccess { return true }
-        }
-
-        // Layer 2: bundle-root URL from SecStaticCode (SecCodeCopyPath returns the .app bundle root)
-        var staticCode: SecStaticCode?
-        if SecCodeCopyStaticCode(code, SecCSFlags(rawValue: 0), &staticCode) == errSecSuccess,
-           let sc = staticCode {
-            var pathURL: CFURL?
-            if SecCodeCopyPath(sc, SecCSFlags(rawValue: 0), &pathURL) == errSecSuccess,
-               let path = (pathURL as URL?)?.path {
-                if isClashAppBundlePath(path) {
-                    log("isAuthorizedClient: SecCode-path fallback accepted pid \(pid): \(path)")
-                    return true
-                }
-            }
+            identifierOK = SecCodeCheckValidity(code, flags, req) == errSecSuccess
         }
     }
-
-    // Layer 3: proc_pidpath — returns the actual executable path regardless of signing.
-    // Most reliable for ad-hoc builds where Security framework may reject the code object.
-    var pathBuf = [Int8](repeating: 0, count: 4096)
-    if proc_pidpath(pid, &pathBuf, 4096) > 0 {
-        let path = String(cString: pathBuf)
-        if isClashExecutablePath(path) {
-            log("isAuthorizedClient: proc_pidpath fallback accepted pid \(pid): \(path)")
-            return true
-        }
+    guard identifierOK else {
+        log("isAuthorizedClient: REJECTED pid \(pid) — identifier 检查未通过 (path=\(clientPath))")
+        return false
     }
 
-    log("isAuthorizedClient: REJECTED pid \(pid)")
-    return false
+    log("isAuthorizedClient: accepted pid \(pid): \(clientPath)")
+    return true
 }
 
 /// 归一化客户端路径（2026-10-14 审查中-12 安全部分）。顺序沿用
@@ -92,10 +114,16 @@ private func canonicalClientPath(_ path: String) -> String? {
 private func isAllowedBundleParent(_ lowercasedParent: String) -> Bool {
     let p = lowercasedParent
     if p == "/applications" { return true }
-    // 从挂载卷（DMG）直接运行
-    if p.hasPrefix("/volumes/") { return true }
-    // Xcode 产物布局 Build/Products/{Debug,Release}
-    if p.hasSuffix("/build/products/debug") || p.hasSuffix("/build/products/release") { return true }
+    let comps = p.split(separator: "/", omittingEmptySubsequences: true)
+    // 从挂载卷（DMG）直接运行：只认「/Volumes/<卷名>」一层（XPC-1 收紧：
+    // 旧实现 hasPrefix("/volumes/") 放行卷内任意深度目录，攻击者可构造）。
+    if comps.count == 2, comps[0] == "volumes" { return true }
+    // Xcode 产物布局 …/Build/Products/{Debug,Release}（XPC-1 收紧：至少 5 段
+    // 且以该结构结尾；`/x/Build/Products/Debug` 这类浅路径可被攻击者构造）。
+    // 合法产物最少也是 `<repo>/.build/Build/Products/Debug`（repo 在根目录时
+    // 恰 5 段），四条合法安装路径不受影响。
+    if comps.count >= 5,
+       p.hasSuffix("/build/products/debug") || p.hasSuffix("/build/products/release") { return true }
     // 控制台用户自己的 ~/Applications
     if let home = consoleUser()?.home.lowercased(), p == home + "/applications" { return true }
     return false
@@ -148,19 +176,34 @@ func consoleRepairTarget() -> (uid: uid_t, dir: String)? {
 }
 
 /// Only permit launching a binary at the canonical ClashHalo kernel path.
-
+/// XPC-1 收紧（2026-11-15 审计）：
+/// - 先 `resolvingSymlinksInPath` 解开软链再比对——旧实现只 standardizingPath，
+///   中间目录软链（…/bin → /tmp/evil）可把 root 执行指向任意二进制；
+/// - 锚定 console user 的 home 做精确全等，不再后缀匹配任意用户的 home
+///   （快速切换用户时非控制台会话的内核启动会被拒，与 chown 修复同一权威）；
+/// - ClashPow 旧数据目录后缀保留（迁移兼容）；
+/// - 末段软链拒绝保留：内核二进制本身不得是符号链接，即使指向合法位置。
 func isAllowedKernelPath(_ path: String) -> Bool {
     let std = (path as NSString).standardizingPath
-    guard !std.contains(".."),
-          (std.hasSuffix("/Library/Application Support/ClashHalo/bin/mihomo") ||
-           std.hasSuffix("/Library/Application Support/ClashPow/bin/mihomo")) else { return false }
+    guard !std.contains("..") else { return false }
     let fm = FileManager.default
-    var isDir: ObjCBool = false
-    guard fm.fileExists(atPath: std, isDirectory: &isDir), !isDir.boolValue else { return false }
+    // 末段软链检查在解引用之前做（attributesOfItem 是 lstat 语义）。
     if let type = (try? fm.attributesOfItem(atPath: std))?[.type] as? FileAttributeType,
        type == .typeSymbolicLink { return false }
+    let resolved = (std as NSString).resolvingSymlinksInPath
+    guard !resolved.contains("..") else { return false }
+    guard let home = consoleUser()?.home else { return false }
+    let homeResolved = (home as NSString).resolvingSymlinksInPath
+    guard resolved == homeResolved + "/Library/Application Support/ClashHalo/bin/mihomo"
+        || resolved == homeResolved + "/Library/Application Support/ClashPow/bin/mihomo" else { return false }
+    var isDir: ObjCBool = false
+    guard fm.fileExists(atPath: resolved, isDirectory: &isDir), !isDir.boolValue else { return false }
     return true
 }
+
+/// helper.log 写入锁：尺寸闸是读-改-写，log() 会被多条 XPC 线程并发调用，
+/// 无锁时两个线程可能同时判超、同时截断，把尾部写重。
+private let logFileLock = NSLock()
 
 func log(_ msg: String) {
     let logDir = "/Library/Logs/ClashHalo"
@@ -171,10 +214,47 @@ func log(_ msg: String) {
     try? fm.createDirectory(atPath: logDir, withIntermediateDirectories: true)
     try? fm.setAttributes([.posixPermissions: 0o755], ofItemAtPath: logDir)
     if !fm.fileExists(atPath: logFile) { fm.createFile(atPath: logFile, contents: nil) }
+    logFileLock.lock()
+    defer { logFileLock.unlock() }
     if let handle = try? FileHandle(forWritingTo: URL(fileURLWithPath: logFile)) {
         defer { try? handle.close() }
+        // 尺寸闸（F10，实测 17MB/9 天无轮转）：>5MB 时截断保留尾部 ~1MB。
+        // GUI app.log 是 2MB 清零式；Helper 侧保留尾部，事故后最近现场仍可回看。
+        if let size = try? handle.seekToEnd(), size > 5 * 1024 * 1024 {
+            let keep = 1 * 1024 * 1024
+            try? handle.seek(toOffset: size - UInt64(keep))
+            let tail = try? handle.read(upToCount: keep)
+            try? handle.truncate(atOffset: 0)
+            try? handle.seek(toOffset: 0)
+            if let tail { handle.write(tail) }
+        }
         _ = try? handle.seekToEnd()
         handle.write(data)
+    }
+}
+
+/// 写一个 sysctl 键（`sysctl -w key=value`），退出码 0 为成功，失败记日志。
+/// setGatewayMode 的正写/回滚与 handleClientExit 的死亡清理共用。
+private func runSysctl(_ key: String, _ value: String) -> Bool {
+    let p = Process()
+    p.executableURL = URL(fileURLWithPath: "/usr/sbin/sysctl")
+    p.arguments = ["-w", "\(key)=\(value)"]
+    let err = Pipe()
+    p.standardError = err
+    p.standardOutput = Pipe()
+    do {
+        try p.run()
+        p.waitUntilExit()
+        if p.terminationStatus != 0 {
+            let data = err.fileHandleForReading.readDataToEndOfFile()
+            let msg = String(data: data, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+            log("sysctl \(key)=\(value) failed status \(p.terminationStatus) \(msg)")
+            return false
+        }
+        return true
+    } catch {
+        log("sysctl \(key)=\(value) failed: \(error)")
+        return false
     }
 }
 
@@ -407,32 +487,44 @@ class Helper: NSObject, HelperProtocol {
             "net.inet6.ip6.forwarding"
         ]
         var ok = true
+        var written: [String] = []
 
         for key in keys {
-            let process = Process()
-            process.executableURL = URL(fileURLWithPath: "/usr/sbin/sysctl")
-            process.arguments = ["-w", "\(key)=\(value)"]
-            let err = Pipe()
-            process.standardError = err
-            process.standardOutput = Pipe()
-            do {
-                try process.run()
-                process.waitUntilExit()
-                if process.terminationStatus != 0 {
-                    let data = err.fileHandleForReading.readDataToEndOfFile()
-                    let msg = String(data: data, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-                    log("setGatewayMode: \(key)=\(value) failed status \(process.terminationStatus) \(msg)")
-                    ok = false
-                }
-            } catch {
-                log("setGatewayMode: \(key)=\(value) failed: \(error)")
+            if runSysctl(key, value) {
+                written.append(key)
+            } else {
                 ok = false
             }
         }
 
-        log("setGatewayMode: \(enabled) -> \(ok ? "success" : "failed")")
-        Self.setState { _, _, gateway in gateway = enabled }
-        if enabled { Self.armWatchForCurrentClient() }
+        // 半失败处理（XPC-5）：旧实现第二个 sysctl 失败仍记 gateway=enabled，
+        // 留下 v4 开 / v6 关的半开转发且死亡清理被错误记账掩盖。
+        // 现在：开启半失败 → 回滚已写入项；记账反映真实系统状态而非请求值——
+        // 回滚干净记 false；回滚不彻底（或关闭不彻底）仍有转发开着，记 true
+        // 交客户端死亡清理兜底（与 setSystemProxy「部分失败仍记意图」同一哲学）。
+        var halfOpen = false
+        if !ok {
+            if enabled {
+                var rollbackOK = true
+                for key in written {
+                    if !runSysctl(key, "0") { rollbackOK = false }
+                }
+                if rollbackOK {
+                    log("setGatewayMode: 部分失败，已回滚 \(written.joined(separator: ", "))=0")
+                } else {
+                    halfOpen = true
+                    log("setGatewayMode: 部分失败且回滚不彻底 — 半开状态，转发可能仍开启，交死亡清理兜底")
+                }
+            } else {
+                halfOpen = true
+                log("setGatewayMode: 关闭不彻底 — 半开状态，仍有转发未关，交死亡清理兜底")
+            }
+        }
+
+        let effective = ok ? enabled : halfOpen
+        log("setGatewayMode: \(enabled) -> \(ok ? "success" : "failed")（记账 gateway=\(effective)）")
+        Self.setState { _, _, gateway in gateway = effective }
+        if effective { Self.armWatchForCurrentClient() }
         reply(ok)
     }
 
@@ -610,7 +702,14 @@ class Helper: NSObject, HelperProtocol {
         // Withdraw only entries we created that are no longer wanted.
         for (dest, iface) in Self.addedRoutes where routes[dest] != iface {
             if Self.routeInterface(exactly: dest) == iface {
-                _ = Self.runRoute(Self.routeArgs("delete", dest: dest, iface: iface))
+                if Self.runRoute(Self.routeArgs("delete", dest: dest, iface: iface)) {
+                    continue
+                }
+                // 撤回失败不能丢记账（F13）：旧实现无论删成功与否都用 stillOurs
+                // 重建 addedRoutes，删失败的路由从此无主、再也撤不回。保留交下轮。
+                log("setupExcludeRoutes: 撤回 \(dest) -> \(iface) 失败，保留记账交下轮")
+                stillOurs[dest] = iface
+                failed += 1
             }
         }
 
@@ -979,13 +1078,12 @@ class HelperDelegate: NSObject, NSXPCListenerDelegate {
             log("handleClientExit: DNS 未完全恢复 failed=\(dnsReport.failed) unreadable=\(dnsReport.unreadable)，需 GUI 侧 sweep 续修")
         }
 
-        // 5. Disable IP Forwarding
+        // 5. Disable IP Forwarding (v4 + v6 — XPC-5: 旧实现只关 v4，
+        //    网关开过之后 v6 转发永久残留)
         if hadGateway {
-            let t = Process()
-            t.executableURL = URL(fileURLWithPath: "/usr/sbin/sysctl")
-            t.arguments = ["-w", "net.inet.ip.forwarding=0"]
-            try? t.run()
-            log("handleClientExit: IP forwarding disabled")
+            let v4 = runSysctl("net.inet.ip.forwarding", "0")
+            let v6 = runSysctl("net.inet6.ip6.forwarding", "0")
+            log("handleClientExit: IP forwarding disabled (v4=\(v4) v6=\(v6))")
         }
     }
 }

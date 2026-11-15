@@ -5,6 +5,16 @@ import Foundation
 /// (Xcode target) since both include this file — prevents the two-location
 /// version drift that caused infinite upgrade loops.
 ///
+/// 1.0.31: audit fix batch (2026-11-15): client auth now requires identifier
+/// match AND install-root path anchoring for every client — the old Layer-1
+/// short-circuit let any local process ad-hoc-sign the identifier and reach
+/// root (XPC-1); kernel paths resolve symlinks and anchor to the console user's
+/// home; the bundle-parent allowlist is tightened (/Volumes exactly one level,
+/// Build/Products depth >= 5); client-death cleanup disables IPv6 forwarding
+/// too, and setGatewayMode rolls back a half-applied enable instead of recording
+/// success (XPC-5); helper.log gains a 5MB size gate keeping the ~1MB tail (F10);
+/// RouteTable.current() gets a 5s netstat timeout, and failed exclude-route
+/// withdrawals keep their bookkeeping for the next round (F13).
 /// 1.0.30: audit fix batch (2026-10-14): DNS restore commands get a 5s timeout
 /// and lose the 223.5.5.5 fallback — failed restores keep the old value for the
 /// GUI sweep instead of clobbering user DNS; the loopback resolver liveness
@@ -32,7 +42,7 @@ import Foundation
 /// session takeover before its destructive steps (quit/relaunch race).
 /// 1.0.25: system-proxy rework (shared ProxyServicePlan, branch-order fix, no
 /// 2-service cap, full-success-only Bool).
-public let kSharedHelperVersion = "1.0.30"
+public let kSharedHelperVersion = "1.0.31"
 
 /// The utun name mihomo is asked to take, instead of accepting whatever index
 /// the kernel hands out. Shared with the Helper so it can tell a route our own
@@ -92,15 +102,32 @@ public enum RouteTable {
     }
 
     /// Read and parse the live IPv4 route table.
+    ///
+    /// netstat can stall (routing-table lock / configd), and callers hold locks
+    /// across this read (the Helper takes `routesLock`), so an unbounded
+    /// `waitUntilExit` could wedge the whole route path. Bound the read+wait at
+    /// 5 s; on timeout terminate the child, log, and return an empty table rather
+    /// than hang. NSLog (not the Helper's `log`) because this file is shared with
+    /// the GUI and the regression tests.
     public static func current() -> [Entry] {
         let p = Process()
         p.executableURL = URL(fileURLWithPath: "/usr/sbin/netstat")
         p.arguments = ["-rn", "-f", "inet"]
         let pipe = Pipe(); p.standardOutput = pipe; p.standardError = Pipe()
         do { try p.run() } catch { return [] }
-        let data = pipe.fileHandleForReading.readDataToEndOfFile()
-        p.waitUntilExit()
-        guard let out = String(data: data, encoding: .utf8) else { return [] }
+        let sema = DispatchSemaphore(value: 0)
+        var output = Data()
+        DispatchQueue.global().async {
+            output = pipe.fileHandleForReading.readDataToEndOfFile()
+            p.waitUntilExit()
+            sema.signal()
+        }
+        if sema.wait(timeout: .now() + 5.0) == .timedOut {
+            if p.isRunning { p.terminate() }
+            NSLog("[ClashHalo] RouteTable.current: netstat timed out after 5s; returning empty table")
+            return []
+        }
+        guard let out = String(data: output, encoding: .utf8) else { return [] }
         return parse(netstat: out)
     }
 
