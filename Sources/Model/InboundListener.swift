@@ -100,7 +100,9 @@ enum InboundListenerStore {
 
             if isTopLevelKey {
                 if inBlock { flush(); inBlock = false }
-                let head = trimmed.replacingOccurrences(of: " ", with: "")
+                // 剥行尾注释后判块键（CFG-13）：`listeners: # 备注` 也是块键，
+                // 旧版整块读不出来。
+                let head = stripComment(trimmed).replacingOccurrences(of: " ", with: "")
                 if head == "listeners:" || head == "listeners:[]" { inBlock = true }
                 continue
             }
@@ -134,9 +136,53 @@ enum InboundListenerStore {
         guard let colon = text.firstIndex(of: ":") else { return nil }
         let key = String(text[text.startIndex..<colon]).trimmingCharacters(in: .whitespaces)
         var value = String(text[text.index(after: colon)...]).trimmingCharacters(in: .whitespaces)
+        // 先剥行尾注释再去引号（CFG-13）：`port: 18085 # 备注` 旧版读成
+        // port=0，监听地址/目标地址同样被注释污染。
+        value = stripComment(value)
         value = value.replacingOccurrences(of: "\"", with: "").replacingOccurrences(of: "'", with: "")
         guard !key.isEmpty, !value.isEmpty else { return nil }
         return (key, value)
+    }
+
+    /// 剥行尾注释，口径与 `YamlScalar.stripInlineComment` 完全一致：只认空白后
+    /// 的 `#`；引号包裹的值先找闭合引号（单引号认 '' 转义、双引号认反斜杠），
+    /// 引号内的 `#` 是数据。本文件必须能单独编译进回归套件
+    /// （inboundlistener-tests 只编这一个源文件），不能引用 YamlScalar，
+    /// 故内置同算法——改任何一侧时同步另一侧。
+    private static func stripComment(_ v: String) -> String {
+        var body = v
+        if let q = v.first, q == "'" || q == "\"" {
+            var i = v.index(after: v.startIndex)
+            var close: String.Index?
+            while i < v.endIndex {
+                let ch = v[i]
+                if q == "\"" && ch == "\\" {
+                    i = v.index(after: i)
+                    if i < v.endIndex { i = v.index(after: i) }
+                    continue
+                }
+                if ch == q {
+                    let n = v.index(after: i)
+                    if q == "'" && n < v.endIndex && v[n] == "'" {
+                        i = v.index(after: n)
+                        continue
+                    }
+                    close = i
+                    break
+                }
+                i = v.index(after: i)
+            }
+            guard let c = close else { return v }   // 引号未闭合：原样返回
+            body = String(v[...c])
+        }
+        var cut: String.Index?
+        for sep in [" #", "\t#"] {
+            if let r = body.range(of: sep), cut == nil || r.lowerBound < cut! {
+                cut = r.lowerBound
+            }
+        }
+        guard let c = cut else { return body }
+        return String(body[..<c]).trimmingCharacters(in: .whitespaces)
     }
 
     private static func applyField(_ key: String, _ value: String,
@@ -207,7 +253,9 @@ enum InboundListenerStore {
             }
             if replaced { return nil }   // 第二份 listeners 块：不敢猜，交调用方报错
 
-            let head = trimmed.replacingOccurrences(of: " ", with: "")
+            // 剥行尾注释后判形态（CFG-13）：`listeners: # 备注` 是块键，
+            // 旧版把它当内联写法误拒，调用方只能报错。
+            let head = stripComment(trimmed).replacingOccurrences(of: " ", with: "")
             if head != "listeners:" && head != "listeners:[]" { sawInline = true; return nil }
 
             // 跳过原块（含其后的缩进行）
@@ -247,6 +295,12 @@ enum InboundListenerStore {
         if name.isEmpty { return "名称不能为空" }
         if name.contains(" ") { return "名称不能包含空格" }
         if name.contains(":") { return "名称不能包含冒号" }
+        // YAML 指示符会破坏无引号的 `- name: X` 写法（CFG-13）：# 开注释、
+        // []{} 进 flow、&* 是锚点/别名、! 是标签、|> 是块标量、, 是分隔符、
+        // %@" 与引号 likewise 保留字符。
+        if name.rangeOfCharacter(from: CharacterSet(charactersIn: "#*[]{}&!|>,%@`'\"")) != nil {
+            return "名称不能包含 YAML 特殊字符（# * [ ] { } & ! | > , 等）"
+        }
 
         if existing.contains(where: { $0.name == name }) {
             return "已存在同名转发「\(name)」"

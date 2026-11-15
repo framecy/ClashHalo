@@ -22,18 +22,58 @@ public enum YamlScalar {
     ///   * `https://dns.google/dns-query#默认代理` — nameserver pinned to a
     ///     policy group.
     ///
-    /// A quoted scalar is returned untouched: a `#` inside quotes is data, and
-    /// unquoting belongs to the caller.
+    /// A quoted scalar keeps its quotes (unquoting belongs to the caller), but a
+    /// comment AFTER the closing quote is still stripped: `"9090" # 备注` used to
+    /// survive whole, so the control port never entered the conflict table
+    /// (CFG-14). A `#` inside the quotes remains data.
     public static func stripInlineComment(_ v: String) -> String {
-        guard let first = v.first, first != "'", first != "\"" else { return v }
+        if let first = v.first, first == "'" || first == "\"" {
+            guard let close = closingQuote(in: v, quote: first) else { return v }
+            let rest = v[v.index(after: close)...]
+            guard let cut = commentCut(in: rest) else { return v }
+            return String(v[..<cut]).trimmingCharacters(in: .whitespaces)
+        }
+        guard let cut = commentCut(in: v[...]) else { return v }
+        return String(v[..<cut]).trimmingCharacters(in: .whitespaces)
+    }
+
+    /// Earliest whitespace-preceded `#` (" #" / "\t#"); the returned index is the
+    /// whitespace that opens the comment. nil = no comment.
+    private static func commentCut(in text: Substring) -> String.Index? {
         var cut: String.Index?
         for sep in [" #", "\t#"] {
-            if let r = v.range(of: sep) {
-                if cut == nil || r.lowerBound < cut! { cut = r.lowerBound }
+            if let r = text.range(of: sep), cut == nil || r.lowerBound < cut! {
+                cut = r.lowerBound
             }
         }
-        guard let c = cut else { return v }
-        return String(v[..<c]).trimmingCharacters(in: .whitespaces)
+        return cut
+    }
+
+    /// Index of the closing quote of a quoted scalar, honoring YAML escapes:
+    /// doubled quotes in single-quoted scalars ('it''s'), backslash escapes in
+    /// double-quoted ones ("a\"b"). nil when unterminated — leave the value alone.
+    private static func closingQuote(in v: String, quote: Character) -> String.Index? {
+        var i = v.index(after: v.startIndex)
+        while i < v.endIndex {
+            let ch = v[i]
+            if quote == "\"" && ch == "\\" {
+                i = v.index(after: i)
+                if i < v.endIndex { i = v.index(after: i) }
+                continue
+            }
+            if ch == quote {
+                if quote == "'" {
+                    let next = v.index(after: i)
+                    if next < v.endIndex && v[next] == "'" {
+                        i = v.index(after: next)
+                        continue
+                    }
+                }
+                return i
+            }
+            i = v.index(after: i)
+        }
+        return nil
     }
 
     /// Interpret a YAML scalar as Bool / Int / String, stripping any inline
@@ -52,11 +92,36 @@ public enum YamlScalar {
         if value.hasPrefix("[") && value.hasSuffix("]") {
             let inner = value.dropFirst().dropLast().trimmingCharacters(in: .whitespaces)
             if inner.isEmpty { return [] as [String] }
-            return inner.components(separatedBy: ",").map {
+            return splitFlowItems(inner).map {
                 $0.trimmingCharacters(in: .whitespaces)
                   .trimmingCharacters(in: CharacterSet(charactersIn: "\"'"))
             }
         }
         return value
+    }
+
+    /// Split a flow sequence on commas OUTSIDE quotes only: the comma in
+    /// `"a,b"` is data, not a separator (F27). Single-quote doubling ('a''b')
+    /// needs no special case — the close+reopen pair keeps interior commas
+    /// protected.
+    private static func splitFlowItems(_ inner: String) -> [String] {
+        var items: [String] = []
+        var current = ""
+        var quote: Character?
+        var escaped = false
+        for ch in inner {
+            if let q = quote {
+                current.append(ch)
+                if escaped { escaped = false }
+                else if q == "\"" && ch == "\\" { escaped = true }
+                else if ch == q { quote = nil }
+                continue
+            }
+            if ch == "'" || ch == "\"" { quote = ch; current.append(ch); continue }
+            if ch == "," { items.append(current); current = ""; continue }
+            current.append(ch)
+        }
+        items.append(current)
+        return items
     }
 }

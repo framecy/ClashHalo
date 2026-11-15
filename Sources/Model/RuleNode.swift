@@ -1,6 +1,6 @@
 import Foundation
 
-/// Mihomo 官方支持的 17 种核心规则类型 (严格枚举)
+/// Mihomo 官方支持的 26 种核心规则类型 (严格枚举)
 public enum MihomoRuleType: String, CaseIterable, Codable, Equatable {
     case domain = "DOMAIN"
     case domainSuffix = "DOMAIN-SUFFIX"

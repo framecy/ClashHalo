@@ -127,8 +127,17 @@ struct KeychainHelper {
         storeLock.lock()
         defer { storeLock.unlock() }
         let kc = deleteKeychainItem(account: key)
+        guard kc else {
+            // Keychain 删除失败、条目可能仍在：保留镜像并报告失败（F23）。
+            // 旧版此时照删镜像还返回 true，下次 read() 会从存活的 Keychain
+            // 条目读出旧值并重建镜像——secret 复活，「删除」成了空操作。
+            return false
+        }
         let mir = deleteMirror(account: key)
-        return kc || mir
+        // Keychain 已删但镜像删除失败也不能报成功：read() 先查镜像，
+        // 残留镜像同样会让值复活。镜像本就不存在时 deleteMirror 返回 false，
+        // 用 mirrorExists 区分「已不在」与「删不掉」。
+        return mir || !mirrorExists(account: key)
     }
 
     /// Eagerly re-persist well-known accounts so the open ACL + mirror land
@@ -243,7 +252,16 @@ struct KeychainHelper {
             // an ad-hoc-signed binary.
             let payload = Data(value.utf8).base64EncodedData()
             let url = mirrorURL(account: account)
-            try payload.write(to: url, options: [.atomic])
+            // 先以 0600 建文件再落内容（F23）：旧版 atomic write 先落 0644、
+            // 事后才 chmod，中间有一个其他本机用户可读的窗口。非原子覆写已有
+            // 文件不改权限；崩溃最坏留下半截镜像——readMirror 解码失败即回落
+            // Keychain 并重新播种，可自愈。
+            if !fm.fileExists(atPath: url.path) {
+                fm.createFile(atPath: url.path, contents: nil,
+                              attributes: [.posixPermissions: 0o600])
+            }
+            try payload.write(to: url, options: [])
+            // 兜底修复存量 0644 镜像（createFile 失败时 write 也会新建文件）。
             try fm.setAttributes([.posixPermissions: 0o600], ofItemAtPath: url.path)
         } catch {
             // Best-effort: Keychain may still hold the secret. Swallowing here

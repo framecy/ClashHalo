@@ -227,6 +227,11 @@ extension AppModel {
         let drifted = Self.configDrift(before: backupContent, profile: content)
         if let last = store.profiles.first(where: { $0.id == id })?.appliedHash,
            last == Sha1.hex(content), drifted.isEmpty {
+            // CFG-2：commit 刚把 profile 原文写进 config.yaml，而运行期加固的
+            // secret 不在 profile 里——短路返回前必须补一次加固，否则磁盘无
+            // secret、内核仍持旧 secret，下次 reconnect 读文件即全量 401 且
+            // 无法自愈。与 engine.setConfig 的「写盘后立即 harden」同序。
+            engine.hardenControllerConfig()
             store.markApplied(id, hash: last)
             showToast("已切换配置「\(name)」", kind: .ok)
             return
@@ -293,8 +298,15 @@ extension AppModel {
                     store.activeID = oldActiveID
                     if oldActiveID == id {
                         if !backupContent.isEmpty {
-                            try? backupContent.write(toFile: store.path(id), atomically: true, encoding: .utf8)
-                            try? backupContent.write(toFile: engine.configFilePath, atomically: true, encoding: .utf8)
+                            // CFG-1：只还原运行配置，**不写 profile 文件**。
+                            // backupContent 是改动前的运行配置快照；旧实现把它
+                            // 写回 store.path(id)，等于用旧运行配置静默覆盖用户
+                            // 刚编辑的 profile（reload 因端口冲突等外因失败时
+                            // 编辑内容不可恢复）。profile 保持用户内容，
+                            // isApplied 回退到点击前的状态即可。
+                            // CFG-8：走 restoreConfigSnapshot，atomic write 后
+                            // 补 0600（裸 write 会把 config.yaml 变成 0644）。
+                            await restoreConfigSnapshot(backupContent, at: engine.configFilePath)
                             if let oldHash = store.profiles.first(where: { $0.id == id })?.appliedHash {
                                 store.markApplied(id, hash: oldHash)
                             } else {
@@ -304,7 +316,8 @@ extension AppModel {
                         }
                     } else {
                         if !backupContent.isEmpty {
-                            try? backupContent.write(toFile: engine.configFilePath, atomically: true, encoding: .utf8)
+                            // CFG-8：同上，回滚写回保持 0600。
+                            await restoreConfigSnapshot(backupContent, at: engine.configFilePath)
                             if let oldHash = store.profiles.first(where: { $0.id == oldActiveID })?.appliedHash {
                                 store.markApplied(oldActiveID, hash: oldHash)
                             }
@@ -338,10 +351,19 @@ extension AppModel {
             await inflight.value
             return
         }
-        let task = Task { await refreshConfigsBody() }
+        let task = Task {
+            await refreshConfigsBody()
+            // F14：登记由任务自己在跑完时清除。旧实现在调用方 await 之后才清，
+            // 留下「已登记但已完成」的窗口：晚到调用者 join 一个已完成的 task
+            // 立即返回，本轮事件被静默吞掉（快照早于事件，且没有下一轮）。
+            // 自清把窗口缩到零——登记在册的任务必然仍在跑（清除是 task body
+            // 的最后一步，MainActor 上无挂起点），晚到者要么并入在跑的一轮，
+            // 要么发起新刷新。清除只可能是本任务自己的登记：任务在跑期间
+            // 所有到达者都走 join 分支，不会替换登记。
+            refreshConfigsTask = nil
+        }
         refreshConfigsTask = task
         await task.value
-        refreshConfigsTask = nil
     }
 
     private func refreshConfigsBody() async {
@@ -1433,7 +1455,8 @@ extension AppModel {
                 await refreshConfigs()
             } catch {
                 if let b = backup {
-                    try? b.write(toFile: cfgPath, atomically: true, encoding: .utf8)
+                    // CFG-8（同类）：回滚保持 0600，走统一快照还原。
+                    await restoreConfigSnapshot(b, at: cfgPath)
                     showToast("端口冲突，正在回滚配置…", kind: .warn)
                     try? await api.reloadConfig(path: cfgPath)
                     await refreshConfigs()
@@ -1450,7 +1473,8 @@ extension AppModel {
                 await reapplyTUN(wasOn: true)
                 guard tunOn else {
                     if let b = backup {
-                        try? b.write(toFile: cfgPath, atomically: true, encoding: .utf8)
+                        // CFG-8（同类）：回滚保持 0600。
+                        await restoreConfigSnapshot(b, at: cfgPath)
                         try? await api.reloadConfig(path: cfgPath)
                         await refreshConfigs()
                     }
@@ -1618,24 +1642,33 @@ extension AppModel {
         // after bring-up, the same mechanism `ProxyManager.cleanupTUNResidual`
         // already uses for `inet <addr> delete`).
         //
-        // TUN v6 显式接管（TUNIPv6Health）：物理 v6 断供（RA 停发/路由缺失/
-        // 探测不可达）时，把全球单播 v6 整段排除出 auto-route——v6 失败发生在
-        // 内核层、应用毫秒级回退 IPv4，而不是进隧道后被 DIRECT 拨号放大成
-        // 应用层长超时（2026-08-29 mini-pro 事件：微信发图 3h 1400 次失败）。
-        // 仅 enable 时需要；disable 的 PATCH 没有路由可排除。TUN 是否接管 v6
-        // 是随内核版本/环境漂移的隐式行为，必须由应用显式拥有。
-        if enable, tunIPv6Gate.dead {
-            var excludes = (body["route-exclude-address"] as? [Any]) ?? []
-            if !excludes.contains(where: { "\($0)" == TUNIPv6Health.ipv6GlobalUnicastExclude }) {
-                excludes.append(TUNIPv6Health.ipv6GlobalUnicastExclude)
-            }
-            body["route-exclude-address"] = excludes
-        }
         // Ask for our own name rather than accepting the next free index. Only on
         // enable — a disable PATCH has no device to name.
         if enable, let dev = pinnedTunDevice { body["device"] = dev }
         for (k, v) in extra { body[k] = v }
+        // TUN-1：v6 断供排除必须放在 extra 覆盖**之后**追加。extra 携带的
+        // route-exclude-address（reconcile 的 ex.merged）是整块替换，先 append
+        // 会被它静默覆盖；而 gate 已 dead 后 refreshTUNIPv6Gate 只在状态翻转时
+        // PATCH，丢掉的 2000::/3 永不补回（mini-pro 微信事故形态复发）。
+        applyIPv6ExclusionIfNeeded(&body)
         return body
+    }
+
+    /// 契约 C8（TUN-1）：把 IPv6 断供排除追加进一份 tun PATCH body。
+    ///
+    /// `2000::/3` 不是共存/直连源条目，不进 `RouteExclusionMerge` 的归属账本——
+    /// 它是 IPv6 健康闸门拥有的内核层保护。任何对 `route-exclude-address` 的
+    /// 整块覆盖（tunPatchBody 的 extra、applyTUNState 的 ex.merged、SDWAN
+    /// 「一键修复」自拼的 body）之后都必须重跑本函数，否则排除项被静默丢掉。
+    /// enable 语义与 tunPatchBody 一致：仅 body 声明 enable 且闸门判定物理 v6
+    /// 断供时追加；去重，重复调用幂等。disable 的 PATCH 没有路由可排除。
+    func applyIPv6ExclusionIfNeeded(_ body: inout [String: Any]) {
+        guard (body["enable"] as? Bool) == true, tunIPv6Gate.dead else { return }
+        var excludes = (body["route-exclude-address"] as? [Any]) ?? []
+        if !excludes.contains(where: { "\($0)" == TUNIPv6Health.ipv6GlobalUnicastExclude }) {
+            excludes.append(TUNIPv6Health.ipv6GlobalUnicastExclude)
+        }
+        body["route-exclude-address"] = excludes
     }
 
     // MARK: - TUN IPv6 接管闸门（采样与推进）
@@ -1693,7 +1726,17 @@ extension AppModel {
             for line in out.split(separator: "\n") {
                 let cols = line.split(whereSeparator: { $0 == " " || $0 == "\t" })
                 guard cols.count >= 4, cols[0] == "default" else { continue }
-                let iface = String(cols[cols.count - 1])
+                // TUN-3：按列名取 Netif，不能取 cols.last。表头是
+                // Destination Gateway Flags Netif [Expire]：RA 下发的 v6 默认
+                // 路由带 Expire 数值列，取末列会把「秒数」当接口名 →
+                // ifaceHasFreshGlobalV6 永远失败 → 永久误判断供。规则与
+                // RouteTable.interfaceColumn（HelperProtocol.swift，v4 路径
+                // 已修过同类 bug）一致：前 3 列之后，取最后一个含字母且不含
+                // ':'/'#' 的 token（排除数字过期值、IP 网关、MAC、link#N）。
+                guard let iface = cols.dropFirst(3).last(where: { token in
+                    token.rangeOfCharacter(from: .letters) != nil
+                        && !token.contains(":") && !token.contains("#")
+                }).map(String.init) else { continue }
                 if !iface.hasPrefix("utun") && iface != "lo0" {
                     return (true, iface)
                 }
@@ -1931,6 +1974,49 @@ extension AppModel {
         Task { await reconcileCoexistenceIfChanged() }
     }
 
+    /// 契约 C1（TS-2 修复的 Model 半边）：TunPage「路由排除网段」NList 的
+    /// 唯一写盘入口。UI 域把 NList 的 commit 接到本方法。
+    ///
+    /// 旧 UI commit 把运行态快照（含自动注入条目）整份 patchPersistent 写盘，
+    /// 是绕过 RouteExclusionMerge 的第四写入入口：撤回只清运行态、磁盘复活，
+    /// provenance 已清 → 条目升格「用户手写」永不撤回。本方法恢复不变量：
+    ///   ① 取当前 provenance 认领集；
+    ///   ② 用户期望清单剥掉认领条目——自动条目由共存/直连管理，用户试图
+    ///      删除时 toast 说明并保留（运行态由 ④ 重新注入）；
+    ///   ③ 只把**用户条目**经 patchPersistentTransactional 写盘（备份→
+    ///      校验→reload→失败回滚，LIFE-5 串行队列内）；
+    ///   ④ reload 后强制重跑共存合并（force 绕过指纹门），把 peer+direct
+    ///      自动条目重新 PATCH 进运行态，归属走 nextRecord 记账。
+    /// 磁盘只留用户条目：自动条目是运行态能力，由源随时重推——写进磁盘
+    /// 正是「复活 + 升格手写」的根因。
+    @discardableResult
+    func commitUserRouteExclusions(_ desired: [String]) async -> Bool {
+        let field = "route-exclude-address"
+        let claimed = Set(CoexistenceProvenance.injectedRecord(field))
+        let normalized = Array(Set(desired.map { $0.trimmingCharacters(in: .whitespaces) }
+            .filter { !$0.isEmpty })).sorted()
+        let userDesired = normalized.filter { !claimed.contains($0) }
+        // 用户试图删自动条目：只比对「当前清单里真实存在的认领条目」，
+        // 避免陈旧记录（条目早已不在运行态）造成误报。
+        let live = (liveTunBlock()["route-exclude-address"] as? [String]) ?? []
+        let removedAuto = Set(live).intersection(claimed).subtracting(Set(normalized))
+        if !removedAuto.isEmpty {
+            showToast("自动条目由共存/直连管理，不能在此删除：\(removedAuto.sorted().joined(separator: "、"))", kind: .warn)
+        }
+        guard await patchPersistentTransactional(["tun": [field: userDesired]]) else {
+            return false   // 事务内部已弹具体失败原因并回滚，不叠加 toast
+        }
+        if tunOn {
+            // 先清指纹再 force：若 force 被守卫弹回（busy/巡检在跑/稳定期），
+            // 30s verifyTUNConfig 的常规 reconcile 也会因指纹失配重推，
+            // 自动条目不会永久缺席（与 performTUNDataPlaneRecovery 同形态）。
+            lastCoexistenceFingerprint = ""
+            await reconcileCoexistenceIfChanged(force: true)
+        }
+        showToast("路由排除网段已保存", kind: .ok)
+        return true
+    }
+
     /// Re-apply route coexistence when the set of peer tunnels changes *while TUN
     /// is already up* — a VPN connecting after TUN, a new subnet route being
     /// accepted, or a peer disconnecting. Injection used to happen only at the
@@ -1948,7 +2034,9 @@ extension AppModel {
     /// peer tunnel moving interface). A caller arriving mid-run returns instead of
     /// pushing a second whole-block `tun` PATCH for the same topology; whatever it
     /// would have seen is re-detected by the 2-minute `verifyTUNConfig` sweep.
-    func reconcileCoexistenceIfChanged() async {
+    /// - Parameter force: 绕过指纹门强制重推（契约 C1：用户条目写盘重载后，
+    ///   自动条目必须重新 PATCH 进运行态，即使拓扑指纹没变）。其余守卫照旧。
+    func reconcileCoexistenceIfChanged(force: Bool = false) async {
         guard tunOn, reachable, !engine.isBusy, !sleeping else { return }
         guard Date() >= tunStateSettleUntil else { return }
         guard !coexistenceReconcileInFlight else { return }
@@ -1958,9 +2046,13 @@ extension AppModel {
         // reconcile 才被发现，白白多推一次整块 tun PATCH。
         refreshDirectExclusions()
         let peers = await Coexistence.detect()
+        // LIFE-3：detect() 是百毫秒级 fork，窗口内用户可能刚关掉 TUN（或有
+        // 自动 teardown 持锁）。入口守卫的结论到这里已经过期，PATCH enable:true
+        // 之前必须复查，否则会把用户刚关的 TUN 静默重新打开。
+        guard tunOn, reachable, !engine.isBusy, !sleeping, !tunAutoTeardownInFlight else { return }
         let plan = Coexistence.plan(peers)
         let fp = Self.exclusionFingerprint(plan, direct: directExcludeActive)
-        guard fp != lastCoexistenceFingerprint else { return }
+        guard force || fp != lastCoexistenceFingerprint else { return }
         guard let ex = routeExclusionBody(RouteExclusionSources(peer: plan.routeExcludes,
                                                                 direct: directExcludeActive)) else { return }
 
@@ -2025,6 +2117,10 @@ extension AppModel {
         guard Date() >= tunStateSettleUntil else { return }
 
         let peers = await Coexistence.detect()
+        // LIFE-3（同形态）：detect() 的 fork 窗口内用户可能已关 TUN / 自动
+        // teardown 已持锁。往系统路由表重推对端网段之前复查入口条件，
+        // 否则会给一个已经关闭的 TUN 会话续装绕行路由。
+        guard tunOn, reachable, !engine.isBusy, !sleeping, !tunAutoTeardownInFlight else { return }
         let expected = Coexistence.excludeRouteMap(peers)
         guard !expected.isEmpty else { return }
 
@@ -2116,18 +2212,19 @@ extension AppModel {
         guard n > 0 else { return false }
         persistTunStateForReload()       // a reload re-reads the file; keep TUN as-is
 
-        func rollback(_ reason: String) {
-            if let b = backup { try? b.write(toFile: path, atomically: true, encoding: .utf8) }
+        // CFG-8（同类）：回滚保持 0600，走统一快照还原（async，调用点 await）。
+        func rollback(_ reason: String) async {
+            if let b = backup { await restoreConfigSnapshot(b, at: path) }
             showToast("DNS 出口修复失败，已回滚：\(reason)", kind: .error)
         }
         if let err = await engine.validateConfig() {
-            rollback(err)
+            await rollback(err)
             return false
         }
         do {
             try await api.reloadConfig(path: path)
         } catch {
-            rollback(error.localizedDescription)
+            await rollback(error.localizedDescription)
             return false
         }
         await refreshConfigs()
@@ -2223,6 +2320,10 @@ extension AppModel {
             if let ex = routeExclusionBody(RouteExclusionSources(peer: plan.routeExcludes,
                                                                  direct: directExcludeActive)) {
                 tunOverrideMap["route-exclude-address"] = ex.merged
+                // TUN-1：ex.merged 整块覆盖了 tunPatchBody 里的 2000::/3
+                // （existing 取自运行时快照，首次开 TUN 时不含它），覆盖后
+                // 必须重新追加，否则 v6 断供排除静默丢失且永不补回。
+                applyIPv6ExclusionIfNeeded(&tunOverrideMap)
                 // 记录的是「至今认领且仍想要」的集合，不是本轮的 newlyAdded——
                 // 后者在第二次下发时恒为空，会把上一轮的认领抹掉。
                 pendingRouteProvenance = ex.record
@@ -2371,6 +2472,11 @@ extension AppModel {
             if gatewayModeOn {
                 _ = await engine.setGatewayMode(enabled: false)
                 gatewayModeOn = false
+                // LIFE-13：与可达分支同一语义——用户没要求关网关，是 TUN 带走的。
+                // 记下意图，下次成功开启 TUN 时随隧道一起恢复，否则内核不可达
+                // 时关一次 TUN 就把网关意图永久丢了。
+                gatewayPendingTunRestore = true
+                logKernel("网关中枢随 TUN 一同关闭（内核不可达），已记录状态，TUN 重新开启后会自动恢复")
                 gatewayDevices.removeAll(keepingCapacity: false)
             }
             // 2026-10-14（审查中-11 修复）：先清路由、后恢复 DNS——顺序即
@@ -2380,12 +2486,28 @@ extension AppModel {
             // 失败结果）。先停流量层（清静态路由 + 物理清残留），再恢复
             // 解析层：DNS 恢复的一刻路由已经直连，新连接一次成功。对齐
             // performCleanup「先断流量层、再恢复解析层」的既有分层。
-            // The kernel that owned these is gone, so nothing else will ever
-            // withdraw them — same reasoning as the `stopEngine` teardown.
+            // The kernel that owned these is gone — same teardown intent as
+            // `stopEngine`, and (X-1) the same three-state semantics: only a
+            // confirmed cleanup clears the latch.
             if staticRoutesInjected {
                 let ok = await XPCManager.shared.callCleanupAllExcludeRoutes()
-                logKernel("XPC Helper 清理静态路由: \(ok == true ? "成功" : "失败")")
-                if ok == true || ok == nil { staticRoutesInjected = false }
+                switch ok {
+                case .some(true):
+                    staticRoutesInjected = false
+                    logKernel("XPC Helper 清理静态路由: 成功")
+                case .some(false):
+                    logKernel("XPC Helper 清理静态路由: 失败（特权服务拒绝执行），保留标记待续清")
+                case .none:
+                    // X-1：nil 只表示「Helper 不可达」，不等于「没有路由要清」。
+                    // 旧实现 `ok == true || ok == nil` 把标记清掉，孤儿静态路由
+                    // 从此无人认领（与 stopEngine 的三态语义相反）。保留标记：
+                    // Helper 恢复后自身会回收孤儿路由，内核恢复后 refreshConfigs
+                    // 的 `!tunOn && staticRoutesInjected` 分支也会继续续清。
+                    logKernel("XPC Helper 清理静态路由: 失败（特权服务不可达），保留标记待下次续清")
+                    if throttleAllows("routes.deadKernelCleanup", interval: 120) {
+                        showToast("关闭 TUN 时未能清理静态路由（特权服务不可达），已留待续清", kind: .warn)
+                    }
+                }
             }
             if NetScanner.hasDownedMihomoTun() {
                 logKernel("关闭 TUN 时检测到残留 utun，请求特权服务物理清理…")
@@ -2899,13 +3021,23 @@ extension AppModel {
         // 该形态此前完全静默。只记日志方便排查，不做任何处置。
         // 判据必须带 !reachable：upDetachedMihomoTun 对健康 TUN 同样返回
         // utun100（UP + 持路由正是健康形态），裸判会每轮巡检误报。
+        // LIFE-6 注：稳态下 reconnect 不可达会先置 tunOn=false，所以本分支
+        // 只覆盖翻转前的瞬态；「不可达 + 残留」的稳态形态由下方 !tunOn 主体
+        // 处置（不再要求 reachable），两态都可见。
         if tunOn {
             if !reachable, await NetScanner.upDetachedMihomoTun() != nil {
                 logKernel("僵尸 TUN 巡检盲区记录：tunOn=true 但内核不可达且 \(kPinnedTunDevice) 仍 UP 持路由——按设计本巡检不介入，等待配置管理路径/数据面探针处置")
             }
             return
         }
-        guard reachable, !sleeping else { return }
+        // LIFE-6（旧 P0-4 残留）：不再要求 reachable。内核不可达时 reconnect
+        // 先置 tunOn=false，「kill -9 内核 + utun 残留持路由」的幽灵流量稳态
+        // 正是 !tunOn && !reachable——旧 `guard reachable` 让 sweep 对该形态
+        // 零动作（循环层修好后仍只是空转）。判据 upDetachedMihomoTun 是纯
+        // 接口/路由扫描（pin 身份化 + UP + 持路由），不依赖内核 API，不可达
+        // 时同样成立；补救 healDetachedTUN 重启内核优先，自带两击确认、
+        // 3 次熔断与冷却，死核形态恰好被它覆盖。!tunOn 反向门控保持不变。
+        guard !sleeping else { return }
         guard !engine.isBusy, !tunAutoTeardownInFlight, !tunDataPlaneRecoveryInFlight,
               !zombieTunRepairInFlight, !tunLoopTripInFlight else { return }
         guard Date() >= tunStateSettleUntil, Date() >= zombieTunCooldownUntil else { return }
@@ -2915,11 +3047,12 @@ extension AppModel {
             return
         }
         zombieTunStrikes += 1
+        let reachNote = reachable ? "" : "，内核不可达"
         guard zombieTunStrikes >= 2 else {
-            logKernel("疑似僵尸 TUN：配置已关但 \(kPinnedTunDevice) 仍 UP 且承载路由（第 1 击，待复查确认）")
+            logKernel("疑似僵尸 TUN：配置已关但 \(kPinnedTunDevice) 仍 UP 且承载路由\(reachNote)（第 1 击，待复查确认）")
             return
         }
-        logKernel("确认僵尸 TUN：配置已关但 \(kPinnedTunDevice) 仍 UP 且承载路由（第 \(zombieTunStrikes) 击）")
+        logKernel("确认僵尸 TUN：配置已关但 \(kPinnedTunDevice) 仍 UP 且承载路由\(reachNote)（第 \(zombieTunStrikes) 击）")
         // Claim the repair slot *before* the next suspension point. The guard at
         // the top of this function reads `zombieTunRepairInFlight`, but the flag
         // used to be set only inside `healDetachedTUN` — i.e. after this line's
@@ -2936,7 +3069,7 @@ extension AppModel {
         // `healDetachedTUN` leave the release to its own defer) closes the window
         // regardless of which caller gets there first.
         zombieTunRepairInFlight = true
-        await healDetachedTUN(reason: "巡检")
+        await healDetachedTUN(reason: reachable ? "巡检" : "巡检·内核不可达")
     }
 
     /// The surgical remedy: a process restart. Killing mihomo releases its
@@ -2949,6 +3082,28 @@ extension AppModel {
     /// proxy setting cannot black-hole the Mac, and restored through the
     /// verified path only when the kernel is back.
     private func healDetachedTUN(reason: String) async {
+        // 修理槽位在任何 early-return 之前认领、由 defer 统一释放：
+        // sweepZombieTUN 在调用前也置该旗标，任何早退路径漏释放都会把巡检
+        // 永久挡在 `!zombieTunRepairInFlight` 门外（旧实现的熔断路径正是
+        // 这种泄漏：guard 在 defer 登记之前 return）。冷却取 max——熔断档
+        // 1800s 不能被常规档 120s 覆盖。
+        zombieTunRepairInFlight = true
+        defer {
+            zombieTunRepairInFlight = false
+            zombieTunStrikes = 0
+            // 120s = 两次僵尸自愈的最小间隔：重启自身会产生 path 风暴，
+            // 巡检不能追自己的尾巴（三次无效后的 1800s 熔断档在下方）。
+            zombieTunCooldownUntil = max(zombieTunCooldownUntil, Date().addingTimeInterval(120))
+        }
+        // LIFE-2：入门守卫。调用方（sweepZombieTUN / handleTUNLoopTrip）的
+        // !isBusy 检查都在各自的 await 之前（TOCTOU），到达这里时锁可能已被
+        // 用户操作持有——必须在置锁点复查，否则并发重启 + 本函数的 defer
+        // 会提前释放他人持有的锁。本守卫与下方 engine.isBusy = true 之间
+        // 无 await（同一 MainActor 同步段），复查不会被挂起点拆开。
+        guard !engine.isBusy else {
+            logKernel("僵尸 TUN 自愈跳过：内核操作进行中（isBusy），待下一拍巡检重试")
+            return
+        }
         guard zombieTunRestarts < 3 else {
             logKernel("僵尸 TUN 已重启内核 \(zombieTunRestarts) 次仍未清除，停止自动重建（请检查共存 VPN 或在网络页手动重启内核）")
             showToast("僵尸 TUN 无法自动清除，请在「网络」页手动重启内核", kind: .error)
@@ -2960,14 +3115,6 @@ extension AppModel {
             return
         }
         zombieTunRestarts += 1
-        zombieTunRepairInFlight = true
-        defer {
-            zombieTunRepairInFlight = false
-            zombieTunStrikes = 0
-            // 120s = 两次僵尸自愈的最小间隔：重启自身会产生 path 风暴，
-            // 巡检不能追自己的尾巴（三次无效后的 1800s 熔断档在上方）。
-            zombieTunCooldownUntil = Date().addingTimeInterval(120)
-        }
         logKernel("僵尸 TUN 自愈：重建内核清除隧道残留（\(reason)，第 \(zombieTunRestarts) 次）")
         showToast("检测到已关闭的 TUN 仍在劫持路由，正在自动重启内核清除…", kind: .warn)
         engine.isBusy = true
@@ -3743,6 +3890,32 @@ extension AppModel {
         return ok
     }
 
+    /// LIFE-5：持久化事务的专用串行队列，**独立于 engine.isBusy**。
+    ///
+    /// 不能用 withEngineBusy 包事务：selectForApply 的网关级联在已持 isBusy
+    /// 的 Task 内调用本事务，包进去会自拒。队列只负责事务彼此互斥——
+    /// 备份→写盘→校验→reload→回滚 跨多个 await，两个事务交错时 A 的失败
+    /// 回滚会抹掉 B 已成功的写入（B 仍返回 true）。实现为 MainActor 任务链：
+    /// 每笔事务先等上一笔完整结束再动文件。非结构化 Task 不继承取消：
+    /// 调用方被取消时事务仍跑完，不会停在「写了一半没有回滚」的状态。
+    private static var configTransactionTail: Task<Void, Never>?
+
+    /// 事务入口：排队串行化后执行 `patchPersistentTransactionalBody`。
+    /// 签名与语义不变（返回磁盘+内核是否都接受了改动），调用方无感。
+    @discardableResult
+    func patchPersistentTransactional(_ overrides: [String: Any]) async -> Bool {
+        guard !overrides.isEmpty else { return true }
+        let previous = Self.configTransactionTail
+        let transaction = Task { @MainActor in
+            await previous?.value
+            return await self.patchPersistentTransactionalBody(overrides)
+        }
+        Self.configTransactionTail = Task { @MainActor in
+            _ = await transaction.value
+        }
+        return await transaction.value
+    }
+
     /// Transactional core behind every persistent (config.yaml) write.
     ///
     /// 顺序是硬约束，不是风格：
@@ -3754,8 +3927,9 @@ extension AppModel {
     /// 6. 任何一步失败 → 还原备份、说清原因、返回 false。
     ///
     /// 失败一律在这里自己弹错误 toast（含“已回滚”字样），调用方不要叠加第二条。
+    /// LIFE-5：只由 `patchPersistentTransactional` 在串行队列内调用。
     @discardableResult
-    func patchPersistentTransactional(_ overrides: [String: Any]) async -> Bool {
+    private func patchPersistentTransactionalBody(_ overrides: [String: Any]) async -> Bool {
         guard !overrides.isEmpty else { return true }
         let path = engine.configFilePath
         guard let backup = try? String(contentsOfFile: path, encoding: .utf8) else {
@@ -3845,7 +4019,14 @@ extension AppModel {
     @discardableResult
     func saveProxyProviders(_ providers: [(name: String, url: String)]) async -> Bool {
         let path = engine.configFilePath
-        let backup = try? String(contentsOfFile: path, encoding: .utf8)
+        // CFG-19：与 patchPersistentTransactional 同一套保护——读不到备份就
+        // 拒绝写入。旧实现 backup 为 nil 也照写，失败分支静默跳过回滚，
+        // 一次写坏就没有任何还原手段。
+        guard let backup = try? String(contentsOfFile: path, encoding: .utf8) else {
+            logKernel("订阅保存取消：无法读取 \(path) 作为回滚备份")
+            showToast("无法读取当前配置，已取消修改", kind: .error)
+            return false
+        }
         engine.writeProxyProviders(providers)
         persistTunStateForReload()    // preserve running TUN across reload
         // 空组预检：删除订阅后，只靠它供血的策略组会失去全部节点来源，
@@ -3854,7 +4035,7 @@ extension AppModel {
         if let text = try? String(contentsOfFile: path, encoding: .utf8) {
             let empty = ProviderUsage.groupsMissingMembers(in: text)
             if let first = empty.first {
-                if let b = backup { await restoreConfigSnapshot(b, at: path) }
+                await restoreConfigSnapshot(backup, at: path)
                 let list = empty.joined(separator: "、")
                 showToast("操作已回滚：策略组「\(first)」在这次改动后没有任何节点来源（proxies / use 均为空）。请先编辑该策略组或保留订阅；涉及：\(list)", kind: .error)
                 logKernel("[Subscriptions] 回滚：以下策略组将变为空组：\(list)")
@@ -3862,7 +4043,7 @@ extension AppModel {
             }
         }
         if let err = await engine.validateConfig() {
-            if let b = backup { await restoreConfigSnapshot(b, at: path) }
+            await restoreConfigSnapshot(backup, at: path)
             showToast("配置无效，已回滚：\(err)", kind: .error)
             return false
         }
@@ -3874,7 +4055,7 @@ extension AppModel {
             showToast("订阅已保存", kind: .ok)
             return true
         } catch {
-            if let b = backup { await restoreConfigSnapshot(b, at: path) }
+            await restoreConfigSnapshot(backup, at: path)
             showToast("保存失败，已回滚：\(error.localizedDescription)", kind: .error)
             return false
         }
@@ -3980,7 +4161,8 @@ extension AppModel {
 
         persistTunStateForReload()
         if let err = await engine.validateConfig() {
-            try? backup.write(toFile: path, atomically: true, encoding: .utf8)
+            // CFG-8：回滚走 restoreConfigSnapshot（atomic write 后补 0600）。
+            await restoreConfigSnapshot(backup, at: path)
             noteConfigContentChanged()
             showToast("转发配置无效，已回滚：\(err)", kind: .error)
             return false
@@ -3992,7 +4174,8 @@ extension AppModel {
             showToast(isEmpty ? "端口转发已清空" : "端口转发已保存并重载", kind: .ok)
             return true
         } catch {
-            try? backup.write(toFile: path, atomically: true, encoding: .utf8)
+            // CFG-8：同上，回滚保持 0600。
+            await restoreConfigSnapshot(backup, at: path)
             noteConfigContentChanged()
             showToast("重载失败，已回滚：\(error.localizedDescription)", kind: .error)
             return false
@@ -4101,9 +4284,20 @@ extension AppModel {
     }
 
     func setMode(_ m: String) {
+        let previous = mode
         mode = m
         Task {
-            try? await api.patchConfig(["mode": m])
+            do {
+                try await api.patchConfig(["mode": m])
+            } catch {
+                // LIFE-8：失败必须回滚 UI 并报错。旧实现 try? 吞掉失败后
+                // 无条件弹「已切换」，界面停在新值上直到 60s 兜底才打回。
+                // 仅当 mode 仍是本次写入值时回滚，避免覆盖期间更新的状态。
+                if mode == m { mode = previous }
+                logKernel("模式切换失败：\(error.localizedDescription)")
+                showToast("模式切换失败：\(error.localizedDescription)", kind: .error)
+                return
+            }
             // Mode switch (global/direct) changes the routing logic; close existing
             // connections so traffic re-dials through the new path immediately.
             if closeOnSwitch {

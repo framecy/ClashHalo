@@ -153,7 +153,8 @@ enum ProviderUsage {
     /// 真正原因。调用方（`saveProxyProviders`）在写盘后、校验前用它给出中文解释。
     ///
     /// 口径与 `groupReferences` 完全一致：同一份行扫描，不解析锚点/多行标量，
-    /// 看不懂的行就跳过。返回顺序即文件顺序。
+    /// 看不懂的行就跳过。返回顺序即文件顺序。另认 `- type:` 在前、`name:` 在后的
+    /// 组边界写法（F24）——旧版整组跳过，空组预检对这种合法配置失明。
     static func groupsMissingMembers(in yaml: String) -> [String] {
         var missing: [String] = []
         var inGroups = false
@@ -183,7 +184,7 @@ enum ProviderUsage {
             guard inGroups else { continue }
             if trimmed.isEmpty || trimmed.hasPrefix("#") { continue }
 
-            // 组边界：2 空格缩进的 `- name:`
+            // 组边界：2 空格缩进的 `- name:` 或 `- type:`（name 可能在后面，F24）
             if raw.hasPrefix("  - ") || raw.hasPrefix("  -\t") {
                 commit()
                 let body = String(trimmed.dropFirst(2)).trimmingCharacters(in: .whitespaces)
@@ -193,8 +194,10 @@ enum ProviderUsage {
                 continue
             }
 
-            // 组内字段：4 空格缩进
-            guard currentName != nil, raw.hasPrefix("    ") else { continue }
+            // 组内字段：4 空格缩进。不要求 currentName 已就位：`- type:` 在前、
+            // `name:` 在后也是合法写法，组名见到 name 字段再补记（F24）；
+            // 成员来源照常累计，commit 时只报告拿到名字的组。
+            guard raw.hasPrefix("    ") else { continue }
             if inUseBlock || inProxiesBlock {
                 if trimmed.hasPrefix("- ") {
                     currentHasMembers = true   // 块状列表里有一个条目就够
@@ -205,11 +208,20 @@ enum ProviderUsage {
             }
             guard let colon = trimmed.firstIndex(of: ":") else { continue }
             let key = String(trimmed[trimmed.startIndex..<colon]).trimmingCharacters(in: .whitespaces)
-            // include-all 家族：成员来自全部节点/provider，本身就有来源，
-            // 不认会把合法配置误判成空组、导致所有订阅保存被回滚。
-            if key.hasPrefix("include-all") { currentHasMembers = true; continue }
-            guard key == "use" || key == "proxies" else { continue }
             let value = String(trimmed[trimmed.index(after: colon)...]).trimmingCharacters(in: .whitespaces)
+            if key == "name" {
+                if currentName == nil { currentName = scalar(value) }
+                continue
+            }
+            // include-all 家族：显式 true 时成员来自全部节点/provider，本身就有
+            // 来源，不认会把合法配置误判成空组、导致所有订阅保存被回滚。
+            // 但 include-all: false / 空值不算来源——否则空组预检漏报（test-rules 发现）。
+            if key.hasPrefix("include-all") {
+                let v = (scalar(value) ?? "").lowercased()
+                if v == "true" || v == "yes" || v == "on" { currentHasMembers = true }
+                continue
+            }
+            guard key == "use" || key == "proxies" else { continue }
             if value.isEmpty {
                 if key == "use" { inUseBlock = true } else { inProxiesBlock = true }
             } else {

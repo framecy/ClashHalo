@@ -59,8 +59,46 @@ struct YAMLPreview: Equatable {
 
     func path(_ id: String) -> String { dir + "/\(id).yaml" }
 
+    /// profiles/*.yaml 的唯一写盘入口：atomic write 默认落 0644，写完必须收回
+    /// 0600——profile 与 config.yaml 含同样的订阅凭据，后者 0600 前者不能裸奔
+    /// （CFG-20）。所有写 profile 的路径都走这里，不再各自 try? write。
+    private func writeProfileFile(_ id: String, _ text: String) {
+        let p = path(id)
+        try? text.write(toFile: p, atomically: true, encoding: .utf8)
+        try? fm.setAttributes([.posixPermissions: 0o600], ofItemAtPath: p)
+    }
+
+    /// 覆写前备份（CFG-18）：`<id>.yaml.bak-<时间戳>`，只保留最近 3 份。
+    /// 校验再严也可能有盲区，备份让用户能回滚。备份同样 0600。
+    private func backupProfileFile(_ id: String) {
+        let src = path(id)
+        guard fm.fileExists(atPath: src) else { return }
+        let df = DateFormatter()
+        df.dateFormat = "yyyyMMdd-HHmmss"
+        let dst = src + ".bak-" + df.string(from: Date())
+        try? fm.copyItem(atPath: src, toPath: dst)
+        try? fm.setAttributes([.posixPermissions: 0o600], ofItemAtPath: dst)
+        pruneBackups(id, keeping: 3)
+    }
+
+    /// 备份清理：时间戳定宽，字典序即时间序。keeping=0 用于删除 profile 时
+    /// 连备份一起清——备份含同样凭据，「删除配置」不能把它们留在盘上。
+    private func pruneBackups(_ id: String, keeping: Int) {
+        let prefix = (path(id) as NSString).lastPathComponent + ".bak-"
+        guard let items = try? fm.contentsOfDirectory(atPath: dir) else { return }
+        let baks = items.filter { $0.hasPrefix(prefix) }.sorted()
+        for name in baks.dropLast(keeping) {
+            try? fm.removeItem(atPath: dir + "/" + name)
+        }
+    }
+
     func load() {
-        try? fm.createDirectory(atPath: dir, withIntermediateDirectories: true)
+        // profiles 目录与 config.yaml 一样装着订阅凭据：0700（CFG-20）。
+        // createDirectory 的 attributes 只对新建生效，旧版留下的 0755 目录
+        // 需要显式修复一次。
+        try? fm.createDirectory(atPath: dir, withIntermediateDirectories: true,
+                                attributes: [.posixPermissions: 0o700])
+        try? fm.setAttributes([.posixPermissions: 0o700], ofItemAtPath: dir)
         if let data = fm.contents(atPath: manifestPath),
            var list = try? JSONDecoder().decode([Profile].self, from: data) {
             for i in list.indices {
@@ -88,7 +126,7 @@ struct YAMLPreview: Equatable {
             if content.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
                 content = defaultContent
             }
-            try? content.write(toFile: path(id), atomically: true, encoding: .utf8)
+            writeProfileFile(id, content)
             let p = Profile(id: id, name: "默认配置", source: "local", url: nil, importedAt: Date(), updatedAt: Date())
             profiles = [p]; activeID = id; save()
         }
@@ -108,6 +146,11 @@ struct YAMLPreview: Equatable {
             }
         }
         if reconciled { save() }
+        // 修复存量 profile 权限：旧版写盘是 0644，而它们与 config.yaml 含同样的
+        // 订阅凭据（CFG-20）。文件不存在时 setAttributes 静默失败，无副作用。
+        for p in profiles {
+            try? fm.setAttributes([.posixPermissions: 0o600], ofItemAtPath: path(p.id))
+        }
     }
 
     /// 保存清单与所有订阅 URL（URL 本体进 Keychain，manifest 里清空）。
@@ -157,7 +200,7 @@ struct YAMLPreview: Equatable {
 
     func content(_ id: String) -> String { (try? String(contentsOfFile: path(id), encoding: .utf8)) ?? "" }
     func saveContent(_ id: String, _ text: String) {
-        try? text.write(toFile: path(id), atomically: true, encoding: .utf8); touch(id)
+        writeProfileFile(id, text); touch(id)
         if let i = profiles.firstIndex(where: { $0.id == id }) {
             profiles[i].appliedHash = nil
             profiles[i].isApplied = false
@@ -173,7 +216,7 @@ struct YAMLPreview: Equatable {
     @discardableResult
     func importLocalDraft(name: String, content: String) -> String {
         let id = UUID().uuidString
-        try? content.write(toFile: path(id), atomically: true, encoding: .utf8)
+        writeProfileFile(id, content)
         let p = Profile(id: id, name: name, source: "local", url: nil,
                         importedAt: Date(), updatedAt: Date(), isApplied: false, appliedHash: nil)
         profiles.append(p); wiped = false; save(); return id
@@ -183,7 +226,7 @@ struct YAMLPreview: Equatable {
     @discardableResult
     func importRemoteDraft(name: String, url: String, content: String) -> String {
         let id = UUID().uuidString
-        try? content.write(toFile: path(id), atomically: true, encoding: .utf8)
+        writeProfileFile(id, content)
         let p = Profile(id: id, name: name, source: "remote", url: url,
                         importedAt: Date(), updatedAt: Date(), isApplied: false, appliedHash: nil)
         profiles.append(p); wiped = false; save(); return id
@@ -237,13 +280,15 @@ struct YAMLPreview: Equatable {
                 return false
             }
             
-            // Validate that the content actually looks like YAML (e.g. contains ":")
-            // This prevents overwriting the file with HTML error pages or empty templates.
-            guard content.contains(":") else {
+            // 内容必须带 mihomo 配置特征（CFG-18）：旧版只查 contains(":")，
+            // 200 的 HTML 错误页（<title>Error: …</title> 也含冒号）拦不住，
+            // 一次覆写就毁掉订阅文件。
+            guard Self.looksLikeMihomoConfig(content) else {
                 return false
             }
-            
-            try content.write(toFile: path(id), atomically: true, encoding: .utf8)
+
+            backupProfileFile(id)
+            writeProfileFile(id, content)
             touch(id)
             return true
         } catch {
@@ -251,8 +296,26 @@ struct YAMLPreview: Equatable {
         }
     }
 
+    /// 订阅内容是否像 mihomo 配置：先拒 HTML/XML（配置不会以 `<` 开头），
+    /// 再要求至少一个顶层配置键。纯节点订阅至少有 proxies:，混合配置会有
+    /// proxy-groups:/rules:/mixed-port: 等。
+    private static func looksLikeMihomoConfig(_ content: String) -> Bool {
+        let trimmed = content.trimmingCharacters(in: .whitespacesAndNewlines)
+        if trimmed.hasPrefix("<") { return false }
+        for raw in content.components(separatedBy: "\n") {
+            guard !raw.hasPrefix(" "), !raw.hasPrefix("\t") else { continue }
+            let t = raw.trimmingCharacters(in: .whitespaces)
+            if t.hasPrefix("proxies:") || t.hasPrefix("proxy-groups:") || t.hasPrefix("rules:")
+                || t.hasPrefix("mixed-port:") || t.hasPrefix("port:") || t.hasPrefix("socks-port:") {
+                return true
+            }
+        }
+        return false
+    }
+
     func remove(_ id: String) {
         try? fm.removeItem(atPath: path(id))
+        pruneBackups(id, keeping: 0)
         KeychainHelper.delete(key: id)
         profiles.removeAll { $0.id == id }; save()
         if activeID == id { activeID = profiles.first?.id ?? "" }
@@ -291,6 +354,7 @@ struct YAMLPreview: Equatable {
     func removeAll() -> [String] {
         for p in profiles {
             try? fm.removeItem(atPath: path(p.id))
+            pruneBackups(p.id, keeping: 0)
             KeychainHelper.delete(key: p.id)
         }
         profiles.removeAll()
@@ -365,6 +429,7 @@ struct YAMLPreview: Equatable {
         guard let i = profiles.firstIndex(where: { $0.id == id }) else { return }
         guard profiles[i].isApplied == false else { return }
         try? fm.removeItem(atPath: path(id))
+        pruneBackups(id, keeping: 0)
         KeychainHelper.delete(key: id)
         profiles.removeAll { $0.id == id }; save()
     }
@@ -375,21 +440,31 @@ struct YAMLPreview: Equatable {
     /// matches what the kernel will eventually count.
     func previewOfContent(_ text: String) -> YAMLPreview {
         var preview = YAMLPreview(); preview.bytes = text.utf8.count
-        var inProxies = false, inGroups = false, inRules = false
+        // 组计数走唯一权威解析（与规则目标校验同口径）：标准组行是
+        // `  - name: X`，行尾没有冒号——旧版要求 hasSuffix(":")，groupCount
+        // 恒 0（CFG-11）。
+        let groups = ProviderUsage.groupNames(in: text)
+        preview.groupCount = groups.count
+        for name in groups where preview.nodeNames.count < 20 {
+            preview.nodeNames.append(name)
+        }
+        var inProxies = false, inRules = false
         for line in text.components(separatedBy: "\n") {
             let trimmed = line.trimmingCharacters(in: .whitespaces)
             if trimmed.isEmpty || trimmed.hasPrefix("#") { continue }
             // Top-level key detection: zero-indent, ends with `:`.
+            // 序列项（`- name:`）不算顶层键，与 ProviderUsage 口径一致；
+            // 先剥行尾注释，`proxies: # 节点` 也是块键（与 insertRuleLine 同口径）。
+            let bare = YamlScalar.stripInlineComment(trimmed)
             let isTopKey: Bool
             if let first = line.first, first == " " || first == "\t" {
                 isTopKey = false
-            } else if trimmed.hasSuffix(":") {
+            } else if bare.hasSuffix(":") && !trimmed.hasPrefix("-") {
                 isTopKey = true
             } else { isTopKey = false }
             if isTopKey {
-                let key = String(trimmed.dropLast())
+                let key = String(bare.dropLast())
                 inProxies = (key == "proxies")
-                inGroups = (key == "proxy-groups")
                 inRules = (key == "rules")
                 if key == "proxy-providers" { preview.hasProxyProviders = true }
                 continue
@@ -398,17 +473,15 @@ struct YAMLPreview: Equatable {
                 preview.ruleCount += 1
                 continue
             }
-            // 2-space-indented children of `proxies:` / `proxy-groups:`.
-            if line.hasPrefix("  ") && !line.hasPrefix("   ") {
-                if inGroups && trimmed.hasSuffix(":") {
-                    preview.groupCount += 1
-                    if preview.nodeNames.count < 20 {
-                        preview.nodeNames.append(String(trimmed.dropLast()))
-                    }
-                } else if inProxies {
-                    preview.nodeCount += 1
-                    if trimmed.hasSuffix(":") && preview.nodeNames.count < 20 {
-                        preview.nodeNames.append(String(trimmed.dropLast()))
+            // proxies: 的节点行。2 空格缩进与 0 缩进序列都是合法 YAML，
+            // 旧版只认前者，0 缩进整段漏计（CFG-11）。
+            let isItem = (line.hasPrefix("  ") && !line.hasPrefix("   "))
+                || (!line.hasPrefix(" ") && !line.hasPrefix("\t") && trimmed.hasPrefix("- "))
+            if inProxies && isItem {
+                preview.nodeCount += 1
+                if preview.nodeNames.count < 20, trimmed.hasPrefix("- name:") {
+                    if let name = ProviderUsage.scalar(String(trimmed.dropFirst("- name:".count))) {
+                        preview.nodeNames.append(name)
                     }
                 }
             }

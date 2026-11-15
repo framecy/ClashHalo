@@ -27,7 +27,7 @@ public final class RuleEditorModel: ObservableObject {
             self.loadedNodes = YamlRuleASTEngine.extractRules(from: yaml).sorted { $0.sort < $1.sort }
             self.nodes = loadedNodes
         } catch {
-            self.errorMessage = "加载配置失败：\\(error.localizedDescription)"
+            self.errorMessage = "加载配置失败：\(error.localizedDescription)"
         }
     }
     
@@ -40,7 +40,22 @@ public final class RuleEditorModel: ObservableObject {
             // 会在每次保存时被清掉（真实配置实测一次空往返少 50 行，其中 43 行注释）。
             let newYaml = try YamlRuleASTEngine.injectRulesPreservingComments(
                 nodes, into: originalYaml, loadedNodes: loadedNodes)
+            // 规则页直接写 config.yaml，必须进审计留痕（CFG-16）：基线取写盘前
+            // 的磁盘内容而不是 originalYaml——load 之后别的写点（设置页/网关）
+            // 可能已经改过文件，与 ConfigStore.commit 同一口径。
+            let before = (try? String(contentsOfFile: targetFilePath, encoding: .utf8))
+                .map(ConfigWriteAudit.flattenedScalars(in:))
             try newYaml.write(toFile: targetFilePath, atomically: true, encoding: .utf8)
+            if let before {
+                ConfigWriteAudit.record(
+                    writer: "RuleEditorModel.save",
+                    path: targetFilePath,
+                    changes: ConfigWriteAudit.changes(
+                        from: before,
+                        to: ConfigWriteAudit.flattenedScalars(in: newYaml)
+                    )
+                )
+            }
             // 保存成功后把基线推进到刚落盘的内容：
             //   * `originalYaml` 决定「块外内容」取哪一版，留着旧版会在下一次保存时
             //     把期间别的写点（网关覆盖、profile 切换）改过的字节回滚掉；
@@ -53,7 +68,7 @@ public final class RuleEditorModel: ObservableObject {
             try? FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: targetFilePath)
             return true
         } catch {
-            self.errorMessage = "保存失败：\\(error.localizedDescription)"
+            self.errorMessage = "保存失败：\(error.localizedDescription)"
             return false
         }
     }

@@ -279,8 +279,19 @@ public final class YamlRuleASTEngine {
                     out.append(contentsOf: renderBlock(nodes: nodes, loadedNodes: loadedNodes, rows: rows))
                     blockDone = true
                 }
-                let startsRules = trimmed == "rules:" || (trimmed.hasPrefix("rules:") && !trimmed.hasPrefix("rules: ["))
-                if startsRules {
+                if trimmed.hasPrefix("rules:") {
+                    // 与 insertRuleLine 同口径：剥行尾注释与空格后判形态。
+                    // 只有裸键 `rules:`（含 `rules: # 备注`）是块状写法；内联数组
+                    // （`rules: […]`，含 `rules:[]`）无法安全重写——旧版漏判后在
+                    // 末尾再补一个 rules: 块，产生重复键，解码器拒绝或 last-wins
+                    // 静默吞掉全部旧规则（CFG-6）。显式报错，交调用方如实提示。
+                    let head = YamlScalar.stripInlineComment(raw)
+                        .replacingOccurrences(of: " ", with: "")
+                        .trimmingCharacters(in: .whitespaces)
+                    guard head == "rules:" else {
+                        throw EngineError.parseError(
+                            "rules 是内联数组写法（rules: […]），规则页暂不支持保存这种形态。请改成块状写法（rules: 独占一行，每条规则一行）后重试")
+                    }
                     inRulesBlock = true
                     rulesKeyLine = raw
                     rows = []
@@ -346,17 +357,21 @@ public final class YamlRuleASTEngine {
         }
         var tail = pending
 
-        // 被删掉的规则：注释移交给原本紧随其后的存活规则，末尾则留块尾。
+        // 被删掉的规则：注释移交给原本紧随其后的存活规则（正向携带 carry，
+        // 与文档一致）；末尾无处可去则留块尾。旧版反向遍历把注释挂到了前一条
+        // 存活规则上，方向与文档相反（CFG-9）。
         let alive = Set(nodes.map(\.id))
         var carry: [String] = []
         var effective: [UUID: [String]] = [:]
-        for loaded in loadedNodes.reversed() {
+        for loaded in loadedNodes {
             let own = comments[loaded.id] ?? []
             if alive.contains(loaded.id) {
-                effective[loaded.id] = own + carry
+                // carry 来自前面被删规则的注释，own 是本规则紧邻的注释：
+                // carry 在前才保持文件原有顺序。
+                effective[loaded.id] = carry + own
                 carry = []
             } else {
-                carry = own + carry
+                carry += own
             }
         }
         tail = carry + tail

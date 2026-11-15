@@ -70,17 +70,38 @@ enum QuickRule {
         if plausibleHost, host != dst { return (.domainSuffix, host) }
 
         // 兜底：裸 IP 连接。fake-ip 下 destinationIP 常为空，真实地址在 remoteDestination。
-        for ip in [dst, remote] where !ip.isEmpty && ip != "?" && isIPAddress(ip) {
-            return ipRule(ip)
+        // remoteDestination 可能带端口（v4 `ip:port`、v6 `[v6]:port`），先剥端口
+        // 再判定——旧版 v4 永不命中（安全失败）、v6 写出带括号的坏 CIDR（CFG-21）。
+        for ip in [dst, remote] {
+            let host = hostWithoutPort(ip)
+            if !host.isEmpty && host != "?" && isIPAddress(host) { return ipRule(host) }
         }
         return nil
     }
 
+    /// 剥掉 `ip:port` / `[v6]:port` 的端口部分；无端口原样返回。
+    /// v6 裸地址至少有两个冒号，只剥「恰好一个冒号」的 v4 形态，不会误伤。
+    static func hostWithoutPort(_ s: String) -> String {
+        let t = s.trimmingCharacters(in: .whitespaces)
+        if t.hasPrefix("[") {
+            guard let close = t.firstIndex(of: "]") else { return t }
+            return String(t[t.index(after: t.startIndex)..<close])
+        }
+        if t.filter({ $0 == ":" }).count == 1, let colon = t.firstIndex(of: ":") {
+            return String(t[..<colon])
+        }
+        return t
+    }
+
     /// v4 必须写 `IP-CIDR`，v6 才写 `IP-CIDR6`：写反了整条规则无效。
+    /// 前缀必须显式：v6 裸 IP 旧版不带 /128，内核拒绝则一键制裁永远不可用；
+    /// 若容忍则语义不明。v4 /32 保持不变（CFG-5）。
     private static func ipRule(_ ip: String) -> (type: MihomoRuleType, match: String) {
-        ip.contains(":")
-            ? (.ipCidr6, ip)
-            : (.ipCidr, "\(ip)/32")
+        if ip.contains(":") {
+            // isIPAddress 对 v6 很宽松，可能放进已带前缀的 CIDR：不重复叠加。
+            return (.ipCidr6, ip.contains("/") ? ip : "\(ip)/128")
+        }
+        return (.ipCidr, "\(ip)/32")
     }
 
     /// 该 App 能不能做「走某个策略组」。

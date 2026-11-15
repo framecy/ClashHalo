@@ -164,6 +164,11 @@ public enum DirectExclusionPlanner {
         guard let prefix = RouteTable.IPPrefix(cidr) else { return .unparsable }
         if prefix.length == 0 { return .defaultRoute }
         if RouteTable.overlaps(cidr, "198.18.0.0/15") { return .fakeIPRange }
+        // TUN-5：v6 fake-ip 默认段同样硬拒。与 198.18.0.0/15 同理——排除 fake-ip
+        // 段等于让 v6 客户端拿到不可路由的假地址，当场断网。纯逻辑闸门不读
+        // config（回归套件直接编译本文件），自定义 fake-ip-range6 不在此覆盖；
+        // fdfe:dcba:9876::/64 是 mihomo 的默认值，也是本产品的出厂形态。
+        if RouteTable.overlaps(cidr, "fdfe:dcba:9876::/64") { return .fakeIPRange }
         if CoexistenceProvenance.isProtectiveExclusion(cidr) { return .linkOnly }
         if localSubnets.contains(where: { RouteTable.overlaps($0, cidr) }) { return .localSubnet }
         return nil

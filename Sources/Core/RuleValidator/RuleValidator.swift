@@ -49,7 +49,7 @@ struct RegexValidator: RuleValidationStrategy {
             _ = try NSRegularExpression(pattern: match)
             return .valid
         } catch {
-            return .invalid("无效的正则表达式: \\(error.localizedDescription)")
+            return .invalid("无效的正则表达式: \(error.localizedDescription)")
         }
     }
 }
@@ -151,11 +151,14 @@ public final class ValidationService {
     /// 存在性校验的意义：规则引用一个已被删掉的策略组，`mihomo -t` / reload 会拒绝整份
     /// 配置，事务回滚后用户只看到一条内核英文报错。这里提前在表单里用中文说清「重新选一个」。
     public func validate(node: RuleNode, knownTargets: Set<String>? = nil) -> ValidationResult {
-        if node.type == .match { return .valid } // MATCH 兜底规则无需 match 参数
-        
-        let strat = strategy(for: node.type)
-        let res = strat.validate(match: node.match)
-        if !res.isValid { return res }
+        // MATCH 兜底规则无需 match 参数：只豁免参数校验，PROXY 目标校验照走。
+        // 旧版在这里提前 return .valid，能写出 MATCH,PROXY（空组）坏配置，
+        // 内核未运行时添加 MATCH 落盘后下次启动直接失败（CFG-4）。
+        if node.type != .match {
+            let strat = strategy(for: node.type)
+            let res = strat.validate(match: node.match)
+            if !res.isValid { return res }
+        }
         
         if node.action == .proxy {
             let group = (node.proxyGroup ?? "").trimmingCharacters(in: .whitespaces)

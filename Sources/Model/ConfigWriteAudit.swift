@@ -34,8 +34,8 @@ import Foundation
 /// key that must never reach a log file is `secret`: the config carries it in
 /// plain text and the file is already a credential, but a log is copied around
 /// far more casually than the config is. `redactedValue(for:)` therefore masks
-/// it (and anything else credential-shaped) to a fixed token that still reveals
-/// *that* it changed without revealing the value.
+/// it (and anything else credential-shaped) to a stable fingerprint that still
+/// reveals *that* it changed without revealing the value.
 enum ConfigWriteAudit {
 
     /// Keys whose values must never be written to the log in clear.
@@ -100,9 +100,14 @@ enum ConfigWriteAudit {
     /// log can never grow without bound on a machine left running for months.
     static let maxBytes = 4 * 1024 * 1024
 
-    /// Render a value for the log, masking credentials.
+    /// Render a sensitive value for the log: never the value itself, but a
+    /// stable fingerprint, so a rotation still leaves a trace
+    /// (`secret: <#a1b2> → <#c3d4>`). Equal values fingerprint equally, so
+    /// "unchanged" stays distinguishable from "rotated" without ever writing
+    /// the secret down（CFG-16：旧版返回常量 <redacted> 且 changes() 整条丢弃，
+    /// secret 轮换零留痕）。
     static func redactedValue(for key: String, _ value: String) -> String {
-        sensitiveKeys.contains(key.lowercased()) ? redaction : value
+        sensitiveKeys.contains(key.lowercased()) ? fingerprint(value) : value
     }
 
     /// Strip one layer of surrounding quotes.
@@ -151,11 +156,15 @@ enum ConfigWriteAudit {
             let normBefore = before.map(normalizedValue)
             let normAfter = after.map(normalizedValue)
             guard normBefore != normAfter else { continue }
-            // A change confined to a redacted value carries no information — both
-            // sides render as the same token. Recording "secret: <redacted> →
-            // <redacted>" teaches the reader the log lies; the fact that *some*
-            // write touched it is already visible from the writer attribution.
-            if sensitiveKeys.contains(key.lowercased()) { continue }
+            // secret 轮换必须留痕（CFG-16）：值本体永不进日志，但指纹对能看出
+            // 「换过了」。旧版在这里 continue 整条丢弃，轮换控制面密钥后
+            // config-writes.log 里一条记录都没有，排查 401 时无据可查。
+            if sensitiveKeys.contains(key.lowercased()) {
+                let b = before.map { redactedValue(for: key, $0) }
+                let a = after.map { redactedValue(for: key, $0) }
+                out.append("\(key): \(display(b)) → \(display(a))")
+                continue
+            }
             out.append("\(key): \(render(before, forKey: key)) → \(render(after, forKey: key))")
         }
         return out
@@ -164,7 +173,9 @@ enum ConfigWriteAudit {
     /// Parse the top-level scalar keys of a config revision.
     ///
     /// Mirrors the reader in `EngineControl.readConfigFile`: only unindented,
-    /// non-comment lines with a colon, value taken up to an unquoted `#`. Nested
+    /// non-comment lines with a colon, comment stripped with `YamlScalar`
+    /// (whitespace-before-# rule, `#` inside quotes is data — so nameserver
+    /// interface bindings like `100.100.100.100#utun8` survive intact). Nested
     /// blocks are represented by their parent key with value `(block)`, so a
     /// change confined to a nested block still shows up as a parent-level event
     /// rather than vanishing.
@@ -175,10 +186,9 @@ enum ConfigWriteAudit {
             guard !raw.hasPrefix("#"), let colon = raw.firstIndex(of: ":") else { continue }
             let key = String(raw[raw.startIndex..<colon]).trimmingCharacters(in: .whitespaces)
             guard !key.isEmpty else { continue }
-            var value = String(raw[raw.index(after: colon)...]).trimmingCharacters(in: .whitespaces)
-            if let hash = value.firstIndex(of: "#") {
-                value = String(value[value.startIndex..<hash]).trimmingCharacters(in: .whitespaces)
-            }
+            let value = YamlScalar.stripInlineComment(
+                String(raw[raw.index(after: colon)...]).trimmingCharacters(in: .whitespaces)
+            ).trimmingCharacters(in: .whitespaces)
             out[key] = value.isEmpty ? "(block)" : value
         }
         return out
@@ -186,12 +196,14 @@ enum ConfigWriteAudit {
 
     /// Top-level keys where the on-disk config disagrees with `profile`.
     ///
-    /// Two classes of difference are expected and must NOT count as drift, or
-    /// re-activating a profile would report drift on every single click:
-    ///   • keys the app deliberately hardens (`hardenControllerConfig`) — the
-    ///     control-plane bind and secret are rewritten on purpose;
-    ///   • keys the settings page owns (`persistent: true` rows) — those are
-    ///     user choices that intentionally outrank the profile.
+    /// Differences the app itself creates on every apply must NOT count as
+    /// drift, or re-activating a profile would report drift on every single
+    /// click. The exempt set is exactly `intentional` below — three writers
+    /// （文档与代码对齐，F25：旧文档声称豁免「设置页 persistent 键」，代码里
+    /// 并没有这一类，设置页键的漂移是调用方需要看到的真漂移）：
+    ///   • hardenControllerConfig   → external-controller, secret
+    ///   • forceTUNDisabled         → tun.enable
+    ///   • injectMemoryOptimization → dns.size, dns.cache-algorithm
     /// Everything else appearing here means the running config has quietly
     /// diverged from what the profile says, which is what the caller needs in
     /// order to decide whether re-applying would be a no-op.
@@ -245,6 +257,12 @@ enum ConfigWriteAudit {
         // credentials, and the question here is whether the list changed, not
         // what is in it.
         var seqCounts: [String: Int] = [:]
+        // Bug-2（test-core 探针实证）：序列项内嵌的更深缩进字段（`- name:` 下的
+        // `server:` / `password:`）属于项本身，不是 owner 块的标量——旧实现把它们
+        // 扁平成 proxies.server / proxies.password，节点服务器地址明文进审计日志，
+        // 且 proxies 重排序产生幻影漂移。序列只按数量渲染（见上方文档），项内
+        // 更深缩进一律跳过。
+        var seqItemIndent: Int? = nil
 
         for raw in text.components(separatedBy: "\n") {
             guard !raw.isEmpty else { continue }
@@ -252,20 +270,24 @@ enum ConfigWriteAudit {
             let body = raw.trimmingCharacters(in: .whitespaces)
             guard !body.isEmpty, !body.hasPrefix("#") else { continue }
 
+            if let si = seqItemIndent {
+                if indent > si { continue }   // 项内嵌套内容，不展开
+                seqItemIndent = nil
+            }
             if body.hasPrefix("- ") || body == "-" {
                 if let owner = stack.last {
                     let path = (stack.dropLast().map(\.key) + [owner.key]).joined(separator: ".")
                     seqCounts[path, default: 0] += 1
                 }
+                seqItemIndent = indent
                 continue
             }
             guard let colon = body.firstIndex(of: ":") else { continue }
             let key = String(body[body.startIndex..<colon]).trimmingCharacters(in: .whitespaces)
             guard !key.isEmpty else { continue }
-            var value = String(body[body.index(after: colon)...]).trimmingCharacters(in: .whitespaces)
-            if let hash = value.firstIndex(of: "#") {
-                value = String(value[value.startIndex..<hash]).trimmingCharacters(in: .whitespaces)
-            }
+            let value = YamlScalar.stripInlineComment(
+                String(body[body.index(after: colon)...]).trimmingCharacters(in: .whitespaces)
+            ).trimmingCharacters(in: .whitespaces)
             while let top = stack.last, top.indent >= indent { stack.removeLast() }
             let path = (stack.map(\.key) + [key]).joined(separator: ".")
             if value.isEmpty {
@@ -291,11 +313,35 @@ enum ConfigWriteAudit {
     /// as a secret, while the fingerprint still distinguishes "same URL, different
     /// provider" from "the URL itself was replaced".
     static func render(_ value: String?, forKey key: String) -> String {
-        guard let value, isSummarized(key) else { return display(value) }
-        guard value != "(absent)", value != "(block)", !value.hasPrefix("(seq") else {
-            return display(value)
+        guard let value else { return display(value) }
+        if isSummarized(key) {
+            guard value != "(absent)", value != "(block)", !value.hasPrefix("(seq") else {
+                return display(value)
+            }
+            return fingerprint(value)
         }
-        return fingerprint(value)
+        // 内联 flow 映射把凭据藏在一个非凭据形状的键里（CFG-16）：
+        // `proxy-providers: {US: {type: http, url: https://…token…}}` 被行扫描
+        // 拍平成键为 "proxy-providers" 的单个标量，isSummarized 不命中，旧版
+        // 就把订阅 URL 明文写进了日志。检测到内嵌 url:/url=/"url": 等字段时
+        // 整个值指纹化。
+        if (value.hasPrefix("{") || value.hasPrefix("[")), containsEmbeddedCredential(value) {
+            return fingerprint(value)
+        }
+        return display(value)
+    }
+
+    /// flow 标量里是否内嵌凭据字段（`url:` / `url=` / `"url":`， likewise
+    /// password/uuid/auth-key/secret/token）。与 summarizedKeySuffixes 同一族。
+    static func containsEmbeddedCredential(_ value: String) -> Bool {
+        let lower = value.lowercased()
+        for field in ["url", "password", "uuid", "auth-key", "secret", "token"] {
+            if lower.contains("\(field):") || lower.contains("\(field)=")
+                || lower.contains("\"\(field)\":") || lower.contains("'\(field)':") {
+                return true
+            }
+        }
+        return false
     }
 
     /// Append one record. Never throws: an audit log that can break the config
