@@ -1191,19 +1191,28 @@ struct KernelMgmtPage: View {
 struct KernelCard: View {
     @EnvironmentObject var M: AppModel
     @StateObject private var km = KernelManager.shared
+    /// 关闭内核会连带退出系统代理 / TUN，先确认再拆，避免误点断网。
+    @State private var showStopConfirm = false
     var body: some View {
         Card(title: "内核管理", icon: "cpu") {
             VStack(spacing: DS.Spacing.m) {
-                HStack {
+                HStack(spacing: DS.Spacing.s) {
                     let connecting = M.engine.isBusy && !M.reachable
                     Circle()
                         .fill(M.reachable ? DS.Palette.ok : (connecting ? DS.Palette.warn : DS.Palette.error))
                         .frame(width: 8, height: 8)
                     Text(M.reachable ? "运行中 · mihomo \(M.version)"
-                                     : (connecting ? "启动中…" : "未运行 · 开启代理或 TUN 将自动启动"))
+                                     : (connecting ? "启动中…" : "未运行 · 点「启动内核」或开启代理 / TUN"))
                         .font(.dsBody).foregroundColor(.secondary)
-                    Spacer()
+                    Spacer(minLength: DS.Spacing.s)
                     if M.reachable {
+                        // toggleEngine() 是现成的手动开关入口：走 withEngineBusy，
+                        // 关闭分支调 stopEngine() 连带关系统代理 / TUN、恢复 DNS、
+                        // 清静态路由与 TUN 残留，不会留下指向死端口的代理。
+                        Button("关闭内核", systemImage: "stop.circle") { showStopConfirm = true }
+                            .dsButton(.destructive)
+                            .disabled(M.engine.isBusy)
+                            .help("停止内核并同时关闭系统代理 / TUN，恢复直连")
                         Button("重启内核", systemImage: "arrow.triangle.2.circlepath") {
                             M.withEngineBusy {
                                 let wasTUN = M.tunOn
@@ -1233,7 +1242,14 @@ struct KernelCard: View {
                                     M.showToast("内核重启超时，系统代理未恢复", kind: .warn)
                                 }
                             }
-                        }.dsButton(.warning)
+                        }
+                        .dsButton(.warning)
+                        .disabled(M.engine.isBusy)
+                    } else {
+                        Button("启动内核", systemImage: "play.circle") { M.toggleEngine() }
+                            .dsButton(.prominent)
+                            .disabled(M.engine.isBusy)
+                            .help("以当前配置启动 mihomo")
                     }
                 }
                 Divider()
@@ -1323,6 +1339,12 @@ struct KernelCard: View {
             km.scanInstalled()
             km.detectBuiltin()
             Task { await km.refreshRunningVersion() }
+        }
+        .confirmationDialog("关闭内核？", isPresented: $showStopConfirm, titleVisibility: .visible) {
+            Button("关闭内核", role: .destructive) { M.toggleEngine() }
+            Button("取消", role: .cancel) { }
+        } message: {
+            Text("将停止 mihomo，并同时关闭系统代理 / TUN、恢复系统 DNS 与直连。需要恢复时点「启动内核」，或重新开启代理 / TUN。")
         }
     }
 

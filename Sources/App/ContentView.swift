@@ -91,6 +91,8 @@ struct ContentView: View {
                 .padding(.bottom, DS.Spacing.s)
                 .frame(maxWidth: .infinity, alignment: .leading)
             }
+            // 矮窗口里优先压缩滚动区，而不是把固定 header / footer 顶出视口。
+            .frame(minHeight: 0)
 
             Divider().overlay(DS.Palette.separator)
             statusFooter
@@ -108,7 +110,9 @@ struct ContentView: View {
             .frame(maxWidth: .infinity, alignment: .leading)
             .padding(.top, first ? DS.Layout.sidebarSectionTop : DS.Spacing.l)
             .padding(.bottom, DS.Spacing.xs)
-            .padding(.leading, DS.Spacing.xs)
+            // 与导航行 / footer 的图标槽共用同一左缘（pageContentInset + s），
+            // 不再用 xs 少 4pt —— 分组标题和图标列错开时整列看起来是歪的。
+            .padding(.leading, DS.Spacing.s)
 
         ForEach(tabs, id: \.id) { t in
             sidebarNavRow(t)
@@ -180,6 +184,7 @@ struct ContentView: View {
         .padding(.horizontal, DS.Layout.pageContentInset)
         .frame(height: DS.Layout.chromeHeight, alignment: .center)
         .frame(maxWidth: .infinity, alignment: .leading)
+        .layoutPriority(1)
         .background(DS.Palette.sidebarBg)
     }
 
@@ -266,6 +271,7 @@ struct ContentView: View {
         .padding(.horizontal, DS.Layout.pageContentInset)
         .padding(.top, DS.Spacing.m)
         .padding(.bottom, DS.Spacing.l)
+        .layoutPriority(1)
         .background(DS.Palette.sidebarBg)
     }
 
@@ -472,13 +478,18 @@ struct Card<Content: View, Actions: View>: View {
     var title: String?
     var icon: String?
     var pad: Bool
+    /// 仪表盘固定行高的卡片要撑满容器；内容型卡片（三步引导卡）必须用
+    /// false——`maxHeight: .infinity` + 内部 Spacer 会把它拉到整窗高，
+    /// 在满高容器里把内容顶出视口（配置页空状态的严重错位即由此而来）。
+    var fillHeight: Bool
     @ViewBuilder var actions: () -> Actions
     @ViewBuilder var content: () -> Content
 
-    init(title: String? = nil, icon: String? = nil, pad: Bool = true, @ViewBuilder actions: @escaping () -> Actions, @ViewBuilder content: @escaping () -> Content) {
+    init(title: String? = nil, icon: String? = nil, pad: Bool = true, fillHeight: Bool = true, @ViewBuilder actions: @escaping () -> Actions, @ViewBuilder content: @escaping () -> Content) {
         self.title = title
         self.icon = icon
         self.pad = pad
+        self.fillHeight = fillHeight
         self.actions = actions
         self.content = content
     }
@@ -505,16 +516,16 @@ struct Card<Content: View, Actions: View>: View {
                 .padding(.horizontal, pad ? DS.Spacing.l : 0)
                 .padding(.bottom, pad ? DS.Spacing.l : 0)
                 .padding(.top, (title == nil && pad) ? DS.Spacing.l : 0)
-            Spacer(minLength: 0)
+            if fillHeight { Spacer(minLength: 0) }
         }
-        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+        .frame(maxWidth: .infinity, maxHeight: fillHeight ? .infinity : nil, alignment: .topLeading)
         .clipped()
         .dsCardChrome()
     }
 }
 
 extension Card where Actions == EmptyView {
-    init(title: String? = nil, icon: String? = nil, pad: Bool = true, @ViewBuilder content: @escaping () -> Content) {
-        self.init(title: title, icon: icon, pad: pad, actions: { EmptyView() }, content: content)
+    init(title: String? = nil, icon: String? = nil, pad: Bool = true, fillHeight: Bool = true, @ViewBuilder content: @escaping () -> Content) {
+        self.init(title: title, icon: icon, pad: pad, fillHeight: fillHeight, actions: { EmptyView() }, content: content)
     }
 }

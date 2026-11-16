@@ -1,5 +1,17 @@
 import SwiftUI
 
+// MARK: - 导入弹窗目标
+//
+// 配置页顶栏与三步卡第 1 步（配置页空状态 + 仪表盘）共用。
+// 每次展示生成新 id → `.sheet(item:)` 重建视图身份，弹窗里的 @State
+// （名称 / URL / 阶段）不会沿用上一次打开的残留值（design.md §6.4、
+// AGENTS.md「带初值的表单弹窗必须用 .sheet(item:)」）。
+struct ImportSheetTarget: Identifiable {
+    let id = UUID()
+    enum Source { case remote, local }
+    let source: Source
+}
+
 // MARK: - 首次上手三步卡
 //
 // 为什么需要它：首次安装后配置页只有一句「暂无配置，点击右上角"+"导入」，
@@ -12,11 +24,13 @@ import SwiftUI
 //                      项不算「选了节点」，否则一份纯直连配置会显示已完成）
 //   3. 开启接管      → `systemProxyOn || tunOn`
 //
-// 配置页空状态与仪表盘（接管未开启时）共用这一张卡，避免两份文案漂移。
+// 配置页空状态与仪表盘（没有配置时）共用这一张卡，避免两份文案漂移。
+// 卡片宽度由调用方决定：两处都铺满内容行，不再各定一套宽度后留半截空白。
 
 struct GettingStartedCard: View {
     @EnvironmentObject var M: AppModel
-    @State private var showImport = false
+    /// nil = 未展示；非 nil 时按 source 打开对应导入弹窗。
+    @State private var importSheet: ImportSheetTarget? = nil
 
     /// 内置策略/节点，不是用户从订阅里选出来的出口。
     private static let builtinProxies: Set<String> = [
@@ -54,14 +68,25 @@ struct GettingStartedCard: View {
     }
 
     var body: some View {
-        Card(title: "三步开始接管", icon: "sparkles") {
+        Card(title: "三步开始接管", icon: "sparkles", fillHeight: false) {
             VStack(alignment: .leading, spacing: DS.Spacing.m) {
                 step(number: 1, title: "导入订阅",
                      detail: step1Done ? "已有 \(M.store.profiles.count) 个配置"
                                        : "粘贴订阅链接，或从本地 YAML 文件导入",
                      done: step1Done) {
-                    Button("导入订阅") { showImport = true }
+                    // 文案承诺了「或从本地 YAML 文件导入」，入口就必须在这里：
+                    // 配置页顶栏的「添加本地」在仪表盘上没有，且空状态里离卡片
+                    // 太远，用户会以为本地配置根本导不进来。
+                    HStack(spacing: DS.Spacing.s) {
+                        Button("从本地导入") {
+                            importSheet = ImportSheetTarget(source: .local)
+                        }
+                        .dsButton()
+                        Button("导入订阅") {
+                            importSheet = ImportSheetTarget(source: .remote)
+                        }
                         .dsButton(.prominent)
+                    }
                 }
                 Divider().overlay(DS.Palette.separator)
                 step(number: 2, title: "选一个节点",
@@ -89,7 +114,12 @@ struct GettingStartedCard: View {
                 }
             }
         }
-        .sheet(isPresented: $showImport) { ImportRemoteSheet() }
+        .sheet(item: $importSheet) { target in
+            switch target.source {
+            case .remote: ImportRemoteSheet()
+            case .local:  AddLocalSheet()
+            }
+        }
     }
 
     @ViewBuilder
