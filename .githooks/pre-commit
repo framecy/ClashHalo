@@ -85,7 +85,11 @@ check_pattern 'AKIA[0-9A-Z]{16}' 'AWS access key ID' BLOCK
 # Real Tailscale keys carry a long tail; {12,} skips masked doc examples
 # like `tskey-auth-xxxxxBLOWUP` (11 chars) in KeychainHelper comments.
 check_pattern 'tskey-(auth|api)-[A-Za-z0-9]{12,}' 'Tailscale auth/API key' BLOCK
-check_pattern '(vmess|vless|trojan|ss|hysteria2?|tuic)://' 'Proxy node link' BLOCK
+# 分享链接的 scheme 本身不是秘密：订阅解析器与文档必须写出 `vless://` 这样的
+# 字面量（旧规则会把它们当成节点链接，于是新增解析器一行都提交不了）。这里只拦
+# 「带真实内容」的链接——命中 @userinfo（trojan/ss/vless/hysteria2/tuic 都有）
+# 或 `://` 后一长串 base64（vmess 与旧格式 ss 没有 @）。纯 scheme 与示例值放行。
+check_pattern '(vmess|vless|trojan|ss|hysteria2?|tuic)://([^[:space:]]*@|[A-Za-z0-9+/=_-]{30,})' 'Proxy node link' BLOCK
 # Subscription URL shapes (real hostname required, so UI placeholders like
 # "https://…/clash" do not hit). The bare word 订阅 stays WARN below — it is
 # part of the product's own UI strings and cannot be a blocking signal.

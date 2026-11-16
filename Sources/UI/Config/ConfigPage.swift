@@ -5,8 +5,9 @@ import SwiftUI
 struct ConfigPage: View {
     @EnvironmentObject var M: AppModel
     @State private var editingID: String? = nil
-    @State private var showImportRemote = false
-    @State private var showAddLocal = false
+    /// 导入弹窗唯一入口：每次展示生成新身份，避免 `ImportRemoteSheet` /
+    /// `AddLocalSheet` 的 @State（名称 / URL / stage）沿用上一次打开的残留值。
+    @State private var importSheet: ImportSheetTarget? = nil
     @State private var showWipeConfirm = false
     /// UI-10：删单个配置的确认目标（对齐删订阅的 confirmationDialog 范式）。
     @State private var confirmDeleteProfile: Profile? = nil
@@ -62,26 +63,24 @@ struct ConfigPage: View {
                 Button { showWipeConfirm = true } label: { Label("清空全部", systemImage: "trash") }
                     .dsButton(.destructive)
                     .disabled(M.store.profiles.isEmpty || M.engine.isBusy)
-                Button { showImportRemote = true } label: { Label("导入订阅", systemImage: "icloud.and.arrow.down") }
+                Button { importSheet = ImportSheetTarget(source: .remote) } label: { Label("导入订阅", systemImage: "icloud.and.arrow.down") }
                     .dsButton()
-                Button { showAddLocal = true } label: { Label("添加本地", systemImage: "doc.badge.plus") }
+                Button { importSheet = ImportSheetTarget(source: .local) } label: { Label("添加本地", systemImage: "doc.badge.plus") }
                     .dsButton(.prominent)
             }
 
             if M.store.profiles.isEmpty {
-                // 空状态不再只是一句话：导入之后还要干什么，由三步卡说完。
-                // 完成度全部由真实状态推导（见 GettingStartedCard），删掉配置会自动回到未完成。
-                VStack {
-                    Spacer(minLength: 0)
-                    // `Card` 内部是 `maxHeight: .infinity`：在这个上下都有 Spacer 的
-                    // 满高容器里它会一路撑满整窗，必须用 fixedSize 锁回内容高度。
+                // 顶对齐铺满一行；放进 ScrollView 是硬要求：满高容器外再叠
+                // padding 会把整个 NavigationSplitView 顶出视口（侧栏和详情
+                // 一起上移的严重错位）。卡片已用 fillHeight:false 取内容高度，
+                // 不需要 fixedSize。
+                ScrollView {
                     GettingStartedCard()
-                        .frame(maxWidth: 620)
-                        .fixedSize(horizontal: false, vertical: true)
-                    Spacer(minLength: 0)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .padding(.horizontal, DS.Layout.pageContentInset)
+                        .padding(.top, DS.Spacing.l)
+                        .padding(.bottom, DS.Spacing.xxl)
                 }
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
-                .padding(DS.Layout.pageContentInset)
             } else {
                 ScrollView {
                     VStack(spacing: DS.Spacing.l) {
@@ -90,7 +89,6 @@ struct ConfigPage: View {
                         // 「第 1 步变勾」就在原地可见，接管一开即退场。
                         if GettingStartedCard.shouldShowAboveProfileList(M) {
                             GettingStartedCard()
-                                .fixedSize(horizontal: false, vertical: true)
                         }
                         LazyVGrid(
                             columns: [GridItem(.adaptive(minimum: 280), spacing: DS.Spacing.l)],
@@ -130,8 +128,12 @@ struct ConfigPage: View {
         } message: {
             Text("将删除该配置文件与其订阅链接，此操作不可撤销。")
         }
-        .sheet(isPresented: $showImportRemote) { ImportRemoteSheet() }
-        .sheet(isPresented: $showAddLocal) { AddLocalSheet() }
+        .sheet(item: $importSheet) { target in
+            switch target.source {
+            case .remote: ImportRemoteSheet()
+            case .local:  AddLocalSheet()
+            }
+        }
         .sheet(item: Binding(get: { editingID.map { IDBox(id: $0) } }, set: { editingID = $0?.id })) { box in
             ProfileEditSheet(profileID: box.id)
         }
@@ -302,6 +304,9 @@ struct ImportRemoteSheet: View {
     @State private var stage: Stage = .pick
     @State private var previewContent = ""
     @State private var preview = YAMLPreview()
+    /// 非 nil = 这次下载的内容是 base64 分享链接订阅，已自动转成配置。
+    /// 订阅源给「N 个节点」而预览是别的数字时，这行是唯一的解释。
+    @State private var conversionNote: String? = nil
     enum Stage { case pick, preview }
 
     var body: some View {
@@ -358,6 +363,11 @@ struct ImportRemoteSheet: View {
                 Label("包含 proxy-providers，将在线拉取节点", systemImage: "icloud.and.arrow.down")
                     .font(.dsBody).foregroundColor(.secondary)
             }
+            if let conversionNote {
+                Label(conversionNote, systemImage: "arrow.triangle.2.circlepath")
+                    .font(.dsBody).foregroundColor(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
         }
     }
 
@@ -366,11 +376,25 @@ struct ImportRemoteSheet: View {
         guard let u = URL(string: url) else { err = "链接无效"; busy = false; return }
         do {
             let (data, _) = try await URLSession.shared.data(from: u)
-            guard let text = String(data: data, encoding: .utf8), text.contains(":") else {
-                err = "下载失败或内容不是 YAML"; busy = false; return
+            let text = String(data: data, encoding: .utf8) ?? ""
+            // base64 分享链接订阅（`.txt` + `text/plain` 面板很常见）不是 mihomo
+            // 配置，但可以当场转换后预览。旧实现在这里直接拒绝并让用户「去订阅页
+            // 添加」——而订阅页走的是同一条下载/校验链，于是这类订阅永远进不来。
+            let normalized = ConfigStore.normalizedForProfile(text)
+            let yaml = normalized.yaml.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !yaml.isEmpty, normalized.converted || yaml.contains(":") else {
+                err = "下载失败或内容不是 YAML"
+                busy = false; return
             }
-            previewContent = text
-            preview = M.store.previewOfContent(text)
+            previewContent = normalized.yaml
+            preview = M.store.previewOfContent(normalized.yaml)
+            if normalized.converted {
+                conversionNote = normalized.skipped.isEmpty
+                    ? "已从 base64 分享链接转换为 mihomo 配置"
+                    : "已转换；\(normalized.skipped.count) 条被跳过：\(normalized.skipped.joined(separator: "；"))"
+            } else {
+                conversionNote = nil
+            }
             if name.isEmpty { name = u.host ?? "远程配置" }
             stage = .preview
         } catch {
@@ -411,6 +435,8 @@ struct AddLocalSheet: View {
     @State private var stage: Stage = .pick
     @State private var draftContent = ""
     @State private var preview = YAMLPreview()
+    /// 非 nil = 选中的文件是 base64 分享链接订阅（.txt），已转成配置。
+    @State private var conversionNote: String? = nil
     enum Stage { case pick, preview }
 
     var body: some View {
@@ -434,6 +460,11 @@ struct AddLocalSheet: View {
                     Label("包含 proxy-providers，将在线拉取节点", systemImage: "icloud.and.arrow.down")
                         .font(.dsBody).foregroundColor(.secondary)
                 }
+                if let conversionNote {
+                    Label(conversionNote, systemImage: "arrow.triangle.2.circlepath")
+                        .font(.dsBody).foregroundColor(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
                 HStack {
                     Button("放弃") { stage = .pick }.dsButton()
                     Spacer()
@@ -445,7 +476,7 @@ struct AddLocalSheet: View {
                 }
 
             }
-        }.padding(DS.Spacing.xl).frame(minWidth: 400, idealWidth: 440, maxWidth: 560)
+        }.padding(DS.Spacing.xl).frame(minWidth: 440, idealWidth: 480, maxWidth: 600)
     }
 
     private func pickFile() {
@@ -461,8 +492,18 @@ struct AddLocalSheet: View {
         defer { if scoped { url.stopAccessingSecurityScopedResource() } }
         do {
             let content = try String(contentsOf: url, encoding: .utf8)
-            draftContent = content
-            preview = M.store.previewOfContent(content)
+            // 本地 `.txt` 也可能是 base64 分享链接订阅：转换后再预览，否则
+            // 预览会显示「0 个节点」而保存时内容又突然变成可用配置。
+            let normalized = ConfigStore.normalizedForProfile(content)
+            draftContent = normalized.yaml
+            preview = M.store.previewOfContent(normalized.yaml)
+            if normalized.converted {
+                conversionNote = normalized.skipped.isEmpty
+                    ? "已从 base64 分享链接转换为 mihomo 配置"
+                    : "已转换；\(normalized.skipped.count) 条被跳过：\(normalized.skipped.joined(separator: "；"))"
+            } else {
+                conversionNote = nil
+            }
             if name.isEmpty { name = url.deletingPathExtension().lastPathComponent }
             stage = .preview
         } catch {

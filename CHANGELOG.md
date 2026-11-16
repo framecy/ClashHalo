@@ -4,6 +4,26 @@
 
 ## [Unreleased]
 
+### Added
+
+- **支持 `.txt` + base64 编码的分享链接订阅**：`vless://` / `vmess://` / `trojan://` / `hysteria2://` / `ss://` / `tuic://` 每行一个、整体 base64 编码的订阅（大量面板/机场给的就是 `text/plain` 的 `.txt`）现在可以直接添加，App 会在写盘前把它转换成 mihomo 配置：节点进 `proxies`，同时生成 `PROXY`（select）与「自动选择」（url-test）两个组，规则为 `GEOIP,CN,DIRECT` + `MATCH,PROXY`。转换发生在**存储层**（`ConfigStore.normalizedForProfile`），四个写盘入口统一走它——本地导入、远程导入（同步/异步）、订阅刷新；任何一个漏掉都会把 base64 文本存成 profile，内核 reload 失败而用户只看到「应用订阅失败」。订阅刷新会把源内容重新转换，不会把原始 base64 覆盖回已转换的 profile。跳过的条目（`ssr://`、hysteria v1、字段缺失）带原因进 app.log；导入预览里显示「已从 base64 分享链接转换为 mihomo 配置」以及跳过数。解析器 `Sources/Core/Subscription/NodeSubscription.swift` 是纯逻辑，回归套件 `nodesubscription-tests`（81 条断言）。
+- **把 base64 订阅接进现有配置（不换配置）**：配置里 `proxy-providers` 的 http provider 指向 base64 节点订阅时，mihomo 永远解析不出节点（它只接受 `proxies:` 结构），而 `use:` 引用它的策略组随之全空——症状是「订阅加进来了、状态也在拉取，但一个节点都没有」。订阅页现在对每条 http 订阅提供「转为本地订阅」：App 下载并转换成 `provider-files/<name>.yaml`，配置里只把该 provider 改成 `type: file` + `path:`，**provider 名与 `use:` 引用、策略组、规则全部不动**；源 URL 记在 `provider-sources.json`（0600），工具栏的「刷新本地订阅」重新下载转换，内核通过文件监听自动重载。改写逻辑收敛在 `ProviderRewrite`（纯逻辑，回归 `providerrewrite-tests`，32 条断言），三处调用共用同一套块定位——`health-check` 块里也有一个 `url:`，按行删除时若不分缩进会连健康检查地址一起删掉。另修一处会互相踩的坑：`writeProxyProviders` 按 http 模板重建整块，用户在订阅页删/改任何一条都会把已转换的 file provider 还原成 `type: http` + `url: ""`；现在它先读出旧块并原样保留 file 类型的定义。
+
+### Fixed
+
+- **装好 Helper 1.0.31 之后所有特权功能失效，而且每次启动都重弹一次管理员授权**：两层根因。**（一）Helper 鉴权死门**——1.0.31 把客户端鉴权改成「路径锚定 + identifier」双必经，其中 identifier 那关把 `kSecCSDoNotValidateExecutable | kSecCSDoNotValidateResources` 传给了 `SecCodeCheckValidity`，而对象是**运行中的 SecCode**（不是磁盘上的 SecStaticCode）。这两个 flag 对该组合被系统判为非法，实测 macOS 27.3 恒定返回 `-67070 errSecCSInvalidFlags`，与 requirement 是否匹配毫无关系；1.0.30 及以前「看起来能用」只是因为 identifier 失败后会掉到 Layer2/3 的路径 fallback 放行，双必经把这层 fallback 关掉后就成了死门。现场证据：`helper.log` 454 条 `REJECTED — identifier 检查未通过 (path=/Applications/ClashHalo.app)`、`accepted` 0 条。改为**完整校验**（flags 为空：可执行哈希 + 资源封印 + running-code 一致性），强度高于旧的 metadata-only 检查，ad-hoc 签名不受影响；拒绝日志补上 OSStatus，避免同类问题再靠猜。Helper 版本 **1.0.32**（需强制替换掉 1.0.31）。**（二）App 把「装了但坏了」读成「没装」**——旧实现 `!isRoot` 就无条件走 `installDaemon`，于是「Helper 拒绝本客户端」和「launchd 没加载」得到同一个动作：每次启动弹一次系统授权，而它修不了前者。现在先分辨三种坏法：已安装二进制与本版本不一致 → 更新；文件齐全但 `launchctl print` 查不到服务 → 重装（bootstrap 修这个）；已加载 + 字节一致仍连不上 → **只报告并指向 helper.log，不再弹框**。判据用 `installedHelperMatchesBundle()` 的字节比较——版本号只在握手成功后才拿得到，而那正是不可达时缺的信息。
+
+### 验证
+
+- 真机（本机 /Applications，Release，macOS 27.3）：替换前 `helper.log` 454 REJECTED / 0 accepted；替换后 `isAuthorizedClient: accepted pid 21110: /Applications/ClashHalo.app`，App 日志 `特权服务安装成功 ✓`，`/Library` 与 App 内嵌 helper 的 sha256 一致。
+- App 侧新分支实测：启动日志从「未检测到特权服务，开始自动安装…」变为「已安装的特权服务与本版本不一致，正在更新…」，一次授权完成替换。
+- 诊断方法可复用：用 `SecCodeCopyGuestWithAttributes(pid)` + `SecCodeCheckValidity(code, flags, req)` 对运行中的 App 逐组合打印 OSStatus，是本轮定位 `-67070` 的直接手段。
+- 构建：`xcodebuild -configuration Release` BUILD SUCCEEDED；Helper 同 make.sh 参数编译，minos 14.0，版本 1.0.32 两处一致。
+- base64 订阅：用一条真实的 `.txt` 订阅（`text/plain`，488 字节 → vless + hysteria2 两个节点）离线跑转换器，得到 2 个节点、0 跳过；生成配置交给 `mihomo -t` 校验输出 `test is successful`。
+- 本地 provider 转换（本机真实配置，1008 行、两个 http provider）：dry-run 改写后 `mihomo -t` 通过；正式转换后 `proxy-providers` 里 `US-LH` 变成 `type: file` + `path: ./provider-files/US-LH-928c1075.yaml`，`health-check` 块完整保留，源 URL 已从配置移除。内核 API 实测：`US-LH vehicleType=File nodes=2`（转换前 0 个节点），同块 `US-BWH vehicleType=HTTP nodes=1` 未受影响；重启 App 后状态保持。改动前已备份原 profile 与 `config.yaml`（`.bak-20261116`，0600）。
+- 回归：`bash Scripts/run-tests.sh` → PASS 22 / FAIL 2 / MISSING 3。两套红的是 `configwriteaudit-tests`（secret 脱敏）/ `quickrule-tests`（v6 /128），两者编译的源码与本次改动无交集，属既有未完成项，**未修**；三套 MISSING 是 `Tests/` 不入库所致（`directexclude-tests` / `gatewaydns-tests` / `dnsledger-tests`）。
+- 未覆盖：Helper 鉴权没有自动化套件——它依赖运行中进程的 Security 框架行为，写进 `run-tests.sh` 会变成「测 macOS 版本」而不是测产品。这条修复以真机日志为断言。
+
 ## [1.5.0] - 2026-11-15
 
 > 三批改动。**（一）启动不再断两次网**：网关 DNS 的监听探针从解析 `netstat` 文本改成真实 UDP 查询，「探测不到」不再允许重载内核，后台自愈在窗口隐藏后真的会跑起来（外加 App Nap 断言）。**（二）直连链路**：把规则判 DIRECT 的 IP 段排除出 TUN，以及让「运行配置偏离 profile」这件事可见。**（三）全量审计修复（2026-11-15）**：独立审计（P0×4 / P1×23 / P2×66 / P3×67）后的集中修复，覆盖发布阻断、本地提权、退出断网、配置数据丢失四类 P0 与全部 P1。**Helper 升级 1.0.31**（第三批鉴权收紧 + 死亡清理补 v6 转发 + 日志尺寸闸；启动时自动升级，单次授权）。前两批未改协议。

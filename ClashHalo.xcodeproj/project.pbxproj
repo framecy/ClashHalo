@@ -9,6 +9,8 @@
 /* Begin PBXBuildFile section */
 		04E0EC007CDC978C6D8D3024 /* YamlRuleASTEngine.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5E2B17CDA9711347F1C170EB /* YamlRuleASTEngine.swift */; };
 		04E0EC017CDC978C6D8D3025 /* YamlScalar.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5E2B17CDA9711348F1C170EC /* YamlScalar.swift */; };
+		A1B2C3D4E5F60718293A4B5C /* NodeSubscription.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1B2C3D4E5F60718293A4B5D /* NodeSubscription.swift */; };
+		A1B2C3D4E5F60718293A4B5E /* ProviderRewrite.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1B2C3D4E5F60718293A4B5F /* ProviderRewrite.swift */; };
 		0F32145D5136BC694424C663 /* RuleNode.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6293BDBC99DBD2AA6E7426F3 /* RuleNode.swift */; };
 		212075FD58BB63EBBCA8786A /* RuleEditorModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = C6DEDA31B7B33D5919A12DEB /* RuleEditorModel.swift */; };
 		394E7B0C59764680BB4D9507 /* MihomoClient.swift in Sources */ = {isa = PBXBuildFile; fileRef = 40F5A17CAAA24A5BBC54C15E /* MihomoClient.swift */; };
@@ -84,6 +86,8 @@
 		5C1B022FFD034AE592948756 /* SdwanPage.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Sources/UI/SDWAN/SdwanPage.swift; sourceTree = SOURCE_ROOT; };
 		5E2B17CDA9711347F1C170EB /* YamlRuleASTEngine.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = YamlRuleASTEngine.swift; path = Sources/Core/YamlEditor/YamlRuleASTEngine.swift; sourceTree = "<group>"; };
 		5E2B17CDA9711348F1C170EC /* YamlScalar.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = YamlScalar.swift; path = Sources/Core/YamlEditor/YamlScalar.swift; sourceTree = "<group>"; };
+		A1B2C3D4E5F60718293A4B5D /* NodeSubscription.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = NodeSubscription.swift; path = Sources/Core/Subscription/NodeSubscription.swift; sourceTree = "<group>"; };
+		A1B2C3D4E5F60718293A4B5F /* ProviderRewrite.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = ProviderRewrite.swift; path = Sources/Core/Subscription/ProviderRewrite.swift; sourceTree = "<group>"; };
 		6293BDBC99DBD2AA6E7426F3 /* RuleNode.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = RuleNode.swift; path = Sources/Model/RuleNode.swift; sourceTree = "<group>"; };
 		7DC2B59D23B0749A0B7CC125 /* RuleFormView.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = RuleFormView.swift; path = Sources/UI/Rules/RuleFormView.swift; sourceTree = "<group>"; };
 		87F1015549B149CD80A68FBC /* SubscriptionsPage.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Sources/UI/Subscriptions/SubscriptionsPage.swift; sourceTree = SOURCE_ROOT; };
@@ -233,6 +237,8 @@
 				C6DEDA31B7B33D5919A12DEB /* RuleEditorModel.swift */,
 				5E2B17CDA9711347F1C170EB /* YamlRuleASTEngine.swift */,
 				5E2B17CDA9711348F1C170EC /* YamlScalar.swift */,
+				A1B2C3D4E5F60718293A4B5D /* NodeSubscription.swift */,
+				A1B2C3D4E5F60718293A4B5F /* ProviderRewrite.swift */,
 				HASHSWFFFFFF /* Hash.swift */,
 				7DC2B59D23B0749A0B7CC125 /* RuleFormView.swift */,
 			);
@@ -420,6 +426,8 @@
 				212075FD58BB63EBBCA8786A /* RuleEditorModel.swift in Sources */,
 				04E0EC007CDC978C6D8D3024 /* YamlRuleASTEngine.swift in Sources */,
 				04E0EC017CDC978C6D8D3025 /* YamlScalar.swift in Sources */,
+				A1B2C3D4E5F60718293A4B5C /* NodeSubscription.swift in Sources */,
+				A1B2C3D4E5F60718293A4B5E /* ProviderRewrite.swift in Sources */,
 				FD7AD16CD9DC6191C81AE1F5 /* RuleFormView.swift in Sources */,
 			);
 		};

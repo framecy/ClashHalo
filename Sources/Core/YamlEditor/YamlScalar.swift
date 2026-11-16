@@ -124,4 +124,29 @@ public enum YamlScalar {
         items.append(current)
         return items
     }
+
+    /// Quote a string scalar when the raw text would not survive a round-trip
+    /// through YAML as a plain scalar.
+    ///
+    /// Moved here from `EngineControl` (where it was introduced for Gateway's
+    /// `bind-address: "*"` — a bare `*` starts an alias node, i.e. a parse
+    /// error) so the subscription renderer can use the same rule without
+    /// pulling `EngineControl`'s SystemConfiguration/XPC dependencies into a
+    /// pure-logic test target. `EngineControl.quoteYAMLScalarIfNeeded`
+    /// forwards here; there is one implementation.
+    public static func quoteIfNeeded(_ s: String) -> String {
+        let indicators: Set<Character> = ["*", "&", "!", "|", ">", "%", "@", "`",
+                                          "[", "]", "{", "}", ",", "#", "\"", "'",
+                                          "?", ":", "-", " ", "\t"]
+        let needsQuote = s.isEmpty
+            || indicators.contains(s.first!)
+            || s.contains(": ")
+            || s.contains(" #")
+            || s.hasSuffix(":")
+        guard needsQuote else { return s }
+        let escaped = s
+            .replacingOccurrences(of: "\\", with: "\\\\")
+            .replacingOccurrences(of: "\"", with: "\\\"")
+        return "\"\(escaped)\""
+    }
 }

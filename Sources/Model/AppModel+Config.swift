@@ -4027,6 +4027,13 @@ extension AppModel {
             showToast("无法读取当前配置，已取消修改", kind: .error)
             return false
         }
+        // 订阅清单是磁盘数据：写入前先记下「配置本来就有错」和「内核是否在线」。
+        // 旧实现无条件 validateConfig + reload，把导入配置自带的错误、以及内核
+        // 未启动都算到这次订阅改动头上，于是回滚并报「配置无效，已回滚」——
+        // 用户看到的就是「没配置 / 未应用配置时管不了订阅」「导入配置后管理订阅失败」。
+        let preexistingError = await engine.validateConfig()
+        let kernelReachable = reachable
+
         engine.writeProxyProviders(providers)
         persistTunStateForReload()    // preserve running TUN across reload
         // 空组预检：删除订阅后，只靠它供血的策略组会失去全部节点来源，
@@ -4042,23 +4049,40 @@ extension AppModel {
                 return false
             }
         }
-        if let err = await engine.validateConfig() {
+        // 只有「原本有效、且被这次写入写坏」才回滚，责任不能算错。
+        if preexistingError == nil, let err = await engine.validateConfig() {
             await restoreConfigSnapshot(backup, at: path)
             showToast("配置无效，已回滚：\(err)", kind: .error)
             return false
         }
-        do {
-            try await api.reloadConfig(path: path)
-            await refreshConfigs()
-            await refreshProxies()
-            noteConfigContentChanged()
-            showToast("订阅已保存", kind: .ok)
-            return true
-        } catch {
-            await restoreConfigSnapshot(backup, at: path)
-            showToast("保存失败，已回滚：\(error.localizedDescription)", kind: .error)
-            return false
+
+        if kernelReachable {
+            do {
+                try await api.reloadConfig(path: path)
+                await refreshConfigs()
+                await refreshProxies()
+                noteConfigContentChanged()
+                if let err = preexistingError {
+                    showToast("订阅已保存；配置本身仍有错误（\(err)），修复后才会生效", kind: .warn)
+                } else {
+                    showToast("订阅已保存", kind: .ok)
+                }
+                return true
+            } catch {
+                await restoreConfigSnapshot(backup, at: path)
+                showToast("保存失败，已回滚：\(error.localizedDescription)", kind: .error)
+                return false
+            }
         }
+
+        // 内核未连接：只持久化，不做 reload（reload 必然失败并回滚掉用户改动）。
+        noteConfigContentChanged()
+        if let err = preexistingError {
+            showToast("订阅已保存到配置文件；配置本身有错误（\(err)），修复后生效", kind: .warn)
+        } else {
+            showToast("订阅已保存到配置文件，内核启动后生效", kind: .ok)
+        }
+        return true
     }
 
     // MARK: - 端口转发（入站 listeners）
@@ -4314,5 +4338,100 @@ extension AppModel {
     // rules are read from the dedicated /rules endpoint, editing is via profile YAML.
     func refreshRules() async {
         if let r = try? await api.fetchRules(), rules != r.rules { rules = r.rules }
+    }
+
+    // MARK: - 把 base64 节点订阅接成本地 provider
+
+    /// 当前激活配置里名为 `name` 的 provider 若指向 base64 分享链接订阅，
+    /// 转换成本地 file provider：provider 名、`use:` 引用、策略组与规则全部不动。
+    ///
+    /// 现场：订阅加进来了、内核状态也在拉取，但一个节点都用不了——mihomo 的
+    /// http provider 只接受 `proxies:` 结构的 YAML，base64 被当配置解析，永远
+    /// 0 节点。转换后由 App 负责下载与刷新，内核只读本地文件。
+    @discardableResult
+    func convertProviderToLocalFile(name: String) async -> Bool {
+        guard !engine.isBusy else { showToast("内核操作进行中，请稍候…", kind: .warn); return false }
+        let id = store.activeID
+        guard !id.isEmpty else { showToast("没有激活的配置", kind: .warn); return false }
+        let profile = store.content(id)
+        guard !profile.isEmpty else { showToast("当前配置为空", kind: .error); return false }
+
+        if ProviderRewrite.isFileProvider(profile, name: name) {
+            showToast("「\(name)」已经是本地 provider", kind: .warn)
+            return true
+        }
+        guard let url = ProviderRewrite.httpURL(profile, name: name)
+                ?? store.providerSource(name: name) else {
+            showToast("在配置里找不到「\(name)」的订阅地址", kind: .warn)
+            return false
+        }
+
+        showToast("正在转换「\(name)」…")
+        guard let raw = await store.download(url) else {
+            showToast("下载订阅「\(name)」失败（网络或服务端错误）", kind: .error)
+            return false
+        }
+        switch NodeSubscription.detect(raw) {
+        case .shareLinks:
+            break
+        case .mihomoConfig:
+            showToast("「\(name)」是标准 provider 格式，内核能直接解析，不需要转换", kind: .warn)
+            return false
+        case .unknown:
+            showToast("「\(name)」的内容既不是 mihomo 配置也不是节点订阅", kind: .warn)
+            return false
+        }
+
+        let rendered = NodeSubscription.renderProviderFile(raw)
+        guard let nodesYAML = rendered.yaml, rendered.nodeCount > 0 else {
+            let why = rendered.skipped.prefix(3).joined(separator: "；")
+            showToast("没有解析出节点：\(why)", kind: .error)
+            return false
+        }
+        guard let filePath = store.writeProviderNodes(name: name, yaml: nodesYAML) else {
+            showToast("写入本地 provider 文件失败", kind: .error)
+            return false
+        }
+        guard let rewritten = ProviderRewrite.convertToFile(profile, name: name, filePath: filePath) else {
+            showToast("无法改写「\(name)」的 provider 定义（可能是单行 {…} 写法）", kind: .error)
+            return false
+        }
+
+        store.saveContent(id, rewritten.yaml)
+        store.setProviderSource(name: name, url: url)
+        let skippedNote = rendered.skipped.isEmpty ? "" : "，跳过 \(rendered.skipped.count) 条"
+        AppModel.appendAppLog("[Subscriptions] 「\(name)」已转为本地 provider：\(rendered.nodeCount) 个节点 → \(filePath)\(skippedNote)")
+        selectForApply(id)
+        showToast("「\(name)」已转成本地 provider（\(rendered.nodeCount) 个节点），正在应用", kind: .ok)
+        return true
+    }
+
+    /// 刷新所有已转换的本地 provider（订阅源内容变了才需要）。
+    /// 没转换过的 provider 不碰——它们是内核自己拉取的 http provider。
+    func refreshLocalProviders() async {
+        let names = Array(store.providerSources.keys)
+        guard !names.isEmpty else { showToast("没有需要刷新的本地订阅", kind: .warn); return }
+        guard !engine.isBusy else { showToast("内核操作进行中，请稍候…", kind: .warn); return }
+        var updated = 0, failed: [String] = []
+        for name in names {
+            guard let url = store.providerSource(name: name),
+                  let raw = await store.download(url) else { failed.append(name); continue }
+            let rendered = NodeSubscription.renderProviderFile(raw)
+            guard let nodesYAML = rendered.yaml, rendered.nodeCount > 0,
+                  store.writeProviderNodes(name: name, yaml: nodesYAML) != nil else {
+                failed.append(name); continue
+            }
+            updated += 1
+            AppModel.appendAppLog("[Subscriptions] 本地 provider「\(name)」已刷新：\(rendered.nodeCount) 个节点")
+        }
+        // file provider 会监听文件变化，内核自己会重载；这里再触发一次确保不是
+        // 依赖 fsnotify 的实现细节。
+        for name in names where !failed.contains(name) {
+            _ = try? await api.updateProvider(name)
+        }
+        showToast(failed.isEmpty
+                  ? "本地订阅已刷新（\(updated) 个）"
+                  : "刷新完成：成功 \(updated)，失败 \(failed.count)（\(failed.joined(separator: ", "))）",
+                  kind: failed.isEmpty ? .ok : .warn)
     }
 }

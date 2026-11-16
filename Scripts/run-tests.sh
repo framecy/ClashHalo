@@ -239,6 +239,21 @@ add_suite gatewaydns-tests \
   "$ROOT/Sources/Model/GatewayDNSHealth.swift" \
   "$ROOT/Tests/GatewayDNSHealth/main.swift"
 
+# base64 分享链接订阅（.txt + text/plain）→ mihomo 配置。旧实现在导入处用
+# `contains(":")` 判有效、在刷新处用 looksLikeMihomoConfig 拒收，而 base64 字母表
+# 不含冒号——这类订阅因此「始终无法使用」。钉住各协议的字段映射与组装结果。
+add_suite nodesubscription-tests \
+  "$ROOT/Sources/Core/YamlEditor/YamlScalar.swift" \
+  "$ROOT/Sources/Core/Subscription/NodeSubscription.swift" \
+  "$ROOT/Tests/NodeSubscription/main.swift"
+
+# http provider 指向 base64 节点订阅 → 改写成本地 file provider。最危险的相邻
+# 字段是 health-check 里的 url：不分缩进地删「url:」会把健康检查一起删掉。
+add_suite providerrewrite-tests \
+  "$ROOT/Sources/Core/YamlEditor/YamlScalar.swift" \
+  "$ROOT/Sources/Core/Subscription/ProviderRewrite.swift" \
+  "$ROOT/Tests/ProviderRewrite/main.swift"
+
 # ── 执行 ───────────────────────────────────────────────────────────────
 
 FILTER=""

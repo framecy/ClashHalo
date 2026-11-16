@@ -519,22 +519,13 @@ import SystemConfiguration
     /// `bind-address: "*"` — a bare `*` starts an alias
     /// node, which is a **parse error**, so every Gateway apply wrote an
     /// unparseable config.yaml and the reload (then every kernel restart)
-    /// failed. Quote anything whose first character is a YAML indicator, plus
-    /// a few mid-string traps.
+    /// failed.
+    ///
+    /// Implementation lives in `YamlScalar.quoteIfNeeded` so the base64
+    /// subscription renderer can share it without dragging this file's
+    /// SystemConfiguration/XPC dependencies into a pure-logic test target.
     static func quoteYAMLScalarIfNeeded(_ s: String) -> String {
-        let indicators: Set<Character> = ["*", "&", "!", "|", ">", "%", "@", "`",
-                                          "[", "]", "{", "}", ",", "#", "\"", "'",
-                                          "?", ":", "-", " ", "\t"]
-        let needsQuote = s.isEmpty
-            || indicators.contains(s.first!)
-            || s.contains(": ")
-            || s.contains(" #")
-            || s.hasSuffix(":")
-        guard needsQuote else { return s }
-        let escaped = s
-            .replacingOccurrences(of: "\\", with: "\\\\")
-            .replacingOccurrences(of: "\"", with: "\\\"")
-        return "\"\(escaped)\""
+        YamlScalar.quoteIfNeeded(s)
     }
 
     private func setNestedScalars(parent: String, kv: [String: Any], in lines: inout [String]) {
@@ -622,6 +613,13 @@ import SystemConfiguration
         var inBlock = false, curIdx = -1
         for line in text.components(separatedBy: "\n") {
             if !line.hasPrefix(" ") && !line.hasPrefix("\t") {
+                let trimmed = line.trimmingCharacters(in: .whitespacesAndNewlines)
+                // 空行 / 顶层注释不是新的顶层键：导入的配置常在两个 provider
+                // 之间留空行，旧实现遇空行就把 inBlock 置 false，空行之后的
+                // provider 全部漏读。保存订阅时整块重写会把它们删掉，策略组
+                // 的 use: 随即指向不存在的 provider（proxy group[0] not found），
+                // 校验失败后整笔操作被回滚——用户看到的就是「管理订阅失败」。
+                if trimmed.isEmpty || trimmed.hasPrefix("#") { continue }
                 inBlock = line.hasPrefix("proxy-providers:"); curIdx = -1; continue
             }
             guard inBlock else { continue }
@@ -658,11 +656,49 @@ import SystemConfiguration
         guard let text = try? String(contentsOfFile: configFilePath, encoding: .utf8) else { return false }
         var lines = text.components(separatedBy: "\n")
 
+        // 0. 先记住旧块里每个 provider 的完整定义与类型。
+        //
+        // 这一读是必须的：本函数按 http 模板重建整块，而 `convertProviderToLocalFile`
+        // 会把 base64 订阅改写成 `type: file` + `path:`。用户在订阅页删/改**任何**
+        // 一条订阅都会走到这里 —— 不保留旧块的话，那条本地 provider 会被还原成
+        // `type: http` + `url: ""`，节点当场全空，而且看起来像是「转换没生效」。
+        var preserved: [String: (isFile: Bool, block: [String])] = [:]
+        if let start = lines.firstIndex(where: { $0.hasPrefix("proxy-providers:") }) {
+            var end = start + 1
+            while end < lines.count,
+                  lines[end].trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                    || lines[end].hasPrefix(" ") || lines[end].hasPrefix("\t") { end += 1 }
+            var current: (name: String, isFile: Bool, block: [String])? = nil
+            for i in (start + 1)..<end {
+                let line = lines[i]
+                let t = Self.stripLineComment(line.trimmingCharacters(in: .whitespacesAndNewlines))
+                let nameIndent = line.hasPrefix("  ") && !line.hasPrefix("   ")
+                if nameIndent && t.hasSuffix(":") {
+                    if let c = current { preserved[c.name] = (c.isFile, c.block) }
+                    let name = String(t.dropLast())
+                        .replacingOccurrences(of: "\"", with: "")
+                        .replacingOccurrences(of: "'", with: "")
+                    current = (name, false, [line])
+                } else if current != nil {
+                    current?.block.append(line)
+                    if t.hasPrefix("type:") && t.lowercased().contains("file") {
+                        current?.isFile = true
+                    }
+                }
+            }
+            if let c = current { preserved[c.name] = (c.isFile, c.block) }
+        }
+
         // 1. Build the new proxy-providers block.
         var block: [String] = []
         if !providers.isEmpty {
             block.append("proxy-providers:")
             for p in providers {
+                // 本地 file provider 原样保留（App 维护的节点文件，不经这里改写）
+                if let old = preserved[p.name], old.isFile {
+                    block += old.block
+                    continue
+                }
                 block += [
                     "  \"\(p.name)\":",
                     "    type: http",
@@ -831,9 +867,48 @@ import SystemConfiguration
             j -= 1
         }
 
+        // 6. 删光订阅后，只靠 provider 供血的策略组会变空，mihomo -t 会拒绝整份
+        // 配置。旧行为在 AppModel 侧整笔回滚并提示「请先编辑该策略组」，用户连
+        // 最后一个订阅都删不掉（反复弹同一条提示）。这里给这些组补 DIRECT 兜底：
+        // 没有节点时本来也只能直连，配置仍然合法，订阅操作得以完成。
+        let emptyGroups = ProviderUsage.groupsMissingMembers(in: lines.joined(separator: "\n"))
+        if !emptyGroups.isEmpty {
+            lines = Self.injectDirectFallback(into: lines, groups: Set(emptyGroups))
+        }
+
         // CFG-3：写盘失败必须返回 false——旧实现恒 return true，订阅页会在
         // 磁盘未变时弹「已保存」。
         return writeConfig(lines.joined(separator: "\n"), to: configFilePath)
+    }
+
+    /// 给没有节点来源的策略组补 `proxies: [DIRECT]`。组边界口径与
+    /// `ProviderUsage.groupsMissingMembers` 一致（2 空格缩进的 `- name:`）。
+    private static func injectDirectFallback(into lines: [String], groups: Set<String>) -> [String] {
+        var out = lines
+        var i = 0
+        while i < out.count {
+            let raw = out[i]
+            guard raw.hasPrefix("  - ") || raw.hasPrefix("  -\t") else { i += 1; continue }
+            let trimmed = raw.trimmingCharacters(in: .whitespaces)
+            let body = String(trimmed.dropFirst(2)).trimmingCharacters(in: .whitespaces)
+            guard body.hasPrefix("name:"),
+                  let name = ProviderUsage.scalar(String(body.dropFirst("name:".count))),
+                  groups.contains(name) else { i += 1; continue }
+            // 找组结束：下一个组起始行，或下一个顶层键。
+            var end = i + 1
+            while end < out.count {
+                let t = out[end].trimmingCharacters(in: .whitespaces)
+                let isGroupStart = t.hasPrefix("- name:")
+                    && (out[end].hasPrefix("  - ") || out[end].hasPrefix("  -\t"))
+                let isTopLevel = !out[end].hasPrefix(" ") && !t.isEmpty && !t.hasPrefix("#")
+                if isGroupStart || isTopLevel { break }
+                end += 1
+            }
+            let indent = String(raw.prefix(while: { $0 == " " })) + "  "
+            out.insert(contentsOf: [indent + "proxies:", indent + "  - DIRECT"], at: end)
+            i = end + 2
+        }
+        return out
     }
 
     /// The BSD name of the current default-route interface (e.g. `en0`), or nil.

@@ -59,6 +59,16 @@ struct YAMLPreview: Equatable {
 
     func path(_ id: String) -> String { dir + "/\(id).yaml" }
 
+    /// 用订阅专用（直连、不吃系统代理）会话取回一份远程内容。
+    /// 返回值只看 HTTP 200 + UTF-8；内容格式由 `NodeSubscription` 判定。
+    func download(_ url: String) async -> String? {
+        guard let u = URL(string: url) else { return nil }
+        guard let (data, response) = try? await session.data(from: u),
+              let http = response as? HTTPURLResponse, http.statusCode == 200,
+              let text = String(data: data, encoding: .utf8), !text.isEmpty else { return nil }
+        return text
+    }
+
     /// profiles/*.yaml 的唯一写盘入口：atomic write 默认落 0644，写完必须收回
     /// 0600——profile 与 config.yaml 含同样的订阅凭据，后者 0600 前者不能裸奔
     /// （CFG-20）。所有写 profile 的路径都走这里，不再各自 try? write。
@@ -108,6 +118,7 @@ struct YAMLPreview: Equatable {
             }
             profiles = list
         }
+        loadProviderSources()
         // Seed from the existing config.yaml on first run — but not after an
         // explicit wipe, where an empty list is the state the user asked for.
         if profiles.isEmpty && !wiped {
@@ -216,7 +227,7 @@ struct YAMLPreview: Equatable {
     @discardableResult
     func importLocalDraft(name: String, content: String) -> String {
         let id = UUID().uuidString
-        writeProfileFile(id, content)
+        writeProfileFile(id, Self.normalizeForWrite(content, context: "导入本地配置「\(name)」"))
         let p = Profile(id: id, name: name, source: "local", url: nil,
                         importedAt: Date(), updatedAt: Date(), isApplied: false, appliedHash: nil)
         profiles.append(p); wiped = false; save(); return id
@@ -226,7 +237,7 @@ struct YAMLPreview: Equatable {
     @discardableResult
     func importRemoteDraft(name: String, url: String, content: String) -> String {
         let id = UUID().uuidString
-        writeProfileFile(id, content)
+        writeProfileFile(id, Self.normalizeForWrite(content, context: "导入订阅「\(name)」"))
         let p = Profile(id: id, name: name, source: "remote", url: url,
                         importedAt: Date(), updatedAt: Date(), isApplied: false, appliedHash: nil)
         profiles.append(p); wiped = false; save(); return id
@@ -242,7 +253,10 @@ struct YAMLPreview: Equatable {
         guard let u = URL(string: url) else { return nil }
         guard let (data, response) = try? await session.data(from: u),
               let httpResponse = response as? HTTPURLResponse, httpResponse.statusCode == 200,
-              let content = String(data: data, encoding: .utf8), content.contains(":") else { return nil }
+              let content = String(data: data, encoding: .utf8), !content.isEmpty else { return nil }
+        // 旧实现要求 `content.contains(":")`：base64 字母表不含冒号，于是所有
+        // `.txt` + base64 分享链接订阅在导入这一步就被判成「下载失败」。
+        // 归一化在 importRemoteDraft(content:) 里统一做。
         return importRemoteDraft(name: name, url: url, content: content)
     }
 
@@ -280,15 +294,19 @@ struct YAMLPreview: Equatable {
                 return false
             }
             
+            // 先归一化：base64 分享链接订阅的 profile 内容是**转换后**的 YAML，
+            // 刷新时若把原始 base64 直接覆盖回去，下一次 reload 必然失败。
+            let normalized = Self.normalizeForWrite(content, context: "刷新订阅「\(p.name)」")
+
             // 内容必须带 mihomo 配置特征（CFG-18）：旧版只查 contains(":")，
             // 200 的 HTML 错误页（<title>Error: …</title> 也含冒号）拦不住，
             // 一次覆写就毁掉订阅文件。
-            guard Self.looksLikeMihomoConfig(content) else {
+            guard Self.looksLikeMihomoConfig(normalized) else {
                 return false
             }
 
             backupProfileFile(id)
-            writeProfileFile(id, content)
+            writeProfileFile(id, normalized)
             touch(id)
             return true
         } catch {
@@ -312,6 +330,124 @@ struct YAMLPreview: Equatable {
         }
         return false
     }
+
+    // MARK: - 转换后的本地 provider（base64 节点订阅）
+
+    /// provider 名 → 原始订阅 URL。
+    ///
+    /// 为什么单独存：配置被 `ProviderRewrite` 改成 `type: file` 之后，profiles 与
+    /// config.yaml 里都不再有源地址，刷新时就没有地方取 URL 了。这些 URL 与订阅
+    /// 凭据同级，所以：文件 0600、目录沿用 profiles 的 0700 约定，且**绝不**写进
+    /// manifest.json（那条隐私不变量不因新增文件而放宽）。
+    @Published private(set) var providerSources: [String: String] = [:]
+
+    private var providerFilesDir: String {
+        NSHomeDirectory() + "/Library/Application Support/ClashHalo/provider-files"
+    }
+    private var providerSourcesPath: String {
+        NSHomeDirectory() + "/Library/Application Support/ClashHalo/provider-sources.json"
+    }
+
+    /// 文件名安全化 + 短哈希：provider 名可以是中文/带空格/带引号，直接当文件名
+    /// 会踩路径分隔符与大小写问题；哈希后缀保证不同名字不会撞车。
+    static func providerSlug(_ name: String) -> String {
+        let safe = name.map { ch -> Character in
+            (ch.isLetter || ch.isNumber || ch == "-" || ch == "_") ? ch : "_"
+        }
+        return "\(String(safe).prefix(24))-\(Sha1.hex(name).prefix(8))"
+    }
+
+    /// 写入 file provider 的节点文件，返回 mihomo 视角的路径（相对 `-d` 工作目录，
+    /// 内核以 `-d <appSupport>` 启动，所以是 `./provider-files/<slug>.yaml`）。
+    @discardableResult
+    func writeProviderNodes(name: String, yaml: String) -> String? {
+        let fm = FileManager.default
+        do {
+            try fm.createDirectory(atPath: providerFilesDir, withIntermediateDirectories: true,
+                                   attributes: [.posixPermissions: 0o700])
+            try? fm.setAttributes([.posixPermissions: 0o700], ofItemAtPath: providerFilesDir)
+            let file = providerFilesDir + "/" + Self.providerSlug(name) + ".yaml"
+            try yaml.write(toFile: file, atomically: true, encoding: .utf8)
+            try? fm.setAttributes([.posixPermissions: 0o600], ofItemAtPath: file)
+            return "./provider-files/\(Self.providerSlug(name)).yaml"
+        } catch {
+            AppModel.appendAppLog("[Subscriptions] 写入本地 provider 文件失败（\(name)）：\(error.localizedDescription)")
+            return nil
+        }
+    }
+
+    func providerSource(name: String) -> String? { providerSources[name] }
+
+    func setProviderSource(name: String, url: String) {
+        providerSources[name] = url
+        saveProviderSources()
+    }
+
+    func removeProviderSource(name: String) {
+        guard providerSources.removeValue(forKey: name) != nil else { return }
+        saveProviderSources()
+    }
+
+    private func saveProviderSources() {
+        do {
+            let data = try JSONEncoder().encode(providerSources)
+            try data.write(to: URL(fileURLWithPath: providerSourcesPath), options: .atomic)
+            try? FileManager.default.setAttributes([.posixPermissions: 0o600],
+                                                   ofItemAtPath: providerSourcesPath)
+        } catch {
+            AppModel.appendAppLog("[Subscriptions] provider 源地址记录写入失败：\(error.localizedDescription)")
+        }
+    }
+
+    private func loadProviderSources() {
+        guard let data = FileManager.default.contents(atPath: providerSourcesPath),
+              let map = try? JSONDecoder().decode([String: String].self, from: data) else { return }
+        providerSources = map
+    }
+
+    // MARK: - Base64 分享链接订阅
+
+    struct NormalizedContent {
+        var yaml: String
+        /// 是否发生了「分享链接列表 → mihomo YAML」的转换
+        var converted: Bool
+        /// 转换时被跳过的条目及原因
+        var skipped: [String]
+    }
+
+    /// 把订阅/导入的原始响应体归一化成可以直接写盘的 mihomo YAML。
+    ///
+    /// 为什么收敛在存储层：写盘入口有四个（本地导入、远程导入同步版、远程导入
+    /// 异步版、订阅刷新），任何一个漏掉都会把 base64 文本存成 profile —— 内核
+    /// reload 失败，用户只看到「应用订阅失败」，完全看不出是格式问题。这正
+    /// 是 `.txt` + base64 订阅「始终无法使用」的现场。
+    ///
+    /// 已经是 YAML 或无法识别时**原样返回**：拒绝坏内容的判定仍归
+    /// `looksLikeMihomoConfig`（以及调用方），这里不做第二套准入规则。
+    static func normalizedForProfile(_ raw: String) -> NormalizedContent {
+        guard NodeSubscription.detect(raw) == .shareLinks else {
+            return NormalizedContent(yaml: raw, converted: false, skipped: [])
+        }
+        let rendered = NodeSubscription.render(raw)
+        guard let yaml = rendered.yaml else {
+            return NormalizedContent(yaml: raw, converted: false, skipped: rendered.skipped)
+        }
+        return NormalizedContent(yaml: yaml, converted: true, skipped: rendered.skipped)
+    }
+
+    /// 转换并写 app.log。订阅刷新是静默路径，节点数比订阅页少时只有日志能
+    /// 解释是哪几条被跳过了。
+    private static func normalizeForWrite(_ raw: String, context: String) -> String {
+        let n = normalizedForProfile(raw)
+        if n.converted {
+            let detail = n.skipped.isEmpty
+                ? "全部成功"
+                : "跳过 \(n.skipped.count) 条：\(n.skipped.joined(separator: "；"))"
+            AppModel.appendAppLog("[Subscriptions] \(context)：base64 分享链接订阅已转换为 mihomo 配置（\(detail)）")
+        }
+        return n.yaml
+    }
+
 
     func remove(_ id: String) {
         try? fm.removeItem(atPath: path(id))
