@@ -5,6 +5,15 @@ import Foundation
 /// (Xcode target) since both include this file — prevents the two-location
 /// version drift that caused infinite upgrade loops.
 ///
+/// 1.0.32: fixes a helper-side auth regression introduced in 1.0.31 that made
+/// every legitimate client unreachable on current macOS. The identifier check
+/// passed `kSecCSDoNotValidateExecutable | kSecCSDoNotValidateResources` to
+/// `SecCodeCheckValidity` — illegal for a *running* SecCode, which returns
+/// -67070 errSecCSInvalidFlags regardless of the requirement. 1.0.30 and older
+/// hid this because the identifier failure fell through to the path fallback;
+/// 1.0.31's AND-gate turned it into a dead end (454 REJECTED / 0 accepted in
+/// helper.log on 2026-11-16, TUN + system proxy + gateway all dead).
+/// Now does a full validity check (empty flags) and logs the OSStatus.
 /// 1.0.31: audit fix batch (2026-11-15): client auth now requires identifier
 /// match AND install-root path anchoring for every client — the old Layer-1
 /// short-circuit let any local process ad-hoc-sign the identifier and reach
@@ -42,7 +51,7 @@ import Foundation
 /// session takeover before its destructive steps (quit/relaunch race).
 /// 1.0.25: system-proxy rework (shared ProxyServicePlan, branch-order fix, no
 /// 2-service cap, full-success-only Bool).
-public let kSharedHelperVersion = "1.0.31"
+public let kSharedHelperVersion = "1.0.32"
 
 /// The utun name mihomo is asked to take, instead of accepting whatever index
 /// the kernel hands out. Shared with the Helper so it can tell a route our own

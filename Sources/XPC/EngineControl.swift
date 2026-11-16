@@ -1630,7 +1630,26 @@ import SystemConfiguration
                 onLog?("App 内未嵌入 Helper 二进制，无法安装特权服务。请用 Scripts/build-debug.sh 或 make.sh 构建后再试。")
                 return false
             }
-            onLog?("未检测到特权服务，开始自动安装…")
+            // 「装不上」有三种完全不同的坏法，只有前两种安装脚本能修。旧实现把
+            // 它们一律读成「未检测到特权服务」，于是每次启动都重走一遍管理员授权
+            // ——2026-11-16 本机事故（Helper 1.0.31 鉴权恒拒）就这么弹了整整一天，
+            // 而重装 10 次也修不了第三条：
+            //   ① 已安装二进制与本版本不一致 → 更新（安装脚本正好干这个）
+            //   ② 文件齐全但 launchd 没加载   → 重装（bootstrap 修这个）
+            //   ③ 已加载 + 字节一致却连不上   → 重装无效，只能看 helper.log
+            if XPCManager.shared.checkStatus() == .enabled {
+                let sameBinary = XPCManager.shared.installedHelperMatchesBundle()
+                let loaded = await XPCManager.shared.isServiceLoaded()
+                if sameBinary && loaded {
+                    onLog?("特权服务已安装且已加载，但 XPC 握手失败（服务拒绝本客户端或反复崩溃）。重装通常修不了，请查看 /Library/Logs/ClashHalo/helper.log，或到「设置 → 权限」手动重装。")
+                    return false
+                }
+                onLog?(sameBinary
+                    ? "特权服务已安装但未加载，正在重新载入…"
+                    : "已安装的特权服务与本版本不一致，正在更新…")
+            } else {
+                onLog?("未检测到特权服务，开始自动安装…")
+            }
             let ok = await installPrivileged(prompt: XPCManager.defaultInstallPrompt)
             if ok {
                 isRoot = await waitForHelperConnectivity()

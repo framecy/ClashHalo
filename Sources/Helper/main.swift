@@ -14,7 +14,7 @@ private let kClientRequirement = "identifier \"com.clashhalo.app\""
 ///      proc_pidpath 的可执行路径；归一化（折叠 `..` + 解软链）后必须落在
 ///      允许的安装根内（见 canonicalClientPath / isAllowedBundleParent）。
 ///   2. identifier 检查（必经）：Security framework requirement 匹配
-///      com.clashhalo.app，保留 ad-hoc 豁免 flag（取舍见下）。
+///      com.clashhalo.app，**完整校验**（不能带 DoNotValidate* 豁免 flag，见下）。
 /// 旧结构是三层逐级放宽：Layer1 identifier 通过即 return true，路径锚定只在
 /// Layer1 失败时才跑——本机任意进程 `codesign -s - -i com.clashhalo.app` 即可
 /// 绕过全部路径校验提权到 root（审计 XPC-1 / 主审复核 verified-core F1）。
@@ -58,32 +58,45 @@ func isAuthorizedClient(_ conn: NSXPCConnection) -> Bool {
         return false
     }
 
-    // 第二步：identifier 检查。
-    // kSecCSDoNotValidateExecutable | kSecCSDoNotValidateResources (== kSecCSBasicValidateOnly)
-    // skips hash and seal verification — only the code-signing metadata (identifier) is
-    // checked. This handles developer-signed and most ad-hoc builds.
+    // 第二步：identifier 检查（完整校验，flags 为空）。
     //
-    // 取舍（2026-10-14 审查中-12，这两个 flag 刻意保留不动）：本 App 的 Debug/开发
-    // 构建是 ad-hoc 签名，去掉豁免后 SecCodeCheckValidity 会去校验可执行哈希与资源
-    // 封印，ad-hoc 产物过不了 → 用户自己的 GUI 被 Helper 拒之门外，特权操作全线失效，
-    // 现场只能手动 bootout/重装 LaunchDaemon 才能恢复。要真正收紧到「验签」级别，前提
-    // 是发布链路统一走 Developer ID + 公证，并为 Debug 构建单开一条可判定的放行规则——
-    // 那是发布策略决定，不在本次修复范围内。
-    // 代价必须写清楚：identifier-only 的元数据检查可以被本机任意用户用
-    // `codesign -s - -i com.clashhalo.app` 伪造。XPC-1 修复后它不再是单独的门：
-    // 伪造者还必须把可执行文件放进上面路径锚定认可的安装根（/Applications、
-    // 控制台用户 ~/Applications、挂载卷根一层、Xcode 产物目录）才能通过。
+    // 为什么不是「只校验签名元数据」：`kSecCSDoNotValidateExecutable` /
+    // `kSecCSDoNotValidateResources`（= 旧实现的 kSecCSBasicValidateOnly）被传进
+    // `SecCodeCheckValidity` 时，对象是**运行中的 SecCode**而不是磁盘上的
+    // SecStaticCode。系统对这个组合直接判非法：实测 macOS 27.3 返回
+    // -67070 errSecCSInvalidFlags（CSCommon.h:76「invalid or inappropriate API
+    // flag(s) specified」），与 requirement 是否匹配毫无关系。
+    //
+    // 事故（2026-11-16，Helper 1.0.31）：1.0.30 及以前 identifier 检查同样恒失败，
+    // 但失败后会掉到 Layer2/3 的路径 fallback 放行，所以「看不出问题」；1.0.31 把
+    // 鉴权改成路径 + identifier 双必经之后，这一关成了死门——合法客户端被永久
+    // 拒绝，TUN / 系统代理 / 网关全线失效，日志里 454 条 REJECTED、0 条 accepted。
+    //
+    // 改成 flags 为空后的强度：反而**高于**旧的 metadata-only 检查。完整校验会读
+    // 可执行哈希、资源封印，并核对运行中代码与磁盘签名一致（防运行后替换）。
+    // ad-hoc 签名不受影响——ad-hoc 只是没有可信时间戳/证书链，签名本身是完整自洽的；
+    // 实测 /Applications 与 Xcode 产物两种 ad-hoc 布局都返回 0。
+    //
+    // 仍存在的边界（与 XPC-1 同一取舍，未变）：requirement 只有 identifier，没有
+    // team id / anchor apple，所以能写 /Applications 的本机用户仍可自签一个同名
+    // identifier 的伪客户端。要真正收紧必须发布链路统一 Developer ID + 公证，
+    // 那是发布策略决定，不在本次修复范围内；路径锚定 + 完整校验已经把门槛提到
+    // 「必须先能写允许的安装根，且被替换后运行中代码会校验失败」。
     var identifierOK = false
+    var identifierStatus = errSecSuccess
     if haveCode, let code {
         var req: SecRequirement?
         if SecRequirementCreateWithString(kClientRequirement as CFString, [], &req) == errSecSuccess,
            let req {
-            let flags = SecCSFlags(rawValue: kSecCSDoNotValidateExecutable | kSecCSDoNotValidateResources)
-            identifierOK = SecCodeCheckValidity(code, flags, req) == errSecSuccess
+            identifierStatus = SecCodeCheckValidity(code, [], req)
+            identifierOK = identifierStatus == errSecSuccess
+        } else {
+            identifierStatus = errSecCSReqFailed
         }
     }
     guard identifierOK else {
-        log("isAuthorizedClient: REJECTED pid \(pid) — identifier 检查未通过 (path=\(clientPath))")
+        // 带上 OSStatus：这一关曾经因为「只打一句未通过」而让 -67070 藏了整整一天。
+        log("isAuthorizedClient: REJECTED pid \(pid) — identifier 检查未通过 (status=\(identifierStatus), path=\(clientPath))")
         return false
     }
 

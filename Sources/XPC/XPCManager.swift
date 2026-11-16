@@ -97,6 +97,54 @@ public class XPCManager {
         return .notFound
     }
 
+    /// Whether launchd currently has the helper service loaded — i.e. more than
+    /// "files happen to be on disk". Lets the caller tell "not installed" apart
+    /// from "installed but broken", which need different remedies.
+    ///
+    /// `launchctl print system/<label>` is readable as a normal user (verified on
+    /// macOS 27.3); a 2 s timeout keeps a wedged launchd from stalling startup.
+    public func isServiceLoaded() async -> Bool {
+        await withCheckedContinuation { cont in
+            DispatchQueue.global().async {
+                let p = Process()
+                p.executableURL = URL(fileURLWithPath: "/bin/launchctl")
+                p.arguments = ["print", "system/com.clashhalo.helper"]
+                p.standardOutput = Pipe()
+                p.standardError = Pipe()
+                let timer = DispatchSource.makeTimerSource(queue: DispatchQueue.global())
+                timer.schedule(deadline: .now() + 2.0)
+                timer.setEventHandler { if p.isRunning { p.terminate() } }
+                timer.resume()
+                do {
+                    try p.run()
+                    p.waitUntilExit()
+                } catch {
+                    timer.cancel()
+                    cont.resume(returning: false)
+                    return
+                }
+                timer.cancel()
+                cont.resume(returning: p.terminationStatus == 0)
+            }
+        }
+    }
+
+    /// Is the installed helper byte-for-byte the one bundled in this app?
+    ///
+    /// The version string only comes back over a successful XPC handshake — exactly
+    /// the information missing when the helper is unreachable. Byte equality is the
+    /// only version-independent, XPC-free signal (≈0.3 MB, once per launch), and it
+    /// also covers the ordinary "new app, old helper" case.
+    public func installedHelperMatchesBundle() -> Bool {
+        let src = Bundle.main.bundlePath + "/Contents/MacOS/com.clashhalo.helper"
+        let dst = "/Library/PrivilegedHelperTools/com.clashhalo.helper"
+        let fm = FileManager.default
+        guard let bundled = fm.contents(atPath: src), let installed = fm.contents(atPath: dst) else {
+            return false
+        }
+        return bundled == installed
+    }
+
     /// Actively verify the helper is reachable, not merely installed (B3/B4).
     /// Performs a low-timeout `getVersion` XPC handshake over a throwaway
     /// connection; returns false on connection error or timeout. A stale/broken
