@@ -4,6 +4,8 @@
 
 ## [Unreleased]
 
+## [1.5.1] - 2026-11-17
+
 ### Added
 
 - **支持 `.txt` + base64 编码的分享链接订阅**：`vless://` / `vmess://` / `trojan://` / `hysteria2://` / `ss://` / `tuic://` 每行一个、整体 base64 编码的订阅（大量面板/机场给的就是 `text/plain` 的 `.txt`）现在可以直接添加，App 会在写盘前把它转换成 mihomo 配置：节点进 `proxies`，同时生成 `PROXY`（select）与「自动选择」（url-test）两个组，规则为 `GEOIP,CN,DIRECT` + `MATCH,PROXY`。转换发生在**存储层**（`ConfigStore.normalizedForProfile`），四个写盘入口统一走它——本地导入、远程导入（同步/异步）、订阅刷新；任何一个漏掉都会把 base64 文本存成 profile，内核 reload 失败而用户只看到「应用订阅失败」。订阅刷新会把源内容重新转换，不会把原始 base64 覆盖回已转换的 profile。跳过的条目（`ssr://`、hysteria v1、字段缺失）带原因进 app.log；导入预览里显示「已从 base64 分享链接转换为 mihomo 配置」以及跳过数。解析器 `Sources/Core/Subscription/NodeSubscription.swift` 是纯逻辑，回归套件 `nodesubscription-tests`（81 条断言）。
