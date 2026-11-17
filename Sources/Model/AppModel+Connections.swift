@@ -437,6 +437,26 @@ extension AppModel {
         }
     }
 
+    /// 连接页每拍快照的落地写点（此前散在 ConnectionsPage 的 VM 里直改这两个
+    /// 缓存，UI 持有写盘顺序；现在收归 Model 单点，语义逐条保留）。
+    ///
+    /// 顺序由 AGENTS.md 连接热路径约定钉死：newClosed 插入关闭历史**头部** →
+    /// 活跃列表按速率排序整体替换 → `activeConnectionsCount` 先于截断落定
+    /// （计数不受 clamp 影响）→ clamp。同一拍里 `recordHistoryOnly` 已在更早处
+    /// 把计数写准，这里的等值短路是兜底（与上方热路径计数同款写法），正常情况
+    /// 不产生额外发布。
+    func adoptConnectionSnapshot(active: [Conn], newClosed: [Conn]) {
+        if !newClosed.isEmpty {
+            cachedClosedConnections.insert(contentsOf: newClosed, at: 0)
+        }
+        // Sorted by rate — clamp 截断时按现有约定保留最忙的头部切片。
+        cachedConns = active.sorted { $0.downRate + $0.upRate > $1.downRate + $1.upRate }
+        if activeConnectionsCount != active.count {
+            activeConnectionsCount = active.count
+        }
+        clampConnectionCaches()
+    }
+
     /// Aggregate LAN gateway clients from a connections snapshot.
     ///
     /// Source filtering goes through `ConnOriginClassifier` and keeps only

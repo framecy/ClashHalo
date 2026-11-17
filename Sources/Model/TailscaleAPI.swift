@@ -40,6 +40,12 @@ enum TailscaleAPI {
     /// JSON without spinning up a session. Only IPv4 addresses are kept —
     /// the current UI and the auto-rule generator are IPv4-first.
     static func decodeDevices(_ data: Data) throws -> [TailscaleDevice] {
+        try sortDevices(mapDevices(data))
+    }
+
+    /// 单页映射（不排序）。decodeDevices 与分页合并（fetchAllPages 的调用方）
+    /// 共用同一映射，避免两处各写一份字段需求。
+    private static func mapDevices(_ data: Data) throws -> [TailscaleDevice] {
         let root: DevicesRoot
         do {
             root = try JSONDecoder().decode(DevicesRoot.self, from: data)
@@ -65,8 +71,12 @@ enum TailscaleAPI {
                 enabledRoutes: ipv4CIDRs(d.enabledRoutes ?? [])
             )
         }
-        .sorted { a, b in
-            // Online first, then hostname.
+    }
+
+    /// 在线优先，其次主机名（与旧 decodeDevices 内联排序同口径）。
+    /// 排序放在**合并全部分页之后**做一次，而不是每页各排各的。
+    private static func sortDevices(_ devices: [TailscaleDevice]) -> [TailscaleDevice] {
+        devices.sorted { a, b in
             if a.online != b.online { return a.online && !b.online }
             return a.hostname.localizedCaseInsensitiveCompare(b.hostname) == .orderedAscending
         }
@@ -170,20 +180,31 @@ enum TailscaleAPI {
         }
     }
 
-    /// `GET /api/v2/tailnet/{tailnet}/devices`.
+    /// `GET /api/v2/tailnet/{tailnet}/devices` 的单页请求构造与执行。
+    ///
+    /// URL / Bearer / 超时的**唯一拼装点**：原先 `fetchDevices` 与
+    /// AppModel+Tailscale 的 `fetchDevicesWithSuffix` 各复制一份（字段需求一致
+    /// ——`fields=all` 才有 advertisedRoutes / enabledRoutes），口径漂移只能
+    /// 靠撞见。返回原始 body，设备解码与 FQDN 后缀推断共用同一次网络往返。
     ///
     /// `tailnet` defaults to `-` (the caller's default tailnet). The token is
     /// sent as a Bearer header; Basic-with-empty-password is also accepted by
     /// the server but Bearer is the clearer form.
-    static func fetchDevices(token: String,
-                             tailnet: String = "-",
-                             session: URLSession) async -> Result<[TailscaleDevice], Error> {
+    static func fetchDevicesPage(token: String,
+                                 tailnet: String = "-",
+                                 cursor: String? = nil,
+                                 session: URLSession) async -> Result<Data, Error> {
         let trimmed = token.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return .failure(.noToken) }
         let enc = tailnet.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? tailnet
-        // `fields=all` is required for advertisedRoutes / enabledRoutes; the
-        // default field set omits them.
-        guard let url = URL(string: "https://api.tailscale.com/api/v2/tailnet/\(enc)/devices?fields=all") else {
+        var query = "fields=all"
+        // 游标值全量百分号编码（只放行字母数字）：游标是服务端 opaque token，
+        // 直接拼进 query 串可能注入额外的参数。
+        if let cursor, !cursor.isEmpty,
+           let encCursor = cursor.addingPercentEncoding(withAllowedCharacters: .alphanumerics) {
+            query += "&cursor=\(encCursor)"
+        }
+        guard let url = URL(string: "https://api.tailscale.com/api/v2/tailnet/\(enc)/devices?\(query)") else {
             return .failure(.badURL)
         }
         var req = URLRequest(url: url)
@@ -196,11 +217,90 @@ enum TailscaleAPI {
             if let h = resp as? HTTPURLResponse, !(200..<300).contains(h.statusCode) {
                 return .failure(.http(h.statusCode))
             }
-            return .success(try decodeDevices(data))
-        } catch let e as Error {
-            return .failure(e)
+            return .success(data)
         } catch {
             return .failure(.transport(error.localizedDescription))
+        }
+    }
+
+    /// 分页上限：API 异常地反复回传同一游标时，最多 20 页就停，防失控。
+    private static let maxFetchPages = 20
+
+    /// 跟随响应 `cursor` 续拉全部分页，返回每页原始 body。
+    ///
+    /// 停止条件：响应缺 `cursor` 字段、游标为空、或达到 20 页上限。响应体解析
+    /// 失败时不在这里报错（调用方解码时如实抛 decode），游标按「没有」处理，
+    /// 单页停——行为与不支持分页的响应完全一致。
+    private static func fetchAllPages(token: String,
+                                      tailnet: String,
+                                      session: URLSession) async -> Result<[Data], Error> {
+        var pages: [Data] = []
+        var cursor: String? = nil
+        for _ in 0..<maxFetchPages {
+            let page: Data
+            switch await fetchDevicesPage(token: token, tailnet: tailnet, cursor: cursor, session: session) {
+            case .failure(let e):
+                return .failure(e)
+            case .success(let d):
+                page = d
+            }
+            pages.append(page)
+            let next = (try? JSONDecoder().decode(DevicesRoot.self, from: page))?.cursor
+            guard let next, !next.isEmpty else { break }
+            cursor = next
+        }
+        return .success(pages)
+    }
+
+    /// `GET /api/v2/tailnet/{tailnet}/devices`（分页续拉合并）。
+    ///
+    /// 设备量大的 tailnet 响应带 `cursor` 时只解一页会**静默丢设备**——面板少
+    /// 一台机器、子网建议漏一条，用户看到的还是「成功」。旧版单页即停。
+    static func fetchDevices(token: String,
+                             tailnet: String = "-",
+                             session: URLSession) async -> Result<[TailscaleDevice], Error> {
+        switch await fetchAllPages(token: token, tailnet: tailnet, session: session) {
+        case .failure(let e):
+            return .failure(e)
+        case .success(let pages):
+            do {
+                var all: [TailscaleDevice] = []
+                for page in pages { all += try mapDevices(page) }
+                return .success(sortDevices(all))
+            } catch let e as Error {
+                return .failure(e)
+            } catch {
+                return .failure(.transport(error.localizedDescription))
+            }
+        }
+    }
+
+    /// One request, two products: the device list and an optional MagicDNS
+    /// suffix inferred from the FQDNs of every fetched page.
+    ///
+    /// 原先整份复制在 AppModel+Tailscale（URL/Bearer/超时各一份），收敛到这里
+    /// 与 fetchDevices 单一来源；suffix 过滤的独立语义保留——FQDN 从全部分页
+    /// 收集，翻页后后缀推断不再只看第一页。
+    static func fetchDevicesWithSuffix(token: String,
+                                       tailnet: String = "-",
+                                       session: URLSession) async -> Result<([TailscaleDevice], String?), Error> {
+        switch await fetchAllPages(token: token, tailnet: tailnet, session: session) {
+        case .failure(let e):
+            return .failure(e)
+        case .success(let pages):
+            do {
+                var all: [TailscaleDevice] = []
+                var names: [String] = []
+                for page in pages {
+                    all += try mapDevices(page)
+                    names += fqdns(from: page)
+                }
+                return .success((sortDevices(all), inferMagicDNSSuffix(fromFQDNs: names)))
+            } catch let e as Error {
+                return .failure(e)
+            } catch {
+                return .failure(.transport(error.localizedDescription))
+            }
         }
     }
 
@@ -220,6 +320,10 @@ enum TailscaleAPI {
 
     private struct DevicesRoot: Decodable {
         let devices: [Device]
+        /// 分页游标（官方 API 分页响应字段名即 `cursor`，续拉时回传为
+        /// `?cursor=` 查询参数）。缺字段 / 空串都按「没有下一页」处理，
+        /// 不支持分页的响应解码结果不受影响。
+        let cursor: String?
     }
 
     private struct Device: Decodable {

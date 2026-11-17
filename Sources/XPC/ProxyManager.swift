@@ -6,6 +6,39 @@ public class ProxyManager {
         NSLog("[ClashHalo Helper ProxyManager] %@", msg)
     }
 
+    /// 自证 127.0.0.1:port 有内核在监听（P1-3 写点自证，AGENTS.md「系统级网络
+    /// 状态的写点必须自证安全前提」）。POSIX 非阻塞 connect + poll 等待，硬上限
+    /// 0.5s，不引入新依赖。内核 mixed-port 没在监听时写系统代理，等于把整机
+    /// 流量指进黑洞——必须先断言再落笔。
+    private static func loopbackListenerAlive(port: Int) -> Bool {
+        guard port > 0, port <= 65535 else { return false }
+        let fd = socket(AF_INET, SOCK_STREAM, 0)
+        guard fd >= 0 else { return false }
+        defer { close(fd) }
+        // 非阻塞 connect：连不上时不能拖住 Helper 线程，用 0.5s poll 上限兜住。
+        let flags = fcntl(fd, F_GETFL, 0)
+        guard flags >= 0 else { return false }
+        _ = fcntl(fd, F_SETFL, flags | O_NONBLOCK)
+        var addr = sockaddr_in()
+        addr.sin_len = UInt8(MemoryLayout<sockaddr_in>.size)
+        addr.sin_family = sa_family_t(AF_INET)
+        addr.sin_port = UInt16(port).bigEndian
+        addr.sin_addr = in_addr(s_addr: INADDR_LOOPBACK.bigEndian)
+        let connectResult = withUnsafePointer(to: &addr) { ptr in
+            ptr.withMemoryRebound(to: sockaddr.self, capacity: 1) { sa in
+                connect(fd, sa, socklen_t(MemoryLayout<sockaddr_in>.size))
+            }
+        }
+        if connectResult == 0 { return true }
+        guard errno == EINPROGRESS else { return false }
+        var pfd = pollfd(fd: fd, events: Int16(POLLOUT), revents: 0)
+        guard poll(&pfd, 1, 500) > 0 else { return false }
+        var soErr: Int32 = 0
+        var len = socklen_t(MemoryLayout<Int32>.size)
+        getsockopt(fd, SOL_SOCKET, SO_ERROR, &soErr, &len)
+        return soErr == 0
+    }
+
     /// Apply system-proxy settings to every non-virtual currently-active
     /// service (shared `ProxyServicePlan` selection), reporting a per-service
     /// outcome. This is the authoritative entry point — the legacy
@@ -17,6 +50,15 @@ public class ProxyManager {
         guard !services.isEmpty else {
             log("setSystemProxy: no network services")
             return .failed
+        }
+        if enabled {
+            // 写点自证（P1-3）：-setwebproxy 落笔前确认 127.0.0.1:port 真有内核
+            // 在监听。不在监听说明内核未起/端口不符，写了就是把系统流量指进
+            // 黑洞——直接失败并写明原因，不进入任何服务的写序列。
+            guard loopbackListenerAlive(port: port) else {
+                log("setSystemProxy: 拒绝写系统代理 — 127.0.0.1:\(port) 无监听（内核未起或端口不符），写下去会把系统流量指进黑洞")
+                return .failed
+            }
         }
         var okList: [String] = []
         var failedList: [String] = []
@@ -361,12 +403,18 @@ public class ProxyManager {
     ///   flags no longer carry UP — i.e. true zombie residue. Client-death
     ///   cleanup passes true so a *healthy* co-resident VPN tunnel sharing the
     ///   198.18.x space (e.g. Shadowrocket, still UP) is never torn down.
+    /// - Parameter configTunDisabled: UP 接口的「配置关」自证证据（P1-2）。
+    ///   只有显式传 `true`（Helper 侧已行扫描确认 config.yaml 的 tun.enable
+    ///   非 true）才允许清理 UP 接口；`false`（配置里 TUN 开着）与 `nil`
+    ///   （配置读不到/未确认）一律跳过 UP 清理并 log——僵尸定义 =
+    ///   配置关 + UP + 固定设备名，宁漏不误伤。downed 接口路径不受影响。
     /// - Returns: XPC-7——无残留可清、或所有「目标已确证存在」的清理命令都成功
     ///   才返回 true；枚举失败或确证目标的 route/ifconfig 命令失败返回 false
     ///   （旧实现恒 return true，失败也报成功）。尽力而为的探测性删除（目标可能
     ///   本就不存在）不计入失败，见各步注释。
     @discardableResult
-    public static func cleanupTUNResidual(downedOnly: Bool = false) -> Bool {
+    public static func cleanupTUNResidual(downedOnly: Bool = false,
+                                          configTunDisabled: Bool? = nil) -> Bool {
         // 1. Find utun interfaces with fake-ip addresses (198.18.x/198.19.x —
         //    mihomo TUN signature)
         let ifconfigOut = runGeneric("/sbin/ifconfig", ["-a"])
@@ -416,7 +464,16 @@ public class ProxyManager {
                         log("cleanupTUNResidual: skip \(iface) — UP 且非固定设备名 \(kPinnedTunDevice)，可能是共存 VPN 正在工作的隧道，宁漏不误伤")
                         continue
                     }
-                    log("cleanupTUNResidual: \(iface) UP 且为固定设备名，按僵尸残留清理")
+                    // 写点自证（P1-2）：UP 分支在三证据齐全时才清——固定设备名
+                    // + 「config.yaml 里 tun.enable 非 true」。上面的设备名判定
+                    // 是旧证据，这里补第三块拼图；GUI 侧的门（upDetachedMihomoTun
+                    // 等）会回归，真正的写点必须自己成立。配置读不到（nil）与
+                    // tun.enable=true（false）都不清。
+                    guard configTunDisabled == true else {
+                        log("cleanupTUNResidual: skip \(iface) — UP 接口缺少「配置关」自证（config.yaml 读不到或 tun.enable=true），僵尸定义不成立，宁漏不误伤")
+                        continue
+                    }
+                    log("cleanupTUNResidual: \(iface) UP 且为固定设备名且配置已关，按僵尸残留清理")
                 }
                 // Extract the IP address: "inet 198.18.0.1 --> ..."
                 let parts = s.trimmingCharacters(in: .whitespaces).split(separator: " ")

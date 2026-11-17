@@ -71,7 +71,7 @@ struct SdwanTopologyView: View {
             ZStack {
                 // Connections (Pan lines with flow simulation)
                 ForEach(ifacePoints, id: \.0) { ifaceId, pt in
-                    let color = lineColor(for: activeIfaces.first(where: { $0.id == ifaceId })?.kind ?? .physical)
+                    let color = (activeIfaces.first(where: { $0.id == ifaceId })?.kind ?? .physical).topologyColor
                     LinkLine(start: hostPt, end: pt, color: color)
                 }
 
@@ -81,7 +81,7 @@ struct SdwanTopologyView: View {
                     if dests.contains(r.dest),
                        let startPt = ifacePoints.first(where: { $0.0 == r.iface })?.1,
                        let endPt = destPoints.first(where: { $0.0 == r.dest })?.1 {
-                        let color = lineColor(for: activeIfaces.first(where: { $0.id == r.iface })?.kind ?? .physical)
+                        let color = (activeIfaces.first(where: { $0.id == r.iface })?.kind ?? .physical).topologyColor
                         LinkLine(start: startPt, end: endPt, color: color)
                     }
                 }
@@ -105,9 +105,9 @@ struct SdwanTopologyView: View {
                 ForEach(0..<activeIfaces.count, id: \.self) { idx in
                     let iface = activeIfaces[idx]
                     let pt = ifacePoints[idx].1
-                    let color = lineColor(for: iface.kind)
+                    let color = iface.kind.topologyColor
                     HStack(spacing: DS.Spacing.s) {
-                        Image(systemName: iconName(for: iface.kind))
+                        Image(systemName: iface.kind.topologyIcon)
                             .foregroundColor(color)
                             .font(.dsLabel)
                             .frame(width: 16)
@@ -147,30 +147,6 @@ struct SdwanTopologyView: View {
         .clipped()
         .dsCardChrome()
     }
-
-    private func lineColor(for k: IfaceKind) -> Color {
-        switch k {
-        case .physical: return DS.Palette.rolePhysical
-        case .proxyTun: return DS.Palette.accent
-        case .tailscale: return DS.Palette.roleTailscale
-        case .zerotier: return DS.Palette.roleZerotier
-        case .oray: return DS.Palette.roleOray
-        case .otherTun: return DS.Palette.roleOther
-        default: return .secondary
-        }
-    }
-
-    private func iconName(for k: IfaceKind) -> String {
-        switch k {
-        case .physical: return "wifi"
-        case .proxyTun: return "shield.fill"
-        case .tailscale: return "point.3.connected.trianglepath.dotted"
-        case .zerotier: return "globe"
-        case .oray: return "link"
-        case .otherTun: return "network"
-        default: return "questionmark.circle"
-        }
-    }
 }
 
 struct SdwanPage: View {
@@ -180,6 +156,10 @@ struct SdwanPage: View {
     @State private var conflicts: [RouteConflict] = []
     @State private var dnsDrift: [Coexistence.ResolverDrift] = []
     @State private var repairingDNS = false
+    /// P1-3：「一键修复」重入守卫。修复链含内核 PATCH + 800ms 等待 + rescan，
+    /// 进行中再点会并行两条链，route-exclude-address 的归属记录（provenance）
+    /// 会被互相覆盖——与 DNS 修复的 `repairingDNS` 同一交互形态。
+    @State private var repairingRoutes = false
     @State private var subnetGaps: [Coexistence.PeerSubnetGap] = []
     /// Another tunnel holding the unscoped default route. Reported, never
     /// "repaired" — see `NetScanner.foreignDefaultRouteHolder`.
@@ -239,8 +219,13 @@ struct SdwanPage: View {
                             // 一键修复修不了——排除条目改变不了默认路由归属。
                             // 禁用并说明，而不是让用户点了没反应、banner 永红。
                             let repairable = !conflicts.isEmpty
-                            Button("一键修复") {
+                            Button(repairingRoutes ? "修复中…" : "一键修复") {
+                                // 重入守卫 + disabled 双保险：整链（PATCH + 800ms +
+                                // rescan）期间禁止并行第二条，防止归属记录互相覆盖。
+                                guard !repairingRoutes else { return }
+                                repairingRoutes = true
                                 Task {
+                                    defer { repairingRoutes = false }
                                     // Same planner the automatic path uses.
                                     let plan = Coexistence.plan(await Coexistence.detect())
                                     // A tun PATCH must restate the whole block:
@@ -292,7 +277,7 @@ struct SdwanPage: View {
                                 }
                             }
                             .dsButton(.warning)
-                            .disabled(!repairable)
+                            .disabled(!repairable || repairingRoutes)
                             .help(repairable ? "" : "全局默认路由由 \(defaultRouteHolder ?? "其他隧道") 持有，需在该隧道一侧处理，本应用无法代为修复")
                         } else {
                             VStack {
@@ -519,28 +504,6 @@ struct SdwanPage: View {
             }
         }
     }
-    private func icon(_ k: IfaceKind) -> String {
-        switch k {
-        case .physical: return "wifi"
-        case .proxyTun: return "shield.fill"
-        case .tailscale: return "point.3.connected.trianglepath.dotted"
-        case .zerotier: return "globe"
-        case .oray: return "link"
-        case .otherTun: return "network"
-        default: return "questionmark.circle"
-        }
-    }
-    private func color(_ k: IfaceKind) -> Color {
-        switch k {
-        case .physical: return DS.Palette.rolePhysical
-        case .proxyTun: return DS.Palette.accent
-        case .tailscale: return DS.Palette.roleTailscale
-        case .zerotier: return DS.Palette.roleZerotier
-        case .oray: return DS.Palette.roleOray
-        case .otherTun: return DS.Palette.roleOther
-        default: return .secondary
-        }
-    }
 
     /// Build per-interface aggregate rows for the "网络接口拓扑" card.
     /// Each interface becomes one expandable row; dests seeded from routes
@@ -623,7 +586,7 @@ struct SdwanPage: View {
     private func routeDestLabel(_ dest: String, kind: IfaceKind) -> some View {
         HStack(spacing: DS.Spacing.xs) {
             Image(systemName: "arrow.up.right.circle.fill")
-                .foregroundColor(color(kind))
+                .foregroundColor(kind.topologyColor)
                 .font(.dsCaption)
             Text(dest)
                 .font(.dsMono)
@@ -670,31 +633,8 @@ struct SdwanAggregateRow<Dest: View>: View {
 
     @State private var expanded = false
 
-    private func icon(_ k: IfaceKind) -> String {
-        switch k {
-        case .physical: return "wifi"
-        case .proxyTun: return "shield.fill"
-        case .tailscale: return "point.3.connected.trianglepath.dotted"
-        case .zerotier: return "globe"
-        case .oray: return "link"
-        case .otherTun: return "network"
-        default: return "questionmark.circle"
-        }
-    }
-    private func color(_ k: IfaceKind) -> Color {
-        switch k {
-        case .physical: return DS.Palette.rolePhysical
-        case .proxyTun: return DS.Palette.accent
-        case .tailscale: return DS.Palette.roleTailscale
-        case .zerotier: return DS.Palette.roleZerotier
-        case .oray: return DS.Palette.roleOray
-        case .otherTun: return DS.Palette.roleOther
-        default: return .secondary
-        }
-    }
-
     var body: some View {
-        let tint = color(group.kind)
+        let tint = group.kind.topologyColor
         return VStack(spacing: 0) {
             if group.dests.isEmpty {
                 // Leaf egress (physical NIC carrying no tun routes) — no chevron,
@@ -731,11 +671,11 @@ struct SdwanAggregateRow<Dest: View>: View {
     /// Static (no-button) header for leaf egresses: only icon + name + IP +
     /// status dot; no chevron, no route-count pill, not tappable.
     private var leafHeader: some View {
-        let tint = color(group.kind)
+        let tint = group.kind.topologyColor
         return HStack(spacing: DS.Spacing.s) {
             // Reserve the chevron slot so leaf rows align with expandable ones.
             Color.clear.frame(width: 14)
-            Image(systemName: icon(group.kind))
+            Image(systemName: group.kind.topologyIcon)
                 .foregroundColor(tint)
                 .font(.dsBody)
                 .frame(width: 18)
@@ -761,13 +701,13 @@ struct SdwanAggregateRow<Dest: View>: View {
     /// Button label for expandable egresses: chevron + icon + name + count
     /// pill + IP + status dot. Tapping the header toggles the whole group.
     private var expandableHeader: some View {
-        let tint = color(group.kind)
+        let tint = group.kind.topologyColor
         return HStack(spacing: DS.Spacing.s) {
             Image(systemName: expanded ? "chevron.down" : "chevron.right")
                 .font(.dsBody)
                 .foregroundColor(.secondary)
                 .frame(width: 14)
-            Image(systemName: icon(group.kind))
+            Image(systemName: group.kind.topologyIcon)
                 .foregroundColor(tint)
                 .font(.dsBody)
                 .frame(width: 18)
@@ -826,5 +766,37 @@ struct NestedControlSurface: ViewModifier {
                     )
                 )
             )
+    }
+}
+
+// MARK: - IfaceKind → 拓扑视觉（角色色 / 图标）
+//
+// 原先 SdwanTopologyView / SdwanPage / SdwanAggregateRow 各持一份逐字相同的
+// switch（颜色、图标各三份），漂移一次就是三个角色色不一致；收敛为本文件
+// 私有扩展作唯一真相。口径与 AGENTS.md「UI 约定」一致：proxyTun 用 accent，
+// 其余走 rolePhysical / roleTailscale / roleZerotier / roleOray / roleOther。
+private extension IfaceKind {
+    var topologyColor: Color {
+        switch self {
+        case .physical: return DS.Palette.rolePhysical
+        case .proxyTun: return DS.Palette.accent
+        case .tailscale: return DS.Palette.roleTailscale
+        case .zerotier: return DS.Palette.roleZerotier
+        case .oray: return DS.Palette.roleOray
+        case .otherTun: return DS.Palette.roleOther
+        default: return .secondary
+        }
+    }
+
+    var topologyIcon: String {
+        switch self {
+        case .physical: return "wifi"
+        case .proxyTun: return "shield.fill"
+        case .tailscale: return "point.3.connected.trianglepath.dotted"
+        case .zerotier: return "globe"
+        case .oray: return "link"
+        case .otherTun: return "network"
+        default: return "questionmark.circle"
+        }
     }
 }

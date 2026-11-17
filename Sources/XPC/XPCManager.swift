@@ -186,10 +186,14 @@ public class XPCManager {
     /// never the setSystemProxy sent over the cached one), so a fresh connection
     /// — the same pattern verifyConnectivity proves reliable — is used here too.
     ///
-    /// Timeout is 15s (was 5s): ProxyManager may still walk a couple of services
-    /// with several networksetup forks; 5s produced false "Couldn't communicate
-    /// with a helper application" while the helper was still busy applying.
-    public func callSystemProxy(enabled: Bool, port: Int, timeout: TimeInterval = 15.0) async -> Bool? {
+    /// Timeout is 60s (was 15s, before that 5s)：Helper 侧一次 enable 最坏是
+    /// 「N 个服务 × 7 条 networksetup 写命令 × 5s 单条超时 × 1 次重试」（见
+    /// ProxyManager.writeCmdTimeout），SC 动态存储锁竞争时单条即可打满 5s。
+    /// 15s 实测仍会在 Helper 正常慢速写入时误判超时，随后本地回退与 Helper
+    /// **并发写同一 SC 存储**——正是 XPC-9 修掉的半提交形态。60s 覆盖常见慢
+    /// 形态（秒级~十几秒），不是理论上界（每条都打满 5s×2×N 时本地回退同样
+    /// 会失败，此时宁可等满也不要抢跑并发写）。
+    public func callSystemProxy(enabled: Bool, port: Int, timeout: TimeInterval = 60.0) async -> Bool? {
         guard checkStatus() == .enabled else { return nil }
         let conn = NSXPCConnection(machServiceName: "com.clashhalo.helper", options: .privileged)
         conn.remoteObjectInterface = NSXPCInterface(with: HelperProtocol.self)
@@ -513,14 +517,17 @@ public class XPCManager {
         // tears down without poisoning future installs.
         // F13: set -e——bootout 带 || true 不受影响，rm -f 对不存在文件不报错；
         // 真实删除失败（如权限异常）不再被静默吞掉、不再假报卸载成功。
+        // 转义纪律（P1-5）：与 installDaemon 同口径，路径插值一律经 shellQuote
+        // （XPC-2 单引号转义）——此处六处插值此前是裸双引号，路径虽是常量，
+        // 但统一走 shellQuote 才能把「插值进 shell 必须转义」钉成纪律。
         let script = """
         set -e; \
-        launchctl bootout system "\(plistDst)" 2>/dev/null || true; \
-        launchctl bootout system "\(legacyPlistDst)" 2>/dev/null || true; \
-        rm -f "\(plistDst)"; \
-        rm -f "\(helperDst)"; \
-        rm -f "\(legacyPlistDst)"; \
-        rm -f "\(legacyHelperDst)"
+        launchctl bootout system \(Self.shellQuote(plistDst)) 2>/dev/null || true; \
+        launchctl bootout system \(Self.shellQuote(legacyPlistDst)) 2>/dev/null || true; \
+        rm -f \(Self.shellQuote(plistDst)); \
+        rm -f \(Self.shellQuote(helperDst)); \
+        rm -f \(Self.shellQuote(legacyPlistDst)); \
+        rm -f \(Self.shellQuote(legacyHelperDst))
         """
 
         let uninstallPrompt = prompt ?? PrivilegedPromptContent(

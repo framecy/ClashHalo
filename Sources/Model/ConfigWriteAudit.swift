@@ -69,17 +69,19 @@ enum ConfigWriteAudit {
         return summarizedKeySuffixes.contains { lower.hasSuffix($0) }
     }
 
-    /// Stable, non-reversible short fingerprint of a value. Derived from the
+    /// Stable, non-reversible fingerprint of a value. Derived from the
     /// value's bytes via `Hasher` with a process-stable seed is not available in
     /// this context, so a simple deterministic fold is used: the requirement is
     /// only that equal values fingerprint equally and different values do not.
+    /// 全宽 64bit hex：旧版只留低 16 位，两条不同订阅 URL 在 4 万次写入的日志
+    /// 尺度下足够撞出同指纹，把「URL 没变」误读成「URL 换了」（反之亦然）。
     static func fingerprint(_ value: String) -> String {
         var hash: UInt64 = 0xcbf29ce484222325          // FNV-1a offset basis
         for byte in value.utf8 {
             hash ^= UInt64(byte)
             hash = hash &* 0x100000001b3               // FNV prime
         }
-        return String(format: "<#%04x>", hash & 0xffff)
+        return String(format: "<#%016llx>", hash)
     }
 
     /// Fixed replacement for a sensitive value. Deliberately constant so the
@@ -283,10 +285,21 @@ enum ConfigWriteAudit {
                 continue
             }
             guard let colon = body.firstIndex(of: ":") else { continue }
-            let key = String(body[body.startIndex..<colon]).trimmingCharacters(in: .whitespaces)
+            // 带引号的键（`"US-LH":`）剥掉首尾配对引号再入 path，与不带引号的
+            // 同名键归一；取值起点相应后移（见 quotedKeyPrefix 的取舍说明）。
+            let rawKey: String
+            let rawValueStart: String.Index
+            if let q = quotedKeyPrefix(in: body) {
+                rawKey = q.key
+                rawValueStart = q.afterColon
+            } else {
+                rawKey = String(body[body.startIndex..<colon])
+                rawValueStart = body.index(after: colon)
+            }
+            let key = rawKey.trimmingCharacters(in: .whitespaces)
             guard !key.isEmpty else { continue }
             let value = YamlScalar.stripInlineComment(
-                String(body[body.index(after: colon)...]).trimmingCharacters(in: .whitespaces)
+                String(body[rawValueStart...]).trimmingCharacters(in: .whitespaces)
             ).trimmingCharacters(in: .whitespaces)
             while let top = stack.last, top.indent >= indent { stack.removeLast() }
             let path = (stack.map(\.key) + [key]).joined(separator: ".")
@@ -302,6 +315,61 @@ enum ConfigWriteAudit {
             out[path] = "(seq: \(count))"
         }
         return out
+    }
+
+    /// 行首是带引号键（`"US-LH": …` / `'a:b': …`）时，返回剥引号后的键名与
+    /// 值区起点（键分隔冒号之后）；否则返回 nil，调用方退回裸键路径。
+    ///
+    /// 为什么存在：profile 与运行配置对同一个键的引号写法可以不同
+    /// （`proxy-providers."P".url` vs `proxy-providers.P.url`），不归一的话
+    /// 同一 provider 的 URL 指纹对不上，凭据变化漏报、同值误报。
+    ///
+    /// 取舍：键内含冒号的 quoted key（`"a:b": v`）先找闭合引号、再从其后取
+    /// 首个冒号，键内冒号得以保留。转义只做最常见的两式——单引号的 `''`、
+    /// 双引号的 `\"` / `\\`——其余转义序列原样进键名：审计路径只要求
+    /// 「同一键稳定归一」，不承诺完整 YAML 语义。找不到闭合引号（或闭合后
+    /// 不是冒号）的畸形行返回 nil 退回旧行为：宁可脏键，也不把行丢掉。
+    static func quotedKeyPrefix(in body: String) -> (key: String, afterColon: String.Index)? {
+        guard let first = body.first, first == "\"" || first == "'" else { return nil }
+        var idx = body.index(after: body.startIndex)
+        var close: String.Index? = nil
+        while idx < body.endIndex {
+            let c = body[idx]
+            if c == first {
+                // 单引号转义 `''`：后一个还是引号则成对跳过。
+                if first == "'",
+                   let next = body.index(idx, offsetBy: 1, limitedBy: body.endIndex),
+                   body[next] == "'" {
+                    idx = body.index(after: next)
+                    continue
+                }
+                // 双引号转义 `\"`：前置反斜杠则不是闭合。
+                if first == "\"", body[body.index(before: idx)] == "\\" {
+                    idx = body.index(after: idx)
+                    continue
+                }
+                close = idx
+                break
+            }
+            idx = body.index(after: idx)
+        }
+        guard let close else { return nil }
+        // 闭合引号到冒号之间只允许空白，才是键分隔冒号。
+        var cursor = body.index(after: close)
+        while cursor < body.endIndex, body[cursor] == " " || body[cursor] == "\t" {
+            cursor = body.index(after: cursor)
+        }
+        guard cursor < body.endIndex, body[cursor] == ":" else { return nil }
+        let inner = String(body[body.index(after: body.startIndex)..<close])
+        let key: String
+        if first == "'" {
+            key = inner.replacingOccurrences(of: "''", with: "'")
+        } else {
+            key = inner
+                .replacingOccurrences(of: "\\\"", with: "\"")
+                .replacingOccurrences(of: "\\\\", with: "\\")
+        }
+        return (key, body.index(after: cursor))
     }
 
     /// Render one side of a change for the log.

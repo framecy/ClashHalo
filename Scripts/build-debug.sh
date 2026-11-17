@@ -21,11 +21,17 @@ mkdir -p "$BUILD"
 # -target pins the Helper's minimum OS to the product deployment target
 # (macOS 14.0); without it swiftc defaults to the build machine's OS and the
 # Helper won't load on macOS 14–26. -O matches make.sh's Release Helper.
+# -DDEBUG（2026-11-17 审查 P1-1 配套）：Helper 允许根里「Xcode 产物目录」分支
+# 由 #if DEBUG 门控。GUI 走 Debug 配置时 Xcode 自动定义 DEBUG，而这里的手工
+# swiftc 不会——缺了它，Debug 构建的 Helper 装机后会把 .build 产物路径的
+# 真客户端拒之门外（实机事故：build-debug.sh 自动打开的 App 被已装 Helper
+# REJECTED「路径未锚定」，特权功能全灭）。make.sh 的 Release Helper 不传此
+# 旗标，收紧后的 Release 允许根不受影响。
 swiftc \
     "$ROOT/Sources/Helper/main.swift" \
     "$ROOT/Sources/XPC/ProxyManager.swift" \
     "$ROOT/Sources/XPC/HelperProtocol.swift" \
-    -target arm64-apple-macosx14.0 -O \
+    -target arm64-apple-macosx14.0 -O -DDEBUG \
     -o "$BUILD/com.clashhalo.helper" \
     -Xlinker -sectcreate -Xlinker __TEXT -Xlinker __info_plist -Xlinker "$ROOT/Helper-Info.plist"
 codesign --force --sign - "$BUILD/com.clashhalo.helper" >/dev/null

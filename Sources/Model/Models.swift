@@ -218,7 +218,13 @@ enum NetScanner {
     /// When it holds, a 198.18 utun under any *other* name belongs to a different
     /// proxy app and must never be reported as ours — not as a live TUN, and
     /// above all not as residue to tear down.
-    static var pinnedDeviceActive = false
+    ///
+    /// 2026-11-17 审查：本枚举的缓存（tunCache）与该旗标原先是无隔离的
+    /// nonisolated static，线程安全只靠「调用方恰好在 MainActor」的隐含约定。
+    /// 现已把触碰这两个状态的全员（含读写函数）标注 @MainActor，把约定变成
+    /// 编译期防护——mihomoTunInterface 内部有 await 挂起点，未来任何非主线程
+    /// 调用方都会当场编译报错而不是埋下数据竞争。
+    @MainActor static var pinnedDeviceActive = false
 
     // System-proxy bypass domains live in `Sources/XPC/HelperProtocol.swift` as
     // `kProxyBypassDomains` (single source of truth shared by the XPC Helper,
@@ -516,7 +522,7 @@ enum NetScanner {
     ///   health polls; the TUN bring-up wait loop passes a near-zero value so a
     ///   cached negative from just before the utun appeared doesn't stall the
     ///   enable flow ~1.5s (nil results are cached like any other).
-    static func mihomoTunInterface(maxAge: TimeInterval = 1.5) async -> String? {
+    @MainActor static func mihomoTunInterface(maxAge: TimeInterval = 1.5) async -> String? {
         // Short TTL cache: refreshConfigs used to call this every 3s; even after
         // poll layering, verify paths can still stack. 1.5s is well under the
         // health-check period and avoids repeated getifaddrs/route forks.
@@ -528,7 +534,7 @@ enum NetScanner {
         return name
     }
 
-    private static var tunCache: (name: String?, at: Date)?
+    @MainActor private static var tunCache: (name: String?, at: Date)?
 
     /// Synchronous sibling of `mihomoTunInterface()` for callers that cannot
     /// await — notably `AppModel.tunnelDNSAddress()`, which is a plain `-> String`
@@ -543,7 +549,7 @@ enum NetScanner {
     ///
     /// Identity rule mirrors `mihomoTunInterfaceUncached()`: prefer the pinned
     /// device name, then the sole 198.18 candidate.
-    static func mihomoTunInterfaceSync() -> String? {
+    @MainActor static func mihomoTunInterfaceSync() -> String? {
         let candidates = interfaces().filter { $0.kind == .proxyTun }
         if candidates.isEmpty { return nil }
         if pinnedDeviceActive, let exact = candidates.first(where: { $0.id == kPinnedTunDevice }) {
@@ -623,7 +629,7 @@ enum NetScanner {
     /// cached like any other, so a reconcile that runs within the TTL after a
     /// failed wait would just re-read that `nil` and reach the same verdict —
     /// which made the post-PATCH retry in `applyTUNState` a guaranteed no-op.
-    static func invalidateTunCache() { tunCache = nil }
+    @MainActor static func invalidateTunCache() { tunCache = nil }
 
     /// Identity-strict variant of `mihomoTunInterface()`: returns our tunnel
     /// **only** when it answers to the pinned device name.
@@ -644,7 +650,7 @@ enum NetScanner {
     ///
     /// Falls back to the sole candidate only when the pin is *not* active, i.e.
     /// when there is no name to be strict about.
-    static func ownMihomoTunInterface(maxAge: TimeInterval = 1.5) async -> String? {
+    @MainActor static func ownMihomoTunInterface(maxAge: TimeInterval = 1.5) async -> String? {
         guard pinnedDeviceActive else { return await mihomoTunInterface(maxAge: maxAge) }
         let candidates = interfaces().filter { $0.kind == .proxyTun }
         guard let ours = candidates.first(where: { $0.id == kPinnedTunDevice }) else {
@@ -653,7 +659,7 @@ enum NetScanner {
         return ours.id
     }
 
-    private static func mihomoTunInterfaceUncached() async -> String? {
+    @MainActor private static func mihomoTunInterfaceUncached() async -> String? {
         let ifaces = interfaces()
         let candidates = ifaces.filter { $0.kind == .proxyTun }
         if candidates.isEmpty { return nil }
@@ -754,7 +760,7 @@ enum NetScanner {
     /// the config-on half of the problem. Requiring at least one route to
     /// point at the interface keeps a momentarily-route-less bring-up/down
     /// window out of scope: nothing is being diverted yet.
-    static func upDetachedMihomoTun() async -> String? {
+    @MainActor static func upDetachedMihomoTun() async -> String? {
         guard pinnedDeviceActive else { return nil }
         guard let iface = interfaces().first(where: {
             $0.kind == .proxyTun && $0.isUp && $0.id == kPinnedTunDevice

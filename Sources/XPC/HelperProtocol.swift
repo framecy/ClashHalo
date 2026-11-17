@@ -51,7 +51,7 @@ import Foundation
 /// session takeover before its destructive steps (quit/relaunch race).
 /// 1.0.25: system-proxy rework (shared ProxyServicePlan, branch-order fix, no
 /// 2-service cap, full-success-only Bool).
-public let kSharedHelperVersion = "1.0.32"
+public let kSharedHelperVersion = "1.0.34"
 
 /// The utun name mihomo is asked to take, instead of accepting whatever index
 /// the kernel hands out. Shared with the Helper so it can tell a route our own

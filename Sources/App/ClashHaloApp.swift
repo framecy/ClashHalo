@@ -257,6 +257,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         kill.arguments = ["-9", "mihomo"]
         kill.standardOutput = Pipe(); kill.standardError = Pipe()
         try? kill.run(); kill.waitUntilExit()
+
+        // 4. 日志收尾（2026-11-17 审查）：app.log 已改为缓冲写（≤32 行或 0.5s
+        //    定界 flush）。退出是落盘尾部日志的最后机会——「为什么一退出就坏」
+        //    的排查恰恰依赖这几行。
+        AppModel.flushAppLogNow()
     }
 
     /// One-shot privileged call over a throwaway XPC connection, bounded so quit

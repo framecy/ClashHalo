@@ -3223,25 +3223,20 @@ extension AppModel {
         // round-trip an occasional probe and that one good packet must not
         // erase an in-flight bad burst. Only a full healthy cycle clears it.
         var trip = false
-        var sawAnyFailure = false
-        var sawAnySuccess = false
         for (i, ok) in outcomes.enumerated() {
-            if ok {
-                sawAnySuccess = true
-                logKernel("TUN 数据面探测 \(i + 1)/\(outcomes.count): DNS gateway \(gateway) 应答")
-            } else {
-                sawAnyFailure = true
-                logKernel("TUN 数据面探测 \(i + 1)/\(outcomes.count) 失败: DNS gateway \(gateway) timeout")
-            }
+            logKernel(ok ? "TUN 数据面探测 \(i + 1)/\(outcomes.count): DNS gateway \(gateway) 应答"
+                         : "TUN 数据面探测 \(i + 1)/\(outcomes.count) 失败: DNS gateway \(gateway) timeout")
             if tunDataPlaneHealth.record(success: ok) {
                 trip = true
             }
         }
-        // Only a completely clean cycle (every attempt answered) clears the
-        // window. A half-dead fd will still see `sawAnyFailure == true` after
-        // the burst, so the bad evidence persists across cycles until either
-        // the recovery threshold trips or the fd genuinely returns to 100%.
-        if !sawAnyFailure, sawAnySuccess, !trip {
+        // AGENTS §5：reset() 只在「满窗口全成功」(allHealthy) 后调用。不能以
+        // 「本轮 cycle 无失败」为清窗条件——runTUNDataPlaneProbeCycle 在首试
+        // 即刻应答时短路返回单元素 outcomes，该条件恒真，会把仍持有
+        // threshold-1 次失败的窗口整段清零：半死 fd「多数失败 + 偶发首试即答」
+        // 形态下坏证据被反复抹掉，正是滑动窗口要防的形态（实机 app.log 3600 条
+        // 探针记录全部走 1/1 短路路径）。
+        if !trip, tunDataPlaneHealth.allHealthy {
             tunDataPlaneHealth.reset()
         }
         guard trip else { return }
@@ -4012,12 +4007,17 @@ extension AppModel {
         }
     }
 
-    /// Safely persist the proxy-providers list to config.yaml + reference them in
-    /// the primary group, then reload. Backs up first and validates with
+    /// Safely persist the proxy-providers list to config.yaml + apply the group
+    /// membership the user picked, then reload. Backs up first and validates with
     /// `mihomo -t`; on any error the original config is restored (never corrupts a
     /// working subscription). Returns true on success.
+    ///
+    /// - `memberships`: provider → 目标策略组集合；只为本次显式编辑的订阅传值。
+    /// - `renamed`: 旧名 → 新名；组里的 `use:` 引用原位换名。
     @discardableResult
-    func saveProxyProviders(_ providers: [(name: String, url: String)]) async -> Bool {
+    func saveProxyProviders(_ providers: [(name: String, url: String)],
+                            memberships: [String: Set<String>] = [:],
+                            renamed: [String: String] = [:]) async -> Bool {
         let path = engine.configFilePath
         // CFG-19：与 patchPersistentTransactional 同一套保护——读不到备份就
         // 拒绝写入。旧实现 backup 为 nil 也照写，失败分支静默跳过回滚，
@@ -4034,7 +4034,7 @@ extension AppModel {
         let preexistingError = await engine.validateConfig()
         let kernelReachable = reachable
 
-        engine.writeProxyProviders(providers)
+        engine.writeProxyProviders(providers, memberships: memberships, renamed: renamed)
         persistTunStateForReload()    // preserve running TUN across reload
         // 空组预检：删除订阅后，只靠它供血的策略组会失去全部节点来源，
         // mihomo -t 的英文语法错掩盖了「组空了」这个真正原因。先用行扫描

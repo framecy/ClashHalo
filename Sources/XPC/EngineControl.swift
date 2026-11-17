@@ -158,6 +158,12 @@ import SystemConfiguration
         // Initial config if missing
         let configPath = appSupport + "/config.yaml"
         if !fm.fileExists(atPath: configPath) {
+            // 控制面默认端口统一 9092（P1-9）：与 MihomoClient 的
+            // @AppStorage("mihomo.port") 默认值、hardenControllerConfig 的缺键
+            // 兜底三处对齐。不用 9090 的原因：9090 是 Clash 生态事实标准端口
+            // （ClashX/Verge 等），fresh install 撞端口会让控制面起不来；9092
+            // 是本应用私有默认。实际控制器地址仍以 applyController 从 config.yaml
+            // 发现为准（AGENTS.md：不要硬编码 127.0.0.1:9092）。
             let initial = """
             mixed-port: 7890
             allow-lan: false
@@ -645,16 +651,31 @@ import SystemConfiguration
     }
 
     /// Rewrite the whole `proxy-providers:` block from the given list (HTTP type +
-    /// standard health-check template), and sync the first `use:`-based group to
-    /// reference exactly these providers. Returns false on read failure.
+    /// standard health-check template), then apply the requested group membership.
+    ///
+    /// - `memberships`: provider → 目标策略组集合；只有本次显式编辑过的订阅才出现。
+    /// - `renamed`: 旧名 → 新名；组里的 `use:` 引用原位换名，不会静默退出所有组。
+    ///
+    /// 归属改写唯一入口是 `ProviderGroupBinding.rewrite`（纯逻辑 + 回归套件），
+    /// 不要再在这里手写第二套 `use:` 逻辑。返回 false 表示读盘/写盘失败。
     @discardableResult
-    func writeProxyProviders(_ providers: [(name: String, url: String)]) -> Bool {
-        let oldNames = Set(proxyProviders().map { $0.name })
+    func writeProxyProviders(_ providers: [(name: String, url: String)],
+                             memberships: [String: Set<String>] = [:],
+                             renamed: [String: String] = [:]) -> Bool {
+        let currentProviders = proxyProviders()
+        let oldNames = Set(currentProviders.map { $0.name })
         let newNames = Set(providers.map { $0.name })
-        let deleted = oldNames.subtracting(newNames)
+        // 改名不算删除：旧名要在组里原位换成新名，而不是先清掉再也没人补回。
+        let deleted = oldNames.subtracting(newNames).subtracting(renamed.keys)
 
         guard let text = try? String(contentsOfFile: configFilePath, encoding: .utf8) else { return false }
         var lines = text.components(separatedBy: "\n")
+
+        // 只改策略组归属时（订阅清单与 URL 都没变），整块 `proxy-providers:` 必须
+        // 原样不动：按 http 模板重建会丢掉用户手写的 filter / exclude-filter /
+        // 自定义 health-check 等字段。旧页面没有「只改归属」入口，这一步是新增的。
+        let providersUnchanged = currentProviders.count == providers.count
+            && zip(currentProviders, providers).allSatisfy { $0.name == $1.name && $0.url == $1.url }
 
         // 0. 先记住旧块里每个 provider 的完整定义与类型。
         //
@@ -662,65 +683,67 @@ import SystemConfiguration
         // 会把 base64 订阅改写成 `type: file` + `path:`。用户在订阅页删/改**任何**
         // 一条订阅都会走到这里 —— 不保留旧块的话，那条本地 provider 会被还原成
         // `type: http` + `url: ""`，节点当场全空，而且看起来像是「转换没生效」。
-        var preserved: [String: (isFile: Bool, block: [String])] = [:]
-        if let start = lines.firstIndex(where: { $0.hasPrefix("proxy-providers:") }) {
-            var end = start + 1
-            while end < lines.count,
-                  lines[end].trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-                    || lines[end].hasPrefix(" ") || lines[end].hasPrefix("\t") { end += 1 }
-            var current: (name: String, isFile: Bool, block: [String])? = nil
-            for i in (start + 1)..<end {
-                let line = lines[i]
-                let t = Self.stripLineComment(line.trimmingCharacters(in: .whitespacesAndNewlines))
-                let nameIndent = line.hasPrefix("  ") && !line.hasPrefix("   ")
-                if nameIndent && t.hasSuffix(":") {
-                    if let c = current { preserved[c.name] = (c.isFile, c.block) }
-                    let name = String(t.dropLast())
-                        .replacingOccurrences(of: "\"", with: "")
-                        .replacingOccurrences(of: "'", with: "")
-                    current = (name, false, [line])
-                } else if current != nil {
-                    current?.block.append(line)
-                    if t.hasPrefix("type:") && t.lowercased().contains("file") {
-                        current?.isFile = true
+        if !providersUnchanged {
+            var preserved: [String: (isFile: Bool, block: [String])] = [:]
+            if let start = lines.firstIndex(where: { $0.hasPrefix("proxy-providers:") }) {
+                var end = start + 1
+                while end < lines.count,
+                      lines[end].trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                        || lines[end].hasPrefix(" ") || lines[end].hasPrefix("\t") { end += 1 }
+                var current: (name: String, isFile: Bool, block: [String])? = nil
+                for i in (start + 1)..<end {
+                    let line = lines[i]
+                    let t = Self.stripLineComment(line.trimmingCharacters(in: .whitespacesAndNewlines))
+                    let nameIndent = line.hasPrefix("  ") && !line.hasPrefix("   ")
+                    if nameIndent && t.hasSuffix(":") {
+                        if let c = current { preserved[c.name] = (c.isFile, c.block) }
+                        let name = String(t.dropLast())
+                            .replacingOccurrences(of: "\"", with: "")
+                            .replacingOccurrences(of: "'", with: "")
+                        current = (name, false, [line])
+                    } else if current != nil {
+                        current?.block.append(line)
+                        if t.hasPrefix("type:") && t.lowercased().contains("file") {
+                            current?.isFile = true
+                        }
                     }
                 }
+                if let c = current { preserved[c.name] = (c.isFile, c.block) }
             }
-            if let c = current { preserved[c.name] = (c.isFile, c.block) }
-        }
 
-        // 1. Build the new proxy-providers block.
-        var block: [String] = []
-        if !providers.isEmpty {
-            block.append("proxy-providers:")
-            for p in providers {
-                // 本地 file provider 原样保留（App 维护的节点文件，不经这里改写）
-                if let old = preserved[p.name], old.isFile {
-                    block += old.block
-                    continue
+            // 1. Build the new proxy-providers block.
+            var block: [String] = []
+            if !providers.isEmpty {
+                block.append("proxy-providers:")
+                for p in providers {
+                    // 本地 file provider 原样保留（App 维护的节点文件，不经这里改写）
+                    if let old = preserved[p.name], old.isFile {
+                        block += old.block
+                        continue
+                    }
+                    block += [
+                        "  \"\(p.name)\":",
+                        "    type: http",
+                        "    url: \"\(p.url)\"",
+                        "    interval: 3600",
+                        "    health-check:",
+                        "      enable: true",
+                        "      url: http://www.gstatic.com/generate_204",
+                        "      interval: 300",
+                        "      lazy: true",
+                    ]
                 }
-                block += [
-                    "  \"\(p.name)\":",
-                    "    type: http",
-                    "    url: \"\(p.url)\"",
-                    "    interval: 3600",
-                    "    health-check:",
-                    "      enable: true",
-                    "      url: http://www.gstatic.com/generate_204",
-                    "      interval: 300",
-                    "      lazy: true",
-                ]
             }
-        }
 
-        // 2. Replace existing proxy-providers block, else insert before proxy-groups.
-        if let start = lines.firstIndex(where: { $0.hasPrefix("proxy-providers:") }) {
-            var end = start + 1
-            while end < lines.count, lines[end].trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || lines[end].hasPrefix(" ") || lines[end].hasPrefix("\t") { end += 1 }
-            lines.replaceSubrange(start..<end, with: block)
-        } else if !block.isEmpty {
-            let at = lines.firstIndex(where: { $0.hasPrefix("proxy-groups:") }) ?? lines.count
-            lines.insert(contentsOf: block + [""], at: at)
+            // 2. Replace existing proxy-providers block, else insert before proxy-groups.
+            if let start = lines.firstIndex(where: { $0.hasPrefix("proxy-providers:") }) {
+                var end = start + 1
+                while end < lines.count, lines[end].trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || lines[end].hasPrefix(" ") || lines[end].hasPrefix("\t") { end += 1 }
+                lines.replaceSubrange(start..<end, with: block)
+            } else if !block.isEmpty {
+                let at = lines.firstIndex(where: { $0.hasPrefix("proxy-groups:") }) ?? lines.count
+                lines.insert(contentsOf: block + [""], at: at)
+            }
         }
 
         // 3. Cleanup all references (use, proxies, rules)
@@ -780,63 +803,15 @@ import SystemConfiguration
             i += 1
         }
 
-        // 4. Sync the primary group's use: block.
-        // 只在**纯新增/编辑**路径做同步。删除路径（deleted 非空）绝不能重注入：
-        // 这里会把第一个策略组的 use: 整块重写为「当前全部 provider」，用户按订阅
-        // 拆分的组结构（组 A 只用订阅 1、组 B 只用订阅 2）会被静默合并——删除订阅
-        // 时其他组的引用清理已由第 3 步按名精确完成，不需要也不应该在这里动任何
-        // 组的 use:。
-        if deleted.isEmpty, let pgIdx = lines.firstIndex(where: { $0.hasPrefix("proxy-groups:") }) {
-            if let firstGroupIdx = lines[(pgIdx+1)...].firstIndex(where: { $0.trimmingCharacters(in: .whitespaces).hasPrefix("- name:") }) {
-                // Find where this group ends
-                var nextGroupIdx = lines.count
-                for idx in (firstGroupIdx+1)..<lines.count {
-                    let trimmed = lines[idx].trimmingCharacters(in: .whitespacesAndNewlines)
-                    if trimmed.hasPrefix("- name:") || (!lines[idx].hasPrefix(" ") && !trimmed.isEmpty) {
-                        nextGroupIdx = idx
-                        break
-                    }
-                }
-                
-                // Remove existing `use:` in primary group
-                if let useIdx = lines[firstGroupIdx..<nextGroupIdx].firstIndex(where: { $0.trimmingCharacters(in: .whitespacesAndNewlines) == "use:" }) {
-                    var endUseIdx = useIdx + 1
-                    let useIndent = lines[useIdx].prefix(while: { $0 == " " }).count
-                    while endUseIdx < nextGroupIdx {
-                        let trimmed = lines[endUseIdx].trimmingCharacters(in: .whitespacesAndNewlines)
-                        if trimmed.isEmpty { endUseIdx += 1; continue }
-                        let indent = lines[endUseIdx].prefix(while: { $0 == " " }).count
-                        if indent > useIndent { 
-                            endUseIdx += 1
-                            continue 
-                        }
-                        if indent == useIndent && trimmed.hasPrefix("-") {
-                            endUseIdx += 1
-                            continue
-                        }
-                        break
-                    }
-                    lines.removeSubrange(useIdx..<endUseIdx)
-                    nextGroupIdx -= (endUseIdx - useIdx)
-                }
-                
-                // Inject new `use:`
-                if !providers.isEmpty {
-                    var insertAt = firstGroupIdx + 1
-                    var baseIndent = "    "
-                    while insertAt < nextGroupIdx {
-                        let line = lines[insertAt]
-                        let trimmed = line.trimmingCharacters(in: .whitespacesAndNewlines)
-                        if !trimmed.hasPrefix("type:") && !trimmed.hasPrefix("name:") { break }
-                        baseIndent = String(line.prefix(while: { $0 == " " }))
-                        insertAt += 1
-                    }
-                    var useBlock = ["\(baseIndent)use:"]
-                    useBlock.append(contentsOf: providers.map { "\(baseIndent)  - \"\($0.name)\"" })
-                    lines.insert(contentsOf: useBlock, at: insertAt)
-                }
-            }
-        }
+        // 4. 按每个订阅的目标归属改写各组 use:。
+        // 旧实现把第一个组的 use: 整块重写成「全部 provider」：用户无法按组分配，
+        // 改名还会静默退出所有组。现在只有显式勾选的组会被增删，未受影响的组
+        // 逐字节不动（ProviderGroupBinding 的回归套件钉住这一点）。
+        lines = ProviderGroupBinding.rewrite(lines.joined(separator: "\n"),
+                                             desired: memberships,
+                                             removed: deleted,
+                                             renamed: renamed)
+            .components(separatedBy: "\n")
 
         // 5. Cleanup any dangling empty use: or proxies: blocks in other groups
         var j = lines.count - 1
@@ -1227,7 +1202,10 @@ import SystemConfiguration
         for i in lines.indices {
             if let ec = scalar(lines[i], "external-controller") {
                 hasController = true
-                let port = ec.lastIndex(of: ":").map { String(ec[ec.index(after: $0)...]) } ?? "9090"
+                // 无端口形态（如 `external-controller: 127.0.0.1`）按本应用统一
+                // 默认 9092 补齐（P1-9：与初始模板、MihomoClient 默认对齐，
+                // 不用生态通用 9090 避免撞端口）。
+                let port = ec.lastIndex(of: ":").map { String(ec[ec.index(after: $0)...]) } ?? "9092"
                 let want = "127.0.0.1:\(port.trimmingCharacters(in: .whitespaces))"
                 if ec != want { lines[i] = "external-controller: \(want)"; changed = true }
             } else if let sec = scalar(lines[i], "secret") {
@@ -1241,7 +1219,10 @@ import SystemConfiguration
             }
         }
 
-        if !hasController { lines.insert("external-controller: 127.0.0.1:9090", at: 0); changed = true }
+        // 缺键兜底统一 9092（P1-9）：此前与初始模板的 9092 不一致——配置丢键
+        // 后修复会突然换端口；9090 是 Clash 生态通用端口，插入时撞端口风险高。
+        // 旧配置若真写着 9090 会走 hasController 分支原样保留，无迁移问题。
+        if !hasController { lines.insert("external-controller: 127.0.0.1:9092", at: 0); changed = true }
         if !hasSecret { lines.insert("secret: \(Self.randomSecret())", at: 0); changed = true }
 
         if changed {
@@ -1980,6 +1961,17 @@ import SystemConfiguration
     /// resolves it against this same home directory and rejects anything else.
     var tailscaleStateDirPath: String { appSupport + "/" + TailscaleSettings.stateDir }
 
+    /// 直连强制（P1-6）：stopKernel 的 shutdown 请求与 MihomoClient /
+    /// KernelManager 同口径，走 `connectionProxyDictionary = [:]` 的 ephemeral
+    /// session，不用 URLSession.shared——内核切换时序里此刻系统代理可能仍指向
+    /// mihomo 自己（本函数先于「临时关系统代理」运行）：经 mixed-port 代理访问
+    /// 控制器会把管理请求当代理流量转发，内核死后还会黑洞到代理超时。
+    private static let noProxySession: URLSession = {
+        let config = URLSessionConfiguration.ephemeral
+        config.connectionProxyDictionary = [:]
+        return URLSession(configuration: config)
+    }()
+
     /// Stop the running kernel: graceful REST shutdown, then helper/killall fallback.
     /// Exposed so callers (e.g. KernelManager.activate) can release bin/mihomo
     /// before overwriting it, avoiding "file busy" when a kernel is running.
@@ -2008,7 +2000,7 @@ import SystemConfiguration
             req.httpMethod = "POST"
             req.timeoutInterval = 1.5
             if !api.secret.isEmpty { req.setValue("Bearer \(api.secret)", forHTTPHeaderField: "Authorization") }
-            _ = try? await URLSession.shared.data(for: req)
+            _ = try? await Self.noProxySession.data(for: req)   // P1-6：无代理直连
             gracefulAttempted = true
         }
 
@@ -2426,6 +2418,12 @@ import SystemConfiguration
         // XPC-9：Helper 明确回 false（写命令半提交/失败，见 helper.err.log
         // 11-06 案例）与 nil 一样走本地 networksetup 回退——旧实现只兜 nil，
         // false 直接把失败抛给 UI，全链路无重试。
+        //
+        // 超时权衡（P1-7 调用点评估）：本调用点是用户可感知的开关（withEngineBusy
+        // 转圈），超时 nil 后确实会走本地回退。不给它单独传更短超时的理由：
+        // 缩短只会更早触发「本地回退与仍活着的 Helper 并发写同一 SC 存储」
+        // （XPC-9 的半提交形态），60s 只在 Helper 真正僵死时才等满，而那时本地
+        // 回退大概率同样失败——等待换确定性，正常路径是秒级返回。
         if let ok = await XPCManager.shared.callSystemProxy(enabled: enabled, port: port), ok {
             return true
         }
@@ -2548,6 +2546,38 @@ import SystemConfiguration
         return ProxyServicePlan.classify(succeeded: okList, failed: failedList)
     }
 
+    /// 自证 127.0.0.1:port 有内核在监听（P1-3 的 GUI 回退侧写点）。与
+    /// ProxyManager.loopbackListenerAlive 同实现口径——HelperProtocol.swift 不在
+    /// 本次允许改动范围，无法抽成共享函数，两处写点各自自证（AGENTS.md：
+    /// 写点必须内部断言，不依赖上游的门）。
+    private static func loopbackListenerAlive(port: Int) -> Bool {
+        guard port > 0, port <= 65535 else { return false }
+        let fd = socket(AF_INET, SOCK_STREAM, 0)
+        guard fd >= 0 else { return false }
+        defer { close(fd) }
+        let flags = fcntl(fd, F_GETFL, 0)
+        guard flags >= 0 else { return false }
+        _ = fcntl(fd, F_SETFL, flags | O_NONBLOCK)
+        var addr = sockaddr_in()
+        addr.sin_len = UInt8(MemoryLayout<sockaddr_in>.size)
+        addr.sin_family = sa_family_t(AF_INET)
+        addr.sin_port = UInt16(port).bigEndian
+        addr.sin_addr = in_addr(s_addr: INADDR_LOOPBACK.bigEndian)
+        let connectResult = withUnsafePointer(to: &addr) { ptr in
+            ptr.withMemoryRebound(to: sockaddr.self, capacity: 1) { sa in
+                connect(fd, sa, socklen_t(MemoryLayout<sockaddr_in>.size))
+            }
+        }
+        if connectResult == 0 { return true }
+        guard errno == EINPROGRESS else { return false }
+        var pfd = pollfd(fd: fd, events: Int16(POLLOUT), revents: 0)
+        guard poll(&pfd, 1, 500) > 0 else { return false }
+        var soErr: Int32 = 0
+        var len = socklen_t(MemoryLayout<Int32>.size)
+        getsockopt(fd, SOL_SOCKET, SO_ERROR, &soErr, &len)
+        return soErr == 0
+    }
+
     /// Set/clear the macOS system HTTP/HTTPS/SOCKS proxy without the Helper.
     ///
     /// P0 unification: this fallback used to walk *every* enabled service
@@ -2563,18 +2593,38 @@ import SystemConfiguration
             NSLog("[ClashHalo] setSystemProxyFallback: no target network services")
             return false
         }
+        // 写点自证（P1-3，GUI 回退侧）：Helper 拒绝/缺席后这里就是最后的写点，
+        // enable 落笔前同样断言内核 mixed-port 在监听，否则本地写成功只会把
+        // 系统流量指进黑洞。
+        if enabled {
+            guard loopbackListenerAlive(port: port) else {
+                NSLog("[ClashHalo] setSystemProxyFallback: 拒绝写系统代理 — 127.0.0.1:\(port) 无监听（内核未起或端口不符）")
+                return false
+            }
+        }
         let outcome = await applySystemProxyLocally(services: services, enabled: enabled, port: port)
         if outcome.isSuccess { return true }
 
         // Admin escalation retry: same services, full-success shell exit.
         let shell = adminShell(services: services, enabled: enabled, port: port)
         let escaped = shell.replacingOccurrences(of: "\\", with: "\\\\").replacingOccurrences(of: "\"", with: "\\\"")
-        let script = "do shell script \"\(escaped)\" with administrator privileges"
+        let shellLine = "do shell script \"\(escaped)\" with administrator privileges"
+        // 知情同意（P1-4）：提权前先弹中文说明框。转义推演（静态核对）：
+        // - 说明文本是纯中文字面量 + 数字端口，不含 `"` 与 `\`；Swift 侧 `\\n`
+        //   产出 AppleScript 字符串内的换行转义，合法。
+        // - `cancel button "取消"`：点「取消」或按 Esc 都会让 osascript 以
+        //   error -128 退出（非零），第二条 -e 的 do shell script 不会执行——
+        //   不提权、不写任何东西，函数按既有约定返回 false。
+        // - shellLine 的 `\` 与 `"` 已按 runAdmin 同款规则转义；adminShell 里的
+        //   单引号在 AppleScript 双引号字符串内无需处理（shell 层转义，往返无损）。
+        // - 两条 -e 各为一行脚本，避免在单个 -e 里依赖裸换行作语句分隔。
+        let action = enabled ? "开启" : "关闭"
+        let dialogLine = "display dialog \"即将以管理员权限执行 networksetup，为所有目标网络服务\(action)系统代理（127.0.0.1:\(port)）。\\n此操作会修改系统网络配置；点「取消」则不提权，本次设置保持失败。\" buttons {\"取消\", \"继续\"} default button \"继续\" cancel button \"取消\" with icon caution"
         return await withCheckedContinuation { cont in
             DispatchQueue.global().async {
                 let p = Process()
                 p.executableURL = URL(fileURLWithPath: "/usr/bin/osascript")
-                p.arguments = ["-e", script]
+                p.arguments = ["-e", dialogLine, "-e", shellLine]
                 do { try p.run(); p.waitUntilExit(); cont.resume(returning: p.terminationStatus == 0) }
                 catch { cont.resume(returning: false) }
             }

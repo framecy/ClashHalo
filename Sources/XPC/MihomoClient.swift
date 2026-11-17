@@ -23,6 +23,11 @@ private struct SafeDecoder: @unchecked Sendable {
         config.urlCache = nil
         config.requestCachePolicy = .reloadIgnoringLocalCacheData
         config.httpShouldUsePipelining = true
+        // 直连强制（P1-6）：与 KernelManager 同口径，内核控制面请求一律不经
+        // 系统代理——系统代理开着时它正指向 mihomo 自己：经 mixed-port 代理
+        // 访问控制器会把管理请求当代理流量转发（语义完全不同），内核死后还会
+        // 黑洞到代理超时。
+        config.connectionProxyDictionary = [:]
         return URLSession(configuration: config)
     }()
 

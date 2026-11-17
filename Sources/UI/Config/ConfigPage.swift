@@ -4,14 +4,20 @@ import SwiftUI
 
 struct ConfigPage: View {
     @EnvironmentObject var M: AppModel
-    @State private var editingID: String? = nil
+    /// UI-3：弹窗目标直接存 box（与 NetworkPages.swift 声明的范式统一），
+    /// 不在 sheet 的 Binding get 里现算身份——那样每次 body 求值都生成新
+    /// 实例，属于反复重建弹窗的脆弱写法。
+    @State private var editingBox: IDBox? = nil
     /// 导入弹窗唯一入口：每次展示生成新身份，避免 `ImportRemoteSheet` /
     /// `AddLocalSheet` 的 @State（名称 / URL / stage）沿用上一次打开的残留值。
     @State private var importSheet: ImportSheetTarget? = nil
     @State private var showWipeConfirm = false
     /// UI-10：删单个配置的确认目标（对齐删订阅的 confirmationDialog 范式）。
     @State private var confirmDeleteProfile: Profile? = nil
-    /// 运行配置与活动 profile 的差异快照。页面出现时算一次，不进 body。
+    /// 运行配置与活动 profile 的差异快照。页面出现时算一次，不进 body；
+    /// `.task(id: M.configContentEpoch)` 挂在 Model 的配置内容代际号上
+    /// （noteConfigContentChanged 覆盖全部配置写盘点），页面在屏期间配置
+    /// 一变即重算，不再依赖页面重新出现。
     @State private var drift: [String] = []
 
     /// 运行配置已偏离 profile 的提示。
@@ -102,7 +108,7 @@ struct ConfigPage: View {
                     .padding(.top, DS.Spacing.l)
                     .padding(.bottom, DS.Spacing.xxl)
                 }
-                .task { drift = M.configDriftAgainstActiveProfile() }
+                .task(id: M.configContentEpoch) { drift = M.configDriftAgainstActiveProfile() }
             }
         }
         .confirmationDialog("清空全部 \(M.store.profiles.count) 个配置？",
@@ -134,7 +140,7 @@ struct ConfigPage: View {
             case .local:  AddLocalSheet()
             }
         }
-        .sheet(item: Binding(get: { editingID.map { IDBox(id: $0) } }, set: { editingID = $0?.id })) { box in
+        .sheet(item: $editingBox) { box in
             ProfileEditSheet(profileID: box.id)
         }
     }
@@ -235,7 +241,7 @@ struct ConfigPage: View {
                 Button { M.selectForApply(p.id) } label: { Label("设为活动", systemImage: "checkmark") }
                     .disabled(M.engine.isBusy)
             }
-            Button { editingID = p.id } label: { Label("编辑 YAML…", systemImage: "pencil") }
+            Button { editingBox = IDBox(id: p.id) } label: { Label("编辑 YAML…", systemImage: "pencil") }
                 .disabled(M.engine.isBusy)
             if draft {
                 Button(role: .destructive) { M.store.discardDraft(p.id) } label: { Label("放弃导入", systemImage: "trash.slash") }

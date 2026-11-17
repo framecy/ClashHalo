@@ -212,6 +212,16 @@ add_suite providerusage-tests \
   "$ROOT/Sources/Core/YamlEditor/YamlScalar.swift" \
   "$ROOT/Tests/ProviderUsage/main.swift"
 
+# 订阅 → 策略组归属：旧实现把第一个组的 use: 整块重写成「全部 provider」，
+# 改名还会静默退出所有组。这里钉住 ProviderGroupBinding 的改写口径：块状/内联
+# 两种 use: 的增删、无 use: 组按缩进插入、改名原位替换、include-all-providers
+# 跳过、无关区域逐字节不变、幂等，以及与 ProviderUsage.groupReferences 一致。
+add_suite providergroupbind-tests \
+  "$ROOT/Sources/Model/ProviderGroupBinding.swift" \
+  "$ROOT/Sources/Model/ProviderUsage.swift" \
+  "$ROOT/Sources/Core/YamlEditor/YamlScalar.swift" \
+  "$ROOT/Tests/ProviderGroupBinding/main.swift"
+
 # 空组预检：删除订阅后只靠它供血的策略组会变成空 select，mihomo -t 的英文
 # 语法错掩盖真正原因。钉住 groupsMissingMembers 的口径：proxies/use 任一有
 # 非空条目即有来源；内联与块状两种写法都认；组外与注释不算。

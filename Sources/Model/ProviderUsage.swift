@@ -137,11 +137,20 @@ enum ProviderUsage {
     }
 
     /// 去掉引号与行尾注释。整行以 `#` 开头的是注释，不是名称。
+    ///
+    /// 引号只剥**首尾一对配对的**（双引号优先、其次单引号，各试一层）：中间的
+    /// 引号是数据的一部分。旧版全局替换会把名称里的引号整串吃掉（`组"名` 变
+    /// `组名`），两个真名不同的组被当成同名，归属统计与去重全错。
+    /// 与 `ConfigWriteAudit.normalizedValue` 同一剥法（此处独立编译，不互引）。
     static func scalar(_ raw: String) -> String? {
         var text = YamlScalar.stripInlineComment(raw).trimmingCharacters(in: .whitespaces)
         if text.isEmpty || text.hasPrefix("#") { return nil }
-        text = text.replacingOccurrences(of: "\"", with: "")
-                   .replacingOccurrences(of: "'", with: "")
+        for q in ["\"", "'"] {
+            if text.count >= 2, text.hasPrefix(q), text.hasSuffix(q) {
+                text = String(text.dropFirst().dropLast())
+                break   // 只剥一层：`"'x'"` 的内层引号是数据
+            }
+        }
         return text.isEmpty ? nil : text
     }
 

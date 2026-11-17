@@ -312,20 +312,48 @@ let kDirectExcludeAcceptedKey = "tun.directExclude.accepted"
     /// this is its GUI counterpart, and the two interleave by wall clock.
     /// Truncated at ~2 MB — diagnostics, not an audit trail.
     /// F15：appendAppLog 是 nonisolated——主线程的 logKernel 与退出清理 /
-    /// 信号处理所在的全局队列会并发进来，而「开文件→判大小→截断→seek→写」
-    /// 不是原子序列，交错会写出撕裂的行甚至互相截断。一把进程内锁串行化
-    /// 整段（锁只护文件操作，不护调用方状态）。
+    /// 信号处理所在的全局队列会并发进来，整段文件操作由 appLogLock 串行化。
+    /// 2026-11-17 审查：每行一次「开文件→判大小→seek→写→关」在日志风暴下是
+    /// 同步 IO 瓶颈（2026-09-12 形态 ~18MB/s）。改为锁保护下的缓冲：满 32 行
+    /// 立即 flush，否则 0.5s 定界 flush；代价是崩溃丢尾部 ≤32 行——风暴期
+    /// 不被磁盘 IO 拖死优先。退出清理走 flushAppLogNow() 兜底。
     private static let appLogLock = NSLock()
+    private nonisolated(unsafe) static var appLogBuffer: [String] = []
+    private nonisolated(unsafe) static var appLogFlushTask: Task<Void, Never>?
 
     nonisolated static func appendAppLog(_ line: String) {
+        let stamped = "[\(appLogDF.string(from: Date()))] \(line)\n"
+        var flushNow = false
         appLogLock.lock()
-        defer { appLogLock.unlock() }
+        appLogBuffer.append(stamped)
+        if appLogBuffer.count >= 32 {
+            flushNow = true
+        } else if appLogFlushTask == nil {
+            appLogFlushTask = Task.detached(priority: .utility) {
+                try? await Task.sleep(nanoseconds: 500_000_000)
+                Self.flushAppLogBuffer()
+            }
+        }
+        appLogLock.unlock()
+        if flushNow { Self.flushAppLogBuffer() }
+    }
+
+    /// 取走缓冲并一次性落盘。单飞语义：取 buffer 与清 task 标记都在锁内，
+    /// 写文件在锁外（风暴期不长时间持锁）；append 的「是否需要排 flush」
+    /// 判定也在同一把锁内，不存在丢失 flush 的窗口。
+    nonisolated static func flushAppLogBuffer() {
+        var lines: [String] = []
+        appLogLock.lock()
+        lines = appLogBuffer
+        appLogBuffer.removeAll(keepingCapacity: true)
+        appLogFlushTask = nil
+        appLogLock.unlock()
+        guard !lines.isEmpty else { return }
         let dir = NSHomeDirectory() + "/Library/Logs/ClashHalo"
         let path = dir + "/app.log"
         let fm = FileManager.default
         try? fm.createDirectory(atPath: dir, withIntermediateDirectories: true)
-        let stamped = "[\(appLogDF.string(from: Date()))] \(line)\n"
-        guard let data = stamped.data(using: .utf8) else { return }
+        guard let data = lines.joined().data(using: .utf8) else { return }
         if !fm.fileExists(atPath: path) { fm.createFile(atPath: path, contents: nil) }
         guard let h = try? FileHandle(forWritingTo: URL(fileURLWithPath: path)) else { return }
         defer { try? h.close() }
@@ -334,6 +362,31 @@ let kDirectExcludeAcceptedKey = "tun.directExclude.accepted"
         }
         _ = try? h.seekToEnd()
         h.write(data)
+    }
+
+    /// 退出清理 / 信号路径的同步兜底：把缓冲里还没到定界的行全部落盘。
+    nonisolated static func flushAppLogNow() {
+        Self.flushAppLogBuffer()
+    }
+
+    // MARK: 连接快照失败留痕
+
+    /// 连接快照获取失败的限频留痕（2026-11-17 审查）。单次瞬态可容忍（轮询
+    /// 原有约定），但内核长时间假死时「数据停更」零留痕会让排查只能靠猜——
+    /// 对齐 noteConfigFetchFailure 的 30s 限频口径，不因 3s 轮询刷爆日志。
+    private var connFetchFailStreak = 0
+    private var connFetchFailLastLogged = Date.distantPast
+
+    func noteConnectionsFetchFailure(_ error: Error) {
+        connFetchFailStreak += 1
+        let now = Date()
+        guard now.timeIntervalSince(connFetchFailLastLogged) >= 30 else { return }
+        connFetchFailLastLogged = now
+        logKernel("连接快照获取失败（连续 \(connFetchFailStreak) 次）：\(error.localizedDescription)")
+    }
+
+    func noteConnectionsFetchSuccess() {
+        connFetchFailStreak = 0
     }
 
     private static let appLogDF: DateFormatter = {
@@ -1111,7 +1164,9 @@ let kDirectExcludeAcceptedKey = "tun.directExclude.accepted"
             try? await Task.sleep(nanoseconds: 300_000_000)
             await api.probe()
         }
-        reachable = api.reachable
+        // LIFE-9 同款等值短路（审查 2026-11-17）：不可达期间 reconnect 每 3 s
+        // 跑一次，等值写 false→false 也会触发 objectWillChange，白刷整棵视图树。
+        if reachable != api.reachable { reachable = api.reachable }
         if version != api.version { version = api.version }
         // P1-3：把失败原因写进日志。401（密钥不匹配）与“连接被拒（内核没起来）”
         // 在界面上都是“不可达”，但处置完全不同。只在原因变化时记录，避免 3 s 重试
@@ -1312,7 +1367,10 @@ let kDirectExcludeAcceptedKey = "tun.directExclude.accepted"
                         do {
                             let snapshot = try await self.api.fetchConnectionsSnapshot()
                             await self.recordHistoryOnly(from: snapshot)
-                        } catch { }
+                            self.noteConnectionsFetchSuccess()
+                        } catch {
+                            self.noteConnectionsFetchFailure(error)
+                        }
 
                         // Health check every 2 minutes (every 4 ticks at 30s interval)
                         self.bgTickCount += 1
@@ -1629,7 +1687,14 @@ let kDirectExcludeAcceptedKey = "tun.directExclude.accepted"
     }
 
     private func startPolling() {
-        pollTask?.cancel()
+        // 合并制（LIFE-10 同一纪律，2026-11-17 审查）：pollTask 还活着就绝不
+        // cancel+重建。loop 每拍动态读取 gatewayModeOn / connectionsPageLive /
+        // tunOn / reachable 等判据，没有任何需要靠重建注入的状态；而重建会把
+        // configDue 打回 `.distantPast`（一次完整 refreshConfigs 突发：HTTP +
+        // yaml 合并 + TUN 探针 + DNS 对账），并把 30 s 健康巡检顺延——route
+        // 点击 / 窗口可见性翻转正因如此在 :118-121 承诺「不得每次都付这个成本」。
+        // 唯一需要重建的情形是任务已停（隐藏态 reconcile 已 cancel + nil）。
+        if let task = pollTask, !task.isCancelled { return }
         pollTask = Task { [weak self] in
             // Deadlines rather than tick counters. The tick rate is no longer
             // fixed — it speeds up while a gateway device list is on screen —
@@ -1701,8 +1766,10 @@ let kDirectExcludeAcceptedKey = "tun.directExclude.accepted"
                     do {
                         let snapshot = try await self.api.fetchConnectionsSnapshot()
                         self.recordHistoryOnly(from: snapshot)
+                        self.noteConnectionsFetchSuccess()
                     } catch {
-                        // Transient API blip — skip this tick.
+                        // Transient API blip — skip this tick, but leave a trace.
+                        self.noteConnectionsFetchFailure(error)
                     }
                     gatewayDue = Date().addingTimeInterval(self.gatewayDevicesOnScreen ? 1 : 3)
                 }
@@ -1715,8 +1782,10 @@ let kDirectExcludeAcceptedKey = "tun.directExclude.accepted"
                     do {
                         let snapshot = try await self.api.fetchConnectionsSnapshot()
                         self.recordHistoryOnly(from: snapshot)
+                        self.noteConnectionsFetchSuccess()
                     } catch {
-                        // Transient API blip — skip this tick.
+                        // Transient API blip — skip this tick, but leave a trace.
+                        self.noteConnectionsFetchFailure(error)
                     }
                     // 3s cadence matches the original foreground spec; the
                     // snapshot is lightweight (no per-connection row conversion
@@ -1979,6 +2048,10 @@ let kDirectExcludeAcceptedKey = "tun.directExclude.accepted"
             // Re-sync state when coming back online or when path changes
             Task {
                 await api.probe()
+                // 入睡瞬间到达的路径事件：probe 之后的每一步都是写动作
+                // （系统代理恢复 / TUN 重建 / 网关体检），入睡后一律不再执行
+                // （2026-11-17 审查 P2：旧实现只在入口查一次 sleeping）。
+                guard !sleeping else { return }
                 if api.reachable {
                     await refreshConfigs()
                     // Restore system proxy if it was auto-disabled by the offline handler
@@ -1991,6 +2064,9 @@ let kDirectExcludeAcceptedKey = "tun.directExclude.accepted"
                     }
                     // If TUN is supposed to be on, ensure it's healthy and interface is pinned
                     if tunOn && !engine.isBusy {
+                        // 二次复查：上面 refreshConfigs / restoreSystemProxy 的
+                        // await 之后可能已经入睡（2026-11-17 审查 P2）。
+                        guard !sleeping else { return }
                         // Reserve the busy slot synchronously: the rebuild decision
                         // needs `await defaultInterface()` below, and a check that
                         // far from the set let two path-update tasks race into two
@@ -2022,7 +2098,7 @@ let kDirectExcludeAcceptedKey = "tun.directExclude.accepted"
                         // deferred, not lost: verifyTUNConfig re-checks on its 30 s
                         // cadence once the window closes.
                         if (onlineChanged || ifaceMoved) && Date() >= tunStateSettleUntil
-                            && !tunFlapAbandoned {
+                            && !tunFlapAbandoned && !sleeping {
                             await applyTUNState(true)
                         } else {
                             // No NIC change, but a peer tunnel may have connected,

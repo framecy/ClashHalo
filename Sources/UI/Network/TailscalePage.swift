@@ -17,6 +17,10 @@ struct TailscalePage: View {
     @State private var apiTokenDraft = ""
     @State private var showAPITokenField = false
     @State private var extraCIDRDraft = ""
+    /// 本机直连网段快照（TS-1 闸门谓词用）。原来在 body 里每帧调
+    /// `PeerRouteGuard.localAttachedSubnets()`（fork getifaddrs）；现在进页算
+    /// 一次，设备列表刷新完成（tsDevices 发布出口）与开关翻转后重算兜底。
+    @State private var localSubnets: [String] = []
 
     var body: some View {
         ScrollView {
@@ -34,6 +38,7 @@ struct TailscalePage: View {
             .padding(DS.Spacing.xl)
         }
         .onAppear {
+            localSubnets = PeerRouteGuard.localAttachedSubnets()
             M.probeTailscaleSupport()
             if M.tsEnabled {
                 M.refreshTailscaleEnvironmentWarnings()
@@ -41,6 +46,11 @@ struct TailscalePage: View {
                 M.refreshTailscaleLocalAddress()
             }
         }
+        // 快照重算点：tsDevices 是设备刷新完成的发布出口（刷新会拉到新设备列表），
+        // tsEnabled 翻转决定 extraCIDREditor 是否在屏；两者之后快照可能与网卡
+        // 状态出现时间差，这里各重算一次（getifaddrs 廉价，非热路径）。
+        .onChange(of: M.tsDevices) { _, _ in localSubnets = PeerRouteGuard.localAttachedSubnets() }
+        .onChange(of: M.tsEnabled) { _, _ in localSubnets = PeerRouteGuard.localAttachedSubnets() }
     }
 
     // MARK: Switch
@@ -388,7 +398,8 @@ struct TailscalePage: View {
             // TS-1 配套：预览计数与导入入口走同一安全闸门（同
             // importAdvertisedSubnetRoutes 的谓词构造），否则「N 条尚未导入」
             // 会把被闸门拒绝的网段也算进去，计数偏大、点了导入却加不进来。
-            let localSubnets = PeerRouteGuard.localAttachedSubnets()
+            // 本机直连网段读 @State 快照（onAppear / tsDevices / tsEnabled 变更时
+            // 重算），body 不再每帧走 getifaddrs。
             let suggested = TailscaleAPI.suggestedSubnetRoutes(from: M.tsDevices) { cidr in
                 M.tsSubnetRejection(cidr, localSubnets: localSubnets) != nil
             }

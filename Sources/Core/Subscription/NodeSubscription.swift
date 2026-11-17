@@ -463,7 +463,11 @@ public enum NodeSubscription {
         out.append("allow-lan: false")
         out.append("mode: rule")
         out.append("log-level: info")
-        out.append("external-controller: 127.0.0.1:9092")
+        // 不写 external-controller 死端口模板：EngineControl.hardenControllerConfig
+        // 会在缺 controller 时统一插 127.0.0.1:9092（P1-9 唯一兜底写点），
+        // MihomoClient.applyController 从当前 config.yaml 发现实际端口——模板
+        // 与兜底两处各写一份端口，口径漂移只能靠撞见。`secret: ""` 保留
+        // （harden 会换成强随机值）。
         out.append("secret: \"\"")
         out.append("dns:")
         out.append("  enable: true")

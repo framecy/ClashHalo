@@ -878,6 +878,9 @@ struct StringListRow: View {
             Text(label).font(.dsBodyMedium)
             // Existing entries — each a chip on a subtle fill so the list reads as
             // distinct rows, clearly separated from the add field below.
+            // 身份用下标而不是元素：新增不查重（append 无 contains 检查），config
+            // 数组本身也可能带重复串（如 nameserver 写两条同值）；换 `id: \.self`
+            // 会让重复行身份撞车。下标身份保证每行唯一，删除按行号精确对应。
             if !items.isEmpty {
                 VStack(spacing: DS.Spacing.xs) {
                     ForEach(items.indices, id: \.self) { i in
@@ -1103,6 +1106,11 @@ struct NList: View {
         VStack(alignment: .leading, spacing: DS.Spacing.s) {
             Text(label).font(.dsBodyMedium)
             if !items.isEmpty {
+                // 身份用下标而不是元素：新增不查重（append 无 contains 检查），
+                // 本地 items 快照在 commit 前可能含重复串（route-exclude-address
+                // 的多源去重发生在写入端 RouteExclusionMerge，此处不保证唯一）；
+                // 换 `id: \.self` 会让重复行身份撞车。下标身份保证每行唯一，
+                // 删除按行号精确对应。
                 VStack(spacing: DS.Spacing.xs) {
                     ForEach(items.indices, id: \.self) { i in
                         HStack {

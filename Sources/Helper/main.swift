@@ -77,11 +77,13 @@ func isAuthorizedClient(_ conn: NSXPCConnection) -> Bool {
     // ad-hoc 签名不受影响——ad-hoc 只是没有可信时间戳/证书链，签名本身是完整自洽的；
     // 实测 /Applications 与 Xcode 产物两种 ad-hoc 布局都返回 0。
     //
-    // 仍存在的边界（与 XPC-1 同一取舍，未变）：requirement 只有 identifier，没有
-    // team id / anchor apple，所以能写 /Applications 的本机用户仍可自签一个同名
-    // identifier 的伪客户端。要真正收紧必须发布链路统一 Developer ID + 公证，
-    // 那是发布策略决定，不在本次修复范围内；路径锚定 + 完整校验已经把门槛提到
-    // 「必须先能写允许的安装根，且被替换后运行中代码会校验失败」。
+    // 仍存在的边界（与 XPC-1 同一取舍；P1-1d 收紧后的口径）：requirement 只有
+    // identifier，没有 team id / anchor apple，伪客户端要冒充，Release 下必须
+    // 先能写 /Applications 或挂载 /Volumes（~/Applications 与任意目录的 Xcode
+    // 产物根均已移出 Release 允许根，DEBUG 构建另认 Build/Products 根）。
+    // 更彻底的收紧是发布链路统一 Developer ID + 公证（发布策略决定，不在本次
+    // 修复范围），以及 Helper 对内核二进制做哈希校验（后续立项项，当前依赖
+    // canonical path + 完整签名校验承担：被替换后运行中代码校验会失败）。
     var identifierOK = false
     var identifierStatus = errSecSuccess
     if haveCode, let code {
@@ -123,7 +125,13 @@ private func canonicalClientPath(_ path: String) -> String? {
 /// DMG 里直接运行；把这些真客户端锁在 Helper 之外，比伪造路径的危害大得多。
 /// 所以这里认的是「安装根的形状」而非某台机器的绝对路径（AGENTS.md：断言不得
 /// 依赖开发机的实时状态）。归一化 + 结构锚定已经把「任意目录塞一个同名 bundle」
-/// 堵到只剩这几个根，攻击者要冒充就得先能写 /Applications 或挂载卷。
+/// 堵到只剩这几个根。
+///
+/// P1-1 收紧后的允许根口径：Release 只认 `/Applications` 与 `/Volumes/<卷>`
+/// 一层（保留 DMG 直跑）；Xcode 产物根仅 DEBUG 放行。原第三根「控制台用户
+/// ~/Applications」移除（P1-1a）：git 追溯它与整份白名单同批引入（4665602），
+/// 无独立产品理由，且用户免管理员即可创建，是与 /Applications 等价的
+/// 伪客户端跳板（本机 ~/Applications 已确认无真客户端 bundle）。
 private func isAllowedBundleParent(_ lowercasedParent: String) -> Bool {
     let p = lowercasedParent
     if p == "/applications" { return true }
@@ -131,14 +139,18 @@ private func isAllowedBundleParent(_ lowercasedParent: String) -> Bool {
     // 从挂载卷（DMG）直接运行：只认「/Volumes/<卷名>」一层（XPC-1 收紧：
     // 旧实现 hasPrefix("/volumes/") 放行卷内任意深度目录，攻击者可构造）。
     if comps.count == 2, comps[0] == "volumes" { return true }
-    // Xcode 产物布局 …/Build/Products/{Debug,Release}（XPC-1 收紧：至少 5 段
-    // 且以该结构结尾；`/x/Build/Products/Debug` 这类浅路径可被攻击者构造）。
-    // 合法产物最少也是 `<repo>/.build/Build/Products/Debug`（repo 在根目录时
-    // 恰 5 段），四条合法安装路径不受影响。
+    #if DEBUG
+    // Xcode 产物布局 …/Build/Products/{Debug,Release}：仅 DEBUG 放行（P1-1b），
+    // Release 产物只应出现在 /Applications 或挂载卷里。残余边界（P1-1c，仅
+    // DEBUG 形态）：`/x/Build/Products/Debug` 这类 5 段浅路径（comps.count>=5
+    // + hasSuffix 即过）在 DEBUG 构建下仍可构造——DEBUG 只跑开发机，接受；
+    // Release 下该分支整体不存在，洞随之关闭。
     if comps.count >= 5,
        p.hasSuffix("/build/products/debug") || p.hasSuffix("/build/products/release") { return true }
-    // 控制台用户自己的 ~/Applications
-    if let home = consoleUser()?.home.lowercased(), p == home + "/applications" { return true }
+    #endif
+    // 原「控制台用户 ~/Applications」分支已移除（P1-1a）：用户免管理员即可
+    // 创建该目录，是与 /Applications 等价的伪客户端跳板；真客户端只从
+    // /Applications、DMG 卷或（DEBUG）Xcode 产物目录运行。
     return false
 }
 
@@ -186,6 +198,41 @@ private func consoleUser() -> (uid: uid_t, home: String)? {
 func consoleRepairTarget() -> (uid: uid_t, dir: String)? {
     guard let u = consoleUser() else { return nil }
     return (u.uid, u.home + "/Library/Application Support/ClashHalo")
+}
+
+/// 行扫描 console user 的 config.yaml，回答「配置里 TUN 是否未开启」。
+/// 返回值语义：
+/// - `true`  —— tun.enable 非 true（未写该键视为 mihomo 默认 false，TUN 关）；
+/// - `false` —— tun.enable 明确为 true；
+/// - `nil`   —— 配置读不到 / 无法判定（此时不得清理 UP 接口，宁漏不误伤）。
+/// 供 cleanupTUNResidual 的 UP 分支做写点自证（P1-2）：僵尸定义 =
+/// 配置关 + 接口 UP + 固定设备名 kPinnedTunDevice，这里只提供「配置关」证据，
+/// UP / 设备名判定在 ProxyManager。行扫描口径与 EngineControl.scalar /
+/// YamlScalar 一致：只认无缩进的顶层 `tun:` 块，`#` 前须空白才算注释；
+/// 不引入完整 YAML parser。
+private func configSaysTunDisabled() -> Bool? {
+    guard let target = consoleRepairTarget() else { return nil }
+    guard let text = try? String(contentsOfFile: target.dir + "/config.yaml", encoding: .utf8) else { return nil }
+    var inTunBlock = false
+    var enableTrue: Bool? = nil   // nil = tun 块内未写 enable（mihomo 默认 false）
+    for raw in text.split(separator: "\n", omittingEmptySubsequences: false) {
+        let line = String(raw)
+        let isIndented = line.hasPrefix(" ") || line.hasPrefix("\t")
+        if !isIndented {
+            if line.hasPrefix("tun:") { inTunBlock = true; continue }
+            if line.contains(":") { inTunBlock = false }
+            continue
+        }
+        guard inTunBlock, line.trimmingCharacters(in: .whitespaces).hasPrefix("enable:") else { continue }
+        var v = line.trimmingCharacters(in: .whitespaces).dropFirst("enable:".count).trimmingCharacters(in: .whitespaces)
+        // CFG-15 口径的简化版：`#` 前须空白才是注释，引号内的 # 是数据；
+        // enable 只会是字面量，剥引号后比对 true/false 足够。
+        if let hash = v.range(of: " #") { v = String(v[..<hash.lowerBound]).trimmingCharacters(in: .whitespaces) }
+        let bare = v.trimmingCharacters(in: CharacterSet(charactersIn: "\"'"))
+        if bare.lowercased() == "true" { enableTrue = true }
+        else if bare.lowercased() == "false" { enableTrue = false }
+    }
+    return enableTrue != true
 }
 
 /// Only permit launching a binary at the canonical ClashHalo kernel path.
@@ -689,11 +736,19 @@ class Helper: NSObject, HelperProtocol {
         return removed
     }
 
+    /// 向路由表注入/维持排除路由（TUN 共存时把对端网段指回原虚拟接口）。
+    ///
+    /// 返回值语义约定（P1-8）：`false` 只代表「确证存在且属于本应用的写操作
+    /// 失败」；**拒绝是正确防护而不是失败**——链路专用前缀与本机直连网段指向
+    /// 隧道等于凭空制造劫持（`PeerRouteGuard.isForbidden` 判定，Helper 侧二次
+    /// 拦截，对齐 GUI 侧 `Coexistence.routesByInterface`）。拒绝计入 refused
+    /// 计数与被拒明细日志、不计入 failed、不影响返回值，供 GUI 归属追踪对账。
     func setupExcludeRoutes(_ routes: [String: String], withReply reply: @escaping (Bool) -> Void) {
         Self.routesLock.lock()
         defer { Self.routesLock.unlock() }
 
         var installed = 0, present = 0, failed = 0, refused = 0
+        var refusedList = [String]()
         var stillOurs = [String: String]()
 
         // Repair first: whatever the caller wants, prefixes that must never point
@@ -709,6 +764,7 @@ class Helper: NSObject, HelperProtocol {
             guard PeerRouteGuard.isForbidden(dest, localSubnets: localSubnets) else { return true }
             log("setupExcludeRoutes: 拒绝 \(dest) — 链路专用或本机直连网段，不得指向隧道")
             refused += 1
+            refusedList.append(dest)   // P1-8：被拒明细进日志，拒绝≠失败
             return false
         }
 
@@ -770,6 +826,9 @@ class Helper: NSObject, HelperProtocol {
         Self.addedRoutes = stillOurs
         Self.persistAddedRoutes()
         log("setupExcludeRoutes: 请求 \(routes.count) 条 — 新建 \(installed)、已存在保持不动 \(present)、失败 \(failed)、拒绝 \(refused)、回收孤儿 \(reclaimed)；自有记账 \(stillOurs.count) 条")
+        if !refusedList.isEmpty {
+            log("setupExcludeRoutes: 被拒网段（防护性拒绝，不计失败）：\(refusedList.joined(separator: ", "))")
+        }
         Self.armWatchForCurrentClient()
         reply(failed == 0)
     }
@@ -784,13 +843,28 @@ class Helper: NSObject, HelperProtocol {
 
     func cleanupTUNResidual(withReply reply: @escaping (Bool) -> Void) {
         log("cleanupTUNResidual called")
+        // 写点自证（P1-2）：UP 接口只有「配置关 + 固定设备名」双证据才允许清理
+        // （僵尸定义 = 配置关 + UP + pin 名）。这里先读 console user 的 config.yaml
+        // 取「配置关」证据，UP / 设备名判定在 ProxyManager 分支内二次断言——
+        // GUI 的门会回归，Helper 写点必须自己成立（AGENTS.md 系统级写点自证）。
+        // downed 接口路径不受影响：DOWN 的 198.18 utun 只可能是残留，见
+        // ProxyManager 的清理资格注释。
+        let tunDisabled = configSaysTunDisabled()
+        switch tunDisabled {
+        case .some(true):
+            break
+        case .some(false):
+            log("cleanupTUNResidual: config.yaml tun.enable=true，UP 接口清理被自证拦下（宁漏不误伤）")
+        case .none:
+            log("cleanupTUNResidual: config.yaml 读不到/无法判定，UP 接口清理被自证拦下（宁漏不误伤）")
+        }
         // Route-table mutations share the lock with setupExcludeRoutes /
         // cleanupAllExcludeRoutes so we never delete routes while another call
         // is injecting them. ifconfig down/IP-delete themselves are sequential
         // underneath; the GUI gates this on hasDownedMihomoTun so it only runs
         // when a mihomo utun residue actually exists.
         Self.routesLock.lock()
-        let ok = ProxyManager.cleanupTUNResidual()
+        let ok = ProxyManager.cleanupTUNResidual(configTunDisabled: tunDisabled)
         Self.routesLock.unlock()
         reply(ok)
     }

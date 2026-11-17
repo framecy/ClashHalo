@@ -309,7 +309,7 @@ extension AppModel {
         Task {
             // Decode and suffix-infer from the same raw body so we do not pay
             // for a second round-trip just to read the FQDN field.
-            let result = await Self.fetchDevicesWithSuffix(token: token)
+            let result = await TailscaleAPI.fetchDevicesWithSuffix(token: token, session: Self.tsAPISession)
             await MainActor.run {
                 self.tsDevicesLoading = false
                 switch result {
@@ -346,35 +346,9 @@ extension AppModel {
         }
     }
 
-    /// One request, two products: the device list and an optional MagicDNS
-    /// suffix inferred from FQDNs in the same payload.
-    private static func fetchDevicesWithSuffix(token: String)
-    async -> Result<([TailscaleDevice], String?), TailscaleAPI.Error> {
-        let trimmed = token.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty else { return .failure(.noToken) }
-        // fields=all is required for advertisedRoutes / enabledRoutes.
-        guard let url = URL(string: "https://api.tailscale.com/api/v2/tailnet/-/devices?fields=all") else {
-            return .failure(.badURL)
-        }
-        var req = URLRequest(url: url)
-        req.httpMethod = "GET"
-        req.timeoutInterval = 12
-        req.setValue("Bearer \(trimmed)", forHTTPHeaderField: "Authorization")
-        req.setValue("application/json", forHTTPHeaderField: "Accept")
-        do {
-            let (data, resp) = try await tsAPISession.data(for: req)
-            if let h = resp as? HTTPURLResponse, !(200..<300).contains(h.statusCode) {
-                return .failure(.http(h.statusCode))
-            }
-            let devices = try TailscaleAPI.decodeDevices(data)
-            let suffix = TailscaleAPI.inferMagicDNSSuffix(fromFQDNs: TailscaleAPI.fqdns(from: data))
-            return .success((devices, suffix))
-        } catch let e as TailscaleAPI.Error {
-            return .failure(e)
-        } catch {
-            return .failure(.transport(error.localizedDescription))
-        }
-    }
+    /// 设备列表 + MagicDNS 后缀推断收敛在 `TailscaleAPI.fetchDevicesWithSuffix`
+    /// （与 fetchDevices 共用同一份 URL/Bearer/超时拼装与翻页循环）；此处不再
+    /// 保留复制体。
 
     /// Pick an exit node from the device panel. Empty string clears it.
     /// Does not auto-apply — the user still has to hit 应用配置, same as every

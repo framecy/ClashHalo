@@ -162,10 +162,24 @@ enum QuickRule {
         node.action == .proxy ? node.proxyGroup : nil
     }
 
+    /// 严格四段十进制 IPv4：段内只允许 ASCII 数字、长度 1–3、无前导零
+    /// （"0" 本身合法，"01" 非法）、值 0...255。旧版 `Int(p)` 判定会把 "+1"
+    /// 当 1、"01" 当 1 放行——写出的 `IP-CIDR,+1.x.x.x/32` 内核拒载，一键制裁
+    /// 静默失效。v6 分支维持既有宽松口径（宽松放进来的地址由 ipRule 补 /128）。
+    /// 本文件独立编译进 quickrule-tests（编译集只有 RuleNode + QuickRule），
+    /// 不引用 DeviceIdentity 的同名判定。
     static func isIPAddress(_ s: String) -> Bool {
         if s.contains(":") { return s.contains("::") || s.filter { $0 == ":" }.count >= 2 }
         let parts = s.split(separator: ".", omittingEmptySubsequences: false)
         guard parts.count == 4 else { return false }
-        return parts.allSatisfy { p in !p.isEmpty && Int(p).map { (0...255).contains($0) } == true }
+        return parts.allSatisfy(isStrictIPv4Octet)
+    }
+
+    /// 单段严格校验（见 isIPAddress 注释）。
+    private static func isStrictIPv4Octet(_ p: Substring) -> Bool {
+        guard (1...3).contains(p.count),
+              p.allSatisfy({ $0.isASCII && $0.isNumber }) else { return false }
+        if p.count > 1, p.first == "0" { return false }   // 前导零
+        return (0...255).contains(Int(p) ?? -1)
     }
 }

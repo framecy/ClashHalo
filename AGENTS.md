@@ -61,7 +61,7 @@ bash make.sh
 ### 回归测试
 
 ```bash
-bash Scripts/run-tests.sh                # 全部套件（当前 27 套）
+bash Scripts/run-tests.sh                # 全部套件（当前 30 套）
 bash Scripts/run-tests.sh --only tun     # 只跑名字含 tun 的
 bash Scripts/restore-tests.sh            # 套件文件缺失时物化
 bash Scripts/tun-exclusion-test.sh       # L1：排除表多源合并 + 归属记录（--apply 会真实 PATCH 一轮并还原）
@@ -102,6 +102,7 @@ bash Scripts/tun-exclusion-test.sh       # L1：排除表多源合并 + 归属�
 - `MihomoClient.applyController(fromConfigAt:)` 从当前 `config.yaml` 发现 controller；不要硬编码 `127.0.0.1:9092`
 - 配置编辑大量使用轻量行扫描，不是完整 YAML parser。改动时保持 `EngineControl.readConfigFile`、`proxyProviders`、`ConfigStore.preview`、`YamlRuleASTEngine` 行为一致
 - **策略组名的唯一解析是 `ProviderUsage.groupNames(in:)`**（`proxy-groups:` 块行扫描，剥引号与行尾注释）。`parseProxyGroupsOrder`（代理组排序）与规则表单的目标校验都复用它；不要再写第三套「组名从哪来」的正则——旧实现会把行尾 `# 备注` 一起吃进组名
+- **订阅 → 策略组归属的唯一写盘入口是 `ProviderGroupBinding.rewrite`**（纯逻辑，`providergroupbind-tests`）。`EngineControl.writeProxyProviders` 只负责重建 `proxy-providers:` 块 + 规则引用清理，然后按 `memberships` / `renamed` 调它；禁止再在写盘函数里手写第二套 `use:` 逻辑。改名必须传 `renamed`（旧名→新名）——旧实现把改名当删除，新名没人补回，订阅会静默退出所有组。`include-all-providers: true` 的组不写 `use:`；取消到组空仍由 `injectDirectFallback` 补 DIRECT。订阅刷新（内核 `PUT /providers` / 刷新本地订阅）只拉节点，禁止走 `saveProxyProviders`。
 - **规则目标存在性校验的唯一入口是 `ValidationService.validate(node:knownTargets:)`**，目标名集合唯一来源 `AppModel.ruleTargetNames`（内核 `/proxies` 的策略组与节点 + `config.yaml` 里的组 + 内置 `DIRECT`/`REJECT`/`REJECT-DROP`/`PASS`）。判定权威是**写盘的目标文件**而不只是运行态：手改 `config.yaml` 新增组、还没 reload 时也要能保存。三条不可丢的边界：①集合为空 = 拿不到数据 → **跳过**校验（不是「全都失效」）；②目标可以是节点名（mihomo 允许规则直接指向节点）；③只有 `PROXY` 动作需要目标，`DIRECT`/`REJECT` 上的残留组名不参与判定
 - `AppModel.ruleTargetNames` 会**读一次 `config.yaml`**（约 34 KB 行扫描）。只在**打开规则弹窗那一刻**求值并存成快照（`RulesPage.RuleEditTarget` / `ConnectionsPage.RuleEditContext` 的 `knownTargets`），禁止放进 `body` / sheet 闭包——连接页 1.5 s 一轮刷新会把它变成反复读盘
 - `ConfigStore` 把订阅 URL 存 Keychain，manifest 会清空 URL。禁止把真实订阅/节点/token 写进仓库

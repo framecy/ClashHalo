@@ -44,6 +44,7 @@
 		ADID1 /* DeviceIdentity.swift in Sources */ = {isa = PBXBuildFile; fileRef = BDID1 /* DeviceIdentity.swift */; };
 		ALST1 /* InboundListener.swift in Sources */ = {isa = PBXBuildFile; fileRef = BLST1 /* InboundListener.swift */; };
 		APUS1 /* ProviderUsage.swift in Sources */ = {isa = PBXBuildFile; fileRef = BPUS1 /* ProviderUsage.swift */; };
+		APGB1 /* ProviderGroupBinding.swift in Sources */ = {isa = PBXBuildFile; fileRef = BPGB1 /* ProviderGroupBinding.swift */; };
 		AGSC1 /* GettingStartedCard.swift in Sources */ = {isa = PBXBuildFile; fileRef = BGSC1 /* GettingStartedCard.swift */; };
 		ATDA1 /* TUNDNSAddress.swift in Sources */ = {isa = PBXBuildFile; fileRef = BTDA1 /* TUNDNSAddress.swift */; };
 		ATDL1 /* TunnelDNSLedger.swift in Sources */ = {isa = PBXBuildFile; fileRef = BTDL1 /* TunnelDNSLedger.swift */; };
@@ -129,6 +130,7 @@
 		BDID1 /* DeviceIdentity.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DeviceIdentity.swift; sourceTree = "<group>"; };
 		BLST1 /* InboundListener.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = InboundListener.swift; sourceTree = "<group>"; };
 		BPUS1 /* ProviderUsage.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ProviderUsage.swift; sourceTree = "<group>"; };
+		BPGB1 /* ProviderGroupBinding.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ProviderGroupBinding.swift; sourceTree = "<group>"; };
 		BTDA1 /* TUNDNSAddress.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TUNDNSAddress.swift; sourceTree = "<group>"; };
 		BTDL1 /* TunnelDNSLedger.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TunnelDNSLedger.swift; sourceTree = "<group>"; };
 		BCWA1 /* ConfigWriteAudit.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ConfigWriteAudit.swift; sourceTree = "<group>"; };
@@ -190,6 +192,7 @@
 				BDID1 /* DeviceIdentity.swift */,
 				BLST1 /* InboundListener.swift */,
 				BPUS1 /* ProviderUsage.swift */,
+				BPGB1 /* ProviderGroupBinding.swift */,
 				BTDA1 /* TUNDNSAddress.swift */,
 				BTDL1 /* TunnelDNSLedger.swift */,
 				BCWA1 /* ConfigWriteAudit.swift */,
@@ -410,6 +413,7 @@
 				ADID1 /* DeviceIdentity.swift in Sources */,
 				ALST1 /* InboundListener.swift in Sources */,
 				APUS1 /* ProviderUsage.swift in Sources */,
+				APGB1 /* ProviderGroupBinding.swift in Sources */,
 				ATDA1 /* TUNDNSAddress.swift in Sources */,
 				ATDL1 /* TunnelDNSLedger.swift in Sources */,
 				ACWA1 /* ConfigWriteAudit.swift in Sources */,

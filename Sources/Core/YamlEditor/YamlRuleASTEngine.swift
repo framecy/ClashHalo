@@ -15,6 +15,17 @@ public final class YamlRuleASTEngine {
     /// 撞车时会静默改变行为（备注写成 `src` 就真成了参数）。
     static let ruleParameterTokens: Set<String> = ["no-resolve", "src"]
 
+    /// 行扫描统一入口：先把 CRLF 归一成 LF，再按裸 `\n` 分割。
+    ///
+    /// 口径与 `EngineControl.readConfigFile` 的裸 `\n` 行扫描同源。此前本文件两种
+    /// 分割混用：`components(separatedBy: .newlines)` 把 `\r` 与 `\n` 各当一个
+    /// 分隔符，CRLF 文件每两行之间多出一条空行（保留注释的重写会原样写回，等于
+    /// 每行后垫一空行）；裸 `"\n"` 分割则让 `\r` 残留行尾、注入行与旧行换行符
+    /// 混杂。归一后 LF / CRLF 两种文件走同一扫描口径，写回统一 LF。
+    private static func configLines(_ yaml: String) -> [String] {
+        yaml.replacingOccurrences(of: "\r\n", with: "\n").components(separatedBy: "\n")
+    }
+
     /// 将 RuleNode 序列化为符合 Clash 规范的字符串
     public static func serialize(node: RuleNode) -> String {
         let prefix = node.isEnabled ? "-" : "# -"
@@ -103,7 +114,7 @@ public final class YamlRuleASTEngine {
     
     /// 获取文件中的所有规则
     public static func extractRules(from yaml: String) -> [RuleNode] {
-        let lines = yaml.components(separatedBy: .newlines)
+        let lines = configLines(yaml)
         var rules: [RuleNode] = []
         var inRulesBlock = false
         var inFence = false
@@ -148,7 +159,7 @@ public final class YamlRuleASTEngine {
     /// 的前提下安全插入，返回 nil 让调用方如实报错，而不是写出一份坏 YAML。
     public static func insertRuleLine(_ line: String, into yaml: String) -> String? {
         let serialized = line.trimmingCharacters(in: .whitespaces)
-        let lines = yaml.components(separatedBy: "\n")
+        let lines = configLines(yaml)
         var out: [String] = []
         out.reserveCapacity(lines.count + 1)
         var inserted = false
@@ -198,7 +209,7 @@ public final class YamlRuleASTEngine {
     /// 判据复用 `parseLine`，保证「能删掉的」与规则页「能读出来的」是同一套理解，
     /// 不引入第二套 YAML 解析。
     public static func removeRuleLines(type: MihomoRuleType, match: String, from yaml: String) -> String {
-        let lines = yaml.components(separatedBy: "\n")
+        let lines = configLines(yaml)
         var out: [String] = []
         out.reserveCapacity(lines.count)
         var inRulesBlock = false
@@ -243,7 +254,7 @@ public final class YamlRuleASTEngine {
     public static func injectRulesPreservingComments(_ nodes: [RuleNode],
                                                      into yaml: String,
                                                      loadedNodes: [RuleNode]) throws -> String {
-        let lines = yaml.components(separatedBy: .newlines)
+        let lines = configLines(yaml)
         var out: [String] = []
         out.reserveCapacity(lines.count + nodes.count)
 
@@ -406,7 +417,7 @@ public final class YamlRuleASTEngine {
 
     /// 将新的 RuleNode 列表安全注入到 YAML 字符串中
     public static func injectRules(_ nodes: [RuleNode], into yaml: String) throws -> String {
-        let lines = yaml.components(separatedBy: .newlines)
+        let lines = configLines(yaml)
         var newLines: [String] = []
 
         var inRulesBlock = false

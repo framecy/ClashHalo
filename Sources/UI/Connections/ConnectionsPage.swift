@@ -847,6 +847,9 @@ private struct ConnAggregateRow: View {
 
 // MARK: - Conn Detail Popup
 struct ConnDetailCard: View {
+    /// origin 判定用的本机地址集合来自 AppModel 的每拍缓存（见下方 origin 注释）；
+    /// 本卡只在页面 overlay 内构造，环境里必有注入的 AppModel。
+    @EnvironmentObject var M: AppModel
     let conn: Conn
     let onClose: () -> Void
 
@@ -899,8 +902,8 @@ struct ConnDetailCard: View {
 
     // MARK: - 四段式辅助
 
-    /// 来源判定。本机地址集合每次求值一次 `getifaddrs`（几十微秒），且
-    /// `updateGatewayDevices` 每拍也在做同样的事；卡片只在选中某行时存在。
+    /// 来源判定。本机地址集合读 AppModel 的每拍缓存 `localIPs`（`recordHistoryOnly`
+    /// 无条件刷新 + 等值短路，CONN-3），不再自己走一遍 `getifaddrs`。
     /// `srcIP == "?"` 是 `Conn` 的「字段缺失」占位，必须当空串交给判定器，
     /// 否则会被当成一个叫 `?` 的对端地址判成「外部」。
     private var origin: ConnOrigin {
@@ -908,7 +911,7 @@ struct ConnDetailCard: View {
             inboundName: conn.inboundName,
             inboundPort: conn.inboundPort,
             sourceIP: conn.srcIP == "?" ? "" : conn.srcIP,
-            localIPs: Set(NetScanner.interfaces().flatMap { $0.ipv4 })
+            localIPs: M.localIPs
         )
     }
 
@@ -1224,13 +1227,11 @@ struct ConnDetailCard: View {
                 }
             }
 
-            if !newClosed.isEmpty {
-                M.cachedClosedConnections.insert(contentsOf: newClosed, at: 0)
-            }
-
-            // Sorted by rate, then clamped
-            M.cachedConns = next.sorted { $0.downRate + $0.upRate > $1.downRate + $1.upRate }
-            M.clampConnectionCaches()
+            // 缓存写入点收归 Model（cachedConns / cachedClosedConnections 是
+            // Model 的缓存，UI 不再直接改写）：newClosed 插头部 → 按速率排序
+            // 赋值 → 计数先于截断落定 → clamp。语义逐条保留，见
+            // `AppModel.adoptConnectionSnapshot(active:newClosed:)`。
+            M.adoptConnectionSnapshot(active: next, newClosed: newClosed)
 
             // Update prevConnById for the next frame
             prevConnById.removeAll(keepingCapacity: true)
