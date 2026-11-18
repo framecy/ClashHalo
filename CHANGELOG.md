@@ -4,6 +4,22 @@
 
 ## [Unreleased]
 
+## [1.5.2] - 2026-11-18
+
+### Fixed
+
+- **路由巡检误报与 Helper XPC 超时死循环**：`RouteTable.current()` 改用 `sysctl(NET_RT_DUMP)` 直接从内核读取 IPv4 路由表（零子进程 fork、毫秒级），消除 GUI 进程 fork `/usr/sbin/netstat` 超时 5s 返回空表导致的「所有对端网段无路由承载」误报；新增 `RouteTable.currentOrNil()`，读取失败时跳过本轮 `auditRoutes` 巡检。Helper 侧 `setupExcludeRoutes` 入口缓存单次路由表快照并复用，避免循环重复读表；`callSetupExcludeRoutes` 默认超时放宽至 `10.0s`。
+- **GEO MMDB 数据库更新 404**：将默认 `geox-url.mmdb` 从已 404 的 `Loyalsoldier/v2ray-rules-dat@release/country.mmdb` 替换为 `https://cdn.jsdelivr.net/gh/MetaCubeX/meta-rules-dat@release/geoip.metadb`，并在启动与配置同步时自动迁移旧 URL。
+
+### Changed
+
+- **订阅配置与本地 Provider 刷新收敛**：将订阅配置解析、文档改写、操作编排与源存储拆分为 `ProviderConfiguration`、`ProviderDocument`、`ProviderOperation`、`ProviderSourceStore` 纯逻辑模块，并补齐对应回归套件。
+
+### 验证
+
+- 回归：`bash Scripts/run-tests.sh` → PASS 32 / FAIL 0 / MISSING 3（3 套 MISSING 为 `Tests/` 不入库所致）。
+- 真机：Release `v1.5.2` 打包校验通过，路由巡检耗时降至毫秒级，无 XPC 超时与 GEO 404 报错。
+
 ## [1.5.1] - 2026-11-17
 
 ### Added
