@@ -325,7 +325,7 @@ public class XPCManager {
     }
 
     /// Inject SD-WAN exclude static routes via a *fresh* helper connection.
-    public func callSetupExcludeRoutes(_ routes: [String: String], timeout: TimeInterval = 5.0) async -> Bool? {
+    public func callSetupExcludeRoutes(_ routes: [String: String], timeout: TimeInterval = 10.0) async -> Bool? {
         guard checkStatus() == .enabled else { return nil }
         let conn = NSXPCConnection(machServiceName: "com.clashhalo.helper", options: .privileged)
         conn.remoteObjectInterface = NSXPCInterface(with: HelperProtocol.self)

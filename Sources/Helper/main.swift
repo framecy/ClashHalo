@@ -700,11 +700,11 @@ class Helper: NSObject, HelperProtocol {
     /// v1.1.9 fixed), and its Gateway column must repeat the interface name,
     /// the shape only `route add -interface` produces. A peer's own entries name
     /// their link (`link#32`) and are left alone.
-    private static func reclaimOrphanedPeerRoutes() -> Int {
+    private static func reclaimOrphanedPeerRoutes(in table: [RouteTable.Entry]? = nil) -> Int {
         let owners = PeerRouteGuard.localSubnetOwners()
         let localSubnets = Array(owners.keys)
         var removed = 0
-        for entry in RouteTable.current()
+        for entry in (table ?? RouteTable.current())
         where entry.interface.hasPrefix("utun")
             && entry.interface != kPinnedTunDevice
             && !entry.isScoped
@@ -753,7 +753,8 @@ class Helper: NSObject, HelperProtocol {
 
         // Repair first: whatever the caller wants, prefixes that must never point
         // at a tunnel get taken back — including orphans from a previous process.
-        let reclaimed = Self.reclaimOrphanedPeerRoutes()
+        let table = RouteTable.current()
+        let reclaimed = Self.reclaimOrphanedPeerRoutes(in: table)
 
         // The caller applies the same rule (see `Coexistence.routesByInterface`);
         // enforcing it again here is what makes it true of the system rather than
@@ -783,7 +784,7 @@ class Helper: NSObject, HelperProtocol {
         }
 
         for (dest, iface) in routes {
-            if let current = Self.routeInterface(exactly: dest) {
+            if let current = RouteTable.interface(exactly: dest, in: table) {
                 if current == iface {
                     // The peer installed it and still owns it. Nothing to do —
                     // and nothing to record, or teardown would delete theirs.

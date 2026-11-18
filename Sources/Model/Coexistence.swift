@@ -432,7 +432,8 @@ enum Coexistence {
     /// before it changes anything — so this is cheap enough to run on a timer
     /// without opening an XPC connection to find out there was nothing to do.
     static func auditRoutes(expected: [String: String]) -> [RouteDrift] {
-        RouteTable.drift(expected: expected, in: RouteTable.current())
+        guard let table = RouteTable.currentOrNil() else { return [] }
+        return RouteTable.drift(expected: expected, in: table)
             .map(RouteDrift.init)
     }
 

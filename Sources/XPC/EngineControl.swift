@@ -586,304 +586,27 @@ import SystemConfiguration
 
     // MARK: - proxy-providers (config.yaml editing)
 
-    /// 剥行尾注释，口径与 `YamlScalar.stripInlineComment` 一致：# 前须空白、
-    /// 引号内的 # 是数据。差别只在引号保护按开合跟踪整段文本——provider 键行
-    /// `"name": # 备注` 与 url 值 `"https://…" # 备注` 的引号在注释之前就闭合，
-    /// YamlScalar「整串以引号开头才保护」的规则在这两种形状上不适用。
-    /// 传入已 trim 的文本；整段都是注释时返回空串。
-    private static func stripLineComment(_ s: String) -> String {
-        if s.hasPrefix("#") { return "" }
-        var quote: Character? = nil
-        var prev: Character? = nil
-        var i = s.startIndex
-        while i < s.endIndex {
-            let c = s[i]
-            if let q = quote {
-                if c == q { quote = nil }
-            } else if c == "\"" || c == "'" {
-                quote = c
-            } else if c == "#", prev == " " || prev == "\t" {
-                return String(s[..<i]).trimmingCharacters(in: .whitespaces)
-            }
-            prev = c
-            i = s.index(after: i)
-        }
-        return s
-    }
-
-    /// Parse the `proxy-providers:` block into (name, url) pairs. Only the
-    /// provider's own 4-space `url:` is read (health-check's 6-space url ignored).
+    /// 导入配置的块/flow/模板引用走统一解析，不再假设 2/4 空格缩进。
     func proxyProviders() -> [(name: String, url: String)] {
         guard let text = try? String(contentsOfFile: configFilePath, encoding: .utf8) else { return [] }
-        var result: [(String, String)] = []
-        var inBlock = false, curIdx = -1
-        for line in text.components(separatedBy: "\n") {
-            if !line.hasPrefix(" ") && !line.hasPrefix("\t") {
-                let trimmed = line.trimmingCharacters(in: .whitespacesAndNewlines)
-                // 空行 / 顶层注释不是新的顶层键：导入的配置常在两个 provider
-                // 之间留空行，旧实现遇空行就把 inBlock 置 false，空行之后的
-                // provider 全部漏读。保存订阅时整块重写会把它们删掉，策略组
-                // 的 use: 随即指向不存在的 provider（proxy group[0] not found），
-                // 校验失败后整笔操作被回滚——用户看到的就是「管理订阅失败」。
-                if trimmed.isEmpty || trimmed.hasPrefix("#") { continue }
-                inBlock = line.hasPrefix("proxy-providers:"); curIdx = -1; continue
-            }
-            guard inBlock else { continue }
-            if line.hasPrefix("  ") && !line.hasPrefix("   ") {       // 2-space provider name
-                // CFG-12：`  "sub": # 机场` 也是 provider 键行——先剥行尾注释
-                // 再判冒号结尾，否则带注释的 provider 整个隐身。
-                let t = Self.stripLineComment(line.trimmingCharacters(in: .whitespacesAndNewlines))
-                if t.hasSuffix(":") { 
-                    let name = String(t.dropLast()).replacingOccurrences(of: "\"", with: "").replacingOccurrences(of: "'", with: "")
-                    if !name.isEmpty {
-                        result.append((name, ""))
-                        curIdx = result.count - 1 
-                    }
-                }
-            } else if curIdx >= 0 && line.hasPrefix("    url:") {     // 4-space own url
-                // CFG-12：url 值同样剥行尾注释（# 前须空白，URL 里的 #fragment
-                // 不受影响），否则编辑框拿到脏 URL、订阅更新必失败。
-                let url = Self.stripLineComment(line.trimmingCharacters(in: .whitespacesAndNewlines).dropFirst(4).trimmingCharacters(in: .whitespacesAndNewlines))
-                result[curIdx].1 = url.replacingOccurrences(of: "\"", with: "").replacingOccurrences(of: "'", with: "")
-            }
-        }
-        return result.map { (name: $0.0, url: $0.1) }
+        return ProviderConfiguration.entries(in: text).map { (name: $0.name, url: $0.url) }
     }
 
-    /// Rewrite the whole `proxy-providers:` block from the given list (HTTP type +
-    /// standard health-check template), then apply the requested group membership.
-    ///
-    /// - `memberships`: provider → 目标策略组集合；只有本次显式编辑过的订阅才出现。
-    /// - `renamed`: 旧名 → 新名；组里的 `use:` 引用原位换名，不会静默退出所有组。
-    ///
-    /// 归属改写唯一入口是 `ProviderGroupBinding.rewrite`（纯逻辑 + 回归套件），
-    /// 不要再在这里手写第二套 `use:` 逻辑。返回 false 表示读盘/写盘失败。
+    /// 订阅结构的唯一纯逻辑写入器负责保真修改与 use: 归属；这里只执行 IO。
     @discardableResult
     func writeProxyProviders(_ providers: [(name: String, url: String)],
                              memberships: [String: Set<String>] = [:],
                              renamed: [String: String] = [:]) -> Bool {
-        let currentProviders = proxyProviders()
-        let oldNames = Set(currentProviders.map { $0.name })
-        let newNames = Set(providers.map { $0.name })
-        // 改名不算删除：旧名要在组里原位换成新名，而不是先清掉再也没人补回。
-        let deleted = oldNames.subtracting(newNames).subtracting(renamed.keys)
-
-        guard let text = try? String(contentsOfFile: configFilePath, encoding: .utf8) else { return false }
-        var lines = text.components(separatedBy: "\n")
-
-        // 只改策略组归属时（订阅清单与 URL 都没变），整块 `proxy-providers:` 必须
-        // 原样不动：按 http 模板重建会丢掉用户手写的 filter / exclude-filter /
-        // 自定义 health-check 等字段。旧页面没有「只改归属」入口，这一步是新增的。
-        let providersUnchanged = currentProviders.count == providers.count
-            && zip(currentProviders, providers).allSatisfy { $0.name == $1.name && $0.url == $1.url }
-
-        // 0. 先记住旧块里每个 provider 的完整定义与类型。
-        //
-        // 这一读是必须的：本函数按 http 模板重建整块，而 `convertProviderToLocalFile`
-        // 会把 base64 订阅改写成 `type: file` + `path:`。用户在订阅页删/改**任何**
-        // 一条订阅都会走到这里 —— 不保留旧块的话，那条本地 provider 会被还原成
-        // `type: http` + `url: ""`，节点当场全空，而且看起来像是「转换没生效」。
-        if !providersUnchanged {
-            var preserved: [String: (isFile: Bool, block: [String])] = [:]
-            if let start = lines.firstIndex(where: { $0.hasPrefix("proxy-providers:") }) {
-                var end = start + 1
-                while end < lines.count,
-                      lines[end].trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-                        || lines[end].hasPrefix(" ") || lines[end].hasPrefix("\t") { end += 1 }
-                var current: (name: String, isFile: Bool, block: [String])? = nil
-                for i in (start + 1)..<end {
-                    let line = lines[i]
-                    let t = Self.stripLineComment(line.trimmingCharacters(in: .whitespacesAndNewlines))
-                    let nameIndent = line.hasPrefix("  ") && !line.hasPrefix("   ")
-                    if nameIndent && t.hasSuffix(":") {
-                        if let c = current { preserved[c.name] = (c.isFile, c.block) }
-                        let name = String(t.dropLast())
-                            .replacingOccurrences(of: "\"", with: "")
-                            .replacingOccurrences(of: "'", with: "")
-                        current = (name, false, [line])
-                    } else if current != nil {
-                        current?.block.append(line)
-                        if t.hasPrefix("type:") && t.lowercased().contains("file") {
-                            current?.isFile = true
-                        }
-                    }
-                }
-                if let c = current { preserved[c.name] = (c.isFile, c.block) }
-            }
-
-            // 1. Build the new proxy-providers block.
-            var block: [String] = []
-            if !providers.isEmpty {
-                block.append("proxy-providers:")
-                for p in providers {
-                    // 本地 file provider 原样保留（App 维护的节点文件，不经这里改写）
-                    if let old = preserved[p.name], old.isFile {
-                        block += old.block
-                        continue
-                    }
-                    block += [
-                        "  \"\(p.name)\":",
-                        "    type: http",
-                        "    url: \"\(p.url)\"",
-                        "    interval: 3600",
-                        "    health-check:",
-                        "      enable: true",
-                        "      url: http://www.gstatic.com/generate_204",
-                        "      interval: 300",
-                        "      lazy: true",
-                    ]
-                }
-            }
-
-            // 2. Replace existing proxy-providers block, else insert before proxy-groups.
-            if let start = lines.firstIndex(where: { $0.hasPrefix("proxy-providers:") }) {
-                var end = start + 1
-                while end < lines.count, lines[end].trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || lines[end].hasPrefix(" ") || lines[end].hasPrefix("\t") { end += 1 }
-                lines.replaceSubrange(start..<end, with: block)
-            } else if !block.isEmpty {
-                let at = lines.firstIndex(where: { $0.hasPrefix("proxy-groups:") }) ?? lines.count
-                lines.insert(contentsOf: block + [""], at: at)
-            }
-        }
-
-        // 3. Cleanup all references (use, proxies, rules)
-        var insideProxyGroups = false
-        var insideRules = false
-
-        var i = 0
-        while i < lines.count {
-            let line = lines[i]
-            let trimmed = line.trimmingCharacters(in: .whitespacesAndNewlines)
-            
-            if line.hasPrefix("proxy-groups:") { insideProxyGroups = true; insideRules = false; i += 1; continue }
-            if line.hasPrefix("rules:") { insideRules = true; insideProxyGroups = false; i += 1; continue }
-            if !line.hasPrefix(" ") && !line.hasPrefix("-") && !trimmed.isEmpty { insideProxyGroups = false; insideRules = false }
-
-            if insideProxyGroups {
-                // Inline array use: [A, B] or proxies: [A, B]
-                if (trimmed.hasPrefix("use:") || trimmed.hasPrefix("proxies:")) && trimmed.contains("[") {
-                    var modified = line
-                    for d in deleted {
-                        modified = modified.replacingOccurrences(of: " \(d),", with: " ")
-                        modified = modified.replacingOccurrences(of: " \"\(d)\",", with: " ")
-                        modified = modified.replacingOccurrences(of: " \(d)]", with: "]")
-                        modified = modified.replacingOccurrences(of: " \"\(d)\"]", with: "]")
-                        modified = modified.replacingOccurrences(of: "[\(d), ", with: "[")
-                        modified = modified.replacingOccurrences(of: "[\"\(d)\", ", with: "[")
-                        modified = modified.replacingOccurrences(of: "[\(d)]", with: "[]")
-                        modified = modified.replacingOccurrences(of: "[\"\(d)\"]", with: "[]")
-                    }
-                    if modified != line { lines[i] = modified }
-                }
-                
-                // Block array: - ProviderName
-                if trimmed.hasPrefix("- ") && !trimmed.hasPrefix("- name:") {
-                    let rawName = trimmed.dropFirst(2).trimmingCharacters(in: .whitespaces)
-                    let name = rawName.replacingOccurrences(of: "\"", with: "").replacingOccurrences(of: "'", with: "")
-                    if deleted.contains(name) {
-                        lines.remove(at: i)
-                        continue
-                    }
-                }
-            }
-
-            if insideRules {
-                // Rule format: - MATCH,NodeOrProvider
-                if trimmed.hasPrefix("- ") {
-                    let parts = trimmed.dropFirst(2).components(separatedBy: ",")
-                    if let lastRaw = parts.last?.trimmingCharacters(in: .whitespaces) {
-                        let last = lastRaw.replacingOccurrences(of: "\"", with: "").replacingOccurrences(of: "'", with: "")
-                        if deleted.contains(last) {
-                            lines.remove(at: i)
-                            continue
-                        }
-                    }
-                }
-            }
-            i += 1
-        }
-
-        // 4. 按每个订阅的目标归属改写各组 use:。
-        // 旧实现把第一个组的 use: 整块重写成「全部 provider」：用户无法按组分配，
-        // 改名还会静默退出所有组。现在只有显式勾选的组会被增删，未受影响的组
-        // 逐字节不动（ProviderGroupBinding 的回归套件钉住这一点）。
-        lines = ProviderGroupBinding.rewrite(lines.joined(separator: "\n"),
-                                             desired: memberships,
-                                             removed: deleted,
-                                             renamed: renamed)
-            .components(separatedBy: "\n")
-
-        // 5. Cleanup any dangling empty use: or proxies: blocks in other groups
-        var j = lines.count - 1
-        while j >= 0 {
-            let trimmed = lines[j].trimmingCharacters(in: .whitespacesAndNewlines)
-            if trimmed == "use:" || trimmed == "proxies:" {
-                let indent = lines[j].prefix(while: { $0 == " " }).count
-                var hasChildren = false
-                var k = j + 1
-                while k < lines.count {
-                    let nextTrimmed = lines[k].trimmingCharacters(in: .whitespacesAndNewlines)
-                    if nextTrimmed.isEmpty { k += 1; continue }
-                    let nextIndent = lines[k].prefix(while: { $0 == " " }).count
-                    if nextIndent > indent { 
-                        hasChildren = true
-                        break 
-                    }
-                    if nextIndent == indent && nextTrimmed.hasPrefix("-") {
-                        hasChildren = true
-                        break
-                    }
-                    break
-                }
-                if !hasChildren {
-                    lines.remove(at: j)
-                }
-            }
-            j -= 1
-        }
-
-        // 6. 删光订阅后，只靠 provider 供血的策略组会变空，mihomo -t 会拒绝整份
-        // 配置。旧行为在 AppModel 侧整笔回滚并提示「请先编辑该策略组」，用户连
-        // 最后一个订阅都删不掉（反复弹同一条提示）。这里给这些组补 DIRECT 兜底：
-        // 没有节点时本来也只能直连，配置仍然合法，订阅操作得以完成。
-        let emptyGroups = ProviderUsage.groupsMissingMembers(in: lines.joined(separator: "\n"))
-        if !emptyGroups.isEmpty {
-            lines = Self.injectDirectFallback(into: lines, groups: Set(emptyGroups))
-        }
-
-        // CFG-3：写盘失败必须返回 false——旧实现恒 return true，订阅页会在
-        // 磁盘未变时弹「已保存」。
-        return writeConfig(lines.joined(separator: "\n"), to: configFilePath)
+        guard let text = try? String(contentsOfFile: configFilePath, encoding: .utf8),
+              let next = try? ProviderDocument.rewrite(text, providers: providers,
+                                                      memberships: memberships, renamed: renamed) else { return false }
+        return persistProviderConfiguration(next)
     }
 
-    /// 给没有节点来源的策略组补 `proxies: [DIRECT]`。组边界口径与
-    /// `ProviderUsage.groupsMissingMembers` 一致（2 空格缩进的 `- name:`）。
-    private static func injectDirectFallback(into lines: [String], groups: Set<String>) -> [String] {
-        var out = lines
-        var i = 0
-        while i < out.count {
-            let raw = out[i]
-            guard raw.hasPrefix("  - ") || raw.hasPrefix("  -\t") else { i += 1; continue }
-            let trimmed = raw.trimmingCharacters(in: .whitespaces)
-            let body = String(trimmed.dropFirst(2)).trimmingCharacters(in: .whitespaces)
-            guard body.hasPrefix("name:"),
-                  let name = ProviderUsage.scalar(String(body.dropFirst("name:".count))),
-                  groups.contains(name) else { i += 1; continue }
-            // 找组结束：下一个组起始行，或下一个顶层键。
-            var end = i + 1
-            while end < out.count {
-                let t = out[end].trimmingCharacters(in: .whitespaces)
-                let isGroupStart = t.hasPrefix("- name:")
-                    && (out[end].hasPrefix("  - ") || out[end].hasPrefix("  -\t"))
-                let isTopLevel = !out[end].hasPrefix(" ") && !t.isEmpty && !t.hasPrefix("#")
-                if isGroupStart || isTopLevel { break }
-                end += 1
-            }
-            let indent = String(raw.prefix(while: { $0 == " " })) + "  "
-            out.insert(contentsOf: [indent + "proxies:", indent + "  - DIRECT"], at: end)
-            i = end + 2
-        }
-        return out
+    /// 不注入/切换 TUN，不调用 setConfig 的整配置重置。调用方负责事务和内核确认。
+    @discardableResult
+    func persistProviderConfiguration(_ text: String) -> Bool {
+        writeConfig(text, to: configFilePath, writer: "providerTransaction")
     }
 
     /// The BSD name of the current default-route interface (e.g. `en0`), or nil.
@@ -1139,10 +862,11 @@ import SystemConfiguration
     /// kelee.one lines are touched, so a user's working geox-url is left intact.
     func normalizeGeoxURL() {
         let path = configFilePath
+        let brokenMMDB = "Loyalsoldier/v2ray-rules-dat@release/country.mmdb"
         guard let text = try? String(contentsOfFile: path, encoding: .utf8),
-              text.contains("geodata.kelee.one") else { return }
+              text.contains("geodata.kelee.one") || text.contains(brokenMMDB) else { return }
         let replacements = [
-            "mmdb": "https://cdn.jsdelivr.net/gh/Loyalsoldier/v2ray-rules-dat@release/country.mmdb",
+            "mmdb": "https://cdn.jsdelivr.net/gh/MetaCubeX/meta-rules-dat@release/geoip.metadb",
             "asn": "https://github.com/P3TERX/GeoLite.mmdb/raw/download/GeoLite2-ASN.mmdb",
             "geosite": "https://cdn.jsdelivr.net/gh/Loyalsoldier/v2ray-rules-dat@release/geosite.dat",
             "geoip": "https://cdn.jsdelivr.net/gh/Loyalsoldier/v2ray-rules-dat@release/geoip.dat"
@@ -1155,7 +879,7 @@ import SystemConfiguration
                 inGeox = line.hasPrefix("geox-url:")
                 continue
             }
-            guard inGeox, line.contains("geodata.kelee.one") else { continue }
+            guard inGeox, line.contains("geodata.kelee.one") || line.contains(brokenMMDB) else { continue }
             let trimmed = line.trimmingCharacters(in: .whitespaces)
             for (k, v) in replacements where trimmed.hasPrefix("\(k):") {
                 let indent = String(line.prefix(while: { $0 == " " || $0 == "\t" }))

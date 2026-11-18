@@ -22,6 +22,8 @@ struct YAMLPreview: Equatable {
 
 @MainActor final class ConfigStore: ObservableObject {
     @Published var profiles: [Profile] = []
+    /// 订阅跨 await 操作期间，不允许配置页删/刷新/编辑 profile 绕过业务锁。
+    var providerMutationInFlight = false
     @AppStorage("config.active") var activeID = ""
 
     /// Set by `removeAll()`, cleared by any import.
@@ -72,10 +74,29 @@ struct YAMLPreview: Equatable {
     /// profiles/*.yaml 的唯一写盘入口：atomic write 默认落 0644，写完必须收回
     /// 0600——profile 与 config.yaml 含同样的订阅凭据，后者 0600 前者不能裸奔
     /// （CFG-20）。所有写 profile 的路径都走这里，不再各自 try? write。
-    private func writeProfileFile(_ id: String, _ text: String) {
+    @discardableResult
+    private func writeProfileFile(_ id: String, _ text: String) -> Bool {
         let p = path(id)
-        try? text.write(toFile: p, atomically: true, encoding: .utf8)
-        try? fm.setAttributes([.posixPermissions: 0o600], ofItemAtPath: p)
+        do {
+            try text.write(toFile: p, atomically: true, encoding: .utf8)
+            try fm.setAttributes([.posixPermissions: 0o600], ofItemAtPath: p)
+            return try String(contentsOfFile: p, encoding: .utf8) == text
+        } catch { return false }
+    }
+
+    /// provider 事务只改 profile 内容，元数据等内核确认后再提交；失败由调用方回滚。
+    func writeProviderProfile(_ id: String, text: String) throws {
+        guard profiles.contains(where: { $0.id == id }), writeProfileFile(id, text) else {
+            throw ProviderOperationError.message("无法写入订阅所属配置，未完成保存")
+        }
+    }
+
+    func finishProviderProfile(_ id: String, text: String, applied: Bool) -> Bool {
+        guard let i = profiles.firstIndex(where: { $0.id == id }) else { return false }
+        profiles[i].updatedAt = Date()
+        profiles[i].isApplied = applied
+        profiles[i].appliedHash = applied ? Sha1.hex(text) : nil
+        return save()
     }
 
     /// 覆写前备份（CFG-18）：`<id>.yaml.bak-<时间戳>`，只保留最近 3 份。
@@ -128,7 +149,7 @@ struct YAMLPreview: Equatable {
             mode: rule
             log-level: info
             geox-url:
-              mmdb: https://cdn.jsdelivr.net/gh/Loyalsoldier/v2ray-rules-dat@release/country.mmdb
+              mmdb: https://cdn.jsdelivr.net/gh/MetaCubeX/meta-rules-dat@release/geoip.metadb
               asn: https://github.com/P3TERX/GeoLite.mmdb/raw/download/GeoLite2-ASN.mmdb
               geosite: https://cdn.jsdelivr.net/gh/Loyalsoldier/v2ray-rules-dat@release/geosite.dat
               geoip: https://cdn.jsdelivr.net/gh/Loyalsoldier/v2ray-rules-dat@release/geoip.dat
@@ -210,13 +231,16 @@ struct YAMLPreview: Equatable {
     }
 
     func content(_ id: String) -> String { (try? String(contentsOfFile: path(id), encoding: .utf8)) ?? "" }
-    func saveContent(_ id: String, _ text: String) {
-        writeProfileFile(id, text); touch(id)
+    @discardableResult
+    func saveContent(_ id: String, _ text: String) -> Bool {
+        guard !providerMutationInFlight, writeProfileFile(id, text) else { return false }
+        touch(id)
         if let i = profiles.firstIndex(where: { $0.id == id }) {
             profiles[i].appliedHash = nil
             profiles[i].isApplied = false
-            save()
+            return save()
         }
+        return false
     }
     private func touch(_ id: String) { if let i = profiles.firstIndex(where: { $0.id == id }) { profiles[i].updatedAt = Date(); save() } }
 
@@ -281,6 +305,8 @@ struct YAMLPreview: Equatable {
     /// applied; a draft stays a draft (the caller decides when to promote).
     /// Does not overwrite the local file if download fails or returns invalid content.
     func updateRemote(_ id: String) async -> Bool {
+        guard !providerMutationInFlight else { return false }
+        let before = content(id)
         guard let p = profiles.first(where: { $0.id == id }),
               let url = p.url,
               let u = URL(string: url) else { return false }
@@ -305,8 +331,10 @@ struct YAMLPreview: Equatable {
                 return false
             }
 
+            guard !providerMutationInFlight, self.content(id) == before,
+                  profiles.contains(where: { $0.id == id }) else { return false }
             backupProfileFile(id)
-            writeProfileFile(id, normalized)
+            guard writeProfileFile(id, normalized) else { return false }
             touch(id)
             return true
         } catch {
@@ -333,76 +361,21 @@ struct YAMLPreview: Equatable {
 
     // MARK: - 转换后的本地 provider（base64 节点订阅）
 
-    /// provider 名 → 原始订阅 URL。
-    ///
-    /// 为什么单独存：配置被 `ProviderRewrite` 改成 `type: file` 之后，profiles 与
-    /// config.yaml 里都不再有源地址，刷新时就没有地方取 URL 了。这些 URL 与订阅
-    /// 凭据同级，所以：文件 0600、目录沿用 profiles 的 0700 约定，且**绝不**写进
-    /// manifest.json（那条隐私不变量不因新增文件而放宽）。
-    @Published private(set) var providerSources: [String: String] = [:]
+    /// 所有源记录由 profileID + providerName 隔离；UI 只看当前配置的能力。
+    let providerSourceStore = ProviderSourceStore(baseDirectory: URL(fileURLWithPath:
+        NSHomeDirectory() + "/Library/Application Support/ClashHalo"))
+    @Published private(set) var providerSourceRevision: UInt64 = 0
 
-    private var providerFilesDir: String {
-        NSHomeDirectory() + "/Library/Application Support/ClashHalo/provider-files"
+    var providerSources: [String: String] {
+        Dictionary(uniqueKeysWithValues: providerSourceStore.records
+            .filter { $0.profileID == activeID }.map { ($0.name, $0.url) })
     }
-    private var providerSourcesPath: String {
-        NSHomeDirectory() + "/Library/Application Support/ClashHalo/provider-sources.json"
-    }
-
-    /// 文件名安全化 + 短哈希：provider 名可以是中文/带空格/带引号，直接当文件名
-    /// 会踩路径分隔符与大小写问题；哈希后缀保证不同名字不会撞车。
-    static func providerSlug(_ name: String) -> String {
-        let safe = name.map { ch -> Character in
-            (ch.isLetter || ch.isNumber || ch == "-" || ch == "_") ? ch : "_"
-        }
-        return "\(String(safe).prefix(24))-\(Sha1.hex(name).prefix(8))"
-    }
-
-    /// 写入 file provider 的节点文件，返回 mihomo 视角的路径（相对 `-d` 工作目录，
-    /// 内核以 `-d <appSupport>` 启动，所以是 `./provider-files/<slug>.yaml`）。
-    @discardableResult
-    func writeProviderNodes(name: String, yaml: String) -> String? {
-        let fm = FileManager.default
-        do {
-            try fm.createDirectory(atPath: providerFilesDir, withIntermediateDirectories: true,
-                                   attributes: [.posixPermissions: 0o700])
-            try? fm.setAttributes([.posixPermissions: 0o700], ofItemAtPath: providerFilesDir)
-            let file = providerFilesDir + "/" + Self.providerSlug(name) + ".yaml"
-            try yaml.write(toFile: file, atomically: true, encoding: .utf8)
-            try? fm.setAttributes([.posixPermissions: 0o600], ofItemAtPath: file)
-            return "./provider-files/\(Self.providerSlug(name)).yaml"
-        } catch {
-            AppModel.appendAppLog("[Subscriptions] 写入本地 provider 文件失败（\(name)）：\(error.localizedDescription)")
-            return nil
-        }
-    }
-
-    func providerSource(name: String) -> String? { providerSources[name] }
-
-    func setProviderSource(name: String, url: String) {
-        providerSources[name] = url
-        saveProviderSources()
-    }
-
-    func removeProviderSource(name: String) {
-        guard providerSources.removeValue(forKey: name) != nil else { return }
-        saveProviderSources()
-    }
-
-    private func saveProviderSources() {
-        do {
-            let data = try JSONEncoder().encode(providerSources)
-            try data.write(to: URL(fileURLWithPath: providerSourcesPath), options: .atomic)
-            try? FileManager.default.setAttributes([.posixPermissions: 0o600],
-                                                   ofItemAtPath: providerSourcesPath)
-        } catch {
-            AppModel.appendAppLog("[Subscriptions] provider 源地址记录写入失败：\(error.localizedDescription)")
-        }
-    }
+    var hasLegacyProviderSources: Bool { !providerSourceStore.legacySources.isEmpty }
+    func noteProviderSourcesChanged() { providerSourceRevision &+= 1 }
 
     private func loadProviderSources() {
-        guard let data = FileManager.default.contents(atPath: providerSourcesPath),
-              let map = try? JSONDecoder().decode([String: String].self, from: data) else { return }
-        providerSources = map
+        do { try providerSourceStore.load(); noteProviderSourcesChanged() }
+        catch { AppModel.appendAppLog("[Subscriptions] 本地订阅索引读取失败，未自动恢复源地址") }
     }
 
     // MARK: - Base64 分享链接订阅
@@ -449,12 +422,35 @@ struct YAMLPreview: Equatable {
     }
 
 
-    func remove(_ id: String) {
-        try? fm.removeItem(atPath: path(id))
-        pruneBackups(id, keeping: 0)
-        KeychainHelper.delete(key: id)
-        profiles.removeAll { $0.id == id }; save()
-        if activeID == id { activeID = profiles.first?.id ?? "" }
+    @discardableResult
+    func remove(_ id: String) -> Bool {
+        guard !providerMutationInFlight, id != activeID,
+              let oldText = try? String(contentsOfFile: path(id), encoding: .utf8) else { return false }
+        let oldProfiles = profiles
+        let oldID = activeID
+        do {
+            // profile 与清单成功移除后，才允许清源；源服务失败自带回滚。
+            let target = URL(fileURLWithPath: path(id)).standardizedFileURL
+            let root = URL(fileURLWithPath: dir).standardizedFileURL
+            guard target.deletingLastPathComponent() == root,
+                  target.resolvingSymlinksInPath() == target else { return false }
+            try fm.removeItem(at: target)
+            profiles.removeAll { $0.id == id }
+            if activeID == id { activeID = profiles.first?.id ?? "" }
+            guard save() else { throw ProviderOperationError.message("删除配置索引失败") }
+            try providerSourceStore.removeProfile(id)
+            noteProviderSourcesChanged()
+            pruneBackups(id, keeping: 0)
+            KeychainHelper.delete(key: id)
+            return true
+        } catch {
+            profiles = oldProfiles
+            activeID = oldID
+            let restored = writeProfileFile(id, oldText)
+            let saved = save()
+            AppModel.appendAppLog(restored && saved ? "删除配置失败，已回滚" : "删除配置失败，回滚未完整完成")
+            return false
+        }
     }
 
     /// Kernel-side caches that belong to the profiles being deleted: proxy- and
@@ -488,17 +484,23 @@ struct YAMLPreview: Equatable {
     /// privileged "delete any path as root" XPC call.
     @discardableResult
     func removeAll() -> [String] {
+        guard !providerMutationInFlight else { return ["订阅操作尚未结束"] }
+        var failed: [String] = []
         for p in profiles {
-            try? fm.removeItem(atPath: path(p.id))
+            do { try fm.removeItem(atPath: path(p.id)) }
+            catch { failed.append("配置文件") }
             pruneBackups(p.id, keeping: 0)
             KeychainHelper.delete(key: p.id)
         }
         profiles.removeAll()
         activeID = ""
-        try? fm.removeItem(atPath: manifestPath)
-        try? fm.removeItem(atPath: configPath)
+        for path in [manifestPath, configPath] where fm.fileExists(atPath: path) {
+            do { try fm.removeItem(atPath: path) }
+            catch { failed.append((path as NSString).lastPathComponent) }
+        }
 
-        var failed: [String] = []
+        do { try providerSourceStore.removeAll(); noteProviderSourcesChanged() }
+        catch { failed.append("本地订阅源与节点缓存") }
         for p in cachePaths where fm.fileExists(atPath: p) {
             do { try fm.removeItem(atPath: p) }
             catch { failed.append((p as NSString).lastPathComponent) }
@@ -514,6 +516,7 @@ struct YAMLPreview: Equatable {
     /// kernel** — that's `engine.setConfig`'s job, driven by the caller.
     /// Returns the YAML content the caller should hand to `setConfig`.
     func commit(_ id: String) -> String? {
+        guard !providerMutationInFlight else { return nil }
         let text = content(id); guard !text.isEmpty else { return nil }
         // This is the writer that actually repairs drift, so it must appear in
         // the audit trail. It runs *before* `engine.setConfig` → `writeConfig`,
@@ -562,20 +565,17 @@ struct YAMLPreview: Equatable {
     /// Applied profiles keep their file (the user can still deactivate via
     /// the legacy remove path; we just don't auto-clean them here).
     func discardDraft(_ id: String) {
+        guard !providerMutationInFlight else { return }
         guard let i = profiles.firstIndex(where: { $0.id == id }) else { return }
         guard profiles[i].isApplied == false else { return }
-        try? fm.removeItem(atPath: path(id))
-        pruneBackups(id, keeping: 0)
-        KeychainHelper.delete(key: id)
-        profiles.removeAll { $0.id == id }; save()
+        _ = remove(id) // 与删除配置共用源/节点清理及回滚，不留下第三个写点。
     }
 
-    /// Row-scan approximation of the YAML structure — no real parser. Stays
-    /// in lockstep with `EngineControl.readConfigFile` / `proxyProviders`
-    /// (same "top-level key + 2-space indent" rule) so what the user sees
-    /// matches what the kernel will eventually count.
+    /// 结构预览仍以行扫描为主；provider 的块/flow/模板检测复用
+    /// ProviderConfiguration，与订阅页及源地址读取保持一致。
     func previewOfContent(_ text: String) -> YAMLPreview {
         var preview = YAMLPreview(); preview.bytes = text.utf8.count
+        preview.hasProxyProviders = !ProviderConfiguration.entries(in: text).isEmpty
         // 组计数走唯一权威解析（与规则目标校验同口径）：标准组行是
         // `  - name: X`，行尾没有冒号——旧版要求 hasSuffix(":")，groupCount
         // 恒 0（CFG-11）。

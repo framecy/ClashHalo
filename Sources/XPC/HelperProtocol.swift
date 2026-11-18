@@ -1,4 +1,5 @@
 import Foundation
+import Darwin
 
 /// Single source of truth for the privileged helper version.
 /// Shared by both the Helper binary (compiled via make.sh) and the main app
@@ -110,34 +111,128 @@ public enum RouteTable {
         }
     }
 
-    /// Read and parse the live IPv4 route table.
+    /// Read and parse the live IPv4 route table directly from the kernel via
+    /// `sysctl(NET_RT_DUMP)`.
     ///
-    /// netstat can stall (routing-table lock / configd), and callers hold locks
-    /// across this read (the Helper takes `routesLock`), so an unbounded
-    /// `waitUntilExit` could wedge the whole route path. Bound the read+wait at
-    /// 5 s; on timeout terminate the child, log, and return an empty table rather
-    /// than hang. NSLog (not the Helper's `log`) because this file is shared with
-    /// the GUI and the regression tests.
+    /// Zero-fork and sub-millisecond: avoids spawning `/usr/sbin/netstat`, which
+    /// can stall or time out (5 s) when forked from the GUI process and cause
+    /// `auditRoutes` to misread an empty table as "all peer routes missing".
+    /// Returns `nil` if the kernel query fails so callers can skip auditing
+    /// instead of treating a read failure as an empty routing table.
+    public static func currentOrNil() -> [Entry]? {
+        var mib: [Int32] = [CTL_NET, PF_ROUTE, 0, AF_INET, NET_RT_DUMP, 0]
+        var needed = 0
+        guard sysctl(&mib, 6, nil, &needed, nil, 0) == 0, needed > 0 else {
+            NSLog("[ClashHalo] RouteTable.currentOrNil: sysctl size failed (errno=%d)", errno)
+            return nil
+        }
+        var buf = [UInt8](repeating: 0, count: needed)
+        guard sysctl(&mib, 6, &buf, &needed, nil, 0) == 0 else {
+            NSLog("[ClashHalo] RouteTable.currentOrNil: sysctl data failed (errno=%d)", errno)
+            return nil
+        }
+
+        let rtaxMax = 8
+        let rtaxDst = 0
+        let rtaxGateway = 1
+        let rtaxNetmask = 2
+        let rtfHost: Int32 = 0x4
+        let rtfGateway: Int32 = 0x2
+        let rtfStatic: Int32 = 0x800
+        let rtfIfScope: Int32 = 0x1000000
+        let rtfUp: Int32 = 0x1
+
+        func roundUp(_ len: Int) -> Int {
+            let size = MemoryLayout<UInt32>.size
+            return len > 0 ? (1 + ((len - 1) | (size - 1))) : size
+        }
+
+        var entries = [Entry]()
+        buf.withUnsafeBytes { raw in
+            var offset = 0
+            while offset + MemoryLayout<rt_msghdr>.size <= needed {
+                let rtm = raw.load(fromByteOffset: offset, as: rt_msghdr.self)
+                let msglen = Int(rtm.rtm_msglen)
+                if msglen <= 0 || offset + msglen > needed { break }
+
+                var saOffset = offset + MemoryLayout<rt_msghdr>.size
+                var dstIP: UInt32?
+                var maskIP: UInt32?
+                var gatewayStr = ""
+
+                for i in 0..<rtaxMax {
+                    guard (rtm.rtm_addrs & (1 << i)) != 0 else { continue }
+                    if saOffset + 2 > offset + msglen { break }
+                    let saLen = Int(raw.load(fromByteOffset: saOffset, as: UInt8.self))
+                    let saFamily = raw.load(fromByteOffset: saOffset + 1, as: UInt8.self)
+
+                    if i == rtaxDst && saFamily == UInt8(AF_INET)
+                        && saOffset + MemoryLayout<sockaddr_in>.size <= offset + msglen {
+                        let sin = raw.load(fromByteOffset: saOffset, as: sockaddr_in.self)
+                        dstIP = UInt32(bigEndian: sin.sin_addr.s_addr)
+                    } else if i == rtaxNetmask && saOffset + 4 <= offset + msglen {
+                        var bytes = [UInt8](repeating: 0, count: 4)
+                        let copyLen = min(max(0, saLen - 4), 4)
+                        for b in 0..<copyLen {
+                            bytes[b] = raw.load(fromByteOffset: saOffset + 4 + b, as: UInt8.self)
+                        }
+                        maskIP = (UInt32(bytes[0]) << 24) | (UInt32(bytes[1]) << 16)
+                            | (UInt32(bytes[2]) << 8) | UInt32(bytes[3])
+                    } else if i == rtaxGateway {
+                        if saFamily == UInt8(AF_INET)
+                            && saOffset + MemoryLayout<sockaddr_in>.size <= offset + msglen {
+                            let sin = raw.load(fromByteOffset: saOffset, as: sockaddr_in.self)
+                            let ip = UInt32(bigEndian: sin.sin_addr.s_addr)
+                            gatewayStr = "\((ip >> 24) & 0xFF).\((ip >> 16) & 0xFF).\((ip >> 8) & 0xFF).\(ip & 0xFF)"
+                        } else if saFamily == UInt8(AF_LINK) && saOffset + 8 <= offset + msglen {
+                            let sdlIndex = raw.load(fromByteOffset: saOffset + 2, as: UInt16.self)
+                            let sdlNlen = Int(raw.load(fromByteOffset: saOffset + 5, as: UInt8.self))
+                            if sdlNlen > 0 && saOffset + 8 + sdlNlen <= offset + msglen {
+                                let nameBytes = (0..<sdlNlen).map {
+                                    raw.load(fromByteOffset: saOffset + 8 + $0, as: UInt8.self)
+                                }
+                                gatewayStr = String(bytes: nameBytes, encoding: .utf8) ?? "link#\(sdlIndex)"
+                            } else {
+                                gatewayStr = "link#\(sdlIndex)"
+                            }
+                        }
+                    }
+                    saOffset += roundUp(saLen)
+                }
+
+                var ifBuf = [CChar](repeating: 0, count: Int(IF_NAMESIZE))
+                let ifName = if_indextoname(UInt32(rtm.rtm_index), &ifBuf).map { String(cString: $0) } ?? ""
+
+                if let dst = dstIP, !ifName.isEmpty {
+                    let isHost = (rtm.rtm_flags & rtfHost) != 0
+                    let prefixLen: Int
+                    if isHost {
+                        prefixLen = 32
+                    } else if let m = maskIP {
+                        prefixLen = m.nonzeroBitCount
+                    } else {
+                        prefixLen = 32
+                    }
+                    let base = prefixLen == 0 ? 0 : (dst & (0xFFFFFFFF << (32 - prefixLen)))
+                    let cidr = "\((base >> 24) & 0xFF).\((base >> 16) & 0xFF).\((base >> 8) & 0xFF).\(base & 0xFF)/\(prefixLen)"
+
+                    var flags = ""
+                    if (rtm.rtm_flags & rtfUp) != 0 { flags.append("U") }
+                    if (rtm.rtm_flags & rtfGateway) != 0 { flags.append("G") }
+                    if isHost { flags.append("H") }
+                    if (rtm.rtm_flags & rtfStatic) != 0 { flags.append("S") }
+                    if (rtm.rtm_flags & rtfIfScope) != 0 { flags.append("I") }
+
+                    entries.append(Entry(cidr: cidr, interface: ifName, flags: flags, gateway: gatewayStr))
+                }
+                offset += msglen
+            }
+        }
+        return entries
+    }
+
     public static func current() -> [Entry] {
-        let p = Process()
-        p.executableURL = URL(fileURLWithPath: "/usr/sbin/netstat")
-        p.arguments = ["-rn", "-f", "inet"]
-        let pipe = Pipe(); p.standardOutput = pipe; p.standardError = Pipe()
-        do { try p.run() } catch { return [] }
-        let sema = DispatchSemaphore(value: 0)
-        var output = Data()
-        DispatchQueue.global().async {
-            output = pipe.fileHandleForReading.readDataToEndOfFile()
-            p.waitUntilExit()
-            sema.signal()
-        }
-        if sema.wait(timeout: .now() + 5.0) == .timedOut {
-            if p.isRunning { p.terminate() }
-            NSLog("[ClashHalo] RouteTable.current: netstat timed out after 5s; returning empty table")
-            return []
-        }
-        guard let out = String(data: output, encoding: .utf8) else { return [] }
-        return parse(netstat: out)
+        currentOrNil() ?? []
     }
 
     /// The `Netif` column. Not simply the last one: rows carry a trailing
@@ -160,8 +255,12 @@ public enum RouteTable {
     /// The interface carrying exactly `cidr`, nil when the table has no such
     /// entry. A wider route that merely covers the prefix is not a match.
     public static func interface(exactly cidr: String) -> String? {
+        interface(exactly: cidr, in: current())
+    }
+
+    public static func interface(exactly cidr: String, in table: [Entry]) -> String? {
         guard let want = normalizedCIDR(cidr) else { return nil }
-        return current().first { $0.cidr == want && !$0.isScoped }?.interface
+        return table.first { $0.cidr == want && !$0.isScoped }?.interface
     }
 
     /// `netstat` destination → canonical `a.b.c.d/len`.
