@@ -11,8 +11,8 @@ import Foundation
 // 所有组。这里把「解析组 / 查归属 / 按目标归属改写 YAML」收敛成唯一入口。
 //
 // 解析口径与 `ProviderUsage` 完全一致（同一份行扫描，不引入第二套 YAML 理解）：
-//   - 只认 `proxy-groups:` 块内 2 空格缩进的 `- name:` / `- type:` 开启的组；
-//   - 组内字段 4 空格，`use:` 支持块状列表与内联数组两种写法；
+//   - 使用 ProviderUsage 的任意空格缩进 scanner，不再维护第二份组边界；
+//   - `use:` 支持块状列表与带转义的内联数组两种写法；
 //   - 不解析锚点、多行标量、`use: [` 换行续写的流式数组；看不懂的行原样保留。
 //
 // 改写原则（回归套件逐字节钉住）：
@@ -22,177 +22,43 @@ import Foundation
 
 enum ProviderGroupBinding {
 
-    /// 一个策略组在文件里的可改写视图。
-    struct Group {
-        let name: String
-        /// `select` / `url-test` / `fallback` / `load-balance` …
-        let type: String?
-        /// `use:` 里显式引用的 provider 名（按文件顺序，已去引号）。
-        let providers: [String]
-        /// `proxies:` 里的条目数（用于「取消后组会不会变空」的预告）。
-        let proxyCount: Int
-        /// `include-all-providers: true`：所有订阅本来就全含，不需要也不该写 `use:`。
-        let includesAllProviders: Bool
-        /// `include-all-proxies: true`：只含配置里的普通节点，订阅节点仍需 `use:`。
-        let includesAllProxies: Bool
-        /// 组起始行与结束行（不含）。
-        let startLine: Int
-        let endLine: Int
-        /// `use:` 所在行；nil = 该组没有 `use:` 键。
-        let useLine: Int?
-        /// `use:` 是否是内联数组写法。
-        let useInline: Bool
-        /// 组内字段缩进（通常 4）。
-        let fieldIndent: Int
-        /// 块状 `use:` 条目的缩进（通常 6）；无块状条目时为 nil。
-        let itemIndent: Int?
-    }
+    typealias Group = ProviderUsage.Group
 
-    // MARK: - 解析
+    /// 读取与 ProviderUsage.groupNames 使用同一 scanner，不另建名称正则。
+    static func groups(in yaml: String) -> [Group] { ProviderUsage.scanGroups(in: yaml) }
 
-    /// 取出 `proxy-groups:` 块里所有能识别的组（按文件顺序）。
-    ///
-    /// 与 `ProviderUsage.groupNames` 的差别只有一处：允许 `- type:` 在前、`name:`
-    /// 在后的组也拿到名字（F24），但仍不解析 `- {name: X, type: …}` 内联映射——
-    /// 那种写法没有独立的 `name:` 行，任何行扫描都取不到。
-    static func groups(in yaml: String) -> [Group] {
+    /// IO 前能力预检；有不支持的组时不能“成功”返回一半改写。
+    static func supportsRewrite(_ yaml: String,
+                                desired: [String: Set<String>],
+                                removed: Set<String>,
+                                renamed: [String: String]) -> Bool {
+        if desired.isEmpty && removed.isEmpty && renamed.isEmpty { return true }
         let lines = yaml.components(separatedBy: "\n")
-        var result: [Group] = []
-
-        var inGroups = false
-        var start = -1
-        var name: String?
-        var type: String?
-        var useEntries: [String] = []
-        var useLine: Int?
-        var useInline = false
-        var proxyCount = 0
-        var includesAllProviders = false
-        var includesAllProxies = false
-        var fieldIndent = 4
-        var itemIndent: Int?
-        var inUseBlock = false
-        var inProxiesBlock = false
-
-        func commit(end: Int) {
-            defer {
-                start = -1
-                name = nil
-                type = nil
-                useEntries = []
-                useLine = nil
-                useInline = false
-                proxyCount = 0
-                includesAllProviders = false
-                includesAllProxies = false
-                fieldIndent = 4
-                itemIndent = nil
-                inUseBlock = false
-                inProxiesBlock = false
+        let parsed = groups(in: yaml)
+        let names = Set(ProviderUsage.groupNames(in: yaml))
+        guard desired.values.allSatisfy({ $0.isSubset(of: names) }) else { return false }
+        if let section = ProviderConfiguration.section(in: lines, key: "proxy-groups") {
+            let value = ProviderConfiguration.field(lines[section.lowerBound])?.value
+            guard value == "" || value == "[]" else { return false }
+            if value == "[]" { return desired.values.allSatisfy(\.isEmpty) }
+            // 未识别的 alias 组可能继承 use；删改名必须拒绝，不能遗留悬空引用。
+            let sequenceLines = ((section.lowerBound + 1)..<section.upperBound).filter {
+                let text = ProviderConfiguration.clean(lines[$0])
+                return text == "-" || text.hasPrefix("- ") || text.hasPrefix("-\t")
             }
-            guard start >= 0, let n = name, !n.isEmpty else { return }
-            result.append(Group(
-                name: n,
-                type: type,
-                providers: useEntries,
-                proxyCount: proxyCount,
-                includesAllProviders: includesAllProviders,
-                includesAllProxies: includesAllProxies,
-                startLine: start,
-                endLine: end,
-                useLine: useLine,
-                useInline: useInline,
-                fieldIndent: fieldIndent,
-                itemIndent: itemIndent
-            ))
-        }
-
-        for (i, raw) in lines.enumerated() {
-            let trimmed = raw.trimmingCharacters(in: .whitespaces)
-            let isTopLevel = !raw.hasPrefix(" ") && !raw.hasPrefix("\t")
-                && !trimmed.isEmpty && !trimmed.hasPrefix("-") && !trimmed.hasPrefix("#")
-
-            if isTopLevel {
-                if inGroups { commit(end: i) }
-                inGroups = trimmed.hasPrefix("proxy-groups:")
-                continue
-            }
-            guard inGroups else { continue }
-            if trimmed.isEmpty || trimmed.hasPrefix("#") { continue }
-
-            let indent = raw.prefix(while: { $0 == " " }).count
-
-            // 组边界：2 空格缩进的 `- name:` / `- type:`
-            if raw.hasPrefix("  - ") || raw.hasPrefix("  -\t") {
-                commit(end: i)
-                start = i
-                fieldIndent = 4
-                let body = String(trimmed.dropFirst(2)).trimmingCharacters(in: .whitespaces)
-                if body.hasPrefix("name:") {
-                    name = ProviderUsage.scalar(String(body.dropFirst("name:".count)))
-                }
-                continue
-            }
-            guard start >= 0 else { continue }
-
-            // 块状 use: 的条目（缩进比字段更深）
-            if inUseBlock {
-                if trimmed.hasPrefix("- ") {
-                    if let n = ProviderUsage.scalar(String(trimmed.dropFirst(2))) {
-                        useEntries.append(n)
-                        if itemIndent == nil { itemIndent = indent }
-                    }
-                    continue
-                }
-                inUseBlock = false
-            }
-            if inProxiesBlock {
-                if trimmed.hasPrefix("- ") {
-                    proxyCount += 1
-                    continue
-                }
-                inProxiesBlock = false
-            }
-
-            guard let colon = trimmed.firstIndex(of: ":") else { continue }
-            let key = String(trimmed[trimmed.startIndex..<colon]).trimmingCharacters(in: .whitespaces)
-            let value = String(trimmed[trimmed.index(after: colon)...]).trimmingCharacters(in: .whitespaces)
-
-            switch key {
-            case "name":
-                if name == nil { name = ProviderUsage.scalar(value) }
-            case "type":
-                if type == nil { type = ProviderUsage.scalar(value) }
-            case "use":
-                useLine = i
-                fieldIndent = indent
-                if value.isEmpty {
-                    useInline = false
-                    inUseBlock = true
-                } else {
-                    useInline = true
-                    useEntries = ProviderUsage.parseInlineList(value)
-                }
-            case "proxies":
-                fieldIndent = min(fieldIndent, indent)
-                if value.isEmpty {
-                    inProxiesBlock = true
-                } else {
-                    proxyCount += ProviderUsage.parseInlineList(value).count
-                }
-            case "include-all-providers":
-                includesAllProviders = boolValue(value)
-            case "include-all-proxies":
-                includesAllProxies = boolValue(value)
-            case "include-all":
-                // 旧写法按代理（非订阅）处理，与 include-all-proxies 同义。
-                includesAllProxies = includesAllProxies || boolValue(value)
-            default:
-                break
+            if let indent = sequenceLines.map({ ProviderConfiguration.indent(lines[$0]) }).min() {
+                let count = sequenceLines.filter { ProviderConfiguration.indent(lines[$0]) == indent }.count
+                if count != parsed.count { return false }
             }
         }
-        if inGroups { commit(end: lines.count) }
-        return result
+        for group in parsed where !group.canRewrite {
+            if group.hasUnknownMembers { return false }
+            if group.providers.contains(where: { removed.contains($0) || renamed[$0] != nil }) { return false }
+            if !group.includesAllProviders && desired.contains(where: {
+                $0.value.contains(group.name) != group.providers.contains($0.key)
+            }) { return false }
+        }
+        return true
     }
 
     /// provider → 显式引用它的组名（按文件顺序，组内去重）。
@@ -225,10 +91,17 @@ enum ProviderGroupBinding {
                         removed: Set<String>,
                         renamed: [String: String]) -> String {
         guard !desired.isEmpty || !removed.isEmpty || !renamed.isEmpty else { return yaml }
+        guard supportsRewrite(yaml, desired: desired, removed: removed, renamed: renamed) else { return yaml }
 
         var lines = yaml.components(separatedBy: "\n")
         // 从后往前改：前面组的行号不受后面组增删的影响。
         for group in groups(in: yaml).reversed() {
+            guard group.canRewrite else { continue }
+            let affected = group.providers.contains { removed.contains($0) || renamed[$0] != nil }
+                || (!group.includesAllProviders && desired.contains {
+                    $0.value.contains(group.name) != group.providers.contains($0.key)
+                })
+            guard affected else { continue }
             var final: [String] = []
             var seen = Set<String>()
             var needsChange = false
@@ -312,12 +185,11 @@ enum ProviderGroupBinding {
         var j = useLine + 1
         while j < out.count {
             let raw = out[j]
-            let trimmed = raw.trimmingCharacters(in: .whitespaces)
+            let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
             if trimmed.isEmpty { j += 1; continue }
             let indent = raw.prefix(while: { $0 == " " }).count
-            let isGroupStart = (raw.hasPrefix("  - ") || raw.hasPrefix("  -\t")) && indent == 2
-            let isTopLevel = !raw.hasPrefix(" ") && !raw.hasPrefix("\t")
-            if isGroupStart || isTopLevel || indent <= group.fieldIndent { break }
+            if trimmed.hasPrefix("#") { j += 1; continue }
+            if indent < group.fieldIndent || (indent == group.fieldIndent && !trimmed.hasPrefix("- ")) { break }
             if trimmed.hasPrefix("- ") { entryLines.append(j) }
             j += 1
         }
@@ -327,7 +199,7 @@ enum ProviderGroupBinding {
         var deleteIndexes: [Int] = []
         for idx in entryLines {
             let raw = out[idx]
-            let trimmed = raw.trimmingCharacters(in: .whitespaces)
+            let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
             let body = String(trimmed.dropFirst(2))
             guard let name = ProviderUsage.scalar(body) else { continue }
             let resolved = renamed[name] ?? name
@@ -351,17 +223,17 @@ enum ProviderGroupBinding {
             var k = useLine + 1
             while k < out.count {
                 let raw = out[k]
-                let trimmed = raw.trimmingCharacters(in: .whitespaces)
+                let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
                 if trimmed.isEmpty { k += 1; continue }
                 let indent = raw.prefix(while: { $0 == " " }).count
-                let isGroupStart = (raw.hasPrefix("  - ") || raw.hasPrefix("  -\t")) && indent == 2
-                let isTopLevel = !raw.hasPrefix(" ") && !raw.hasPrefix("\t")
-                if isGroupStart || isTopLevel || indent <= group.fieldIndent { break }
+                if trimmed.hasPrefix("#") { k += 1; continue }
+                if indent < group.fieldIndent || (indent == group.fieldIndent && !trimmed.hasPrefix("- ")) { break }
                 if trimmed.hasPrefix("- ") { insertAt = k + 1 }
                 k += 1
             }
             let prefix = String(repeating: " ", count: itemIndent)
-            out.insert(contentsOf: additions.map { prefix + "- \"\(escape($0))\"" }, at: insertAt)
+            let eol = out[useLine].hasSuffix("\r") ? "\r" : ""
+            out.insert(contentsOf: additions.map { prefix + "- \"\(escape($0))\"" + eol }, at: insertAt)
         }
 
         // 最后一条也删掉：整块 use: 移除（块内注释/空行留给组，不误删）。
@@ -381,10 +253,12 @@ enum ProviderGroupBinding {
         var anchor = group.startLine
         var k = group.startLine + 1
         while k < min(group.endLine, out.count) {
-            let trimmed = out[k].trimmingCharacters(in: .whitespaces)
-            if trimmed.hasPrefix("type:") { anchor = k; break }
+            let trimmed = out[k].trimmingCharacters(in: .whitespacesAndNewlines)
+            if ProviderConfiguration.indent(out[k]) == group.fieldIndent,
+               ProviderConfiguration.field(trimmed)?.key == "type" { anchor = k; break }
             k += 1
         }
+        if lines[group.startLine].hasSuffix("\r") { block = block.map { $0 + "\r" } }
         out.insert(contentsOf: block, at: min(anchor + 1, out.count))
         return out
     }
@@ -395,41 +269,11 @@ enum ProviderGroupBinding {
     /// 一起 trim 掉，缩进行里算出来的后缀会错位（实测把 `"OLD"` 又拼回了一截）。
     /// 这里只做一件事：跳过引号内的 `#`，找到空白分隔的注释起点。
     private static func splitComment(_ raw: String) -> (body: String, comment: String) {
-        var quote: Character?
-        var prev: Character?
-        var i = raw.startIndex
-        while i < raw.endIndex {
-            let c = raw[i]
-            if let q = quote {
-                if q == "\"" && c == "\\" {
-                    i = raw.index(after: i)
-                    if i >= raw.endIndex { break }
-                    prev = raw[i]
-                    i = raw.index(after: i)
-                    continue
-                }
-                if c == q { quote = nil }
-            } else if c == "\"" || c == "'" {
-                quote = c
-            } else if c == "#", prev == " " || prev == "\t" {
-                // 注释从整段分隔空白开始，保留原缩进（回写时不重排格式）。
-                var cut = i
-                while cut > raw.startIndex {
-                    let b = raw.index(before: cut)
-                    if raw[b] == " " || raw[b] == "\t" { cut = b } else { break }
-                }
-                let body = String(raw[..<cut]).trimmingCharacters(in: .whitespaces)
-                return (body, String(raw[cut...]))
-            }
-            prev = c
-            i = raw.index(after: i)
-        }
-        return (raw, "")
+        ProviderConfiguration.splitComment(raw)
     }
 
     private static func escape(_ name: String) -> String {
-        name.replacingOccurrences(of: "\\", with: "\\\\")
-            .replacingOccurrences(of: "\"", with: "\\\"")
+        String(ProviderConfiguration.quoted(name).dropFirst().dropLast())
     }
 
     private static func boolValue(_ raw: String) -> Bool {

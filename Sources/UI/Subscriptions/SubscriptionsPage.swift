@@ -6,7 +6,7 @@ import SwiftUI
 /// 首次出现时采用 `@State` 初值，复用同一身份会让「编辑」沿用上一次的勾选
 /// （规则页 2026-10-20 的同款根因）。
 struct SubscriptionDraft: Identifiable {
-    enum Mode { case add, editFull, editGroups }
+    enum Mode { case add, editFull, editGroups, bindSource }
     let id = UUID()
     let mode: Mode
     let name: String
@@ -35,6 +35,9 @@ struct SubscriptionsPage: View {
     /// 已被 App 转成本地文件的 provider（`type: file`）。这些的节点由 App 维护，
     /// 编辑 URL 没有意义，也不该再走 http 模板重写。
     @State private var localFileProviders: Set<String> = []
+    @State private var managedFileProviders: Set<String> = []
+    @State private var draftProfileID = ""
+    @State private var reloadGeneration = 0
 
     /// 以磁盘清单为准渲染；内核在线时把节点数 / 协议 / 流量等运行时信息补上。
     /// 只用 `/providers` 的数据会让「配置里有、内核还没加载」的订阅整个消失。
@@ -53,7 +56,7 @@ struct SubscriptionsPage: View {
                 // 磁盘配置文件（那是配置页的事）。文案必须让两者分得开。
                 Button { Task { await updateAll() } } label: { Label("全部刷新节点", systemImage: "arrow.clockwise") }
                     .dsButton()
-                    .disabled(updatingAll || !M.reachable)
+                    .disabled(updatingAll || M.engine.isBusy || localProviders.isEmpty)
                 if !M.store.providerSources.isEmpty {
                     Button { Task { await M.refreshLocalProviders() } } label: {
                         Label("刷新本地订阅", systemImage: "arrow.triangle.2.circlepath")
@@ -63,6 +66,7 @@ struct SubscriptionsPage: View {
                 }
                 Button { openAdd() } label: { Label("添加订阅", systemImage: "plus") }
                     .dsButton(.prominent)
+                    .disabled(M.engine.isBusy)
             }
             if !loaded {
                 VStack(spacing: DS.Spacing.m) {
@@ -102,8 +106,11 @@ struct SubscriptionsPage: View {
         }
         .task { await reload() }
         // UI-6：内核恢复后自动重取，不需要切走再切回。
-        .onChange(of: M.reachable) { _, up in
-            if up { Task { await reload() } }
+        .onChange(of: M.reachable) { _, _ in Task { await reload() } }
+        .onChange(of: M.configContentEpoch) { _, _ in Task { await reload() } }
+        .onChange(of: M.store.activeID) { _, _ in
+            draft = nil
+            Task { await reload() }
         }
         .sheet(item: $draft) { d in
             SubscriptionSheet(
@@ -153,19 +160,18 @@ struct SubscriptionsPage: View {
                     } else {
                         Button { Task { await update(p.name) } } label: { Image(systemName: "arrow.clockwise") }
                             .buttonStyle(.borderless).help("刷新内核节点（不重写配置文件）")
-                            .disabled(!M.reachable)
+                            .disabled(M.engine.isBusy || (!M.reachable && !managedFileProviders.contains(p.name)))
                         if localFileProviders.contains(p.name) {
-                            // 本地 provider 的 URL 已经不存在（源地址记在 provider-sources.json），
-                            // 编辑框会显示空值并让用户以为订阅坏了。
-                            Button { Task { await M.refreshLocalProviders() } } label: {
-                                Image(systemName: "arrow.triangle.2.circlepath")
+                            Button { openBindSource(p.name) } label: {
+                                Image(systemName: "link")
                             }
                             .buttonStyle(.borderless)
-                            .help("重新下载并转换这条本地订阅")
+                            .help("绑定远程源到当前配置；旧版同名源不会自动跨配置继承")
                             .disabled(M.engine.isBusy)
                         } else {
                             Button { openEdit(p.name) } label: { Image(systemName: "pencil") }
                                 .buttonStyle(.borderless).help("编辑订阅（名称 / 链接 / 策略组）")
+                                .disabled(M.engine.isBusy)
                             // base64 节点订阅（.txt）内核解析不了，转成本地文件才有节点。
                             Button { Task { await M.convertProviderToLocalFile(name: p.name) } } label: {
                                 Image(systemName: "square.and.arrow.down")
@@ -176,6 +182,7 @@ struct SubscriptionsPage: View {
                         }
                         Button { confirmDelete = p.name } label: { Image(systemName: "trash") }
                             .buttonStyle(.borderless).foregroundColor(DS.Palette.error).help("删除")
+                            .disabled(M.engine.isBusy)
                     }
                 }
                 // 协议分布：一眼看出这份订阅是什么货色（VLESS 61 · HYSTERIA2 25 · SS 2）。
@@ -191,6 +198,10 @@ struct SubscriptionsPage: View {
                             .truncationMode(.tail)
                             .help("按协议统计的节点数，合计 \(summary.total) 个")
                     }
+                }
+                if localFileProviders.contains(p.name) && !managedFileProviders.contains(p.name) {
+                    Text("该文件未绑定当前配置的远程源；点击链接图标绑定后可下载刷新。")
+                        .font(.dsCaption).foregroundStyle(.secondary)
                 }
                 groupRow(p)
                 if let s = p.subscriptionInfo, let total = s.Total, total > 0 {
@@ -266,6 +277,7 @@ struct SubscriptionsPage: View {
     // MARK: - Drafts
 
     private func openAdd() {
+        draftProfileID = M.store.activeID
         // 「默认全选」：勾上全部可加入的组；include-all-providers 组置灰展示。
         draft = SubscriptionDraft(mode: .add, name: "", url: "",
                                   selected: Set(groups.filter { !$0.includesAllProviders }.map(\.name)),
@@ -273,11 +285,18 @@ struct SubscriptionsPage: View {
     }
 
     private func openGroups(_ name: String) {
+        draftProfileID = M.store.activeID
         draft = SubscriptionDraft(mode: .editGroups, name: name, url: "", selected: Set(memberships[name] ?? []),
                                   originalName: name)
     }
 
+    private func openBindSource(_ name: String) {
+        draftProfileID = M.store.activeID
+        draft = SubscriptionDraft(mode: .bindSource, name: name, url: "", selected: [], originalName: name)
+    }
+
     private func openEdit(_ name: String) {
+        draftProfileID = M.store.activeID
         draft = SubscriptionDraft(mode: .editFull, name: name,
                                   url: M.engine.proxyProviders().first { $0.name == name }?.url ?? "",
                                   selected: Set(memberships[name] ?? []),
@@ -289,8 +308,15 @@ struct SubscriptionsPage: View {
     private func save(name rawName: String, url rawURL: String, selected: Set<String>,
                       mode: SubscriptionDraft.Mode, originalName: String?) async -> String? {
         guard !M.engine.isBusy else { return "内核正忙，请稍后再试" }
+        guard draftProfileID == M.store.activeID else { return "配置已切换，请重新打开编辑框" }
         let name = rawName.trimmingCharacters(in: .whitespaces)
         let url = rawURL.trimmingCharacters(in: .whitespaces)
+        if mode == .bindSource {
+            let ok = await M.convertProviderToLocalFile(name: originalName ?? name, sourceURL: url)
+            await reload()
+            if ok { draft = nil; return nil }
+            return "绑定未完成，未使用旧版共享源；请检查地址及配置格式"
+        }
         var list = M.engine.proxyProviders()
 
         if mode != .editGroups {
@@ -328,40 +354,38 @@ struct SubscriptionsPage: View {
         await reload()
         if ok {
             draft = nil
-            let count = chosen.count
-            M.showToast(count > 0
-                        ? "已保存订阅「\(name)」，加入 \(count) 个策略组"
-                        : "已保存订阅「\(name)」，节点已随 include-all-providers 组生效",
-                        kind: .ok)
             return nil
         }
-        return "保存失败，已回滚；请检查配置后重试"
+        return "保存未完成，请查看提示并检查配置后重试"
     }
 
     private func delete(_ name: String) async {
         var list = M.engine.proxyProviders()
         list.removeAll { $0.name == name }
-        _ = await M.saveProxyProviders(list)
-        // 源地址记录跟着一起清：留着的唯一后果是「刷新本地订阅」去下载一个已经
-        // 不存在的 provider，白等一轮网络超时。
-        M.store.removeProviderSource(name: name)
+        guard await M.saveProxyProviders(list) else { return }
+        // 源地址和节点文件由保存事务按 profileID 清理，UI 不再拥有第二个写点。
         await reload()
     }
 
     private func reload() async {
+        // 旧请求不能在切配置/新请求之后覆盖当前快照。
+        reloadGeneration &+= 1
+        let generation = reloadGeneration
+        let profileID = M.store.activeID
         // 磁盘清单先落地：即使内核不可达、fetchProviders 抛错，页面也有东西可管。
-        localProviders = M.engine.proxyProviders()
         let configText = (try? String(contentsOfFile: M.engine.configFilePath, encoding: .utf8)) ?? ""
-        localFileProviders = Set(localProviders.map(\.name).filter {
-            ProviderRewrite.isFileProvider(configText, name: $0)
-        })
+        let configured = ProviderConfiguration.entries(in: configText)
+        localProviders = configured.map { (name: $0.name, url: $0.url) }
+        localFileProviders = Set(configured.filter { $0.type.lowercased() == "file" }.map(\.name))
+        managedFileProviders = Set(configured.filter {
+            $0.type.lowercased() == "file" && M.store.providerSourceStore.source(profileID: profileID, name: $0.name)?.path == $0.path
+        }.map(\.name))
         groups = ProviderGroupBinding.groups(in: configText)
         memberships = ProviderGroupBinding.membership(in: configText)
         defer { loaded = true }
-        guard let p = try? await M.api.fetchProviders() else {
-            providers = []
-            return
-        }
+        let fetched = try? await M.api.fetchProviders()
+        guard generation == reloadGeneration, profileID == M.store.activeID else { return }
+        guard let p = fetched else { providers = []; return }
         // HTTP 与 File 都要留在运行时清单里：转成本地 provider 的订阅（type: file）
         // 节点由 App 维护，但节点数 / 协议分布只存在于 `/providers` 的返回里。
         // 只留 HTTP 会让这类订阅回落到 displayed 的兜底条目，卡片显示「0 节点」
@@ -371,31 +395,18 @@ struct SubscriptionsPage: View {
             .sorted { $0.name < $1.name }
     }
     private func update(_ name: String) async {
+        guard !busy.contains(name), !M.engine.isBusy else { return }
         busy.insert(name)
-        do {
-            try await M.api.updateProvider(name)
-        } catch {
-            // 这里原来用 `try?` 把失败吞掉，再无条件弹绿色「已更新订阅」——节点一个没变
-            // 也报成功。失败时如实报错并**不** reload()：更新没成功，重取只会把同一份
-            // 旧节点列表再画一遍，看起来像"刷新过了"。
-            M.logKernel("[Subscriptions] 更新订阅「\(name)」失败: \(error.localizedDescription)")
-            busy.remove(name)
-            M.showToast("刷新节点「\(name)」失败，已保留原节点列表", kind: .error)
-            return
-        }
-        try? await Task.sleep(nanoseconds: 800_000_000)
-        await reload(); busy.remove(name)
-        M.showToast("内核节点「\(name)」已刷新", kind: .ok)
+        defer { busy.remove(name) }
+        _ = await M.refreshProviderNodes(names: [name])
+        await reload()
     }
     private func updateAll() async {
-        // P3：重入守卫——全部刷新进行中再点一次会并行跑两条更新链，
-        // toast 互相覆盖、reload 互相打架。
-        guard !updatingAll else { return }
+        guard !updatingAll, !M.engine.isBusy else { return }
         updatingAll = true
         defer { updatingAll = false }
-        // 本地 provider 的节点文件由 App 维护，内核 update 只是重读同一份文件；
-        // 真正的「重新下载源地址」是「刷新本地订阅」。放进来只会多一次无效请求。
-        for p in providers where !localFileProviders.contains(p.name) { await update(p.name) }
+        _ = await M.refreshProviderNodes()
+        await reload()
     }
     // 到期日只渲染为墙上日期；formatter 构建一次（LogsPage.logDF 同款写法），
     // 不随每行每次 body 求值重建（DateFormatter 初始化是重对象操作）。
@@ -452,7 +463,13 @@ private struct SubscriptionSheet: View {
     }
     private var chosenCount: Int { selected.intersection(Set(selectableGroups.map(\.name))).count }
     private var canSave: Bool {
-        guard !groups.isEmpty, !saving else { return false }
+        guard !saving else { return false }
+        if draft.mode == .bindSource {
+            return URL(string: url.trimmingCharacters(in: .whitespaces)).map {
+                ["http", "https"].contains($0.scheme?.lowercased() ?? "") && $0.host != nil
+            } ?? false
+        }
+        guard !groups.isEmpty else { return false }
         if canEditName {
             guard !name.trimmingCharacters(in: .whitespaces).isEmpty,
                   url.trimmingCharacters(in: .whitespaces).hasPrefix("http") else { return false }
@@ -479,6 +496,7 @@ private struct SubscriptionSheet: View {
                 VStack(alignment: .leading, spacing: DS.Spacing.s) {
                     Text("名称").font(.dsBody).foregroundColor(.secondary)
                     TextField("如 US-Premium（不含空格）", text: $name)
+                        .disabled(draft.mode == .bindSource)
                         .inputStyle()
                         .font(.dsMono)
                         .onSubmit { Task { await submit() } }
@@ -497,8 +515,13 @@ private struct SubscriptionSheet: View {
                 }
             }
 
-            groupPicker
-            if let warning = emptyGroupWarning {
+            if draft.mode == .bindSource {
+                Text("仅为当前配置绑定源并转换节点，不继承其他配置的同名地址，原策略组保持不变。")
+                    .font(.dsCaption).foregroundStyle(.secondary)
+            } else {
+                groupPicker
+            }
+            if draft.mode != .bindSource, let warning = emptyGroupWarning {
                 Text(warning)
                     .font(.dsCaption)
                     .foregroundColor(DS.Palette.warn)
@@ -535,6 +558,7 @@ private struct SubscriptionSheet: View {
         case .add: return "添加订阅"
         case .editFull: return "编辑订阅"
         case .editGroups: return "编辑策略组归属"
+        case .bindSource: return "绑定本地订阅的远程源"
         }
     }
 

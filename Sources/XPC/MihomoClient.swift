@@ -31,6 +31,11 @@ private struct SafeDecoder: @unchecked Sendable {
         return URLSession(configuration: config)
     }()
 
+    /// 测试可注入隔离的 URLProtocol session，生产仍使用上面的直连配置。
+    init(session: URLSession? = nil) {
+        if let session { self.session = session }
+    }
+
     private var apiBase: String { "http://\(host):\(port)" }
     private var wsBase: String { "ws://\(host):\(port)" }
 
@@ -110,8 +115,12 @@ private struct SafeDecoder: @unchecked Sendable {
     /// 5xx 响应体。旧实现 `_ = try await session.data(for: req)` 把响应丢掉，于是
     /// “上游拉不到订阅”走成成功路径 —— 界面弹绿条、节点一个没变（P0-6 的另一半）。
     func updateProvider(_ name: String) async throws {
-        let enc = name.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? name
-        guard let req = request("/providers/proxies/\(enc)", method: "PUT") else { throw MihomoError.badURL }
+        // 名称是单个 path segment；urlPathAllowed 会保留 /，把导入名称拆成路由。
+        let allowed = CharacterSet.urlPathAllowed.subtracting(CharacterSet(charactersIn: "/%?#"))
+        guard let enc = name.addingPercentEncoding(withAllowedCharacters: allowed),
+              var req = request("/providers/proxies/\(enc)", method: "PUT") else { throw MihomoError.badURL }
+        // 更新会等待远端订阅下载，不能沿用本地状态轮询的 6 秒超时。
+        req.timeoutInterval = 60
         let (_, resp) = try await session.data(for: req)
         if let h = resp as? HTTPURLResponse, !(200..<300).contains(h.statusCode) {
             throw MihomoError.http(h.statusCode)

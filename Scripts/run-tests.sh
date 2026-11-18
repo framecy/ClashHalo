@@ -209,6 +209,7 @@ add_suite inboundlistener-tests \
 # N=0 时警示「节点不会出现在代理节点页」。
 add_suite providerusage-tests \
   "$ROOT/Sources/Model/ProviderUsage.swift" \
+  "$ROOT/Sources/Core/Subscription/ProviderConfiguration.swift" \
   "$ROOT/Sources/Core/YamlEditor/YamlScalar.swift" \
   "$ROOT/Tests/ProviderUsage/main.swift"
 
@@ -219,6 +220,7 @@ add_suite providerusage-tests \
 add_suite providergroupbind-tests \
   "$ROOT/Sources/Model/ProviderGroupBinding.swift" \
   "$ROOT/Sources/Model/ProviderUsage.swift" \
+  "$ROOT/Sources/Core/Subscription/ProviderConfiguration.swift" \
   "$ROOT/Sources/Core/YamlEditor/YamlScalar.swift" \
   "$ROOT/Tests/ProviderGroupBinding/main.swift"
 
@@ -227,6 +229,7 @@ add_suite providergroupbind-tests \
 # 非空条目即有来源；内联与块状两种写法都认；组外与注释不算。
 add_suite emptygroup-tests \
   "$ROOT/Sources/Model/ProviderUsage.swift" \
+  "$ROOT/Sources/Core/Subscription/ProviderConfiguration.swift" \
   "$ROOT/Sources/Core/YamlEditor/YamlScalar.swift" \
   "$ROOT/Tests/ProviderEmptyGroup/main.swift"
 
@@ -261,8 +264,41 @@ add_suite nodesubscription-tests \
 # 字段是 health-check 里的 url：不分缩进地删「url:」会把健康检查一起删掉。
 add_suite providerrewrite-tests \
   "$ROOT/Sources/Core/YamlEditor/YamlScalar.swift" \
+  "$ROOT/Sources/Core/Subscription/ProviderConfiguration.swift" \
   "$ROOT/Sources/Core/Subscription/ProviderRewrite.swift" \
   "$ROOT/Tests/ProviderRewrite/main.swift"
+
+# 导入 provider：任意缩进、flow、模板继承与 URL 转义，不能读成 health-check.url。
+add_suite providerconfiguration-tests \
+  "$ROOT/Sources/Core/Subscription/ProviderConfiguration.swift" \
+  "$ROOT/Tests/ProviderConfiguration/main.swift"
+
+# 刷新请求：真实 URLSession + URLProtocol 隔离控制器，校验名称编码、超时和错误码。
+add_suite providerrefresh-tests \
+  "$ROOT/Sources/Core/YamlEditor/YamlScalar.swift" \
+  "$ROOT/Sources/XPC/MihomoModels.swift" \
+  "$ROOT/Sources/XPC/MihomoClient.swift" \
+  "$ROOT/Tests/ProviderRefresh/main.swift"
+
+# 保真订阅写入：字段保留、名称空间、profile同步及空组兜底。
+add_suite providerdocument-tests \
+  "$ROOT/Sources/Core/Subscription/ProviderConfiguration.swift" \
+  "$ROOT/Sources/Core/Subscription/ProviderDocument.swift" \
+  "$ROOT/Sources/Model/ProviderUsage.swift" \
+  "$ROOT/Sources/Model/ProviderGroupBinding.swift" \
+  "$ROOT/Sources/Core/YamlEditor/YamlScalar.swift" \
+  "$ROOT/Tests/ProviderDocument/main.swift"
+
+# 本地源隔离及真实文件失败回滚（只用临时目录）。
+add_suite providersourcestore-tests \
+  "$ROOT/Sources/Core/Hash.swift" \
+  "$ROOT/Sources/Core/Subscription/ProviderSourceStore.swift" \
+  "$ROOT/Tests/ProviderSourceStore/main.swift"
+
+# 订阅提交/队列：失败必须回滚，设置与订阅不能交错。
+add_suite provideroperation-tests \
+  "$ROOT/Sources/Core/Subscription/ProviderOperation.swift" \
+  "$ROOT/Tests/ProviderOperation/main.swift"
 
 # ── 执行 ───────────────────────────────────────────────────────────────
 

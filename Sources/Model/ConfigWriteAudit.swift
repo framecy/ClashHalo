@@ -66,7 +66,9 @@ enum ConfigWriteAudit {
     static func isSummarized(_ keyPath: String) -> Bool {
         let lower = keyPath.lowercased()
         if sensitiveKeys.contains(lower) { return true }
-        return summarizedKeySuffixes.contains { lower.hasSuffix($0) }
+        let leaf = lower.split(separator: ".").last.map(String.init) ?? lower
+        if sensitiveKeys.contains(leaf) || leaf == "token" { return true }
+        return summarizedKeySuffixes.contains { lower == String($0.dropFirst()) || lower.hasSuffix($0) }
     }
 
     /// Stable, non-reversible fingerprint of a value. Derived from the
@@ -151,6 +153,9 @@ enum ConfigWriteAudit {
     /// full flattened scalar view so a nested change still moves the parent.
     static func changes(from old: [String: String], to new: [String: String]) -> [String] {
         var out: [String] = []
+        // 路径只标出使用方（url: *source），源值可能在任意模板键下。
+        // 两版一起追踪依赖：删除 alias 引用的同一次写入也不能把旧源明文带出。
+        let protectedSources = credentialSourceKeys(in: [old, new])
         for key in Set(old.keys).union(new.keys).sorted() {
             let before = old[key]
             let after = new[key]
@@ -158,16 +163,9 @@ enum ConfigWriteAudit {
             let normBefore = before.map(normalizedValue)
             let normAfter = after.map(normalizedValue)
             guard normBefore != normAfter else { continue }
-            // secret 轮换必须留痕（CFG-16）：值本体永不进日志，但指纹对能看出
-            // 「换过了」。旧版在这里 continue 整条丢弃，轮换控制面密钥后
-            // config-writes.log 里一条记录都没有，排查 401 时无据可查。
-            if sensitiveKeys.contains(key.lowercased()) {
-                let b = before.map { redactedValue(for: key, $0) }
-                let a = after.map { redactedValue(for: key, $0) }
-                out.append("\(key): \(display(b)) → \(display(a))")
-                continue
-            }
-            out.append("\(key): \(render(before, forKey: key)) → \(render(after, forKey: key))")
+            // 使用方与源均保留稳定指纹，不能用常量遮盖凭据轮换。
+            let protect = protectedSources.contains(key)
+            out.append("\(key): \(render(before, forKey: key, forceSummary: protect)) → \(render(after, forKey: key, forceSummary: protect))")
         }
         return out
     }
@@ -265,6 +263,7 @@ enum ConfigWriteAudit {
         // 且 proxies 重排序产生幻影漂移。序列只按数量渲染（见上方文档），项内
         // 更深缩进一律跳过。
         var seqItemIndent: Int? = nil
+        var blockScalar: (indent: Int, path: String)?
 
         for raw in text.components(separatedBy: "\n") {
             guard !raw.isEmpty else { continue }
@@ -272,6 +271,13 @@ enum ConfigWriteAudit {
             let body = raw.trimmingCharacters(in: .whitespaces)
             guard !body.isEmpty, !body.hasPrefix("#") else { continue }
 
+            if let scalar = blockScalar {
+                if indent > scalar.indent {
+                    out[scalar.path, default: ""] += "\n" + body
+                    continue
+                }
+                blockScalar = nil
+            }
             if let si = seqItemIndent {
                 if indent > si { continue }   // 项内嵌套内容，不展开
                 seqItemIndent = nil
@@ -284,17 +290,33 @@ enum ConfigWriteAudit {
                 seqItemIndent = indent
                 continue
             }
-            guard let colon = body.firstIndex(of: ":") else { continue }
+            let quotedKey = quotedKeyPrefix(in: body)
+            // YAML block 映射的冒号后必须是分隔空白，URL 中的 :// 是内容。
+            // 无键行接回父值，防止换行 anchor scalar 被拆成带凭据的假键。
+            let colon = body.indices.first { index in
+                guard body[index] == ":" else { return false }
+                let next = body.index(after: index)
+                return next == body.endIndex || body[next].isWhitespace
+            }
+            guard quotedKey != nil || colon != nil else {
+                if let owner = stack.last, indent > owner.indent {
+                    let path = stack.map(\.key).joined(separator: ".")
+                    out[path, default: ""] += "\n" + body
+                }
+                continue
+            }
             // 带引号的键（`"US-LH":`）剥掉首尾配对引号再入 path，与不带引号的
             // 同名键归一；取值起点相应后移（见 quotedKeyPrefix 的取舍说明）。
             let rawKey: String
             let rawValueStart: String.Index
-            if let q = quotedKeyPrefix(in: body) {
+            if let q = quotedKey {
                 rawKey = q.key
                 rawValueStart = q.afterColon
-            } else {
+            } else if let colon {
                 rawKey = String(body[body.startIndex..<colon])
                 rawValueStart = body.index(after: colon)
+            } else {
+                continue
             }
             let key = rawKey.trimmingCharacters(in: .whitespaces)
             guard !key.isEmpty else { continue }
@@ -303,11 +325,18 @@ enum ConfigWriteAudit {
             ).trimmingCharacters(in: .whitespaces)
             while let top = stack.last, top.indent >= indent { stack.removeLast() }
             let path = (stack.map(\.key) + [key]).joined(separator: ".")
-            if value.isEmpty {
+            let nodeValue = yamlPayload(in: value)
+            if nodeValue.hasPrefix("|") || nodeValue.hasPrefix(">") {
+                blockScalar = (indent, path)
+            }
+            if nodeValue.isEmpty {
+                // `defaults: &d` / `!!map &d` 仍是块头；不能让子字段掉到顶层。
                 stack.append((indent, key))
-                out[path] = "(block)"
+                out[path] = value.isEmpty ? "(block)" : value
             } else {
-                out[path] = normalizedValue(value)
+                // 保留引号供 alias 词法分析；changes 已统一做引号归一，普通值
+                // 比较不受影响，而 '*name' 不会被错认成真实引用。
+                out[path] = value
             }
         }
         // Fold the counts in so growing or shrinking a list shows up as drift.
@@ -380,36 +409,185 @@ enum ConfigWriteAudit {
     /// verbatim would put a live subscription token into a file that nobody treats
     /// as a secret, while the fingerprint still distinguishes "same URL, different
     /// provider" from "the URL itself was replaced".
-    static func render(_ value: String?, forKey key: String) -> String {
+    static func render(_ value: String?, forKey key: String, forceSummary: Bool = false) -> String {
         guard let value else { return display(value) }
-        if isSummarized(key) {
+        let node = yamlPayload(in: value)
+        let payload = normalizedValue(node)
+        let flow = node.hasPrefix("{") || node.hasPrefix("[")
+        // 订阅 URL 可直接作为 bearer credential，不依赖字段名是否恰好叫 url。
+        // 仅保守覆盖 HTTP(S) scalar，普通 mode/interval/非凭据模板不受影响。
+        let url = payload.lowercased().hasPrefix("https://") || payload.lowercased().hasPrefix("http://")
+        if forceSummary || isSummarized(key) || url || (flow && containsEmbeddedCredential(node)) {
             guard value != "(absent)", value != "(block)", !value.hasPrefix("(seq") else {
                 return display(value)
             }
-            return fingerprint(value)
-        }
-        // 内联 flow 映射把凭据藏在一个非凭据形状的键里（CFG-16）：
-        // `proxy-providers: {US: {type: http, url: https://…token…}}` 被行扫描
-        // 拍平成键为 "proxy-providers" 的单个标量，isSummarized 不命中，旧版
-        // 就把订阅 URL 明文写进了日志。检测到内嵌 url:/url=/"url": 等字段时
-        // 整个值指纹化。
-        if (value.hasPrefix("{") || value.hasPrefix("[")), containsEmbeddedCredential(value) {
-            return fingerprint(value)
+            // 装饰不是值：&source/!!str/引号不应改变相同 URL 的指纹。
+            return fingerprint(payload.isEmpty ? value : payload)
         }
         return display(value)
     }
 
-    /// flow 标量里是否内嵌凭据字段（`url:` / `url=` / `"url":`， likewise
-    /// password/uuid/auth-key/secret/token）。与 summarizedKeySuffixes 同一族。
-    static func containsEmbeddedCredential(_ value: String) -> Bool {
-        let lower = value.lowercased()
-        for field in ["url", "password", "uuid", "auth-key", "secret", "token"] {
-            if lower.contains("\(field):") || lower.contains("\(field)=")
-                || lower.contains("\"\(field)\":") || lower.contains("'\(field)':") {
-                return true
+    /// 只拆 YAML node properties，不尝试执行 tag 或展开 alias。两种属性的
+    /// 顺序可互换；!<tag:yaml.org,2002:map> 中的逗号不是 flow 分隔符。
+    private static func yamlPayload(in raw: String) -> String {
+        var rest = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        while let first = rest.first, first == "&" || first == "!" {
+            let end: String.Index
+            if rest.hasPrefix("!<"), let close = rest.firstIndex(of: ">") {
+                end = rest.index(after: close)
+            } else {
+                end = rest.firstIndex { $0.isWhitespace || "{}[],".contains($0) } ?? rest.endIndex
+            }
+            guard end > rest.startIndex else { break }
+            rest = String(rest[end...]).trimmingCharacters(in: .whitespacesAndNewlines)
+        }
+        return rest
+    }
+
+    /// 引用来自凭据字段时，反向保护 anchor 所在键。按两版键路径取并集，
+    /// 不修改 flattenedScalars 的原值，也不把所有模板都变成同一常量。
+    private static func credentialSourceKeys(in revisions: [[String: String]]) -> Set<String> {
+        var definitions: [String: Set<String>] = [:]
+        var valuesByKey: [String: [String]] = [:]
+        var pending: [String] = []
+        for revision in revisions {
+            for (key, value) in revision {
+                valuesByKey[key, default: []].append(value)
+                for name in yamlReferenceNames(in: value, marker: "&") {
+                    definitions[name, default: []].insert(key)
+                }
+                if isSummarized(key) {
+                    pending += yamlReferenceNames(in: value, marker: "*")
+                } else {
+                    // 只沿 url/password 等字段追踪，不能把 flow 中无关的
+                    // interval: *seconds 一起污染，破坏普通值的诊断可读性。
+                    for credential in embeddedCredentialValues(value) {
+                        pending += yamlReferenceNames(in: credential, marker: "*")
+                    }
+                }
             }
         }
-        return false
+        var visited: Set<String> = []
+        var protected: Set<String> = []
+        while let name = pending.popLast() {
+            guard visited.insert(name).inserted else { continue } // 循环/重复引用有界
+            for key in definitions[name] ?? [] {
+                protected.insert(key)
+                for value in valuesByKey[key] ?? [] {
+                    pending += yamlReferenceNames(in: value, marker: "*")
+                }
+            }
+        }
+        return protected
+    }
+
+    /// 轻量词法扫描：引号里的 "*name" 是文本，URL query 的 & 也不是 anchor。
+    private static func yamlReferenceNames(in value: String, marker: Character) -> [String] {
+        let chars = Array(value)
+        var names: [String] = []
+        var quote: Character?
+        var i = 0
+        while i < chars.count {
+            let c = chars[i]
+            if let q = quote {
+                if q == "\"" && c == "\\" { i += 2; continue }
+                if c == q {
+                    if q == "'", i + 1 < chars.count, chars[i + 1] == q { i += 2; continue }
+                    quote = nil
+                }
+                i += 1
+                continue
+            }
+            if c == "\"" || c == "'" { quote = c; i += 1; continue }
+            if c == marker, i == 0 || chars[i - 1].isWhitespace || "{[, :".contains(chars[i - 1]) {
+                let start = i + 1
+                var end = start
+                while end < chars.count, !chars[end].isWhitespace, !"{}[],".contains(chars[end]) { end += 1 }
+                if end > start { names.append(String(chars[start..<end])) }
+                i = end
+            } else {
+                i += 1
+            }
+        }
+        return names
+    }
+
+    /// 返回 flow 映射中凭据字段的值；字段名允许引号及冒号两侧空格。
+    /// 不按子串找 url:，避免把非凭据的说明文本误当字段。
+    private static func embeddedCredentialValues(_ raw: String) -> [String] {
+        let value = yamlPayload(in: raw)
+        guard value.hasPrefix("{") || value.hasPrefix("[") else { return [] }
+        let chars = Array(value)
+        var results: [String] = []
+        var quote: Character?
+        var i = 0
+        while i < chars.count {
+            let c = chars[i]
+            if let q = quote {
+                if q == "\"" && c == "\\" { i += 2; continue }
+                if c == q {
+                    if q == "'", i + 1 < chars.count, chars[i + 1] == q { i += 2; continue }
+                    quote = nil
+                }
+                i += 1
+                continue
+            }
+            if c == "{" || c == "," {
+                var start = i + 1
+                while start < chars.count, chars[start].isWhitespace { start += 1 }
+                var end = start
+                var key = ""
+                if start < chars.count, chars[start] == "\"" || chars[start] == "'" {
+                    let q = chars[start]
+                    end = start + 1
+                    while end < chars.count, chars[end] != q { end += 1 }
+                    if end < chars.count { key = String(chars[(start + 1)..<end]); end += 1 }
+                } else {
+                    while end < chars.count, !chars[end].isWhitespace, !":={}[],".contains(chars[end]) { end += 1 }
+                    key = String(chars[start..<end])
+                }
+                while end < chars.count, chars[end].isWhitespace { end += 1 }
+                if end < chars.count, chars[end] == ":" || chars[end] == "=", isSummarized(key) {
+                    let content = end + 1
+                    let stop = flowValueEnd(in: chars, from: content)
+                    results.append(String(chars[content..<stop]).trimmingCharacters(in: .whitespacesAndNewlines))
+                }
+            }
+            if c == "\"" || c == "'" { quote = c }
+            i += 1
+        }
+        return results
+    }
+
+    private static func flowValueEnd(in chars: [Character], from start: Int) -> Int {
+        var depth = 0
+        var quote: Character?
+        var i = start
+        while i < chars.count {
+            let c = chars[i]
+            if let q = quote {
+                if q == "\"" && c == "\\" { i += 2; continue }
+                if c == q {
+                    if q == "'", i + 1 < chars.count, chars[i + 1] == q { i += 2; continue }
+                    quote = nil
+                }
+            } else if c == "\"" || c == "'" {
+                quote = c
+            } else if c == "{" || c == "[" {
+                depth += 1
+            } else if c == "}" || c == "]" {
+                if depth == 0 { return i }
+                depth -= 1
+            } else if c == "," && depth == 0 {
+                return i
+            }
+            i += 1
+        }
+        return chars.count
+    }
+
+    static func containsEmbeddedCredential(_ value: String) -> Bool {
+        !embeddedCredentialValues(value).isEmpty
     }
 
     /// Append one record. Never throws: an audit log that can break the config
