@@ -368,8 +368,7 @@ echo "════════════════════════�
 printf "回归汇总：PASS %d   FAIL %d   MISSING %d\n" "$pass" "$fail" "$miss"
 if [ "$miss" -gt 0 ]; then
   echo ""
-  echo "有套件的测试文件不在工作区。Tests/ 自 291a239 起不入库，"
-  echo "新克隆的仓库需要先物化："
+  echo "有套件的测试文件不在工作区，请检查 Tests/ 目录是否完整（历史分支若缺失可尝试）："
   echo "    bash Scripts/restore-tests.sh"
 fi
 if [ "$fail" -eq 0 ] && [ "$miss" -eq 0 ]; then

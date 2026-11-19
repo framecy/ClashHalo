@@ -61,16 +61,15 @@ bash make.sh
 ### 回归测试
 
 ```bash
-bash Scripts/run-tests.sh                # 全部套件（当前 30 套）
+bash Scripts/run-tests.sh                # 全部套件（当前 35 套）
 bash Scripts/run-tests.sh --only tun     # 只跑名字含 tun 的
-bash Scripts/restore-tests.sh            # 套件文件缺失时物化
 bash Scripts/tun-exclusion-test.sh       # L1：排除表多源合并 + 归属记录（--apply 会真实 PATCH 一轮并还原）
 ```
 
 原则是**直接编译生产源码**，绝不在测试里重新实现一遍规则——复刻逻辑只会让产品坏掉时测试照样通过。每套是一个独立可执行的 `Tests/<名>/main.swift`，用 `swiftc -O` 连同它要钉住的那几个 `Sources/` 文件编成二进制运行。
 
 - 退出码：全绿 0，任何 FAIL / COMPILE-ERROR / 缺文件都是 1。**一套红了不会中止其余**（旧版 `set -e` 一红全断，"跑过回归"实际只覆盖了排在最前面那套）。
-- `Tests/` **不在版本管理里**（`.gitignore`，自 `291a239` 起移出），新克隆的仓库必须先 `restore-tests.sh` 才能跑回归；脚本会明确列出哪些套件连历史里都取不到、只存在于写它的那台机器上。
+- `Tests/` **已重新纳入版本管理**（历史提交 `291a239` 曾短暂移出，`Scripts/restore-tests.sh` 仅作历史应急恢复脚本保留）；新克隆仓库可直接运行 `bash Scripts/run-tests.sh`，不得再将 `Tests/` 加回 `.gitignore`（仅忽略误留的编译产物）。
 - 新增可测的纯逻辑半边（无 UI、无进程管理、无 MainActor）时，**必须**在 `Scripts/run-tests.sh` 里 `add_suite` 登记一条：未登记的套件等于不存在的套件。`TUNLoopSentinel` 就长期漏登记、从未被跑过。
 - 断言不得依赖开发机的实时状态（网卡、网段、路由、已装应用）。`RouteGuard` 里那条「识别出 en0 的 10.123.0.0/24」曾让整套测试在换网络后必红——测的是笔记本，不是产品。
 - 规则编辑相关的两套：`rulevalidator-tests` 钉住目标存在性校验的三种状态（存在则放行 / 不存在则中文拦住并带上原目标名 / 拿不到数据必须放行）；`providerusage-tests` 同时钉住 `ProviderUsage.groupNames` 的扫描口径（只认 `proxy-groups:` 块里 2 空格缩进的 `- name:`，不把 provider/rules 里的同名文本算进来）。

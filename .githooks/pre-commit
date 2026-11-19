@@ -89,23 +89,37 @@ check_pattern 'tskey-(auth|api)-[A-Za-z0-9]{12,}' 'Tailscale auth/API key' BLOCK
 # 字面量（旧规则会把它们当成节点链接，于是新增解析器一行都提交不了）。这里只拦
 # 「带真实内容」的链接——命中 @userinfo（trojan/ss/vless/hysteria2/tuic 都有）
 # 或 `://` 后一长串 base64（vmess 与旧格式 ss 没有 @）。纯 scheme 与示例值放行。
-check_pattern '(vmess|vless|trojan|ss|hysteria2?|tuic)://([^[:space:]]*@|[A-Za-z0-9+/=_-]{30,})' 'Proxy node link' BLOCK
+# 仅在 Tests/ 下的合成测试样例中，放行 RFC 2606 保留域名（example.com/org/net/invalid）。
+NODE_LINK_MATCHES="$(scan_staged '(vmess|vless|trojan|ss|hysteria2?|tuic)://([^[:space:]]*@|[A-Za-z0-9+/=_-]{30,})' \
+    | grep -vE '^Tests/.*@[^[:space:]]*\.?example\.(com|org|net|invalid)\b' || true)"
+report_matches "$NODE_LINK_MATCHES" 'Proxy node link' BLOCK
+
 # Subscription URL shapes (real hostname required, so UI placeholders like
 # "https://…/clash" do not hit). The bare word 订阅 stays WARN below — it is
 # part of the product's own UI strings and cannot be a blocking signal.
-check_pattern 'https?://[A-Za-z0-9.-]+[^[:space:]"'"'"']*(/clash|/link/|subscribe|token=)' 'Subscription URL' BLOCK
-check_pattern '[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}' 'UUID (potential node UUID)' BLOCK
+# 仅在 Tests/ 下放行指向 RFC 2606 保留域名的合成测试 URL。
+SUB_URL_MATCHES="$(scan_staged 'https?://[A-Za-z0-9.-]+[^[:space:]"'"'"']*(/clash|/link/|subscribe|token=)' \
+    | grep -vE '^Tests/.*https?://([A-Za-z0-9-]+\.)?example\.(com|org|net|invalid)\b' || true)"
+report_matches "$SUB_URL_MATCHES" 'Subscription URL' BLOCK
+
+# UUID：仅在 Tests/ 下放行明显的人造测试 UUID（11111111-2222-... / aaaaaaaa-bbbb-...）。
+UUID_MATCHES="$(scan_staged '[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}' \
+    | grep -vE '^Tests/.*(11111111-2222-3333-4444-555555555555|aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee)' || true)"
+report_matches "$UUID_MATCHES" 'UUID (potential node UUID)' BLOCK
 
 # Bare (unquoted) YAML-style values: `secret: abc123` / `password = hunter2`.
 # Filters drop Swift/JS/Python type annotations, keywords, argument-label
 # echoes and variable references (String / nil / new / token: token /
 # api.secret / oldSecret). They are anchored to the key name so the
 # "file:line:" prefix cannot fake a match.
+# 仅在 Tests/ 下放行明确标注的合成测试样例（EXAMPLE_* 及 NodeSubscription 固定短密码）。
 BARE_MATCHES="$(scan_staged '(secret|password|token)\s*[:=]\s*[A-Za-z0-9][A-Za-z0-9_+/.-]{2,}' \
     | grep -vE '(secret|password|token)\s*[:=]\s*(String|NSString|Int|Bool|Double|Float|Data|URL|UUID|Any|nil|true|false|self|Self|secret|password|token|new|function|return|typeof|void|this|class|const|let|var|None|True|False)([^A-Za-z0-9_]|$)' \
     | grep -vE '(secret|password|token)\s*[:=]\s*[a-z][A-Za-z0-9]*[A-Z]' \
-    | grep -vE '(secret|password|token)\s*[:=]\s*[A-Za-z_][A-Za-z0-9_]*\.' || true)"
+    | grep -vE '(secret|password|token)\s*[:=]\s*[A-Za-z_][A-Za-z0-9_]*\.' \
+    | grep -vE '^Tests/.*(secret|password|token)\s*[:=]\s*(EXAMPLE_[A-Z0-9_]+|letmein|xyz|pass(-y)?)([^A-Za-z0-9_-]|$)' || true)"
 report_matches "$BARE_MATCHES" 'Hardcoded secret/password/token (bare value)' BLOCK
+
 
 # WARN: warns but allows commit
 check_pattern '订阅|sub[^a-z]' 'Possible subscription reference (text heuristic)' WARN

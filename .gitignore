@@ -61,8 +61,8 @@ netwatch*/
 /Docs/Audit-2026-11-15.md
 /Docs/TailscaleIntegration.md
 
-# 本地回归测试套件（开发工具，不入库）
 # 本地运行时产物（会话状态/验证脚本残留），不入库
 .local/
 .verify_run/
-Tests/
+# Tests/ 已重新纳入版本管理；仅忽略在 Tests/ 下随手编译出的无后缀二进制产物
+Tests/*/verify-boundary-fix
