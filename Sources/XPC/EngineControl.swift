@@ -1135,7 +1135,28 @@ import SystemConfiguration
     ///   and made the system-proxy toggle feel dead (v1.1.4). TUN/gateway pass
     ///   true because root is a hard requirement for them; the system proxy,
     ///   which only needs a listening mixed-port, passes false.
+    /// 单飞句柄：合并冷启动、唤醒恢复与用户开关的并发拉起请求，避免同时 spawn 两个 mihomo 撞端口。
+    private var inFlightStartTask: Task<Void, Never>?
+
     func ensureRunningAsync(preferRoot: Bool = true, allowRootUpgradeRestart: Bool = true) async {
+        if let inflight = inFlightStartTask {
+            await inflight.value
+            // 若刚才在跑的是用户态启动，而本调用方要求 root 升级（TUN/网关），
+            // 等前一次单飞落稳后再走一次正常检查，避免并发撞端口。
+            guard preferRoot && allowRootUpgradeRestart && isRoot && !runningAsRoot else { return }
+        }
+        let task = Task { @MainActor [weak self] in
+            guard let self else { return }
+            await self.ensureRunningAsyncBody(preferRoot: preferRoot,
+                                              allowRootUpgradeRestart: allowRootUpgradeRestart)
+            // 在 MainActor 同步尾部自清，消除「已完成但仍登记」窗口（同 refreshConfigsTask）。
+            self.inFlightStartTask = nil
+        }
+        inFlightStartTask = task
+        await task.value
+    }
+
+    private func ensureRunningAsyncBody(preferRoot: Bool, allowRootUpgradeRestart: Bool) async {
         await api.probe()
 
         // If reachable, optionally upgrade to root (TUN/gateway paths only).
@@ -1147,10 +1168,15 @@ import SystemConfiguration
                 await syncRunningAsRootIfNeeded()
                 if !runningAsRoot {
                     print("ensureRunning: Upgrading to root process...")
-                    await restart()
+                    // 直接 stopKernel 后落入下方 root 启动分支，不递归调 restart()，
+                    // 保持单飞句柄绝对无重入死锁。
+                    await stopKernel()
+                } else {
+                    return
                 }
+            } else {
+                return
             }
-            return
         }
 
         let fm = FileManager.default
@@ -1695,6 +1721,67 @@ import SystemConfiguration
         config.connectionProxyDictionary = [:]
         return URLSession(configuration: config)
     }()
+
+    /// 真实公网出口验收：经 mihomo 自己的混合端口做一次 HTTPS 往返。
+    ///
+    /// 为什么不用 `URLSession` 直连域名：那条路依赖**系统解析器**，而系统解析器
+    /// 可能被 TUN 的 fake-ip 重定向、Tailscale MagicDNS 或卡住的 mDNSResponder
+    /// 拖死（2026-11-20 实机：TUN 关闭状态下 `dig` 默认解析器就超时，直连
+    /// 用户网关却正常）。用系统解析器当验收判据，会在隧道完全健康时误判失败。
+    ///
+    /// 经混合端口则：目标域名由**内核自己**解析，连接由内核经节点拨出——正好覆盖
+    /// 「节点出网被自己的 TUN 回注 → DoH 全灭」这次事故的整条链路，且不依赖本机 DNS。
+    /// 代理地址是字面量 127.0.0.1，本身不需要解析。
+    nonisolated func probeTUNPublicHTTPS(port: Int, timeout: TimeInterval = 4) async -> Bool {
+        guard port > 0, port <= 65535,
+              let url = URL(string: "https://www.gstatic.com/generate_204") else { return false }
+        let config = URLSessionConfiguration.ephemeral
+        config.timeoutIntervalForRequest = timeout
+        config.timeoutIntervalForResource = timeout
+        config.requestCachePolicy = .reloadIgnoringLocalAndRemoteCacheData
+        config.connectionProxyDictionary = [
+            kCFNetworkProxiesHTTPEnable as String: 1,
+            kCFNetworkProxiesHTTPProxy as String: "127.0.0.1",
+            kCFNetworkProxiesHTTPPort as String: port,
+            kCFNetworkProxiesHTTPSEnable as String: 1,
+            kCFNetworkProxiesHTTPSProxy as String: "127.0.0.1",
+            kCFNetworkProxiesHTTPSPort as String: port
+        ]
+        let session = URLSession(configuration: config)
+        defer { session.invalidateAndCancel() }
+        var request = URLRequest(url: url)
+        request.httpMethod = "GET"
+        request.timeoutInterval = timeout
+        do {
+            let (_, response) = try await session.data(for: request)
+            guard let http = response as? HTTPURLResponse else { return false }
+            return (200..<300).contains(http.statusCode)
+        } catch {
+            return false
+        }
+    }
+
+    /// 系统解析器健康检查（只看本机能不能解析一个真实域名）。
+    ///
+    /// 与出网验收分开：系统解析器可能被 TUN 重定向、Tailscale MagicDNS 或卡住的
+    /// mDNSResponder 单独拖死（2026-11-20 实机：TUN 关闭时默认解析器就超时）。
+    /// 因此它只用于**提示与自愈动作**，不作为关停隧道的判据。
+    nonisolated static func systemResolverHealthy(host: String = "example.com") async -> Bool {
+        await Task.detached(priority: .utility) {
+            var hints = addrinfo(ai_flags: AI_ADDRCONFIG,
+                                 ai_family: AF_INET,
+                                 ai_socktype: SOCK_STREAM,
+                                 ai_protocol: 0,
+                                 ai_addrlen: 0,
+                                 ai_canonname: nil,
+                                 ai_addr: nil,
+                                 ai_next: nil)
+            var result: UnsafeMutablePointer<addrinfo>?
+            let rc = getaddrinfo(host, nil, &hints, &result)
+            if let result { freeaddrinfo(result) }
+            return rc == 0
+        }.value
+    }
 
     /// Stop the running kernel: graceful REST shutdown, then helper/killall fallback.
     /// Exposed so callers (e.g. KernelManager.activate) can release bin/mihomo
@@ -2270,11 +2357,9 @@ import SystemConfiguration
         return ProxyServicePlan.classify(succeeded: okList, failed: failedList)
     }
 
-    /// 自证 127.0.0.1:port 有内核在监听（P1-3 的 GUI 回退侧写点）。与
-    /// ProxyManager.loopbackListenerAlive 同实现口径——HelperProtocol.swift 不在
-    /// 本次允许改动范围，无法抽成共享函数，两处写点各自自证（AGENTS.md：
-    /// 写点必须内部断言，不依赖上游的门）。
-    private static func loopbackListenerAlive(port: Int) -> Bool {
+    /// 非阻塞 TCP 回环监听探针的唯一实现（合并原 loopbackListenerAlive 与
+    /// isLocalPortListening 两份重复代码）。
+    nonisolated private static func probeLoopbackTCP(port: Int, timeoutMs: Int32) -> Bool {
         guard port > 0, port <= 65535 else { return false }
         let fd = socket(AF_INET, SOCK_STREAM, 0)
         guard fd >= 0 else { return false }
@@ -2287,19 +2372,24 @@ import SystemConfiguration
         addr.sin_family = sa_family_t(AF_INET)
         addr.sin_port = UInt16(port).bigEndian
         addr.sin_addr = in_addr(s_addr: INADDR_LOOPBACK.bigEndian)
-        let connectResult = withUnsafePointer(to: &addr) { ptr in
+        let rc = withUnsafePointer(to: &addr) { ptr in
             ptr.withMemoryRebound(to: sockaddr.self, capacity: 1) { sa in
                 connect(fd, sa, socklen_t(MemoryLayout<sockaddr_in>.size))
             }
         }
-        if connectResult == 0 { return true }
+        if rc == 0 { return true }
         guard errno == EINPROGRESS else { return false }
         var pfd = pollfd(fd: fd, events: Int16(POLLOUT), revents: 0)
-        guard poll(&pfd, 1, 500) > 0 else { return false }
+        guard poll(&pfd, 1, max(1, timeoutMs)) > 0 else { return false }
         var soErr: Int32 = 0
         var len = socklen_t(MemoryLayout<Int32>.size)
         getsockopt(fd, SOL_SOCKET, SO_ERROR, &soErr, &len)
         return soErr == 0
+    }
+
+    /// 自证 127.0.0.1:port 有内核在监听（P1-3 的 GUI 回退侧写点）。
+    private static func loopbackListenerAlive(port: Int) -> Bool {
+        probeLoopbackTCP(port: port, timeoutMs: 500)
     }
 
     /// Set/clear the macOS system HTTP/HTTPS/SOCKS proxy without the Helper.
@@ -2493,31 +2583,10 @@ import SystemConfiguration
     /// path — the wait must be structurally capped, not best-effort.
     static func isLocalPortListening(_ port: Int, timeout: TimeInterval = 1.5) async -> Bool {
         guard port > 0 else { return false }
+        let timeoutMs = Int32(max(1, timeout * 1000))
         return await withCheckedContinuation { cont in
             DispatchQueue.global(qos: .userInitiated).async {
-                var addr = sockaddr_in()
-                addr.sin_family = sa_family_t(AF_INET)
-                addr.sin_port = in_port_t(port).bigEndian
-                addr.sin_addr = in_addr(s_addr: inet_addr("127.0.0.1"))
-                let fd = socket(AF_INET, SOCK_STREAM, 0)
-                guard fd >= 0 else { cont.resume(returning: false); return }
-                defer { close(fd) }
-                let flags = fcntl(fd, F_GETFL, 0)
-                _ = fcntl(fd, F_SETFL, flags | O_NONBLOCK)
-                let rc = withUnsafePointer(to: &addr) {
-                    $0.withMemoryRebound(to: sockaddr.self, capacity: 1) {
-                        connect(fd, $0, socklen_t(MemoryLayout<sockaddr_in>.size))
-                    }
-                }
-                if rc == 0 { cont.resume(returning: true); return }
-                guard errno == EINPROGRESS else { cont.resume(returning: false); return }
-                var pfd = pollfd(fd: fd, events: Int16(POLLOUT), revents: 0)
-                let polled = poll(&pfd, 1, Int32(timeout * 1000))
-                guard polled > 0 else { cont.resume(returning: false); return }
-                var soError: Int32 = 0
-                var len = socklen_t(MemoryLayout<Int32>.size)
-                getsockopt(fd, SOL_SOCKET, SO_ERROR, &soError, &len)
-                cont.resume(returning: soError == 0)
+                cont.resume(returning: Self.probeLoopbackTCP(port: port, timeoutMs: timeoutMs))
             }
         }
     }
@@ -2526,6 +2595,13 @@ import SystemConfiguration
     /// when config.yaml hasn't changed since the last call.
     private var rcfCacheMtime: Date?
     private var rcfCache: [String: Any]?
+
+    /// 供外部事务写者（端口转发、配置回滚等）复用的统一 config.yaml 写盘入口：
+    /// 强制 atomic + 0600 + ConfigWriteAudit，避免绕过审计链或遗漏权限。
+    @discardableResult
+    func writeConfigFile(_ text: String, writer: String = #function) -> Bool {
+        writeConfig(text, to: configFilePath, writer: writer)
+    }
 
     /// Single choke point for every config.yaml write: atomic replace + 0600.
     /// The file carries the built-in tailnet node's auth-key in plain text when

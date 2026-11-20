@@ -47,12 +47,18 @@ import Darwin
 /// redirect — system DNS set to `127.0.0.1` with nothing listening on port 53
 /// — instead of leaving every domain lookup black-holed until the app relaunches.
 /// 1.0.27: client-death cleanup scopes its loopback-proxy reality check to the
-/// port the helper last wrote, so quitting ClashHalo no longer wipes a
-/// co-resident proxy app's system-proxy settings. 1.0.26: cleanup re-checks
+/// 1.0.35: Helper 侧 RouteTable.current() 从 fork netstat 换成 sysctl
+/// (NET_RT_DUMP) 直读。旧实现在 TUN 刚开启、路由表剧烈变动时两次超时
+/// 5s×2（2026-11-20 15:33 实机：setupExcludeRoutes 耗时 11s 耗尽 XPC
+/// 10s 超时），排除路由注入迟到 11 秒——窗口内 Tailscale 对端网段被
+/// TUN 吞掉形成黑洞，异地组网断网。1.5.2 已把 GUI 侧换成 sysctl 但
+/// 未 bump Helper 版本，已装 1.0.34 被语义化比较短路，修复从未上机。
+/// 1.0.34: 见 CHANGELOG（控制端口统一、鉴权收紧）。
+/// 1.0.26: cleanup re-checks
 /// session takeover before its destructive steps (quit/relaunch race).
 /// 1.0.25: system-proxy rework (shared ProxyServicePlan, branch-order fix, no
 /// 2-service cap, full-success-only Bool).
-public let kSharedHelperVersion = "1.0.34"
+public let kSharedHelperVersion = "1.0.35"
 
 /// The utun name mihomo is asked to take, instead of accepting whatever index
 /// the kernel hands out. Shared with the Helper so it can tell a route our own

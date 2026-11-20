@@ -440,6 +440,10 @@ let kDirectExcludeAcceptedKey = "tun.directExclude.accepted"
     /// success, on user-driven TUN off, and after a completed recovery cycle.
     /// See `TUNDataPlaneHealthState` / `Sources/Model/TUNDataPlaneProbe.swift`.
     var tunDataPlaneHealth = TUNDataPlaneHealthState()
+    /// 巡检公网出口 HTTPS 探测的节流门：上一轮成功后 5 分钟、失败后 60 秒内
+    /// 不重做（2026-11-20 实机「频繁弹 toast」反馈：30s 巡检每轮打真实 HTTPS，
+    /// 节点 4s 抖动会被滑动窗口放大成自愈链连弹）。本地 fake-ip 探测仍每轮跑。
+    var tunPublicEgressProbeDue: Date = .distantPast
     /// In-flight probe Task, cancelled when the user turns TUN off or the app
     /// is about to exit so a late result cannot restart a kernel the user no
     /// longer wants.
@@ -2770,15 +2774,19 @@ let kDirectExcludeAcceptedKey = "tun.directExclude.accepted"
             await refreshProxies()
             await refreshRules()
             if gatewayModeOn {
-                engine.setTopLevelScalars(AppModel.gatewayOverrides)
-                try await api.reloadConfig(path: path)
-                await refreshConfigs()
+                // 对齐 performReloadActiveConfig / selectForApply（LIFE-4）：
+                // 走统一事务，避免裸写 setTopLevelScalars + reload 漏校验与回滚。
+                let gatewayOK = await patchPersistentTransactional(AppModel.gatewayOverrides)
+                if !gatewayOK {
+                    logKernel("规则保存网关级联：网关配置未能重新应用（已按事务回滚），请检查「网络」页网关状态")
+                }
             }
             showToast("规则已保存并重载", kind: .ok)
             return true
         } catch {
             if !backup.isEmpty {
-                try? backup.write(toFile: path, atomically: true, encoding: .utf8)
+                // 走统一回滚入口：保证 0600 权限不退化为 0644，并在 ConfigWriteAudit 留痕。
+                await restoreConfigSnapshot(backup, at: path, writer: "applyRuleEditorSaveAsync")
                 noteConfigContentChanged()
             }
             showToast("规则重载失败，已回滚磁盘：\(error.localizedDescription)", kind: .error)

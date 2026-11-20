@@ -2356,16 +2356,26 @@ extension AppModel {
         }
 
         var overrides: [String: Any] = ["tun": tunOverrideMap]
-        // Pin the outbound interface to the real default-route NIC when enabling
-        // TUN. auto-detect-interface alone loses a startup race — auto-route
-        // hijacks the default route before the monitor identifies the NIC, so
-        // every dial fails "interface not found" until it catches up, black-holing
-        // traffic. An explicit interface-name gives egress a concrete NIC at once;
-        // the monitor still updates it on later network changes. Clear it on
-        // disable so non-TUN egress returns to fully automatic selection.
-        if want, let iface = await EngineControl.defaultInterface() {
-            overrides["interface-name"] = iface
-        } else if !want {
+        // 先确定并持久化物理出网口，再允许任何启动/重载路径创建 TUN。
+        // 旧实现把 interface-name 与 tun.enable 放在同一次 PATCH：mihomo 可以先
+        // 创建 utun 并安装 auto-route，再处理出网口绑定；这段窗口里内核自己的
+        // 节点/DoH 连接会重新进入 TUN，形成自循环。落盘是为了 root 重建和
+        // PUT /configs 也从第一行配置起就持有同一个物理口。
+        var tunEgressInterface: String?
+        if want {
+            guard let iface = await EngineControl.defaultInterface() else {
+                showToast("无法确认物理出网网卡，TUN 未启用", kind: .error)
+                logKernel("TUN 中止：无法确认物理出网网卡，不猜测 en0，不创建隧道")
+                return
+            }
+            tunEgressInterface = iface
+            engine.setTopLevelScalars(["interface-name": iface])
+            guard engine.readConfigFile()?["interface-name"] as? String == iface else {
+                showToast("出网网卡配置写入失败，TUN 未启用", kind: .error)
+                logKernel("TUN 中止：interface-name 未能写入 config.yaml")
+                return
+            }
+        } else {
             overrides["interface-name"] = ""
         }
 
@@ -2466,6 +2476,7 @@ extension AppModel {
         // Do the local half of the teardown and treat it as done.
         if !want && !reachable {
             engine.forceTUNDisabled()
+            engine.setTopLevelScalars(["interface-name": ""])
             tunOn = false
             Coexistence.commitProvenance(field: "route-exclude-address", injected: [])
             lastCoexistenceFingerprint = ""
@@ -2517,6 +2528,18 @@ extension AppModel {
             logKernel("内核未运行，TUN 已就地关闭（配置落盘 tun.enable=false）")
             showToast("TUN 模式已关闭", kind: .ok)
             return
+        }
+
+        // 运行态也必须分阶段：先 PATCH 并回读出网口，再 PATCH tun.enable。
+        // 仅写盘不够——普通热切换不会重读文件；仅发一次 PATCH 也不够，
+        // 控制面 200 不代表后续应用顺序符合我们的路由安全前提。
+        if let iface = tunEgressInterface {
+            guard await confirmTUNEgressInterface(iface) else {
+                logKernel("TUN 中止：interface-name 未能回读确认为 \(iface)，关闭隧道回退")
+                await applyTUNState(false, allowRestartFallback: false)
+                showToast("出网网卡绑定未生效，已回退 TUN", kind: .error)
+                return
+            }
         }
 
         let tPatch = Date()
@@ -2707,8 +2730,22 @@ extension AppModel {
                 // No auto-stopEngine when both proxy faces are off — keep the core
                 // warm so re-enabling TUN is a PATCH, not a full root restart.
                 if want {
+                    // utun 存在与 fake-ip 本地应答都不是公网可用证据。真实 DNS +
+                    // HTTPS 任一失败就立即走既有关闭链，避免把全局断网留给用户。
+                    // 验收过程不弹 toast（AGENTS toast 纪律：报结果不报过程）——
+                    // 2026-11-20 实机反馈「频繁弹 toast」：过程 toast 与成功 toast
+                    // 在开启/回退路径上连弹 5~6 条；失败已有下方专门错误提示。
+                    guard await verifyTUNPublicEgress() else {
+                        logKernel("TUN 开启验收未通过，自动关闭并恢复直连")
+                        await applyTUNState(false, allowRestartFallback: false)
+                        showToast("TUN 出网异常，已自动回退并恢复直连", kind: .error, duration: 8)
+                        return
+                    }
                     showToast(usedRestartPath ? "TUN 模式已开启（经重启内核重建隧道）"
                                               : "TUN 模式已开启（热切换，未断流）", kind: .ok)
+                    // 刚做过真实出口验收：推进巡检豁免窗，5 分钟内的数据面
+                    // 巡检不再重抽公网 HTTPS（见 tunPublicEgressProbeDue 注释）。
+                    tunPublicEgressProbeDue = Date().addingTimeInterval(300)
                     // Gateway rides on TUN: if a teardown took it down with the
                     // tunnel, bring it back now that the tunnel is up again.
                     await restoreGatewayAfterTUNIfPending()
@@ -2723,6 +2760,9 @@ extension AppModel {
                     showToast("TUN 模式已关闭", kind: .ok)
                 }
                 if !want {
+                    // 关闭已获内核确认后，同步撤销落盘的物理口覆盖，避免下次
+                    // 非 TUN 启动仍沿用本次隧道的固定出网口。
+                    engine.setTopLevelScalars(["interface-name": ""])
                     // TUN is now off — restore system DNS before anything else.
                     // The TUN fake-ip gateway (198.18.0.0) only answers while
                     // the tunnel is up; a downed utun black-holes all DNS.
@@ -2751,6 +2791,65 @@ extension AppModel {
                 showToast(want ? "TUN 开启失败（内核未运行）" : "TUN 已随内核停止关闭", kind: want ? .error : .ok)
             }
         }
+    }
+
+    /// 启用 TUN 前的运行态出网口确认。失败必须阻止 enable，而不是让
+    /// auto-route 先接管全局流量后再等自动监测慢慢自愈。
+    private func confirmTUNEgressInterface(_ expected: String) async -> Bool {
+        guard await engine.patchConfig(["interface-name": expected]) else { return false }
+        for delay in [0, 150_000_000, 400_000_000] as [UInt64] {
+            if delay > 0 { try? await Task.sleep(nanoseconds: delay) }
+            if let current = try? await api.fetchConfigs(),
+               current["interface-name"] as? String == expected {
+                logKernel("TUN 出网口已确认：\(expected)，下一步才允许启用隧道")
+                return true
+            }
+        }
+        return false
+    }
+
+    /// 真实出口验收：**端到端 HTTPS 是唯一判据**。
+    ///
+    /// 2026-11-20 实机教训：fake-ip 模式下 `/dns/query` 对普通域名返回
+    /// 198.18.x 假地址是设计行为。把「返回假地址」当失败，会让开启验收每次
+    /// 1.5 秒就回退，TUN 永远开不起来。所以 DNS 只做分类诊断（真实 A /
+    /// fake-ip / 断链），失败与否一律由真正走完整链路（TUN → 节点 → 公网）
+    /// 的 HTTPS 探测决定；并给 2 次机会容忍节点拨号与策略组选路的预热期。
+    private func verifyTUNPublicEgress() async -> Bool {
+        var dnsVerdictLogged = false
+        // 最多两次：总预算从旧版的 3×8s≈32s 压到 ≈10s（用户实测「开启很慢」
+        // 就来自这里）。首次给节点拨号留足 4s，失败再补一次。
+        for attempt in 1...2 {
+            if await engine.probeTUNPublicHTTPS(port: proxyPort) {
+                logKernel("TUN 公网验收通过：真实 HTTPS 可达（第 \(attempt) 次）")
+                return true
+            }
+            if !dnsVerdictLogged {
+                dnsVerdictLogged = true
+                let verdict = await classifyTUNDNSForDiagnosis()
+                switch verdict {
+                case .realAnswers:
+                    logKernel("TUN 公网验收：上游 DNS 正常（真实 A 记录），HTTPS 未通，继续重试")
+                case .fakeIPAnswers:
+                    logKernel("TUN 公网验收：DNS 返回 fake-ip（fake-ip 模式的正常行为，不作为失败依据）")
+                case .broken:
+                    logKernel("TUN 公网验收：上游 DNS 无有效应答（诊断信息，最终仍以 HTTPS 为准）")
+                }
+            }
+            if attempt < 2 { try? await Task.sleep(nanoseconds: 1_200_000_000) }
+        }
+        // 系统解析器状态只进日志（提示与后续自愈排查），不参与成败判定。
+        let resolverOK = await EngineControl.systemResolverHealthy()
+        logKernel("TUN 公网验收失败：真实 HTTPS 2 次均不可达（系统解析器\(resolverOK ? "正常，嫌疑在节点/代理链路" : "异常——隧道回退后请关注系统 DNS 是否被残留重定向")）")
+        return false
+    }
+
+    /// 只供日志区分「DNS 坏」还是「出网坏」，绝不参与成败判定。
+    private func classifyTUNDNSForDiagnosis() async -> TUNPublicEgressGate.DNSVerdict {
+        guard let payload = try? await api.dnsQuery(name: "example.com", type: "A") else {
+            return .broken
+        }
+        return TUNPublicEgressGate.classify(payload)
     }
 
     /// Verify the kernel really adopted `tun.enable == want`, re-PATCHing while
@@ -3217,6 +3316,25 @@ extension AppModel {
         logKernel("TUN 数据面探测开始（\(reason)）→ \(gateway):53 @\(tunDevice)")
         let outcomes = await engine.runTUNDataPlaneProbeCycle(gateway: gateway,
                                                               interface: tunDevice)
+        // 本地 DNS 应答之外，再做一次真实出口检查。失败不会立刻重启内核，
+        // 而是作为本轮失败进入既有滑动窗口；持续异常才触发自愈，最终回退。
+        // 节流：巡检 30s 一轮，每轮打真实 HTTPS 会把节点 4s 抖动放大成
+        // 「数据面异常 → 重建内核」的自愈链连弹。本地 fake-ip 探测每轮覆盖
+        // 数据面活性；公网 HTTPS 留给开启/自愈验收 + 本节流后的长周期抽查。
+        let publicEgressOK: Bool
+        if outcomes.contains(true) {
+            if Date() < tunPublicEgressProbeDue {
+                // 门限内沿用「最近一次公网已验收」的结论，不惩罚窗口：
+                // 若跳过时记失败，30s×4 拍就会打满滑动窗口误触自愈。
+                publicEgressOK = true
+            } else {
+                publicEgressOK = await verifyTUNPublicEgress()
+                tunPublicEgressProbeDue = Date().addingTimeInterval(publicEgressOK ? 300 : 60)
+            }
+        } else {
+            // 本轮本地探测全失败：本地已红，不需要公网证据即记失败。
+            publicEgressOK = false
+        }
         // Feed every attempt into the sliding-window state machine on this
         // actor — never pass actor-isolated state as `inout` into an async
         // helper. A success does NOT reset the window: a half-dead fd can
@@ -3226,9 +3344,12 @@ extension AppModel {
         for (i, ok) in outcomes.enumerated() {
             logKernel(ok ? "TUN 数据面探测 \(i + 1)/\(outcomes.count): DNS gateway \(gateway) 应答"
                          : "TUN 数据面探测 \(i + 1)/\(outcomes.count) 失败: DNS gateway \(gateway) timeout")
-            if tunDataPlaneHealth.record(success: ok) {
+            if tunDataPlaneHealth.record(success: ok && publicEgressOK) {
                 trip = true
             }
+        }
+        if !publicEgressOK {
+            logKernel("TUN 公网出口巡检失败：真实 DNS/HTTPS 未通过（fake-ip 绿灯不单独算健康）")
         }
         // AGENTS §5：reset() 只在「满窗口全成功」(allHealthy) 后调用。不能以
         // 「本轮 cycle 无失败」为清窗条件——runTUNDataPlaneProbeCycle 在首试
@@ -3379,9 +3500,19 @@ extension AppModel {
             }
         }
 
+        // 本地 fd 验收通过后，还必须证明真实上游与公网出口恢复；否则
+        // 「节点回注但 fake-ip 能答」仍会被误报成自愈成功。
+        if accepted {
+            accepted = await verifyTUNPublicEgress()
+            if accepted {
+                // 自愈刚验收过真实出口：推进巡检豁免窗，与开启验收同口径。
+                tunPublicEgressProbeDue = Date().addingTimeInterval(300)
+            }
+        }
+
         let total = String(format: "%.1f", Date().timeIntervalSince(t0))
         if accepted {
-            logKernel("TUN 自愈成功: DNS 数据面恢复，总耗时 \(total)s")
+            logKernel("TUN 自愈成功: 本地 DNS 与真实公网出口均恢复，总耗时 \(total)s")
             showToast("TUN 数据面已自动恢复", kind: .ok)
             return
         }
@@ -3989,12 +4120,17 @@ extension AppModel {
     }
 
     /// Put a backed-up config.yaml back on disk (keeping its 0600 mode) and
-    /// resync the UI from runtime truth. Used by both transactional writers.
-    private func restoreConfigSnapshot(_ text: String, at path: String) async {
+    /// record the rollback in ConfigWriteAudit so the audit trail stays intact.
+    func restoreConfigSnapshot(_ text: String, at path: String, writer: String = #function) async {
+        if path == engine.configFilePath {
+            if !engine.writeConfigFile(text, writer: "rollback:\(writer)") {
+                logKernel("配置回滚写入失败：\(path)")
+            }
+            return
+        }
         do {
             try text.write(toFile: path, atomically: true, encoding: .utf8)
-            // atomic write 会重建文件，权限跟着默认值走 —— config.yaml 必须
-            // 保持 0600（订阅 URL 等敏感内容在别的文件里，但这条规则不能破）。
+            // atomic write 会重建文件，权限跟着默认值走 —— 保持 0600。
             try? FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: path)
         } catch {
             logKernel("配置回滚写入失败：\(error.localizedDescription)")
@@ -4241,14 +4377,11 @@ extension AppModel {
 
     private func commitInboundListeners(_ next: String, backup: String, path: String,
                                         isEmpty: Bool) async -> Bool {
-        do {
-            try next.write(toFile: path, atomically: true, encoding: .utf8)
-        } catch {
-            showToast("保存失败：\(error.localizedDescription)", kind: .error)
+        // 走 EngineControl 唯一写盘入口：atomic + 0600 + ConfigWriteAudit 留痕。
+        guard engine.writeConfigFile(next, writer: "commitInboundListeners") else {
+            showToast("保存失败：无法写入配置文件", kind: .error)
             return false
         }
-        // config.yaml 里有 tailnet auth-key 明文，沿用 0600 承诺。
-        try? FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: path)
 
         persistTunStateForReload()
         if let err = await engine.validateConfig() {

@@ -135,6 +135,46 @@ struct DNSProbe {
     }
 }
 
+/// 真实出口验收里的 DNS 分类（**只用于诊断，不用于判失败**）。
+///
+/// fake-ip 模式下 `/dns/query` 对普通域名本来就会返回 198.18.x 假地址——
+/// 那是设计行为，不是故障。2026-11-20 实机教训：把「返回假地址」当成
+/// 「上游 DNS 失败」会让开启验收每 1.5 秒就回退一次，TUN 永远开不起来。
+/// 真正的判据只能是端到端 HTTPS；DNS 分类只用来在失败时说明是哪一层坏了。
+enum TUNPublicEgressGate {
+    enum DNSVerdict: Equatable {
+        /// NOERROR 且至少一条非 fake-ip 的 IPv4 A 记录 —— 上游真的解析过。
+        case realAnswers
+        /// NOERROR 但只有 fake-ip 段地址 —— fake-ip 正常，不构成失败证据。
+        case fakeIPAnswers
+        /// SERVFAIL / 空答案 / 结构不合法 —— 解析链路确实坏了。
+        case broken
+    }
+
+    static func classify(_ payload: [String: Any]) -> DNSVerdict {
+        guard (payload["Status"] as? Int) == 0 else { return .broken }
+        guard let answers = payload["Answer"] as? [[String: Any]], !answers.isEmpty else {
+            return .broken
+        }
+        var sawValid = false
+        for entry in answers {
+            guard let raw = entry["A"] as? String else { continue }
+            let octets = raw.split(separator: ".").compactMap { UInt32($0) }
+            guard octets.count == 4, octets.allSatisfy({ $0 <= 255 }) else { continue }
+            sawValid = true
+            if !(octets[0] == 198 && (octets[1] == 18 || octets[1] == 19)) {
+                return .realAnswers
+            }
+        }
+        return sawValid ? .fakeIPAnswers : .broken
+    }
+
+    /// 兼容旧断言：只有真实 A 记录算「上游确实解析过」。
+    static func dnsSucceeded(_ payload: [String: Any]) -> Bool {
+        classify(payload) == .realAnswers
+    }
+}
+
 /// Decides whether a probe reply is admissible as evidence that **our** tunnel
 /// is alive — as opposed to *any* resolver on the machine answering.
 ///

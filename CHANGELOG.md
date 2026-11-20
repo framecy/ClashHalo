@@ -4,6 +4,22 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- **TUN 开启期间 toast 连弹与巡检公网探测过频**（2026-11-20 15:44 实机反馈「频繁弹出 toast」）：①开启验收的「正在验收真实 DNS 与公网出口…」过程 toast 移除——toast 只报结果（失败已有专门错误提示、成功只弹一条「TUN 模式已开启」），此前一次开启最多连弹 5~6 条；②数据面巡检（30s 一轮）从每轮打真实 HTTPS 改为节流抽查：成功后 5 分钟、失败后 60 秒内不重做，开启/自愈验收通过同样推进豁免窗。本地 fake-ip 探测仍每轮覆盖数据面活性；公网 HTTPS 的职责收窄为开启/自愈验收 + 长周期抽查，节点 4 秒抖动不再会被滑动窗口放大成「数据面异常 → 重建内核」的自愈链连弹。
+- **TUN 开启后异地组网断网 11 秒（Helper 版本投递漏账）**（2026-11-20 15:33 实机事故）：TUN 开启后 auto-route 会劫持全局路由，Tailscale 对端网段的流量靠「排除路由注入」在 1~2 秒内指回原虚拟接口补偿。但已安装 Helper（1.0.34）的 `RouteTable.current()` 还是 fork netstat 实现——1.5.2 只把它换成了 sysctl 却**没 bump `kSharedHelperVersion`**，语义化升级比较（`installed < expected`）恒 false，带修复的新 Helper 从未上机。实机在 TUN 刚起、路由表剧烈变动时 netstat 两次超时 5s×2，注入迟到 11 秒耗尽 XPC 10s 超时；窗口内对端网段流量被 TUN 吞掉、mihomo 按 DIRECT 从物理口出站但无路由可达，形成黑洞（公网流量正常、Chrome/微信在内核日志里均正常转发，唯独组网流量消失）。`kSharedHelperVersion` bump 至 **1.0.35**（同步 `Helper-Info.plist`），安装新版后自动原地升级 Helper，读表回到毫秒级；实机验证 Helper 1.0.35 上机后组网流量恢复。已知残留：XPC 超时后 Helper 实际完成注入但 GUI 判失败、关闭 TUN 时不清理这批路由（孤儿路由由下次开启时的「回收孤儿」机制兜底）——根因修复后 10s 超时场景基本消失，状态分裂待后续立项。
+- **TUN 开启时的自循环窗口与验收误判**（2026-11-20 实机事故）：①旧实现把 `interface-name` 与 `tun.enable` 放在同一次 PATCH，mihomo 可先创建 utun 并装 auto-route 再处理出网口绑定，这段窗口里内核自己的 DoH/节点连接会重新进入 TUN 形成自循环、DoH 全灭。现在分四段：先确认物理出网网卡（拿不到就中止，不猜测 en0）→ 落盘并回读 `interface-name` → PATCH 运行态并回读确认 → 才允许 enable；任一段失败即中止或回退，关闭时同步撤销落盘与运行态的出网口覆盖。②开启验收曾把「fake-ip 模式下 `/dns/query` 返回 198.18.x 假地址」当失败（那是设计行为），导致验收每 1.5s 回退一次、TUN 永远开不起来；现在**端到端 HTTPS 是唯一成败判据**（经 mihomo 混合端口做真实往返，不依赖本机系统解析器——后者可能被 MagicDNS 或卡住的 mDNSResponder 单独拖死），DNS 只做分类诊断，重试预算从 3×8s≈32s 压到 ≈10s。③TUN 数据面巡检与自愈链同步补挂公网出口检查：本地 fake-ip 应答不再是健康证据，自愈「成功」必须同时证明真实出口恢复。
+
+### Changed
+
+- **冷启动并发拉起内核的单飞合并**：`ensureRunningAsync` 用 in-flight 句柄合并冷启动、唤醒恢复与用户开关的并发拉起（1.5.2 记录的竞态待办），避免同时 spawn 两个 mihomo 撞端口；root 升级重启路径改为 stopKernel 后直落启动分支，保持无重入。
+- **config.yaml 写盘收敛到唯一入口**：端口转发提交、规则保存回滚、网关级联等事务写者统一走 `EngineControl.writeConfigFile`（atomic + 0600 + ConfigWriteAudit 留痕）；规则保存的网关级联改走统一事务（不再裸写 `setTopLevelScalars` + reload）。回环端口监听探针合并为单一 `probeLoopbackTCP` 实现。
+
+### 验证
+
+- 回归：`bash Scripts/run-tests.sh` 全部套件通过（含 `tundataplane-tests` 新增 `TUNPublicEgressGate` 9 条断言：fake-ip 判 `fakeIPAnswers` 不判失败、SERVFAIL/空答案/非法地址判 `broken`、混合地址判 `realAnswers`）。
+- Debug 构建（含 Helper 嵌入路径）编译通过；未在本次会话实机开启 TUN 验证分阶段时序，验收链路依赖真机网络环境。
+
 ## [1.5.2] - 2026-11-18
 
 ### Fixed

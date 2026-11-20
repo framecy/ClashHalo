@@ -27,6 +27,7 @@ xcuserdata/
 
 # Swift
 .build/
+.build-debug/
 .swiftpm/
 
 # Build artifacts

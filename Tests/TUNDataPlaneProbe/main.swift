@@ -199,6 +199,43 @@ expect(!TUNProbeReplyGate.admits(boundAddress: "", replyDestination: tun),
 expect(!TUNProbeReplyGate.admits(boundAddress: "198.18.0.0", replyDestination: en0),
        "历史故障地址 198.18.0.0 作为绑定值也不接纳物理口应答")
 
+// MARK: - TUNPublicEgressGate
+
+section("TUNPublicEgressGate — fake-ip 是正常行为，不能当失败依据")
+expect(TUNPublicEgressGate.classify([
+    "Status": 0,
+    "Answer": [["A": "93.184.216.34"]]
+]) == .realAnswers, "NOERROR + 真实 A 记录 → realAnswers")
+expect(TUNPublicEgressGate.classify([
+    "Status": 0,
+    "Answer": [["A": "198.18.0.1"]]
+]) == .fakeIPAnswers,
+       "fake-ip 应答 → fakeIPAnswers（2026-11-20 误判事故：它被当成失败，TUN 永远开不起来）")
+expect(TUNPublicEgressGate.classify([
+    "Status": 2,
+    "Answer": [["A": "93.184.216.34"]]
+]) == .broken, "SERVFAIL 即使夹带答案也算断链")
+expect(TUNPublicEgressGate.classify(["Status": 0, "Answer": []]) == .broken,
+       "NOERROR 空答案 → broken")
+expect(TUNPublicEgressGate.classify(["Status": 0]) == .broken, "缺 Answer → broken")
+expect(TUNPublicEgressGate.classify([
+    "Status": 0,
+    "Answer": [["A": "not-an-ip"]]
+]) == .broken, "非法地址 → broken")
+expect(TUNPublicEgressGate.classify([
+    "Status": 0,
+    "Answer": [["A": "198.18.9.9"], ["A": "104.20.23.154"]]
+]) == .realAnswers, "混有真实地址时判定 realAnswers")
+// 旧断言兼容：只有真实 A 记录算「上游确实解析过」，但调用方已不再据此判失败。
+expect(TUNPublicEgressGate.dnsSucceeded([
+    "Status": 0,
+    "Answer": [["A": "93.184.216.34"]]
+]), "dnsSucceeded 仍按真实 A 记录口径")
+expect(!TUNPublicEgressGate.dnsSucceeded([
+    "Status": 0,
+    "Answer": [["A": "198.18.0.1"]]
+]), "dnsSucceeded 对 fake-ip 仍返回 false（仅诊断用途）")
+
 // MARK: - Summary
 
 print("\n════════════════════════════════")
