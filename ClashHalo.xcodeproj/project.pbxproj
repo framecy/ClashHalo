@@ -8,6 +8,7 @@
 
 /* Begin PBXBuildFile section */
 		A1B2C3D4E5F60718293A466 /* ProviderOperation.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1B2C3D4E5F60718293A467 /* ProviderOperation.swift */; };
+		A1B2C3D4E5F60718293A471 /* ProviderRequestThrottle.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1B2C3D4E5F60718293A472 /* ProviderRequestThrottle.swift */; };
 		A1B2C3D4E5F60718293A464 /* ProviderSourceStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1B2C3D4E5F60718293A465 /* ProviderSourceStore.swift */; };
 		A1B2C3D4E5F60718293A462 /* ProviderDocument.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1B2C3D4E5F60718293A463 /* ProviderDocument.swift */; };
 		04E0EC007CDC978C6D8D3024 /* YamlRuleASTEngine.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5E2B17CDA9711347F1C170EB /* YamlRuleASTEngine.swift */; };
@@ -80,6 +81,7 @@
 
 /* Begin PBXFileReference section */
 		A1B2C3D4E5F60718293A467 /* ProviderOperation.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Sources/Core/Subscription/ProviderOperation.swift; sourceTree = "<group>"; };
+		A1B2C3D4E5F60718293A472 /* ProviderRequestThrottle.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Sources/Core/Subscription/ProviderRequestThrottle.swift; sourceTree = "<group>"; };
 		A1B2C3D4E5F60718293A465 /* ProviderSourceStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Sources/Core/Subscription/ProviderSourceStore.swift; sourceTree = "<group>"; };
 		A1B2C3D4E5F60718293A463 /* ProviderDocument.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Sources/Core/Subscription/ProviderDocument.swift; sourceTree = "<group>"; };
 		06A576D2F0DE48B7BA1A37D7 /* TrafficHistory.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Sources/Model/TrafficHistory.swift; sourceTree = SOURCE_ROOT; };
@@ -254,6 +256,7 @@
 				A1B2C3D4E5F60718293A467 /* ProviderOperation.swift */,
 				A1B2C3D4E5F60718293A465 /* ProviderSourceStore.swift */,
 				A1B2C3D4E5F60718293A463 /* ProviderDocument.swift */,
+				A1B2C3D4E5F60718293A472 /* ProviderRequestThrottle.swift */,
 				HASHSWFFFFFF /* Hash.swift */,
 				7DC2B59D23B0749A0B7CC125 /* RuleFormView.swift */,
 			);
@@ -448,6 +451,7 @@
 				A1B2C3D4E5F60718293A466 /* ProviderOperation.swift in Sources */,
 				A1B2C3D4E5F60718293A464 /* ProviderSourceStore.swift in Sources */,
 				A1B2C3D4E5F60718293A462 /* ProviderDocument.swift in Sources */,
+				A1B2C3D4E5F60718293A471 /* ProviderRequestThrottle.swift in Sources */,
 				FD7AD16CD9DC6191C81AE1F5 /* RuleFormView.swift in Sources */,
 			);
 		};

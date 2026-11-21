@@ -300,6 +300,13 @@ add_suite provideroperation-tests \
   "$ROOT/Sources/Core/Subscription/ProviderOperation.swift" \
   "$ROOT/Tests/ProviderOperation/main.swift"
 
+# Provider API 每秒节流：机场按订阅 key 限频（超发直接 429）。钉住滑动窗口
+# 语义（任意 <1s 区间 ≤9 次，固定窗口边界尖峰不允许）、键口径（同 host 多
+# URL 共享闸门）与端到端等待下界。
+add_suite providerthrottle-tests \
+  "$ROOT/Sources/Core/Subscription/ProviderRequestThrottle.swift" \
+  "$ROOT/Tests/ProviderThrottle/main.swift"
+
 # ── 执行 ───────────────────────────────────────────────────────────────
 
 FILTER=""
