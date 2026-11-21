@@ -11,13 +11,13 @@ func expect(_ cond: Bool, _ what: String) {
 }
 func section(_ s: String) { print("\n── \(s) ──") }
 
-// The exact route table captured from the affected machine, verbatim.
+// 事故机器的真实路由表快照；网段与对端地址已做脱敏替换（结构与判据保真）。
 let liveTable = """
 Destination        Gateway            Flags               Netif Expire
 default            10.10.0.1           UGScg                 en0
 default            link#32            UCSIg               utun8
-10.10.0/24          utun8              USc                 utun8
-10.10.0/24          link#32            UCSI                utun8
+10.10.0/24         utun8              USc                 utun8
+10.10.0/24         link#32            UCSI                utun8
 10.10.0.1/32        link#15            UCS                   en0      !
 10.10.0.20/32       link#15            UCS                   en0      !
 10.10.0.80          link#32            UHWIi               utun8
@@ -26,7 +26,7 @@ default            link#32            UCSIg               utun8
 100.100.100.100    utun8              UHS                 utun8
 100.100.100.100/32 link#32            UCS                 utun8
 100.64.1.23      utun8              UHS                 utun8
-192.168.30          link#32            UCS                 utun8
+192.168.30         link#32            UCS                 utun8
 224.0.0/4          utun8              UmS                 utun8
 224.0.0/4          link#32            UmCSI               utun8
 255.255.255.255/32 link#32            UCSI                utun8
@@ -100,7 +100,7 @@ expect(names == ["10.10.0.0/24->utun8", "224.0.0.0/4->utun8"],
        "只回收 LAN 与组播两条（实得 \(names.sorted()))")
 expect(!names.contains { $0.hasPrefix("100.64") },     "不动 Tailscale CGNAT")
 expect(!names.contains { $0.hasPrefix("100.100.100") }, "不动 MagicDNS 排除路由")
-expect(!names.contains { $0.hasPrefix("100.121") },     "不动对端自身地址排除路由")
+expect(!names.contains { $0.hasPrefix("100.64.1.23") },  "不动对端自身地址排除路由")
 expect(!reclaimed.contains { $0.interface == kPinnedTunDevice }, "绝不碰自己的 utun100")
 
 section("回归：GUI 采集过滤（routesByInterface 的等价谓词）")
@@ -192,7 +192,7 @@ expect(!live.contains("198.18.0.0/30"), "不把 utun 的网段当直连（utun �
 expect(!live.contains("127.0.0.0/8"), "不含回环")
 // 这条断言曾经写死 v4（`octets == 4`），在本机有全局 IPv6 地址时误红：
 // localAttachedSubnets 走 getifaddrs 的 sin6_addr 分支，**本来就同时返回 v6 直连段**
-// （本机实测 "2001:db8:2:210::/64"）——产品是对的，是断言把 v6 当成非法。
+// （本机实测 "2001:db8:210::/64" 这类全局 v6 直连段）——产品是对的，是断言把 v6 当成非法。
 // 真正要钉的是「每条都是合法 CIDR 且掩码落在 1...31」：v4 判四段点分、v6 判含冒号，
 // 两者都不接受 /0 与 /32、/128 这类主机/默认掩码。
 expect(live.allSatisfy { cidr in
@@ -218,8 +218,8 @@ Destination        Gateway            Flags        Netif Expire
 default            link#33            UCSg        utun100
 100.64/10          utun100            UCS         utun100
 100.100.100.100/32 utun8              UCS           utun8
-192.168.30          link#32            UCSI          utun8
-10.10.0/24          link#15            UCS             en0
+192.168.30         link#32            UCSI          utun8
+10.10.0/24         link#15            UCS             en0
 """)
 let want = ["100.64.0.0/10": "utun8",
             "100.100.100.100/32": "utun8",
