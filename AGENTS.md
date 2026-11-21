@@ -61,13 +61,15 @@ bash make.sh
 ### 回归测试
 
 ```bash
-bash Scripts/run-tests.sh                # 全部套件（当前 35 套）
+bash Scripts/run-tests.sh                # 全部套件（当前 36 套）
 bash Scripts/run-tests.sh --only tun     # 只跑名字含 tun 的
 bash Scripts/tun-exclusion-test.sh       # L1：排除表多源合并 + 归属记录（--apply 会真实 PATCH 一轮并还原）
+bash Scripts/audit.sh                    # 独立审查：隐私（全历史身份/敏感值/凭据形态）+ 全量回归；--no-tests 秒级只查隐私
 ```
 
 原则是**直接编译生产源码**，绝不在测试里重新实现一遍规则——复刻逻辑只会让产品坏掉时测试照样通过。每套是一个独立可执行的 `Tests/<名>/main.swift`，用 `swiftc -O` 连同它要钉住的那几个 `Sources/` 文件编成二进制运行。
 
+- **`Scripts/audit.sh` 是独立审查入口**（2026-11-21 历史脱敏后新增）：不信任任何前序审查结论，从当前仓库重新推导五件事——提交身份匿名（作者/提交者/附注标签 tagger）、全历史 blob+提交消息敏感值、凭据形态、工作区、对象库健康，再接全量回归。旧机器克隆是否仍是脱敏前的脏历史，`--no-tests` 三秒即知。发现新的敏感值形态时把模式追加进脚本头部的 `PRIVACY`/`SECRET`（可移植 ERE，禁用 `\b` 与前瞻；被审查字面量必须碎片拼接防自匹配，见脚本内注释）
 - 退出码：全绿 0，任何 FAIL / COMPILE-ERROR / 缺文件都是 1。**一套红了不会中止其余**（旧版 `set -e` 一红全断，"跑过回归"实际只覆盖了排在最前面那套）。
 - `Tests/` **已重新纳入版本管理**（历史提交 `291a239` 曾短暂移出，`Scripts/restore-tests.sh` 仅作历史应急恢复脚本保留）；新克隆仓库可直接运行 `bash Scripts/run-tests.sh`，不得再将 `Tests/` 加回 `.gitignore`（仅忽略误留的编译产物）。
 - 新增可测的纯逻辑半边（无 UI、无进程管理、无 MainActor）时，**必须**在 `Scripts/run-tests.sh` 里 `add_suite` 登记一条：未登记的套件等于不存在的套件。`TUNLoopSentinel` 就长期漏登记、从未被跑过。
