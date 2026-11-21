@@ -1,34 +1,12 @@
 # ClashHalo 全量代码审查（2026-11-21）
 
-- **触发任务**：① 为 Provider（订阅服务商）的 API KEY 增加每秒 ≤ 9 次的请求频率限制；② 全量审查代码，重点看功能解耦、内核关联、TUN 逻辑。
-- **审查方式**：逐文件精读 + 对照 AGENTS.md 已文档化不变量逐一核验 + 36 套回归 + Debug 构建。审查为只读（除频率限制功能本身）。
+- **触发任务**：全量审查代码，重点看功能解耦、内核关联、TUN 逻辑。
+- **审查方式**：逐文件精读 + 对照 AGENTS.md 已文档化不变量逐一核验 + 35 套回归 + Debug 构建。审查为只读。
 - **基线**：`fe0f24b`（v1.5.2 build 140 之后，Helper 1.0.35）。
 
 ---
 
-## 一、本次功能改动：Provider API 每秒 ≤ 9 次节流闸
-
-**为什么**：订阅服务商（机场面板）按 API key 限频，超发直接 429；旧实现「全部刷新」对多个订阅的下载 / 内核 PUT 是无间隔循环，快响应的服务商在 1 秒内可被打穿。
-
-**实现**（滑动窗口 + 单一漏斗）：
-
-| 文件 | 改动 |
-|---|---|
-| `Sources/Core/Subscription/ProviderRequestThrottle.swift`（新增） | `ProviderRateWindow`（纯逻辑滑动窗口：任意 <1s 区间同 key ≤9 次，固定窗口的边界尖峰不允许）+ `ProviderThrottlePolicy`（常量 9、键=host:port 归一口径）+ `ProviderRequestGate`（@MainActor 闸门，等待用不可取消定时器——取消不得绕过闸门、已取消任务里 `Task.sleep` 会热自旋） |
-| `Sources/Model/ConfigStore.swift` | 新增唯一漏斗 `fetchSubscriptionData`，`download` / `importRemoteDraft` / `updateRemote` 三处直连下载全部经它过闸 |
-| `Sources/Model/AppModel+Config.swift` | `refreshProviderNodes` http 分支在 `PUT /providers/proxies/:name` 前过闸——该 PUT 会让 mihomo 携带订阅 URL（内含 key）重新下载 |
-| `Tests/ProviderThrottle/` + `Scripts/run-tests.sh` | 21 断言回归套件（滑动窗口语义 / 键口径 / 端到端 ≥0.9s 等待下界），已登记为 `providerthrottle-tests` |
-| `ClashHalo.xcodeproj` | 新文件登记（PBXFileReference + BuildFile + group + Sources 四处） |
-
-**键口径**：按 host(:port) 分桶而非完整 URL——同一 API key 常以 `flag=clash` / `flag=singbox` 等参数出现在多条订阅 URL，按完整 URL 分桶会放过「同 key 多 URL」叠加超频；按 host 只会更严不会更松。https 默认 443 / http 默认 80 归一，非 http(s) 与解析失败统一落 "other" 单桶。
-
-**已知边界**（如实记录，非缺陷）：跨 host 共享同一 key（CDN 多子域）URL 侧无法识别，各子域各得一桶；mihomo 按 `interval` 的内核自动更新（分钟级）与健康检查（打 gstatic，不用订阅 key）不在 App 管辖；file 型 provider 的内核刷新只重读本地文件，无网络请求，不过闸。
-
-**验证**：`xcodebuild Debug` exit 0；`bash Scripts/run-tests.sh` 36/36 全绿（35 原有 + 1 新增）。
-
----
-
-## 二、审查发现
+## 一、审查发现
 
 ### P2-1 NetworkPages「重启内核」在 UI 层复刻了一遍高危时序
 
@@ -51,11 +29,10 @@
 ### 观察项（不算缺陷）
 
 - `SubscriptionsPage.swift:320/337/363` 直接调 `engine.proxyProviders()` / 读 `config.yaml`：只读行扫描，符合 AGENTS.md「配置编辑大量使用轻量行扫描」的既定口径，不改。
-- `refreshProviderNodes` 的 file 分支（`AppModel+Config.swift:4596-4619`）PUT 不走节流闸：file 型 provider 的内核刷新只重读本地文件，无网络请求，设计如此。
 
 ---
 
-## 三、已核验不变量（全部通过，抽样证据）
+## 二、已核验不变量（全部通过，抽样证据）
 
 | 领域 | 不变量 | 证据 |
 |---|---|---|

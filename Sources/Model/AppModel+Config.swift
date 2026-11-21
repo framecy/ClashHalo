@@ -4619,13 +4619,7 @@ extension AppModel {
                     }
                 } else if entry.type.lowercased() == "http" {
                     guard self.reachable else { failed += 1; continue }
-                    do {
-                        // 这个 PUT 会让 mihomo 携带订阅 URL（内含 API key）重新下载，
-                        // 与 App 自己的直连下载共用同一把每秒闸门（≤ 9 次/服务商）。
-                        await ProviderRequestGate.shared.awaitTurn(
-                            key: ProviderThrottlePolicy.throttleKey(forURL: entry.url))
-                        try await self.api.updateProvider(name); success += 1
-                    }
+                    do { try await self.api.updateProvider(name); success += 1 }
                     catch { failed += 1 }
                 } else { failed += 1 }
             }

@@ -61,7 +61,7 @@ bash make.sh
 ### 回归测试
 
 ```bash
-bash Scripts/run-tests.sh                # 全部套件（当前 36 套）
+bash Scripts/run-tests.sh                # 全部套件（当前 35 套）
 bash Scripts/run-tests.sh --only tun     # 只跑名字含 tun 的
 bash Scripts/tun-exclusion-test.sh       # L1：排除表多源合并 + 归属记录（--apply 会真实 PATCH 一轮并还原）
 bash Scripts/audit.sh                    # 独立审查：隐私（全历史身份/敏感值/凭据形态）+ 全量回归；--no-tests 秒级只查隐私

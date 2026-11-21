@@ -61,20 +61,11 @@ struct YAMLPreview: Equatable {
 
     func path(_ id: String) -> String { dir + "/\(id).yaml" }
 
-    /// 所有带订阅凭据（API key 在 URL 里）的出站请求唯一漏斗：先过「同一服务商
-    /// 每秒 ≤ 9 次」闸门（`ProviderRequestGate`），再走直连 session。
-    /// download / importRemoteDraft / updateRemote 一律经它——三处各写一遍
-    /// 就会各漏一遍节流。
-    private func fetchSubscriptionData(from u: URL) async -> (Data, URLResponse)? {
-        await ProviderRequestGate.shared.awaitTurn(key: ProviderThrottlePolicy.throttleKey(forURL: u.absoluteString))
-        return try? await session.data(from: u)
-    }
-
     /// 用订阅专用（直连、不吃系统代理）会话取回一份远程内容。
     /// 返回值只看 HTTP 200 + UTF-8；内容格式由 `NodeSubscription` 判定。
     func download(_ url: String) async -> String? {
         guard let u = URL(string: url) else { return nil }
-        guard let (data, response) = await fetchSubscriptionData(from: u),
+        guard let (data, response) = try? await session.data(from: u),
               let http = response as? HTTPURLResponse, http.statusCode == 200,
               let text = String(data: data, encoding: .utf8), !text.isEmpty else { return nil }
         return text
@@ -284,7 +275,7 @@ struct YAMLPreview: Equatable {
     @discardableResult
     func importRemoteDraft(name: String, url: String) async -> String? {
         guard let u = URL(string: url) else { return nil }
-        guard let (data, response) = await fetchSubscriptionData(from: u),
+        guard let (data, response) = try? await session.data(from: u),
               let httpResponse = response as? HTTPURLResponse, httpResponse.statusCode == 200,
               let content = String(data: data, encoding: .utf8), !content.isEmpty else { return nil }
         // 旧实现要求 `content.contains(":")`：base64 字母表不含冒号，于是所有
@@ -321,7 +312,7 @@ struct YAMLPreview: Equatable {
               let u = URL(string: url) else { return false }
         
         do {
-            guard let (data, response) = await fetchSubscriptionData(from: u) else { return false }
+            let (data, response) = try await session.data(from: u)
             guard let httpResponse = response as? HTTPURLResponse, httpResponse.statusCode == 200 else {
                 return false
             }
