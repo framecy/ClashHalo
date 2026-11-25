@@ -66,6 +66,8 @@
 		ATSA1 /* TailscaleAPI.swift in Sources */ = {isa = PBXBuildFile; fileRef = BTSA1 /* TailscaleAPI.swift */; };
 		ATSM1 /* AppModel+Tailscale.swift in Sources */ = {isa = PBXBuildFile; fileRef = BTSM1 /* AppModel+Tailscale.swift */; };
 		ATSU1 /* TailscalePage.swift in Sources */ = {isa = PBXBuildFile; fileRef = BTSU1 /* TailscalePage.swift */; };
+		TRC1 /* TailnetRemnantCleaner.swift in Sources */ = {isa = PBXBuildFile; fileRef = TRC2 /* TailnetRemnantCleaner.swift */; };
+		TLAT1 /* TailscaleLatency.swift in Sources */ = {isa = PBXBuildFile; fileRef = TLAT2 /* TailscaleLatency.swift */; };
 		AMG3 /* AppMemoryGuard.swift in Sources */ = {isa = PBXBuildFile; fileRef = AMG4 /* AppMemoryGuard.swift */; };
 		AMP1 /* AppModel+Proxies.swift in Sources */ = {isa = PBXBuildFile; fileRef = AMP2 /* AppModel+Proxies.swift */; };
 		B1F3682AEF4F4C8AB5A97582 /* EngineControl.swift in Sources */ = {isa = PBXBuildFile; fileRef = 43A486CB7FAA4FBBAEBFCCE6 /* EngineControl.swift */; };
@@ -117,6 +119,8 @@
 		BTSA1 /* TailscaleAPI.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Sources/Model/TailscaleAPI.swift; sourceTree = SOURCE_ROOT; };
 		BTSM1 /* AppModel+Tailscale.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "Sources/Model/AppModel+Tailscale.swift"; sourceTree = SOURCE_ROOT; };
 		BTSU1 /* TailscalePage.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Sources/UI/Network/TailscalePage.swift; sourceTree = SOURCE_ROOT; };
+		TRC2 /* TailnetRemnantCleaner.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Sources/Model/TailnetRemnantCleaner.swift; sourceTree = SOURCE_ROOT; };
+		TLAT2 /* TailscaleLatency.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Sources/Model/TailscaleLatency.swift; sourceTree = SOURCE_ROOT; };
 		AMG4 /* AppMemoryGuard.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "Sources/Model/AppMemoryGuard.swift"; sourceTree = SOURCE_ROOT; };
 		AMP2 /* AppModel+Proxies.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "Sources/Model/AppModel+Proxies.swift"; sourceTree = SOURCE_ROOT; };
 		B001 /* ClashHaloApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ClashHaloApp.swift; sourceTree = "<group>"; };
@@ -214,6 +218,8 @@
 				BTSN1 /* TailscaleNode.swift */,
 				BTSA1 /* TailscaleAPI.swift */,
 				BTSM1 /* AppModel+Tailscale.swift */,
+				TRC2 /* TailnetRemnantCleaner.swift */,
+				TLAT2 /* TailscaleLatency.swift */,
 				9641FF3F733D4D03A5FC9B70 /* ConfigStore.swift */,
 				06A576D2F0DE48B7BA1A37D7 /* TrafficHistory.swift */,
 			);
@@ -409,6 +415,8 @@
 				ATSA1 /* TailscaleAPI.swift in Sources */,
 				ATSM1 /* AppModel+Tailscale.swift in Sources */,
 				ATSU1 /* TailscalePage.swift in Sources */,
+				TRC1 /* TailnetRemnantCleaner.swift in Sources */,
+				TLAT1 /* TailscaleLatency.swift in Sources */,
 				A006 /* Models.swift in Sources */,
 				KCH0 /* KeychainHelper.swift in Sources */,
 				ACX1 /* Coexistence.swift in Sources */,

@@ -114,7 +114,6 @@ add_suite yamlruleengine-tests \
   "$ROOT/Sources/Model/RuleNode.swift" \
   "$ROOT/Sources/Core/YamlEditor/YamlScalar.swift" \
   "$ROOT/Sources/Core/Hash.swift" \
-  "$ROOT/Sources/Model/TailscaleNode.swift" \
   "$ROOT/Sources/Core/YamlEditor/YamlRuleASTEngine.swift" \
   "$ROOT/Tests/YamlRuleEngine/main.swift"
 
@@ -147,12 +146,18 @@ add_suite coexprovenance-tests \
   "$ROOT/Sources/Model/CoexistenceProvenance.swift" \
   "$ROOT/Tests/CoexistenceProvenance/main.swift"
 
-# Tailscale 覆盖网段与节点解析。
-add_suite tailscale-tests \
-  "$ROOT/Sources/Core/YamlEditor/YamlScalar.swift" \
+# v1.6.0 移除内置 Tailnet 的存量清理器：fence（闭合/未闭合）、按名剥节点、
+# 规则与 ts:// 引用完整性、不误伤订阅自带节点、幂等。
+add_suite tailnetremnant-tests \
+  "$ROOT/Sources/Model/TailnetRemnantCleaner.swift" \
   "$ROOT/Sources/Core/Hash.swift" \
-  "$ROOT/Sources/Model/TailscaleNode.swift" \
-  "$ROOT/Tests/TailscaleOverlay/main.swift"
+  "$ROOT/Sources/Model/KeychainHelper.swift" \
+  "$ROOT/Tests/TailnetRemnantCleaner/main.swift"
+
+# 对等节点测速门控（迁自 tailscale-api-tests）。
+add_suite tailnetlatency-tests \
+  "$ROOT/Sources/Model/TailscaleLatency.swift" \
+  "$ROOT/Tests/TailscaleLatency/main.swift"
 
 # Keychain 持久化：ad-hoc 重签 / 重装后 Tailscale key 与订阅 URL 不得丢失。
 # 镜像目录 + 开放 ACL 是修复的两半；本套钉住镜像恢复路径（单元测试无法伪造
@@ -161,12 +166,6 @@ add_suite keychain-tests \
   "$ROOT/Sources/Core/Hash.swift" \
   "$ROOT/Sources/Model/KeychainHelper.swift" \
   "$ROOT/Tests/KeychainHelper/main.swift"
-
-# Tailscale API 设备列表解码 + 延迟测试语义分类。对等节点（无 exit-node）
-# 不得参与公网 URL 测速，否则会被永久标红。
-add_suite tailscale-api-tests \
-  "$ROOT/Sources/Model/TailscaleAPI.swift" \
-  "$ROOT/Tests/TailscaleAPI/main.swift"
 
 # 系统代理子系统：服务/设备配对解析（分支顺序回归）、目标服务选择（活性过滤
 # + 虚拟服务排除 + 无 2 服务上限 + 回退）、三态结果分类、-get*proxy 读回解析、
