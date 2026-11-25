@@ -5,7 +5,7 @@ import Security
 //
 // Compiles the production sources (KeychainHelper + Hash) directly — no
 // reimplementation. The bug under test is "ad-hoc re-sign / reinstall loses
-// Tailscale auth-key and subscription URLs". We cannot forge a second code-
+// subscription URLs". We cannot forge a second code-
 // signing identity from a unit test, so the suite pins the *mirror* path that
 // is the durable half of the fix, plus round-trip save/read/delete behaviour
 // against a disposable account namespace so a developer's real secrets are never
@@ -152,14 +152,6 @@ do {
     expect(KeychainHelper.read(key: key) == "first", "初值")
     _ = KeychainHelper.save(key: key, value: "second")
     expect(KeychainHelper.read(key: key) == "second", "覆盖后是新值")
-}
-
-section("maskTailscaleKey 展示形态")
-do {
-    let masked = maskTailscaleKey("tskey-auth-xxxxxBLOWUP")
-    expect(masked.contains("…"), "含省略号")
-    expect(!masked.contains("BLOW"), "中间被遮")
-    expect(maskTailscaleKey("short").allSatisfy { $0 == "•" }, "短串全遮")
 }
 
 print("\n\(checks - failures)/\(checks) 通过")

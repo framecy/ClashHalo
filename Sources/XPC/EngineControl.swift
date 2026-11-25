@@ -221,13 +221,6 @@ import SystemConfiguration
             forceTUNDisabled()   // TUN is runtime-only (root) — never auto-enable from disk
             injectMemoryOptimization()
         }
-        // Apply the tailscale overlay after all normalizers. The overlay must
-        // run here — not just in setConfig() — so that a cold start (kernel
-        // reads config.yaml directly) or a config.yaml recreated by the
-        // normalizers above includes the tailscale node when the user has it
-        // enabled. Without this, tsEnabled + warmUpTailscale() dials a node
-        // the kernel never loaded, and the feature silently does nothing.
-        applyTailscaleOverlay()
         return replacedSecret
     }
 
@@ -1613,9 +1606,6 @@ import SystemConfiguration
         do {
             hardenControllerConfig()   // ensure controller binds loopback + strong secret
             injectMemoryOptimization() // Apply kernel memory optimization settings
-            // C6：记录 overlay 注入（含写盘）结果，Tailscale 启用流程读它判定
-            // 「开关亮了但内核没节点」的假成功（TS-6）。
-            lastOverlayInjectionOK = applyTailscaleOverlay()
             // Reload 会让内核重读 config.yaml，而盘上 tun.enable 恒 false（TUN 是
             // 运行时 PATCH 能力）。旧实现在这里无条件 forceTUNDisabled()，等于
             // 每次 reload 都把运行中的 TUN 拆掉：30 s 健康巡检撞上接口消失窗口
@@ -1646,109 +1636,6 @@ import SystemConfiguration
         return (tun["enable"] as? Bool) ?? false
     }
 
-    // MARK: - Built-in tailnet node (mihomo `type: tailscale`)
-
-    /// Desired built-in tailnet node, owned by `AppModel` (which holds the user
-    /// intent and reads the auth key out of the Keychain). `nil` means the
-    /// feature is off and any previously injected node must be removed.
-    ///
-    /// This lives here rather than in the profile because the profile is
-    /// regenerated from the subscription on every switch/update, and
-    /// `PATCH /configs` cannot add proxies or rules. The node therefore has to
-    /// be re-applied to whatever YAML the profile pipeline just produced —
-    /// which is exactly what `setConfig` does, alongside the other three
-    /// runtime overrides that outrank profile content.
-    var tailscaleSettings: TailscaleSettings?
-
-    /// Warnings from the last overlay application, surfaced by the UI.
-    private(set) var tailscaleWarnings: [String] = []
-    /// True when the last application could not write the MagicDNS resolver
-    /// policy (no `dns:` block, or DNS disabled).
-    private(set) var tailscaleDNSSkipped = false
-    /// C6：最近一次 `setConfig` 中 overlay 注入（含写盘）是否成功。
-    /// Tailscale 启用流程（AppModel+Tailscale）读它判定启用成败；
-    /// 初值 true = 尚未有失败的注入记录。
-    private(set) var lastOverlayInjectionOK: Bool = true
-
-    /// Rewrite the on-disk config so it matches `tailscaleSettings`.
-    /// Idempotent: strips any previous injection first, so repeated calls and
-    /// changed settings never stack.
-    @discardableResult
-    func applyTailscaleOverlay() -> Bool {
-        let path = configFilePath
-        guard let text = try? String(contentsOfFile: path, encoding: .utf8) else { return false }
-
-        let updated: String
-        if let settings = tailscaleSettings {
-            let r = TailscaleOverlay.apply(to: text, settings: settings)
-            tailscaleWarnings = r.warnings
-            tailscaleDNSSkipped = r.dnsSkipped
-            guard r.injected else {
-                onLog?("内置 Tailnet 注入失败：" + r.warnings.joined(separator: "；"))
-                return false
-            }
-            updated = r.yaml
-        } else {
-            tailscaleWarnings = []
-            tailscaleDNSSkipped = false
-            updated = TailscaleOverlay.strip(text)
-        }
-
-        guard updated != text else { return true }
-        // writeConfig enforces atomic + 0600 (the file now carries an
-        // auth key; it already held subscription secrets).
-        // CFG-3：writeConfig 不 throw，旧 do/catch 是死代码——写失败被吞成
-        // return true。现在把失败如实返回（setConfig 记入 lastOverlayInjectionOK）。
-        guard writeConfig(updated, to: path) else {
-            onLog?("内置 Tailnet 写入配置失败：config.yaml 不可写（权限或磁盘空间）")
-            return false
-        }
-        return true
-    }
-
-    /// Does this kernel binary actually carry the tailscale outbound?
-    ///
-    /// Version comparison is not enough: the type is behind the
-    /// `with_gvisor && !no_tailscale` build tags, so a new-enough release built
-    /// without them parses `type: tailscale` as `unsupport proxy type`. Ask the
-    /// binary instead — `-t` on a throwaway home directory, which also keeps
-    /// the probe away from the real config and the real tsnet state.
-    func supportsTailscale() async -> Bool {
-        let bin = kernelPath
-        guard FileManager.default.fileExists(atPath: bin) else { return false }
-        return await withCheckedContinuation { (cont: CheckedContinuation<Bool, Never>) in
-            DispatchQueue.global().async {
-                let fm = FileManager.default
-                let dir = NSTemporaryDirectory() + "clashhalo-ts-probe-\(UUID().uuidString)"
-                defer { try? fm.removeItem(atPath: dir) }
-                guard (try? fm.createDirectory(atPath: dir,
-                                               withIntermediateDirectories: true)) != nil else {
-                    cont.resume(returning: false); return
-                }
-                let cfg = dir + "/config.yaml"
-                guard (try? TailscaleSupport.probeYAML().write(toFile: cfg,
-                                                               atomically: true,
-                                                               encoding: .utf8)) != nil else {
-                    cont.resume(returning: false); return
-                }
-                let p = Process()
-                p.executableURL = URL(fileURLWithPath: bin)
-                p.arguments = ["-d", dir, "-f", cfg, "-t"]
-                let pipe = Pipe(); p.standardOutput = pipe; p.standardError = pipe
-                do { try p.run() } catch { cont.resume(returning: false); return }
-                let data = pipe.fileHandleForReading.readDataToEndOfFile()
-                p.waitUntilExit()
-                let out = String(data: data, encoding: .utf8) ?? ""
-                cont.resume(returning: p.terminationStatus == 0
-                            && !TailscaleSupport.isUnsupportedOutput(out))
-            }
-        }
-    }
-
-    /// Absolute path of the tsnet state directory, for display and for reset.
-    /// Mirrors `TailscaleSettings.stateDir`, which is relative because mihomo
-    /// resolves it against this same home directory and rejects anything else.
-    var tailscaleStateDirPath: String { appSupport + "/" + TailscaleSettings.stateDir }
 
     /// 直连强制（P1-6）：stopKernel 的 shutdown 请求与 MihomoClient /
     /// KernelManager 同口径，走 `connectionProxyDictionary = [:]` 的 ephemeral
@@ -2643,10 +2530,9 @@ import SystemConfiguration
     }
 
     /// Single choke point for every config.yaml write: atomic replace + 0600.
-    /// The file carries the built-in tailnet node's auth-key in plain text when
-    /// that feature is enabled, so the 0600 promise must hold for every writer
-    /// (setTopLevelScalars, setTunEnabled, hardenControllerConfig, setConfig…),
-    /// not just applyTailscaleOverlay which used to chmod alone.
+    /// The file carries subscription secrets in plain text, so the 0600 promise
+    /// must hold for every writer (setTopLevelScalars, setTunEnabled,
+    /// hardenControllerConfig, setConfig…), not just the config editor.
     ///
     /// Also the single place where the write is audited. Before this, an
     /// unexplained change to the running config (e.g. an eight-key drift from the

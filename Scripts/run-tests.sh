@@ -159,7 +159,7 @@ add_suite tailnetlatency-tests \
   "$ROOT/Sources/Model/TailscaleLatency.swift" \
   "$ROOT/Tests/TailscaleLatency/main.swift"
 
-# Keychain 持久化：ad-hoc 重签 / 重装后 Tailscale key 与订阅 URL 不得丢失。
+# Keychain 持久化：ad-hoc 重签 / 重装后订阅 URL 不得丢失。
 # 镜像目录 + 开放 ACL 是修复的两半；本套钉住镜像恢复路径（单元测试无法伪造
 # 第二个 code-signing identity，所以 Keychain ACL 半边靠代码审阅保证）。
 add_suite keychain-tests \

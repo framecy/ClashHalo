@@ -69,7 +69,7 @@ extension AppModel {
         // TS-3：重建后对 peer-only Tailscale 节点重新分类（与 test() 同一判据）。
         // 无 exit node 时它们没有公网出口，URL 测试必红；旧实现每次 refresh 都把
         // -2 哨兵抹回 0，界面重新显示「未测试」，下一轮测试又把它们打红。
-        let exitNode = tsEnabled ? tsSettings.exitNode : ""
+        let exitNode = ""   // v1.6.0: 内置 Tailnet 已移除，App 侧不再有出口节点配置
         for (name, node) in ns
         where !TailscaleLatency.usesPublicURLTest(nodeType: node.type, exitNode: exitNode) {
             ns[name]?.delay = TailscaleLatency.peerOnlySentinel
@@ -159,7 +159,7 @@ extension AppModel {
         // fails without falling back to direct, painting the chip red forever.
         // Mark them with the peer-only sentinel and keep them out of the public
         // probe set. Exit-node tailscale still takes the regular URL test.
-        let exitNode = tsEnabled ? tsSettings.exitNode : ""
+        let exitNode = ""   // v1.6.0: 内置 Tailnet 已移除，App 侧不再有出口节点配置
         var peerOnly: [String] = []
 
         for name in names {

@@ -290,21 +290,3 @@ struct KeychainHelper {
         }
     }
 }
-
-// MARK: - Tailscale credential keys (Keychain account names)
-
-/// Keychain account names for Tailscale integration. Values themselves are
-/// stored via `KeychainHelper` under the existing `com.clashhalo.secrets`
-/// service — same mechanism as subscription URLs. Distinct accounts here so a
-/// subscription profile can never collide with a Tailscale auth key.
-let kTailscaleAuthKey  = "tailscale.authkey"
-let kTailscaleAPIToken = "tailscale.api.token"
-
-/// Mask a `tskey-…` string for display. `tskey-auth-xxxxxBLOWUP` → `tskey-auth-xxxxx…UP`.
-func maskTailscaleKey(_ s: String) -> String {
-    guard s.count > 10 else { return String(repeating: "•", count: s.count) }
-    let head = s.prefix(16)
-    let tail = s.suffix(2)
-    return "\(head)…\(tail)"
-}
-

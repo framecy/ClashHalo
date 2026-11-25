@@ -120,11 +120,6 @@ struct ToastPayload: Equatable {
 
 // MARK: - AppModel
 
-
-
-// TailscaleDevice lives in TailscaleAPI.swift so the device-list decoder can
-// be regression-tested without compiling the whole Models surface.
-
 // MARK: - Config profiles (multi-config management)
 
 struct Profile: Identifiable, Codable {

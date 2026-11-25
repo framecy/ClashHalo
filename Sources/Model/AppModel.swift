@@ -726,43 +726,6 @@ let kDirectExcludeAcceptedKey = "tun.directExclude.accepted"
     let launchedAt = Date()
     var lastInterface: String? = nil
 
-    // MARK: Built-in tailnet node (see AppModel+Tailscale.swift)
-
-    /// User intent, mirrored in `UserDefaults`. Like the gateway switch, this is
-    /// never inferred from config content: a leftover `type: tailscale` block in
-    /// someone's profile is not a request to join a tailnet.
-    @Published var tsEnabled = false
-    /// Everything except the auth key, which lives in the Keychain and is only
-    /// merged in when the overlay is rendered.
-    @Published var tsSettings = TailscaleSettings()
-    @Published var tsState: TailscaleSessionState = .disabled
-    /// nil = not probed yet. False = this kernel build has no tailscale outbound.
-    @Published var tsSupported: Bool?
-    /// Findings from the last overlay application plus environment conflicts.
-    @Published var tsWarnings: [String] = []
-    /// Live `/logs` subscription, open only while waiting for a login URL.
-    var tsLoginWatch: WSHandle?
-    var tsLoginDeadline: Date?
-    /// Log level to restore once the session watch stops. Set only when
-    /// `beginTailscaleSession` had to raise the kernel's log level (the user's
-    /// own setting can be `error`/`silent`, which would otherwise swallow every
-    /// tsnet message — including the login URL — before it reaches `/logs`).
-    /// nil means the level was already loud enough and nothing needs restoring.
-    var tsLogLevelToRestore: String?
-    /// Devices from the Tailscale control-plane API (optional API token).
-    @Published var tsDevices: [TailscaleDevice] = []
-    @Published var tsDevicesLoading = false
-    @Published var tsDevicesError: String?
-    /// This machine's own tailnet addresses. mihomo exposes no tsnet status
-    /// over REST, so these are resolved indirectly — see
-    /// `refreshTailscaleLocalAddress()` for the two sources and their order.
-    @Published var tsLocalIPs: [String] = []
-    /// Full MagicDNS name of this node when known (`host.tailXXXX.ts.net`).
-    @Published var tsLocalDNSName: String = ""
-    /// Rate-limit device refreshes so opening the page twice does not hammer
-    /// the API. Cleared when the token changes or the user hits refresh.
-    var tsDevicesFetchedAt: Date = .distantPast
-
     // Toast — single-slot, generation-guarded (see showToast).
     @Published var toast: ToastPayload?
     /// Cancels the previous auto-dismiss so rapid showToast calls don't wipe a newer message.
@@ -937,25 +900,19 @@ let kDirectExcludeAcceptedKey = "tun.directExclude.accepted"
         // co-resident proxy sharing the 198.18 fake-ip space is never taken for
         // ours (nor torn down as our residue). See `kPinnedTunDevice`.
         NetScanner.pinnedDeviceActive = pinnedTunDevice != nil
-        // Re-home any secret still sitting under a pre-fix Keychain ACL
-        // (code-signing-pinned) into the open-ACL + Application Support mirror
-        // form. This used to run synchronously on the main thread, which blocked
-        // startup indefinitely when the Keychain showed an authorization dialog
-        // for an item locked to a *previous* ad-hoc signing identity — the
-        // dialog can never be answered in a headless or background launch, so
-        // `SecItemCopyMatching` hung and the entire app stalled before
-        // `mark("prelude")`, leaving the window visible but `reachable=false`, no
-        // streams, no polling, and a frozen dashboard. Moved off the main thread:
-        // the result (re-saved secrets) is only needed on the *next* launch.
-        let migrationAccounts = [kTailscaleAuthKey, kTailscaleAPIToken]
-        Task.detached(priority: .utility) {
-            KeychainHelper.migrateKnownAccounts(migrationAccounts)
+        // v1.6.0：内置 Tailnet 已移除。这里做一次性存量清理（幂等）：
+        // config.yaml / profiles/*.yaml、Keychain、UserDefaults、tsnet 状态目录。
+        // 必须早于 ensureInstalled——后者会重写 config.yaml，而清理器要用
+        // `mihomo -t` 对清理后的真实文件自证（规则指向已删节点是 fatal）。
+        let tailnetReport = TailnetRemnantCleaner.run(
+            configPath: engine.configFilePath,
+            profilesDir: (engine.configFilePath as NSString).deletingLastPathComponent + "/profiles",
+            kernelPath: (engine.configFilePath as NSString).deletingLastPathComponent + "/bin/mihomo",
+            writeConfig: { engine.writeConfigFile($0, writer: "tailnetRemnantCleaner") }
+        )
+        if tailnetReport.ran {
+            logKernel("内置 Tailnet 残留清理：改文件 \(tailnetReport.changedFiles.count) 个，摘节点 \(tailnetReport.removedNodes.count) 个，凭据残留 \(tailnetReport.keychainResidue.count) 个；告警 \(tailnetReport.warnings.joined(separator: "；"))")
         }
-        // Hand the engine the built-in tailnet plan *before* anything can call
-        // setConfig. A subscription auto-update we did not initiate would
-        // otherwise rewrite config.yaml without the node, silently dropping a
-        // feature the user left enabled. Pure UserDefaults + Keychain reads.
-        loadTailscalePrefs()
         mark("prelude")
         let replacedSecret = engine.ensureInstalled()
         mark("ensureInstalled")
@@ -1037,6 +994,14 @@ let kDirectExcludeAcceptedKey = "tun.directExclude.accepted"
 
             if alive {
                 logKernel("启动探测：内核存活，同步状态…")
+                // 存量清理只改了盘；存活内核（上一会话的 root 内核，或崩溃后
+                // 遗留的进程）仍按旧配置跑：tsnet 节点继续拨号、ts:// 策略继续
+                // 劫持 ts.net。这里必须确定性重载，不能靠 api.reachable——它在
+                // 本次探测之前是初始化值，正是上面这段被跳过的地方。
+                if tailnetReport.configChanged {
+                    do { try await api.reloadConfig(path: engine.configFilePath) }
+                    catch { logKernel("按清理后配置重载内核失败：\(error.localizedDescription)") }
+                }
             } else if store.profiles.isEmpty {
                 // Nothing to run. `ensureInstalled()` has just recreated a
                 // factory config.yaml (it does that whenever the file is
@@ -1121,35 +1086,11 @@ let kDirectExcludeAcceptedKey = "tun.directExclude.accepted"
             // deliberately does not act during it.
             logKernel(String(format: "启动完成：App RSS %.0f MB", Double(Self.residentMemoryBytes()) / 1_000_000))
 
-            // tsnet is lazy: it only starts on the first dial. If the user had
-            // Tailscale enabled in a previous session, the proxy is in the config
-            // but the kernel is not running tsnet — nothing would ever dial it.
-            // Kick it now so the node registers with the control plane promptly.
-            // TS-MUX：但若系统 Tailscale 客户端正在运行，先自动回退
-            // （撤 overlay + 提示二选一），不再注册/预热节点。只装了 CLI
-            // 不算运行，内置节点照常预热。
-            if tsEnabled, await fallbackTailnetForSystemClient() {
-                // 回退已在 fallback 内完成（日志 + toast + overlay 已撤除）
-            } else if tsEnabled {
-                // ensureInstalled() wrote the overlay to config.yaml, but a
-                // warm-started kernel is still running the old config from
-                // before this launch. Check whether the kernel actually has
-                // the node; if not, reload so warmUpTailscale's dial reaches
-                // a proxy that exists.
-                let proxies = try? await api.fetchProxies()
-                let hasNode = proxies?.proxies.keys.contains(tsSettings.nodeName) ?? false
-                if !hasNode {
-                    logKernel("内置 Tailnet：内核缺少节点，正在重载配置…")
-                    // TS-MUX Nit：这条重载原来是裸调用，没过 busy 闸。用可
-                    // await 的对应物（withEngineBusy 是 fire-and-forget），
-                    // 免得 warmUpTailscale 在重载完成前就去拨尚未进内核的节点。
-                    _ = await awaitEngineIdle("内置 Tailnet 启动重载") {
-                        await self.reloadWithTailscaleOverlay()
-                    }
-                }
-                warmUpTailscale()
+            if !tailnetReport.keychainResidue.isEmpty {
+                showToast("内置 Tailnet 已移除；有 \(tailnetReport.keychainResidue.count) 项旧凭据未能删除，请在「密码与密钥」中手动清理", kind: .warn)
+            } else if tailnetReport.configChanged {
+                showToast("内置 Tailnet 已移除，旧节点/规则已清理；如需继续使用 tailnet 请安装系统 Tailscale 客户端", kind: .warn)
             }
-
             startNetworkMonitor()
             installSignalHandlers()
             observeSleepWake()
@@ -2066,18 +2007,6 @@ let kDirectExcludeAcceptedKey = "tun.directExclude.accepted"
                 // （系统代理恢复 / TUN 重建 / 网关体检），入睡后一律不再执行
                 // （2026-11-17 审查 P2：旧实现只在入口查一次 sleeping）。
                 guard !sleeping else { return }
-                // TS-MUX：系统客户端可能在 ClashHalo 常驻期间随时启动（开机
-                // 自启 / 用户手动 / 登录后才拉起），它创建 tailnet utun 本身就是
-                // 一次网络拓扑变化——正是这里的事件源。此刻复查 presence，兑现
-                // installedOnly 告警里「客户端启动后会自动停用」的承诺；此前
-                // 触发点只有启动与 TailscalePage 出现，常驻期间承诺落空，期间
-                // 共存层仍在为 100.64/10 让路、内置节点双输。getifaddrs + 最多
-                // 4 次 fileExists，廉价；fallback 幂等且自带 tsEnabled guard，
-                // 非 TS 用户零开销。
-                if tsEnabled, systemTailscaleClientRunning() {
-                    logKernel("网络变化：检测到系统 Tailscale 客户端已上线，自动停用内置 Tailnet（二者互斥）")
-                    await fallbackTailnetForSystemClient()
-                }
                 if api.reachable {
                     await refreshConfigs()
                     // Restore system proxy if it was auto-disabled by the offline handler

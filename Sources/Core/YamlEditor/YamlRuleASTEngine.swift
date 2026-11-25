@@ -117,17 +117,10 @@ public final class YamlRuleASTEngine {
         let lines = configLines(yaml)
         var rules: [RuleNode] = []
         var inRulesBlock = false
-        var inFence = false
         var sortIndex = 0
 
         for line in lines {
             let trimmed = line.trimmingCharacters(in: .whitespaces)
-            // App-managed fenced regions (Tailscale overlay) are opaque to the
-            // editor: never parsed into user nodes, so saving can neither
-            // reorder nor re-serialize them.
-            if trimmed == TailscaleOverlay.fenceBegin { inFence = true; continue }
-            if trimmed == TailscaleOverlay.fenceEnd { inFence = false; continue }
-            if inFence { continue }
 
             let isTopLevelKey = !line.hasPrefix(" ") && !line.hasPrefix("\t") && !trimmed.isEmpty && !trimmed.hasPrefix("-") && !trimmed.hasPrefix("#")
 
@@ -204,7 +197,7 @@ public final class YamlRuleASTEngine {
     }
 
     /// 删除 `rules:` 块内匹配 `type + match` 的行，其余字节原样保留
-    /// （含块内注释、空行与 Tailscale fence）。
+    /// （含块内注释与空行）。
     ///
     /// 判据复用 `parseLine`，保证「能删掉的」与规则页「能读出来的」是同一套理解，
     /// 不引入第二套 YAML 解析。
@@ -213,15 +206,9 @@ public final class YamlRuleASTEngine {
         var out: [String] = []
         out.reserveCapacity(lines.count)
         var inRulesBlock = false
-        var inFence = false
 
         for raw in lines {
             let trimmed = raw.trimmingCharacters(in: .whitespaces)
-            if trimmed == TailscaleOverlay.fenceBegin || trimmed == TailscaleOverlay.fenceEnd {
-                inFence = (trimmed == TailscaleOverlay.fenceBegin)
-                out.append(raw)
-                continue
-            }
             let isTopLevelKey = !raw.hasPrefix(" ") && !raw.hasPrefix("\t")
                 && !trimmed.isEmpty && !trimmed.hasPrefix("-") && !trimmed.hasPrefix("#")
             if isTopLevelKey {
@@ -229,7 +216,7 @@ public final class YamlRuleASTEngine {
                 out.append(raw)
                 continue
             }
-            if inRulesBlock, !inFence, let node = parseLine(raw),
+            if inRulesBlock, let node = parseLine(raw),
                node.type == type, node.match == match {
                 continue  // 丢弃这一条同匹配规则；注释与空行不受影响
             }
@@ -248,7 +235,6 @@ public final class YamlRuleASTEngine {
     /// 语义：
     /// - 注释/空行按「它后面紧邻的那条规则」归属；规则被删除时，注释转交给原本紧随
     ///   其后的存活规则，末尾无处可去则留在块尾——**任何情况下注释都不丢**。
-    /// - Tailscale fence 区整段视为不透明内容，原样保留（与 `injectRules` 一致）。
     /// - 未改动的规则沿用原始行文本（缩进、行尾写法逐字节不变）。因此「打开规则页
     ///   不做任何修改直接保存」得到的文件与原文件完全一致。
     public static func injectRulesPreservingComments(_ nodes: [RuleNode],
@@ -261,26 +247,10 @@ public final class YamlRuleASTEngine {
         var inRulesBlock = false
         var rulesKeyLine: String? = nil
         var rows: [BlockRow] = []
-        var fenceBuffer: [String]? = nil
         var blockDone = false
 
         for raw in lines {
             let trimmed = raw.trimmingCharacters(in: .whitespaces)
-
-            // fence 区整段不透明：块内进 rows，块外原样输出。
-            if trimmed == TailscaleOverlay.fenceBegin {
-                fenceBuffer = [raw]
-                continue
-            }
-            if fenceBuffer != nil {
-                fenceBuffer?.append(raw)
-                if trimmed == TailscaleOverlay.fenceEnd {
-                    let block = (fenceBuffer ?? []).joined(separator: "\n")
-                    fenceBuffer = nil
-                    if inRulesBlock { rows.append(.plain(block)) } else { out.append(block) }
-                }
-                continue
-            }
 
             let isTopLevelKey = !raw.hasPrefix(" ") && !raw.hasPrefix("\t")
                 && !trimmed.isEmpty && !trimmed.hasPrefix("-") && !trimmed.hasPrefix("#")
@@ -330,7 +300,6 @@ public final class YamlRuleASTEngine {
         if inRulesBlock, !blockDone {
             out.append(contentsOf: renderBlock(nodes: nodes, loadedNodes: loadedNodes, rows: rows))
         }
-        if let leftover = fenceBuffer { out.append(contentsOf: leftover) }
 
         // 没有 rules 块：末尾补建（与 injectRules 的兜底一致）。
         if rulesKeyLine == nil {
@@ -343,7 +312,7 @@ public final class YamlRuleASTEngine {
 
     /// 块内一行的归类。
     private enum BlockRow {
-        /// 注释、空行，或整段 fence（可能含换行，原样输出）。
+        /// 注释或空行（原样输出）。
         case plain(String)
         /// 一条规则行；`id` 是 `load()` 时对应节点的 id。
         case rule(id: UUID, raw: String)
@@ -421,26 +390,10 @@ public final class YamlRuleASTEngine {
         var newLines: [String] = []
 
         var inRulesBlock = false
-        var inFence = false
         var rulesInjected = false
 
         for line in lines {
             let trimmed = line.trimmingCharacters(in: .whitespaces)
-
-            // Fenced overlay regions inside the rules block must survive
-            // editing verbatim — dropping them (the old behavior) broke the
-            // overlay's strip∘apply idempotence and left injected rules
-            // duplicated and unremovable. Outside the rules block the generic
-            // pass-through below already keeps them.
-            if trimmed == TailscaleOverlay.fenceBegin || trimmed == TailscaleOverlay.fenceEnd {
-                inFence = (trimmed == TailscaleOverlay.fenceBegin)
-                if inRulesBlock { newLines.append(line) }
-                continue
-            }
-            if inFence {
-                if inRulesBlock { newLines.append(line) }
-                continue
-            }
 
             let isTopLevelKey = !line.hasPrefix(" ") && !line.hasPrefix("\t") && !trimmed.isEmpty && !trimmed.hasPrefix("-") && !trimmed.hasPrefix("#")
 
@@ -465,8 +418,7 @@ public final class YamlRuleASTEngine {
             if !inRulesBlock {
                 newLines.append(line)
             }
-            // 如果在 rules 块内，丢弃原来的子行（我们已经按节点列表重新序列化；
-            // fence 区已在上方原样保留）
+            // 如果在 rules 块内，丢弃原来的子行（我们已经按节点列表重新序列化）
         }
         
         // 如果原文件没有 rules: 块，则在末尾追加

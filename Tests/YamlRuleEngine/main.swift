@@ -2,8 +2,8 @@
 //
 // A1 旧版在任意 `#` 处截断——值含 `#` 的规则在编辑器里凭空消失，
 //    保存即从 config.yaml 物理删除。
-// A2 旧版丢弃 rules 块内全部注释行——打断 Tailscale overlay 的
-//    strip∘apply 幂等（fence 失效 → 重复注入 → 关闭功能清不干净）。
+// A2 旧版丢弃 rules 块内全部注释行——用户手写的证据链（「某域名被墙」）
+//    点一次保存就消失；注释行也不得被当成规则节点。
 import Foundation
 
 var failed = 0
@@ -29,49 +29,28 @@ if let n = node {
           "序列化→反序列化往返保留 # 值")
 }
 
-// ── A2: fence 区（overlay 托管）原样保留 ──
-let fenceBegin = TailscaleOverlay.fenceBegin
-let fenceEnd = TailscaleOverlay.fenceEnd
+// ── A2: rules 块内注释不是规则，且编辑后不丢失 ──
 let yaml = """
 port: 7890
 rules:
-  \(fenceBegin)
-  - DOMAIN-SUFFIX,ts.net,CLASHHALO-TS
-  - IP-CIDR,100.64.0.0/10,CLASHHALO-TS,no-resolve
-  \(fenceEnd)
+  # 证据注释：2026-08 实测该域名被墙
   - DOMAIN-SUFFIX,example.com,DIRECT
   - MATCH,DIRECT
 """
 
 let nodes = YamlRuleASTEngine.extractRules(from: yaml)
-check(nodes.count == 2, "fence 内 overlay 规则不进编辑器节点（仅 2 条用户规则）")
-check(!nodes.contains { $0.match.contains("ts.net") || $0.match.contains("100.64") },
-      "overlay 规则不出现在可编辑列表")
-
-func fencedRegion(_ text: String) -> [String] {
-    var out: [String] = []
-    var inside = false
-    for l in text.components(separatedBy: "\n") {
-        let t = l.trimmingCharacters(in: .whitespaces)
-        if t == fenceBegin { inside = true; continue }
-        if t == fenceEnd { inside = false; continue }
-        if inside { out.append(t) }
-    }
-    return out
-}
+check(nodes.count == 2, "注释行不进编辑器节点（仅 2 条规则）")
+check(!nodes.contains { $0.match.contains("#") }, "注释不被当成规则")
 
 let edited = (try? YamlRuleASTEngine.injectRules(nodes, into: yaml)) ?? ""
 check(!edited.isEmpty, "injectRules 成功")
-check(edited.contains(fenceBegin) && edited.contains(fenceEnd), "fence 标记在注入后保留")
-check(fencedRegion(edited) == fencedRegion(yaml), "fence 区内容逐行保序不变")
 check(edited.contains("- DOMAIN-SUFFIX,example.com,DIRECT"), "用户规则正常重序列化")
 
-// 编辑器增删用户规则不影响 fence 区
+// 编辑器增删用户规则生效
 var mutated = nodes
 mutated.removeLast()
 mutated.insert(RuleNode(type: .domain, match: "added.example", action: .direct, sort: 0, isEnabled: true, proxyGroup: nil), at: 0)
 let edited2 = (try? YamlRuleASTEngine.injectRules(mutated, into: yaml)) ?? ""
-check(fencedRegion(edited2) == fencedRegion(yaml), "编辑用户规则后 fence 区仍不变")
 check(edited2.contains("added.example") && !edited2.contains("MATCH,DIRECT"),
       "用户规则增删生效")
 
@@ -93,9 +72,6 @@ rules:
   - DOMAIN-SUFFIX,keep.example,DIRECT
 
   - DOMAIN-SUFFIX,replace.example,油管视频
-  \(fenceBegin)
-  - DOMAIN-SUFFIX,ts.net,CLASHHALO-TS
-  \(fenceEnd)
   - MATCH,兜底流量
 """
 let inserted = YamlRuleASTEngine.insertRuleLine("- DOMAIN-SUFFIX,new.example,REJECT", into: commented)
@@ -106,7 +82,6 @@ if let ins = inserted {
     let lines = ins.components(separatedBy: "\n")
     let rulesIdx = lines.firstIndex(of: "rules:") ?? -1
     check(lines[rulesIdx + 1] == "  - DOMAIN-SUFFIX,new.example,REJECT", "新规则插在 rules: 之后第一行")
-    check(fencedRegion(ins) == fencedRegion(commented), "fence 区不受影响")
     let reNodes = YamlRuleASTEngine.extractRules(from: ins)
     check(reNodes.first?.match == "new.example", "回读首条即新规则")
     check(reNodes.firstIndex { $0.type == .match }! == reNodes.count - 1, "MATCH 仍在最后")
@@ -116,7 +91,6 @@ let removed = YamlRuleASTEngine.removeRuleLines(type: .domainSuffix, match: "rep
 check(!removed.contains("replace.example"), "目标规则被删除")
 check(removed.contains("# 证据注释"), "删除规则不动注释")
 check(removed.contains("kept") == false && removed.contains("keep.example"), "其它规则不受影响")
-check(fencedRegion(removed) == fencedRegion(commented), "删除规则不动 fence 区")
 check(YamlRuleASTEngine.removeRuleLines(type: .domainSuffix, match: "nope.example", from: commented) == commented,
       "无匹配时不改动任何字节")
 
