@@ -2,7 +2,7 @@
 
 本文件给后续 AI 编码代理使用。进入本仓库后，先读本文件，再按需读 `README.md`、`CHANGELOG.md` 和相关源码。
 
-当前主干：`main`，产品版本 **v1.5.4**（`MARKETING_VERSION`，与 `Sources/Info.plist` 的 `CFBundleShortVersionString` 同源），Helper **1.0.35**（`kSharedHelperVersion`，`Helper-Info.plist` 的 `CFBundleVersion` 同值）。当前构建号 **151**（`CURRENT_PROJECT_VERSION`，`make.sh` 每次打包自增）。
+当前主干：`main`，产品版本 **v1.6.0**（`MARKETING_VERSION`，与 `Sources/Info.plist` 的 `CFBundleShortVersionString` 同源），Helper **1.0.35**（`kSharedHelperVersion`，`Helper-Info.plist` 的 `CFBundleVersion` 同值）。当前构建号 **152**（`CURRENT_PROJECT_VERSION`，`make.sh` 每次打包自增）。
 
 ## 项目概览
 
@@ -98,7 +98,6 @@ bash Scripts/audit.sh                    # 独立审查：隐私（全历史身�
 - `AppModel` 是 `@MainActor`；UI 状态更新留在主 actor
 - `AppModel.swift` 只放共享状态与生命周期；新业务优先进现有扩展文件
 - 用户触发的长耗时内核操作走 `withEngineBusy` / `engine.isBusy` 串行化；调用方必须等待结果的路径（互斥回退、启动重载）用 `awaitEngineIdle`——`withEngineBusy` 是 fire-and-forget，busy 时直接丢 body
-- **内置 Tailnet 与系统 Tailscale 客户端互斥的唯一判定入口是 `systemTailscalePresence()`**（`AppModel+Tailscale.swift`，三态 none / installedOnly / running）：`running` 要求「`.tailscale` 接口在位且 isUp **且** 本机确有安装」——`.tailscale` 判据只是 RFC 6598 CGNAT 网段（100.64/10），只看网段会把 Cloudflare WARP 等同段 VPN 假阳成「运行中」，而回退会持久化 `tsEnabled=false` 并拦住重开。回退（`fallbackTailnetForSystemClient`）与开启闸只在 `.running` 触发；只装 CLI/App 而未运行（`.installedOnly`）不动用户开关；常驻期间客户端中途启动由 `handleNetworkChange` 的 presence 复查覆盖。overlay 注入/撤除统一走 `reloadWithTailscaleOverlay()`，撤除未确认（内核忙超时/重载失败）时 30s×3 自动重试剥除——残留的 `ts://Tailnet` DNS 策略与 100.64/10 规则会劫持系统客户端的 ts.net 流量，禁止 fire-and-forget 撤除
 - **自动 teardown 例外**：`verifyTUNConfig` 与 `refreshConfigs` 的 TUN 自愈路径必须**手工**持有 `engine.isBusy` + `tunAutoTeardownInFlight`，并用 `defer` 单点复位；不要用 `withEngineBusy`（fire-and-forget 会在 teardown 完成前过早放行用户 toggle）
 - 任何 `engine.isBusy = true` 后的 `await` 路径都必须 `defer { engine.isBusy = false }`，防止 `CancellationError` 把锁永久卡死（见 `handleNetworkChange`）
 - `MihomoClient.applyController(fromConfigAt:)` 从当前 `config.yaml` 发现 controller；不要硬编码 `127.0.0.1:9092`

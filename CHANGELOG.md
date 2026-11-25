@@ -4,6 +4,22 @@
 
 ## [Unreleased]
 
+## [1.6.0] - 2026-11-25
+
+### Removed
+- 移除内置 Tailnet（内嵌 tsnet / `type: tailscale` 出站、Tailnet 页、TS-MUX 互斥）。
+  升级时自动清理旧版本写入的节点、规则、`ts://` DNS 策略、Keychain 凭据、
+  UserDefaults 开关与 tsnet 状态目录；如需继续使用请安装系统 Tailscale 客户端。
+
+### Fixed
+- 存量配置里若残留指向已删节点的规则，mihomo 会 fatal 退出；清理器先保证引用
+  完整性再写盘，并用 `mihomo -t` 自证，失败回滚。
+- `nameserver-policy` 条目值为空会让 mihomo panic；清理时连条目键一起删除。
+
+### 验证
+- Debug/Release 构建通过；36 套回归全绿（tailnetremnant 40 断言、tailnetlatency 6）。
+- 未覆盖：真机覆盖升级、DMG 打包、真实 tsnet 会话下 ts.net 的即时断开。
+
 ## [1.5.4] - 2026-11-24
 
 ### Added

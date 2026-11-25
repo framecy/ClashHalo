@@ -56,7 +56,7 @@ ClashHalo 在**系统正确性**上已经比对标产品更深：DNS 重定向�
 
 ### 2.2 ClashHalo 现状（逐条核实过的）
 
-- 侧栏 10 个路由：仪表盘 / 连接 / 日志 / 代理节点 / 规则 / 订阅 / 配置 / 网络（6 个 tab：入站·TUN·DNS·嗅探·Tailnet·内核）/ 网络拓扑 / 设置（`Sources/App/ContentView.swift`、`NetworkHubPage`）
+- 侧栏 10 个路由：仪表盘 / 连接 / 日志 / 代理节点 / 规则 / 订阅 / 配置 / 网络（5 个 tab：入站·TUN·DNS·嗅探·内核）/ 网络拓扑 / 设置（`Sources/App/ContentView.swift`、`NetworkHubPage`）
 - 连接页 3 个视图（连接中 / 已关闭 / 聚合），表列 = 目标 / 进程 / 规则 / 链路 / ↓ / ↑；右键只有「添加/修改分流规则…」→ 打开规则表单
 - 连接详情是扁平 Grid：ID / 域名 / IP / 源 IP / 网络 / 进程 / 规则 / 策略 / 节点 / 上下行 / 时间（`ConnDetailCard`）
 - 局域网设备卡片只有 IP + 连接数 + 速率 + 时长（`GatewayDevice`，`Sources/Model/Models.swift`）
