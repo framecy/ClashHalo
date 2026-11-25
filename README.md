@@ -1,6 +1,6 @@
 # ClashHalo
 
-> macOS 14+ 原生 SwiftUI 代理客户端，直接编排官方 `mihomo` (Clash.Meta) 内核。当前版本 **v1.5.3**。
+> macOS 14+ 原生 SwiftUI 代理客户端，直接编排官方 `mihomo` (Clash.Meta) 内核。当前版本 **v1.5.4**。
 
 ClashHalo 采用纯 Swift 的原生编排器架构：应用层负责界面与状态管理，独立签名的 Helper 处理特权操作，内核层直接驱动 `mihomo`。目标很明确，少一层中间件，少一层不稳定性。
 
@@ -19,6 +19,9 @@ ClashHalo 采用纯 Swift 的原生编排器架构：应用层负责界面与状
 - **局域网网关**
   - 将 Mac 变成局域网网关和 DNS 接管点。
   - 适合旁路由、家庭设备统一接管场景。
+- **内置 Tailnet 节点**
+  - 无需系统客户端，经 mihomo 内嵌 tsnet 直接接入 Tailscale 网络。
+  - 与系统 Tailscale 客户端互斥：检测到系统客户端运行时自动停用内置节点。
 - **网络面板**
   - 内建 Zashboard 外部面板接入。
   - 支持内核面板与运行状态查看。

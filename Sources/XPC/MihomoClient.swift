@@ -194,7 +194,12 @@ private struct SafeDecoder: @unchecked Sendable {
     /// (e.g. a bad proxy-group reference) instead of silently "succeeding".
     func reloadConfig(path: String) async throws {
         let data = try JSONSerialization.data(withJSONObject: ["path": path])
-        guard let req = request("/configs?force=true", method: "PUT", body: data) else { throw MihomoError.badURL }
+        guard var req = request("/configs?force=true", method: "PUT", body: data) else { throw MihomoError.badURL }
+        // Force-reload may synchronously download geodata / rule-providers referenced by
+        // the new profile. The shared 6s timeout (request(_:)) is far too short for that
+        // and turns a slow first load into a false "apply failed" + rollback. Match the
+        // 60s budget used by updateProvider(_:), which waits on the same kind of fetch.
+        req.timeoutInterval = 60
         let (respData, resp) = try await session.data(for: req)
         if let h = resp as? HTTPURLResponse, h.statusCode >= 400 {
             let msg = (try? JSONSerialization.jsonObject(with: respData) as? [String: Any])?["message"] as? String

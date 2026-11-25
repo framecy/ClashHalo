@@ -118,6 +118,17 @@ enum TailscaleName {
         return cleaned
     }
 
+    /// Exit nodes must be tailnet device names. Reserved policy targets
+    /// (`DIRECT` / `REJECT` / …) are not devices: mihomo rejects them at
+    /// every start with `invalid value "DIRECT" for --exit-node`. Callers
+    /// must drop them from the render and surface a warning instead of
+    /// writing them into the kernel config.
+    static let reservedPolicyNames: Set<String> = ["DIRECT", "REJECT", "REJECT-DROP", "PASS"]
+
+    static func isReservedPolicy(_ name: String) -> Bool {
+        reservedPolicyNames.contains(name.uppercased())
+    }
+
     /// mihomo normalizes the hostname to lowercase; DNS labels only.
     static func sanitizeHostname(_ raw: String) -> String {
         let allowed = CharacterSet(charactersIn: "abcdefghijklmnopqrstuvwxyz0123456789-")
@@ -208,6 +219,12 @@ enum TailscaleOverlay {
                           injected: false)
         }
 
+        // TS-EXIT：保留策略名不是 tailnet 设备，警告而不是照渲染。
+        if !settings.exitNode.isEmpty, TailscaleName.isReservedPolicy(settings.exitNode) {
+            warnings.append("出口节点 \"\(settings.exitNode)\" 是保留策略名，不是 tailnet 设备，"
+                            + "已忽略（请在设备列表选择真实节点）")
+        }
+
         // 1. proxies
         guard let afterProxies = insertIntoSequence(
             &lines, key: "proxies", entries: [proxyEntry(settings)]
@@ -266,8 +283,13 @@ enum TailscaleOverlay {
         if s.ephemeral { kv.append("ephemeral: true") }
         if !s.dialerProxy.isEmpty { kv.append("dialer-proxy: \(quoted(s.dialerProxy))") }
         if s.preferIPv6 { kv.append("ip-version: ipv6-prefer") }
-        if !s.exitNode.isEmpty {
-            kv.append("exit-node: \(quoted(s.exitNode))")
+        // TS-EXIT：exit node 必须是 tailnet 设备名。保留策略名（DIRECT/REJECT…）
+        // 不是设备——写进 --exit-node 内核每次启动必报 invalid value
+        // （2026-11-23 实机 plist 里 exitNode="DIRECT"，每次启动报错）。在这里
+        // 静默丢弃；带原因的 warning 由 apply() 统一给出。
+        let exitNode = TailscaleName.isReservedPolicy(s.exitNode) ? "" : s.exitNode
+        if !exitNode.isEmpty {
+            kv.append("exit-node: \(quoted(exitNode))")
             // Only meaningful with an exit node; omit otherwise so the kernel
             // does not carry a dead preference.
             kv.append("exit-node-allow-lan-access: \(s.exitNodeAllowLANAccess)")

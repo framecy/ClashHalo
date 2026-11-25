@@ -324,6 +324,17 @@ import SystemConfiguration
         }
     }
 
+    /// Read the `tun.device` pin currently on disk, if any (line scan, same
+    /// conventions as `setTunEnabled`). Profiles don't carry the pin, so
+    /// `setConfig` captures it before overwriting the file and feeds it back
+    /// through `persistTunState` when a reload has to keep TUN alive.
+    func tunDevicePin() -> String? {
+        guard let text = try? String(contentsOfFile: configFilePath, encoding: .utf8) else { return nil }
+        // 与全项目共用同一套行扫描/标量口径（引号、行尾注释）：
+        // YamlScalar.nestedScalar 有独立回归套件 tundevicepin-tests。
+        return YamlScalar.nestedScalar(in: text, block: "tun", key: "device")
+    }
+
     /// Combined size of both kernel stdout/stderr sinks. The log-storm
     /// watchdog samples this on a fixed cadence and reacts to the growth
     /// rate — an error loop inside the kernel is the one symptom that cannot
@@ -1588,6 +1599,12 @@ import SystemConfiguration
 
     func setConfig(_ yaml: String) async -> (ok: Bool, error: String?) {
         let path = configFilePath
+        // The pinned utun name lives in the file, but profiles don't carry it.
+        // Capture it before the write below overwrites the file: a reload that
+        // restores `tun.enable` without the pin brings the tunnel back on a
+        // kernel-assigned utun while the health check still accepts only the
+        // pinned name — see `persistTunState` for the teardown loop that causes.
+        let previousTunDevice = tunDevicePin()
         // CFG-3：写盘失败必须传播。旧实现忽略 writeConfig 的 Bool，磁盘满/权限
         // 坏时照样 reload 旧文件并报「已切换」——假成功。
         guard writeConfig(yaml, to: path) else {
@@ -1595,16 +1612,38 @@ import SystemConfiguration
         }
         do {
             hardenControllerConfig()   // ensure controller binds loopback + strong secret
-            forceTUNDisabled()         // TUN is runtime-only — don't let a profile auto-enable it
             injectMemoryOptimization() // Apply kernel memory optimization settings
             // C6：记录 overlay 注入（含写盘）结果，Tailscale 启用流程读它判定
             // 「开关亮了但内核没节点」的假成功（TS-6）。
             lastOverlayInjectionOK = applyTailscaleOverlay()
+            // Reload 会让内核重读 config.yaml，而盘上 tun.enable 恒 false（TUN 是
+            // 运行时 PATCH 能力）。旧实现在这里无条件 forceTUNDisabled()，等于
+            // 每次 reload 都把运行中的 TUN 拆掉：30 s 健康巡检撞上接口消失窗口
+            // 判「接口丢失」→ 自动关 → 网络变化又自动开，形成闪烁循环——即
+            // `persistTunState` 注释记载的 Gateway 同款事故，Tailnet 的 reload
+            // 路径当时漏掉了同一模式。现在先问内核：TUN 在跑就按 enable + pin
+            // 原样写回，让 reload 在同一接口上带回隧道；内核不可达或 TUN 本来
+            // 没开才保持 false——“不让 profile 自动带起 TUN”的原语义不变。
+            if await runtimeTunEnabled() {
+                persistTunState(enabled: true, device: previousTunDevice)
+            } else {
+                forceTUNDisabled()     // TUN is runtime-only — don't let a profile auto-enable it
+            }
             try await api.reloadConfig(path: path)
             return (true, nil)
         } catch {
             return (false, error.localizedDescription)
         }
+    }
+
+    /// Live runtime `tun.enable` straight from the kernel (`GET /configs`).
+    /// Used by `setConfig` to decide whether a reload must preserve a running
+    /// TUN. False when the kernel is unreachable — that also means "no TUN
+    /// to preserve".
+    private func runtimeTunEnabled() async -> Bool {
+        guard let cfg = try? await api.fetchConfigs() else { return false }
+        guard let tun = cfg["tun"] as? [String: Any] else { return false }
+        return (tun["enable"] as? Bool) ?? false
     }
 
     // MARK: - Built-in tailnet node (mihomo `type: tailscale`)

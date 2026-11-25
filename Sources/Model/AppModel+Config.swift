@@ -710,6 +710,38 @@ extension AppModel {
         return true
     }
 
+    /// Awaitable counterpart of `withEngineBusy` for the few paths that must
+    /// finish before the caller continues (startup reload, mutual-exclusion
+    /// rollback). `withEngineBusy` is fire-and-forget: it drops the body when
+    /// the engine is busy, which is fine for user toggles but not for a state
+    /// rollback — the state would say "off" while the running kernel still
+    /// carried the removed overlay, with no further config write to clean it.
+    ///
+    /// Waits up to `timeout` for the current operation to release the lock,
+    /// then holds `engine.isBusy` itself with a single `defer` reset — the same
+    /// manual-flag pattern explicitly allowed for awaited TUN auto-teardown
+    /// paths. Fire-and-forget callers must keep using `withEngineBusy`.
+    /// Returns nil (and logs) if the wait timed out.
+    func awaitEngineIdle<T>(_ label: String = "操作", timeout: TimeInterval = 60,
+                            _ body: () async -> T) async -> T? {
+        let deadline = Date().addingTimeInterval(timeout)
+        while engine.isBusy {
+            if Task.isCancelled {
+                logKernel("\(label)：等待内核空闲时任务被取消，操作未执行")
+                return nil
+            }
+            if Date() >= deadline {
+                logKernel("\(label)：等待内核空闲超时（\(Int(timeout)) s），操作未执行")
+                return nil
+            }
+            try? await Task.sleep(nanoseconds: 100_000_000)
+        }
+        engine.isBusy = true
+        engine.busyStep = label
+        defer { engine.isBusy = false }
+        return await body()
+    }
+
     /// Run a kernel restart (or any window where the mixed-port stops
     /// listening) with the system proxy suspended, restoring it only once the
     /// kernel answers again.

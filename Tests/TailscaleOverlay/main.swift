@@ -329,6 +329,19 @@ do {
            "no exit-node key when unset")
     expect(TailscaleOverlay.proxyEntry(settings { $0.exitNode = "auto:any" })
         .contains("exit-node: \"auto:any\""), "exit-node rendered when set")
+    // TS-EXIT：保留策略名不是 tailnet 设备——渲染层丢弃，apply 层告警。
+    expect(!TailscaleOverlay.proxyEntry(settings { $0.exitNode = "DIRECT" })
+        .contains("exit-node"),
+           "reserved policy name DIRECT is dropped from the render (invalid for --exit-node)")
+    expect(!TailscaleOverlay.proxyEntry(settings { $0.exitNode = "REJECT" })
+        .contains("exit-node-allow-lan-access"),
+           "reserved exit node does not drag exit-node-allow-lan-access along")
+    do {
+        let r = TailscaleOverlay.apply(to: colZero, settings: settings { $0.exitNode = "DIRECT" })
+        expect(r.injected, "apply still injects the node when the exit node is reserved")
+        expect(r.warnings.contains { $0.contains("保留策略名") },
+               "apply warns about the ignored reserved exit node")
+    }
 }
 
 // MARK: - Log parsing

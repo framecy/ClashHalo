@@ -487,6 +487,15 @@ struct MenuBarPanel: View {
     @Environment(\.openWindow) private var openWindow
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
+    /// MBP-1：滚动区内容的真实布局高度，驱动 ScrollView 的显式 frame。
+    /// 初值取中位（320），首帧后立即被 PreferenceKey 实测值替换。
+    @State private var contentHeight: CGFloat = 320
+
+    private struct MBPContentHeight: PreferenceKey {
+        static var defaultValue: CGFloat = 0
+        static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) { value = max(value, nextValue()) }
+    }
+
     var body: some View {
         VStack(alignment: .leading, spacing: DS.Spacing.s) {
             // Header + inline status (serves as toast surface when the main window is hidden)
@@ -500,7 +509,7 @@ struct MenuBarPanel: View {
                             Text(toast.text)
                                 .font(.dsBody)
                                 .foregroundColor(.secondary)
-                                .lineLimit(2)
+                                .lineLimit(1)
                         }
                     } else {
                         let connecting = M.engine.isBusy && !M.reachable
@@ -521,6 +530,14 @@ struct MenuBarPanel: View {
             // UI-12：中部包 ScrollView——20 组 + 10 配置时内容远超屏幕高度，
             // 旧实现没有滚动容器，底部「退出」键不可达。头部（toast 面）与
             // 底部动作行固定在滚动区外，任何内容长度下都可见可点。
+            //
+            // MBP-1（macOS 27 实测回归）：MenuBarExtra(.window) 的窗口尺寸协商
+            // 对 ScrollView 不取 ideal 高度——面板坍缩成 header+footer 的
+            // 110pt 空壳、中部 0 高（v1.5.0 a8c267a 引入滚动容器后出现；
+            // v1.4.2 纯 VStack 无此路径；fixedSize 申报 ideal 高度实测无效，
+            // 27.2.1 的协商压根不读它）。改为 PreferenceKey 显式测量内容高度
+            // 驱动 ScrollView frame：短内容 = 原生 VStack 式自适应，
+            // 超过 560 封顶转滚动；160 是测量失败时的地板值。
             ScrollView {
                 VStack(alignment: .leading, spacing: DS.Spacing.s) {
             // Switches card
@@ -650,8 +667,16 @@ struct MenuBarPanel: View {
                           isOn: Binding(get: { M.showDock }, set: { M.setShowDock($0) }))
             }
                 }
+                .background(
+                    GeometryReader { geo in
+                        Color.clear.preference(key: MBPContentHeight.self, value: geo.size.height)
+                    }
+                )
             }
-            .frame(maxHeight: DS.Layout.menuBarPanelMaxHeight)
+            .frame(height: min(max(contentHeight, 160), DS.Layout.menuBarPanelMaxHeight))
+            .onPreferenceChange(MBPContentHeight.self) { h in
+                if h > 0 { contentHeight = h }
+            }
 
             Divider().padding(.vertical, DS.Spacing.xs)
             // Action row — open the external Zashboard panel / quit

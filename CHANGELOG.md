@@ -4,6 +4,26 @@
 
 ## [Unreleased]
 
+## [1.5.4] - 2026-11-24
+
+### Added
+
+- **内置 Tailnet 与系统 Tailscale 客户端互斥**：检测系统客户端安装/运行状态——客户端**正在运行**（tailnet utun 在位且本机确有安装）时自动停用内置节点并从运行配置撤除 overlay（`ts://Tailnet` DNS 策略与 100.64/10 规则），开启入口同步拦截；**只装了 CLI/App 而未运行**不影响内置节点使用，仅在客户端启动后自动让路。
+
+### Fixed
+
+- **内置 Tailnet 与系统 Tailscale 客户端的互斥逻辑**（2026-11-24 二轮审查三项 Important）：①自动回退的 overlay 撤除改为可等待路径（`awaitEngineIdle`，有界等锁 + 真正 await 重载）；撤除未确认（内核忙超时 / 重载失败）不再静默假成功——如实提示并自动重试剥除（30s×3），残留的 `ts://Tailnet` DNS 策略与 100.64/10 规则不再长期劫持刚启动的系统客户端。②「装了 Tailscale CLI/App」不再等于「客户端在运行」：回退与互斥入口闸只在 tailnet utun 在位**且**本机确有安装时触发（排除 Cloudflare WARP 等同样占用 RFC 6598 CGNAT 段的假阳），homebrew 只装 CLI 的用户不会被自动关闭内置节点且无处重开。③ClashHalo 常驻期间系统客户端中途启动（创建 tailnet utun 触发网络拓扑变化）现在会即时触发同样的自动停用，不再只依赖启动时与 Tailscale 页出现时的检查——installedOnly 告警里「客户端启动后会自动停用」的承诺至此兑现。
+- **`tun` 设备 pin 解析补齐回归测试**：`tunDevicePin()` 手写行扫描（引号 / 行尾注释 / tab 缩进口径与写入口径不一致的风险）统一委托 `YamlScalar.nestedScalar(in:block:key:)`，新增 `tundevicepin-tests` 套件（14 断言）钉住；启动时的内置 Tailnet 重载补上 busy 保护（`awaitEngineIdle`）。
+
+### Changed
+
+- `.gitignore` 增加 `.workbuddy-ai/`（本地会话产物，不入库）。
+
+### 验证
+
+- 回归：`bash Scripts/run-tests.sh` → PASS 36 / FAIL 0 / MISSING 0（含新增 `tundevicepin-tests`）；Debug 构建（`xcodebuild -derivedDataPath .build-debug`）通过。
+- 未实机覆盖：Tailscale 三态路径（本机无安装，依赖单测与独立代码复审）。冒烟发现 macOS 上 `HOME=` 无法隔离 `NSHomeDirectory`/`UserDefaults`/`cfprefsd`（按真实用户解析）——同机双实例冒烟必须先停生产实例，此处记录备忘。
+
 ## [1.5.3] - 2026-11-21
 
 ### Fixed

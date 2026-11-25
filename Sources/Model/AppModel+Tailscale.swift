@@ -382,6 +382,125 @@ extension AppModel {
 
     // MARK: - Enable / apply
 
+    // MARK: - TS-MUX 互斥（内置 Tailnet vs 系统 Tailscale 客户端）
+
+    /// TS-MUX：系统 Tailscale 的「存在」分两级。真正会伤到内置节点的是
+    /// **正在运行**的系统客户端——它占住 100.64/10 的 utun，共存层才会为它
+    /// 把 100.64/10 排除出 TUN、ts.net 挡出 fake-ip，而内置节点恰靠这两段
+    /// 流量进 TUN，同开双输。只装了 CLI/App 却没有那张接口时，内置节点照常
+    /// 可用；旧实现「装了就算」还把 tsEnabled=false 写进 UserDefaults，入口
+    /// 闸又拦着重开，homebrew 只装 CLI 的用户被永久关掉且没有 UI Undo 路径。
+    private enum SystemTailscalePresence {
+        case none
+        case installedOnly
+        case running
+    }
+
+    private func systemTailscalePresence() -> SystemTailscalePresence {
+        let fm = FileManager.default
+        let installPaths = [
+            "/Applications/Tailscale.app",
+            NSHomeDirectory() + "/Applications/Tailscale.app",
+            "/usr/local/bin/tailscale",      // 官方 App 创建的 CLI 链接
+            "/opt/homebrew/bin/tailscale"     // homebrew 独立安装（可无 GUI 跑 tailscaled）
+        ]
+        let installed = installPaths.contains(where: { fm.fileExists(atPath: $0) })
+        // TS-MUX：running = tailnet utun 在位**且**本机确有 Tailscale 安装。
+        // `.tailscale` 的判据只是 RFC 6598 CGNAT 网段（100.64/10），Cloudflare
+        // WARP、自建 WireGuard mesh 同样使用该段——只看网段会把它们误判成
+        // 「系统客户端运行中」，回退闸随即持久化 tsEnabled=false 并拦住重开，
+        // 把共存层的低后果流量判据升级成写盘的用户状态变更。叠加 isUp 与
+        // 安装检查后，唯一已知假阳是「WARP/自建 mesh + 装了 Tailscale CLI
+        // 同时在线」——极小众，且此时内置节点确实也进不了 100.64/10，回退
+        // 未必是错，接受并记录。
+        let tailnetIfaceUp = NetScanner.interfaces().contains(where: {
+            $0.kind == .tailscale && $0.isUp
+        })
+        if tailnetIfaceUp, installed { return .running }
+        return installed ? .installedOnly : .none
+    }
+
+    /// 运行时钩子（handleNetworkChange）用：系统客户端是否**正在运行**。
+    /// 枚举保持 private，这里只暴露布尔语义，避免 presence 三态泄漏成公共 API。
+    func systemTailscaleClientRunning() -> Bool {
+        systemTailscalePresence() == .running
+    }
+
+    /// TS-MUX：互斥二选一的自动回退——检测到系统客户端**正在运行**时关掉
+    /// 内置 Tailnet、从运行配置撤除 overlay，并提示用户二选一。返回是否回退。
+    ///
+    /// 只装了 CLI/App 不算：没有 tailnet utun 就没有 100.64/10 的流量冲突，
+    /// 内置节点可以照常用；把它一并关掉且不给 UI Undo，是审查指出的过度反应。
+    ///
+    /// 撤 overlay 不能省：残留的 `ts://Tailnet` DNS 策略与规则会把 ts.net
+    /// 劫持进一个不会再被拨号的节点，正好废掉刚装好的系统客户端——旧实现
+    /// 只挂警告不动手（"Reported, never auto-corrected"），而共存层同时为
+    /// 保护客户端把 100.64/10 排除出 TUN、ts.net 挡出 fake-ip，内置节点恰恰
+    /// 又靠这两段流量进 TUN，同开必然双输。这是 v1.5.3 三 BUG 之二的根因。
+    @discardableResult
+    func fallbackTailnetForSystemClient() async -> Bool {
+        guard tsEnabled, systemTailscalePresence() == .running else { return false }
+        logKernel("内置 Tailnet：检测到系统 Tailscale 客户端正在运行，自动停用内置节点（两者互斥）")
+        tsEnabled = false
+        saveTailscalePrefs()          // engine.tailscaleSettings → nil，后续写盘不再注入
+        stopTailscaleLoginWatch()
+        tsState = .disabled
+        tsWarnings = []
+        tsDevices = []
+        tsLocalIPs = []
+        tsLocalDNSName = ""
+        // 状态回退是同步的，所以 overlay 撤除必须确定性完成：withEngineBusy
+        // 是 fire-and-forget，busy 时会直接丢掉 body，而 refreshConfigs 只读
+        // 不写，运行内核会长期残留 ts://Tailnet 与 100.64 规则。awaitEngineIdle
+        // 有界等待后真正 await body，失败时留日志、不留假状态。
+        let removed = await awaitEngineIdle("停用内置 Tailnet（回撤 overlay）") {
+            await self.reloadWithTailscaleOverlay()   // 从运行内核剥掉节点/围栏/规则
+        }
+        if removed == true {
+            showToast("系统 Tailscale 客户端正在运行，已停用内置 Tailnet（二者互斥）", kind: .warn)
+        } else {
+            // TS-MUX-R：撤除未确认（nil = 等待内核空闲超时；false = body 跑了
+            // 但重载失败）。此刻 tsEnabled=false 已持久化，而运行内核可能仍残留
+            // `ts://Tailnet` DNS 策略与 100.64 规则——残留会把 ts.net 劫持进一个
+            // 不会再拨号的节点，正好废掉刚启动的系统客户端（本函数头注释批判的
+            // "Reported, never auto-corrected" 同型缺陷，不能只留一条日志就发
+            // 「已停用」的成功 toast）。如实相告 + 有界重试兜底。
+            let reason = removed == nil ? "等待内核空闲超时" : "撤除重载失败"
+            logKernel("内置 Tailnet：\(reason)，overlay 仍在运行配置中，已调度 30s×3 自动重试剥除")
+            // 文案保持一行可完整显示（toast 通道 lineLimit(1)），细节看日志与告警卡。
+            showToast("内置 Tailnet 已停用，撤除未确认（\(reason)），将自动重试", kind: .warn)
+            scheduleTailnetOverlayRemovalRetry(remaining: 3)
+        }
+        return true
+    }
+
+    /// TS-MUX-R：overlay 撤除失败后的有界自动重试（30s 间隔，至多 `remaining` 次）。
+    ///
+    /// 单链保证：调用方 `fallbackTailnetForSystemClient` 的入口 guard 要求
+    /// tsEnabled=true，回退后立刻置 false，因此同一条重试链不会叠加；重试期间
+    /// 用户重新打开内置节点（setTailscaleEnabled）则直接退出——那时的正确动作
+    /// 是注入 overlay，不是剥除。任务被取消/入睡时安静放弃，残留等下一次
+    /// fallback 或配置写入剥掉（任何 setConfig 都会按 nil settings 重写剥离）。
+    private func scheduleTailnetOverlayRemovalRetry(remaining: Int) {
+        guard remaining > 0 else {
+            logKernel("内置 Tailnet：overlay 剥除重试已用尽，残留待下次配置写入或重启后清理")
+            return
+        }
+        Task { [weak self] in
+            try? await Task.sleep(nanoseconds: 30_000_000_000)
+            guard let self, !self.sleeping, self.tsEnabled == false else { return }
+            let removed = await self.awaitEngineIdle("内置 Tailnet 撤除重试") {
+                await self.reloadWithTailscaleOverlay()
+            }
+            if removed == true {
+                self.logKernel("内置 Tailnet：残留 overlay 已在重试中剥除")
+            } else {
+                self.logKernel("内置 Tailnet：撤除重试第 \(4 - remaining) 次未确认，剩余 \(remaining - 1) 次")
+                self.scheduleTailnetOverlayRemovalRetry(remaining: remaining - 1)
+            }
+        }
+    }
+
     /// Turn the built-in node on or off, and push the result into the kernel.
     ///
     /// Adding a proxy requires a full config reload — `PATCH /configs` cannot
@@ -391,6 +510,12 @@ extension AppModel {
         guard on != tsEnabled else { return }
         if on, tsSupported == false {
             showToast("当前内核不支持 Tailscale 出站，请先升级内核", kind: .error)
+            return
+        }
+        // TS-MUX：互斥入口闸——只在系统客户端**正在运行**时拒绝开启；只装了
+        // CLI/App 不拦，用户仍可手动开内置节点（回退路径见 fallback…）。
+        if on, systemTailscalePresence() == .running {
+            showToast("系统 Tailscale 客户端正在运行，请关闭后使用内置 Tailnet", kind: .error)
             return
         }
         withEngineBusy(on ? "启用内置 Tailnet" : "关闭内置 Tailnet") { [weak self] in
@@ -500,6 +625,11 @@ extension AppModel {
     /// overrides are idempotent by construction, and this keeps exactly one
     /// place that knows how a config reaches the kernel.
     func reloadWithTailscaleOverlay() async -> Bool {
+        // setConfig 现在会按运行态保留 TUN（见其内部 persistTunState 调用），
+        // 这里补上与配置切换路径同款的兜底：reload 万一仍把 TUN 拆掉（内核
+        // normalize/拒绝文件值），从运行态重新拉起，而不是等 30 s 巡检去报
+        // 「接口丢失」再走自动关→自动开的闪烁循环。
+        let wasTunOn = tunOn
         guard let text = try? String(contentsOfFile: engine.configFilePath, encoding: .utf8) else {
             showToast("读取配置失败", kind: .error)
             return false
@@ -529,6 +659,12 @@ extension AppModel {
         // 比较基线。注入失败时内核没有节点，不能算「已应用」。
         tsAppliedPeerIPs = TailscaleOverlay.normalizePeerIPs(
             engine.tailscaleSettings?.peerIPs ?? [])
+        // 同配置切换路径的兜底顺序：reload 后先刷新运行态，再在 TUN 意外掉线
+        // 时走完整 enable 流程拉回（root 切换 + PATCH + 接口 pin）。
+        await refreshConfigs()
+        if wasTunOn && !tunOn {
+            await reapplyTUN(wasOn: true)
+        }
         return true
     }
 
@@ -537,16 +673,25 @@ extension AppModel {
     /// The one conflict that makes the feature silently useless: a system
     /// Tailscale client already owns 100.64/10 on this machine.
     ///
-    /// We do not fight it. The coexistence layer will keep excluding the CGNAT
-    /// range from the proxy TUN — which is correct for the system client and
-    /// fatal for us — so the honest move is to say so and let the user choose,
-    /// rather than quietly winning or quietly losing.
+    /// TS-MUX：这里不再只是挂一条警告——旧实现 "Reported, never
+    /// auto-corrected"（共存层为保护系统客户端排除 100.64/10、内置节点恰靠
+    /// 这段流量进 TUN，同开双输）正是 v1.5.3 Tailnet 完全不可用的根因。
+    /// 现在检测到系统客户端在运行即自动回退并提示二选一；只装了 CLI/App 则
+    /// 明确告知「内置节点仍可用」，不再悄悄把用户开关关掉。
     func refreshTailscaleEnvironmentWarnings() {
         guard tsEnabled else { tsWarnings = []; return }
+        let presence = systemTailscalePresence()
+        if presence == .running {
+            Task { await fallbackTailnetForSystemClient() }
+            return
+        }
         var warnings = engine.tailscaleWarnings
-        if NetScanner.interfaces().contains(where: { $0.kind == .tailscale }) {
-            warnings.append("检测到系统 Tailscale 客户端正在运行。100.64/10 会被让给它，"
-                            + "内置节点收不到流量——请退出系统客户端后再使用内置节点")
+        if presence == .installedOnly {
+            // 不回退：没有 tailnet utun 就没有 100.64/10 的流量冲突。给出
+            // 说明型提示（追加而非整份替换，其余告警照常保留），让用户知道
+            // 两个客户端并存时谁会主动让路。
+            warnings.append("检测到本机安装了 Tailscale 客户端/CLI，但未在运行；"
+                            + "内置节点可正常使用。启动系统客户端后会自动停用内置节点（二者互斥）")
         }
         if !tsSettings.exitNode.isEmpty && !tsSettings.exitNode.hasPrefix("auto:") {
             warnings.append("已指定出口节点：内核在选中失败时只记警告、不报错，"

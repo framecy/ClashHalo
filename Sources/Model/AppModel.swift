@@ -1125,7 +1125,12 @@ let kDirectExcludeAcceptedKey = "tun.directExclude.accepted"
             // Tailscale enabled in a previous session, the proxy is in the config
             // but the kernel is not running tsnet — nothing would ever dial it.
             // Kick it now so the node registers with the control plane promptly.
-            if tsEnabled {
+            // TS-MUX：但若系统 Tailscale 客户端正在运行，先自动回退
+            // （撤 overlay + 提示二选一），不再注册/预热节点。只装了 CLI
+            // 不算运行，内置节点照常预热。
+            if tsEnabled, await fallbackTailnetForSystemClient() {
+                // 回退已在 fallback 内完成（日志 + toast + overlay 已撤除）
+            } else if tsEnabled {
                 // ensureInstalled() wrote the overlay to config.yaml, but a
                 // warm-started kernel is still running the old config from
                 // before this launch. Check whether the kernel actually has
@@ -1135,7 +1140,12 @@ let kDirectExcludeAcceptedKey = "tun.directExclude.accepted"
                 let hasNode = proxies?.proxies.keys.contains(tsSettings.nodeName) ?? false
                 if !hasNode {
                     logKernel("内置 Tailnet：内核缺少节点，正在重载配置…")
-                    _ = await reloadWithTailscaleOverlay()
+                    // TS-MUX Nit：这条重载原来是裸调用，没过 busy 闸。用可
+                    // await 的对应物（withEngineBusy 是 fire-and-forget），
+                    // 免得 warmUpTailscale 在重载完成前就去拨尚未进内核的节点。
+                    _ = await awaitEngineIdle("内置 Tailnet 启动重载") {
+                        await self.reloadWithTailscaleOverlay()
+                    }
                 }
                 warmUpTailscale()
             }
@@ -2056,6 +2066,18 @@ let kDirectExcludeAcceptedKey = "tun.directExclude.accepted"
                 // （系统代理恢复 / TUN 重建 / 网关体检），入睡后一律不再执行
                 // （2026-11-17 审查 P2：旧实现只在入口查一次 sleeping）。
                 guard !sleeping else { return }
+                // TS-MUX：系统客户端可能在 ClashHalo 常驻期间随时启动（开机
+                // 自启 / 用户手动 / 登录后才拉起），它创建 tailnet utun 本身就是
+                // 一次网络拓扑变化——正是这里的事件源。此刻复查 presence，兑现
+                // installedOnly 告警里「客户端启动后会自动停用」的承诺；此前
+                // 触发点只有启动与 TailscalePage 出现，常驻期间承诺落空，期间
+                // 共存层仍在为 100.64/10 让路、内置节点双输。getifaddrs + 最多
+                // 4 次 fileExists，廉价；fallback 幂等且自带 tsEnabled guard，
+                // 非 TS 用户零开销。
+                if tsEnabled, systemTailscaleClientRunning() {
+                    logKernel("网络变化：检测到系统 Tailscale 客户端已上线，自动停用内置 Tailnet（二者互斥）")
+                    await fallbackTailnetForSystemClient()
+                }
                 if api.reachable {
                     await refreshConfigs()
                     // Restore system proxy if it was auto-disabled by the offline handler

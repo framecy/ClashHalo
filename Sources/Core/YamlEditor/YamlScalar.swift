@@ -125,6 +125,37 @@ public enum YamlScalar {
         return items
     }
 
+    /// Read one scalar from a top-level mapping block using the same conventions
+    /// as the config line scanners: `block:` starts at column 0, `key:` is an
+    /// indented line inside it, the first match wins, and the next top-level key
+    /// ends the block. Inline comments and surrounding quotes follow
+    /// `stripInlineComment`, so a `#` inside the value stays data.
+    public static func nestedScalar(in text: String, block: String, key: String) -> String? {
+        let topKey = block + ":"
+        let nestedKey = key + ":"
+        var inBlock = false
+        for line in text.components(separatedBy: "\n") {
+            if !line.hasPrefix(" ") && !line.hasPrefix("\t") {
+                inBlock = line.hasPrefix(topKey)
+                continue
+            }
+            guard inBlock else { continue }
+            let trimmed = line.trimmingCharacters(in: .whitespaces)
+            guard trimmed.hasPrefix(nestedKey) else { continue }
+            let stripped = stripInlineComment(
+                String(trimmed.dropFirst(nestedKey.count)).trimmingCharacters(in: .whitespaces)
+            )
+            var value = stripped
+            if value.count >= 2,
+               ((value.hasPrefix("\"") && value.hasSuffix("\"")) ||
+                (value.hasPrefix("'") && value.hasSuffix("'"))) {
+                value = String(value.dropFirst().dropLast())
+            }
+            return value.isEmpty ? nil : value
+        }
+        return nil
+    }
+
     /// Quote a string scalar when the raw text would not survive a round-trip
     /// through YAML as a plain scalar.
     ///

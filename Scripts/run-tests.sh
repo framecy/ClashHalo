@@ -60,6 +60,14 @@ add_suite yamlscalar-tests \
   "$ROOT/Sources/Core/YamlEditor/YamlScalar.swift" \
   "$ROOT/Tests/YamlScalar/main.swift"
 
+# TUN device pin：setConfig 覆盖 config.yaml 前先抓 `tun.device`，写盘后靠它
+# 保住正在跑的 utun。旧的手写扫描见 tunDevicePin：见 `#` 就截（不管前面
+# 有没有空白）、只剥双引号，与 YamlScalar 的全项目口径不一致。钉住嵌套块
+# 定位、引号/行尾注释、块外同名键不串味，以及无空白 `#` 是数据。
+add_suite tundevicepin-tests \
+  "$ROOT/Sources/Core/YamlEditor/YamlScalar.swift" \
+  "$ROOT/Tests/TunDevicePin/main.swift"
+
 # TUN 系统 DNS 网关：2026-10-09 断网事故。配置里的 inet4-address 是**前缀**
 # （198.18.0.0/30），裸切掉 /30 写进系统 DNS 的是网络地址 .0 —— 内核永不应答，
 # TUN 一抖/一关就全网解析黑洞（实测 dig @198.18.0.0 → connection timed out，
