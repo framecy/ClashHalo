@@ -26,10 +26,39 @@
   空串，于是 TUN 退回自动挑网卡）。`setConfig` 现在写盘前抓取、重载前补回。
 - 配置写盘审计能定位到具体调用点：`setTopLevelScalars`、`setTunEnabled`、
   `setTunDevice`、`persistTunState` 都接受 `writer` 归属，此前只能记到函数名一级。
-
+- **界面上的布尔开关把「没写」显示成「关」，而内核缺省可能是开**。订阅里最常见的
+  最小配置 `sniffer: { enable: true }` 在界面上是「三项全关」，内核缺省其实是三项全
+  开（`force-dns-mapping` / `parse-pure-ip` / `override-destination`）；同理 `ipv6`、
+  `tun.auto-route`、`tun.auto-detect-interface` 也缺省为开。于是用户点一次开关，写进
+  去的值本来就是内核在用的值，行为毫无变化，看起来像开关失灵。现在所有界面布尔开关
+  的缺省值统一来自一张按内核 `DefaultRawConfig()` 核实过的表（`KernelDefaults`），
+  并加了预检：界面上新增开关却没登记，回归直接 FAIL。
+- **枚举选择器也把「没写」显示成第一个选项，而内核缺省不在第一个**。三处实修：
+  `tun.stack`（内核缺省 `Mips`，界面却显示 `gVisor`，且选择器里根本没有 Mips，
+  切走就回不去）；`dns.enhanced-mode`（内核缺省 `redir-host`，界面显示 `Fake-IP`
+  ——两者对「哪些应用能上网」的影响完全不同）；`find-process-mode`（内核缺省
+  `strict`，界面显示「总是」）。现在枚举缺省同样只来自那张表
+  （`KernelDefaults.strings`），`NPicker` / `PickerRow` 取值都走它，内核缺省也补进
+  `tun.stack` 的选项。
 - **嗅探页文案「修改后请重启核心生效」不准确**：这几个开关走热重载
   （`PUT /configs?force=true` → `executor.ApplyConfig` → `updateSniffer`），保存即
   生效，不需要重启内核；已建立的连接也不会被掐断。
+
+### 验证
+- 新增 `tailscalesubnet-tests`（14 断言）钉住 `RouteAll` 解析、问不到与 false
+  的区别、三态动作分派；新增 `tundupgate-tests`（12 断言）钉住重复开启闸门的四条
+  边界（关闭永不拦 / `tunOn` 为假永不拦 / 无验收时间戳不拦 / 窗口外放行），并用
+  两处变异验证过测试会红。
+- `kerneldefaults-tests`（46 断言）钉住 16 条布尔缺省值（含 `ipv6`、`tun.auto-route`
+  为真，`dns.ipv6` 为假——这一条推翻了「dns 缺省为开」的猜测）+ 5 条枚举缺省值
+  （`tun.stack` = `Mips`、`dns.enhanced-mode` = `redir-host`、`find-process-mode` =
+  `strict`、`geodata-loader`、`log-level`）、`isKnown` 只认完整路径、显式值优先、
+  块缺失与类型不对退回缺省。`Scripts/run-tests.sh` 另加 `kernel-defaults` 预检：
+  扫 `Sources/UI` 的 `NToggle` / `ToggleRow`（查 `bools`）与 `NPicker` / `PickerRow`
+  （查 `strings`）调用点，逐个要求表里有同名键，并挡住「调用点分行导致正则扫不到」
+  的漏检。变异验证过会红：缺省反转 → 3 条红；删除 `dns.enhanced-mode` 登记 →
+  预检 FAIL + 2 条红；把 `find-process-mode` 写成界面的第一个选项 → 1 条红。
+- Debug 与 Release clean build 均通过；全量回归 39 套全绿。
 
 ## [1.6.0] - 2026-11-25
 

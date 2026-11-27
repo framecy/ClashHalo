@@ -323,6 +323,112 @@ add_suite tundupgate-tests \
   "$ROOT/Sources/Model/TUNEnableGate.swift" \
   "$ROOT/Tests/TUNEnableGate/main.swift"
 
+# 内核布尔缺省表（2026-11-27）：mihomo 的缺省值来自 `DefaultRawConfig()` 预置结构体
+# + YAML 逐键覆盖，所以「没写」不等于 false——`sniffer` 的 force-dns-mapping /
+# parse-pure-ip / override-destination、`tun` 的 auto-route / auto-detect-interface、
+# 顶层 `ipv6` 都缺省是开，而 `dns.ipv6` 缺省是关（这一条推翻了「dns 缺省为开」的
+# 猜测）。旧 UI 用 `== true` 判定，最小配置 `sniffer: { enable: true }` 显示「三项
+# 全关」，用户点一次开关写入 true 却没有行为变化，看起来像失灵。
+add_suite kerneldefaults-tests \
+  "$ROOT/Sources/Model/KernelDefaults.swift" \
+  "$ROOT/Tests/KernelDefaults/main.swift"
+
+# ── 预检：界面开关必须在内核缺省表里登记 ─────────────────────────────────
+# KernelDefaults 能保证「缺省值按内核语义」的前提是：界面上的每个开关都在表里。
+# 这里直接扫 Sources/UI 的调用点（NToggle / NPicker 取 `parent.sub`，ToggleRow 取
+# 顶层键），布尔键查 `bools`、枚举键查 `strings`，缺一个就 FAIL——新增开关忘了
+# 登记会当场红，而不是等到某天内核改了缺省、界面开始安静地说谎。也顺带挡住
+# 「调用点写成分行、正则扫不到」这种预检失明：解析出来的键数少于调用点数量同样
+# 判 FAIL（2026-11-27 `tun.stack` 就是这样漏的：枚举键没有对应预检）。
+preflight_kernel_defaults() {
+  local table="$ROOT/Sources/Model/KernelDefaults.swift"
+  local ui_keys table_keys missing nested_sites top_sites nested_parsed top_parsed
+  local picker_keys picker_table_keys picker_missing picker_sites picker_parsed
+  local row_keys row_missing row_sites row_parsed
+  if [ ! -f "$table" ]; then
+    echo "PREFLIGHT FAIL：缺 $table"
+    return 1
+  fi
+  # 先取「未去重」的行数：同一个键可能出现在两个页面（tcp-concurrent），
+  # 去重后再比就会误判成「有调用点没解析到」。
+  nested_parsed=$(grep -rhoE 'NToggle\("[^"]*", *"[^"]+", *"[^"]+"' "$ROOT/Sources/UI" | wc -l | tr -d ' ')
+  top_parsed=$(grep -rhoE 'ToggleRow\("[^"]*", *key: *"[^"]+"' "$ROOT/Sources/UI" | wc -l | tr -d ' ')
+  picker_parsed=$(grep -rhoE 'NPicker\("[^"]*", *"[^"]+", *"[^"]+"' "$ROOT/Sources/UI" | wc -l | tr -d ' ')
+  row_parsed=$(grep -rhoE 'PickerRow\("[^"]*", *key: *"[^"]+"' "$ROOT/Sources/UI" | wc -l | tr -d ' ')
+  ui_keys=$(
+    {
+      grep -rhoE 'NToggle\("[^"]*", *"[^"]+", *"[^"]+"' "$ROOT/Sources/UI" \
+        | sed -E 's/.*NToggle\("[^"]*", *"([^"]+)", *"([^"]+)".*/\1.\2/'
+      grep -rhoE 'ToggleRow\("[^"]*", *key: *"[^"]+"' "$ROOT/Sources/UI" \
+        | sed -E 's/.*key: *"([^"]+)".*/\1/'
+    } | sort -u
+  )
+  row_keys=$(
+    grep -rhoE 'PickerRow\("[^"]*", *key: *"[^"]+"' "$ROOT/Sources/UI" \
+      | sed -E 's/.*key: *"([^"]+)".*/\1/' | sort -u
+  )
+  picker_keys=$(
+    grep -rhoE 'NPicker\("[^"]*", *"[^"]+", *"[^"]+"' "$ROOT/Sources/UI" \
+      | sed -E 's/.*NPicker\("[^"]*", *"([^"]+)", *"([^"]+)".*/\1.\2/' | sort -u
+  )
+  table_keys=$(
+    sed -n '/static let bools: \[String: Bool\] = \[/,/^    \]/p' "$table" \
+      | grep -oE '"[^"]+"' | tr -d '"' | sort -u
+  )
+  picker_table_keys=$(
+    sed -n '/static let strings: \[String: String\] = \[/,/^    \]/p' "$table" \
+      | grep -oE '"[^"]+"' | tr -d '"' | sort -u
+  )
+  nested_sites=$(grep -rhoE 'NToggle\(' "$ROOT/Sources/UI" | wc -l | tr -d ' ')
+  top_sites=$(grep -rhoE 'ToggleRow\(' "$ROOT/Sources/UI" | wc -l | tr -d ' ')
+  picker_sites=$(grep -rhoE 'NPicker\(' "$ROOT/Sources/UI" | wc -l | tr -d ' ')
+  row_sites=$(grep -rhoE 'PickerRow\(' "$ROOT/Sources/UI" | wc -l | tr -d ' ')
+  missing=$(comm -23 <(printf '%s\n' "$ui_keys") <(printf '%s\n' "$table_keys"))
+  picker_missing=$(comm -23 <(printf '%s\n' "$picker_keys") <(printf '%s\n' "$picker_table_keys"))
+  row_missing=$(comm -23 <(printf '%s\n' "$row_keys") <(printf '%s\n' "$picker_table_keys"))
+
+  if [ -n "$missing" ]; then
+    echo "PREFLIGHT FAIL：这些界面布尔开关没在 KernelDefaults.bools 登记："
+    printf '%s\n' "$missing" | sed 's/^/    /'
+    echo "  先去上游 config/config.go 的 DefaultRawConfig() 核实缺省值，再登记。"
+    return 1
+  fi
+  if [ -n "$row_missing" ]; then
+    echo "PREFLIGHT FAIL：这些界面顶层枚举选择器没在 KernelDefaults.strings 登记："
+    printf '%s\n' "$row_missing" | sed 's/^/    /'
+    echo "  先去上游 config/config.go 的 DefaultRawConfig() 核实缺省值，再登记。"
+    return 1
+  fi
+  if [ -n "$picker_missing" ]; then
+    echo "PREFLIGHT FAIL：这些界面枚举选择器没在 KernelDefaults.strings 登记："
+    printf '%s\n' "$picker_missing" | sed 's/^/    /'
+    echo "  先去上游 config/config.go 的 DefaultRawConfig() + constant/ 的映射表核实缺省值，再登记。"
+    return 1
+  fi
+  if [ "$nested_parsed" -lt "$nested_sites" ]; then
+    echo "PREFLIGHT FAIL：NToggle 调用点 $nested_sites 处，只解析出 $nested_parsed 处——"
+    echo "  有调用被写成分行，预检会看不见它。请把 NToggle 调用保持单行。"
+    return 1
+  fi
+  if [ "$top_parsed" -lt "$top_sites" ]; then
+    echo "PREFLIGHT FAIL：ToggleRow 调用点 $top_sites 处，只解析出 $top_parsed 处——"
+    echo "  有调用被写成分行，预检会看不见它。请把 ToggleRow 调用保持单行。"
+    return 1
+  fi
+  if [ "$row_parsed" -lt "$row_sites" ]; then
+    echo "PREFLIGHT FAIL：PickerRow 调用点 $row_sites 处，只解析出 $row_parsed 处——"
+    echo "  有调用被写成分行，预检会看不见它。请把 PickerRow 调用保持单行。"
+    return 1
+  fi
+  if [ "$picker_parsed" -lt "$picker_sites" ]; then
+    echo "PREFLIGHT FAIL：NPicker 调用点 $picker_sites 处，只解析出 $picker_parsed 处——"
+    echo "  有调用被写成分行，预检会看不见它。请把 NPicker 调用保持单行。"
+    return 1
+  fi
+  echo "preflight kernel-defaults    OK    $nested_sites 个嵌套开关 + $top_sites 个顶层开关 + $picker_sites 个嵌套选择器 + $row_sites 个顶层选择器均已登记"
+  return 0
+}
+
 # ── 执行 ───────────────────────────────────────────────────────────────
 
 FILTER=""
@@ -345,6 +451,13 @@ fi
 
 pass=0; fail=0; miss=0
 declare -a RESULTS=()
+
+if [ -z "$FILTER" ] || case "$FILTER" in *kernel*) true ;; *) false ;; esac; then
+  if ! preflight_kernel_defaults; then
+    fail=$((fail+1))
+    RESULTS+=("FAIL    kernel-defaults  预检：界面开关未登记或缺省值未核实")
+  fi
+fi
 
 for entry in "${SUITES[@]}"; do
   name="${entry%%::*}"

@@ -3,7 +3,6 @@ import SwiftUI
 // MARK: - Network / TUN / Sniffer (read-only in stage A; editable in C/E)
 
 private func cfgStr(_ c: [String: Any], _ k: String) -> String { c[k].map { "\($0)" } ?? "—" }
-private func cfgBool(_ c: [String: Any], _ k: String) -> Bool { (c[k] as? Bool) == true }
 
 // MARK: - 端口转发（入站监听）
 //
@@ -450,7 +449,7 @@ struct TunPage: View {
                                 .disabled(M.engine.isBusy)
                                 .opacity(M.engine.isBusy ? 0.55 : 1)
                         }.padding(.vertical, DS.Spacing.s)
-                        NPicker("协议栈", "tun", "stack", [("gvisor","gVisor"),("system","System"),("mixed","Mixed")])
+                        NPicker("协议栈", "tun", "stack", [("gvisor","gVisor"),("system","System"),("mixed","Mixed"),("mips","Mips")])
                         NToggle("自动路由", "tun", "auto-route")
                         NToggle("自动检测网卡", "tun", "auto-detect-interface")
                         NList("DNS 劫持", "tun", "dns-hijack", placeholder: "any:53")
@@ -582,6 +581,9 @@ struct SnifferPage: View {
                 VStack(spacing: DS.Spacing.l) {
                     Card(title: "协议嗅探 Sniffer", icon: "scope") {
                     VStack(spacing: 2) {
+                        // 缺省值统一走 KernelDefaults（内核对「没写这个键」的语义）：
+                        // 只有「启用嗅探」缺省关，其余三项缺省开。订阅里最常见的最小配置
+                        // 只写 enable，其余三项不落盘。
                         NToggle("启用嗅探", "sniffer", "enable")
                         NToggle("覆盖目标地址", "sniffer", "override-destination")
                         NToggle("强制 DNS 映射", "sniffer", "force-dns-mapping")
@@ -716,6 +718,9 @@ struct NumRow: View {
 }
 
 /// Toggle bound to a top-level boolean config key.
+///
+/// 与 `NToggle` 同一套缺省语义：没写这个键时显示内核实际采用的值
+/// （`KernelDefaults`，如 `ipv6` 缺省开）。
 struct ToggleRow: View {
     @EnvironmentObject var M: AppModel
     let label: String; let key: String; let persistent: Bool
@@ -726,10 +731,13 @@ struct ToggleRow: View {
             Spacer()
             // 统一用紧凑开关（design.md §6.7）：系统 NSSwitch 在当前 macOS 上是
             // 54×24pt 固定尺寸，比这一行的 12pt 文字大得多。
-            DSCompactSwitch(isOn: (M.configs[key] as? Bool) == true,
+            let current = NestedBoolSetting.effectiveValue(in: M.configs,
+                                                           key: key,
+                                                           defaultValue: KernelDefaults.bool(parent: "", key: key))
+            DSCompactSwitch(isOn: current,
                             isEnabled: !M.engine.isBusy,
                             accessibilityText: label) {
-                let v = !((M.configs[key] as? Bool) == true)
+                let v = !current
                 Task {
                     // 没有本地 @State：开关的值直接读 M.configs。写入被拒时
                     // patchPersistent/patch 已弹出原因并从内核真值重同步，开关
@@ -841,6 +849,10 @@ struct SecretRow: View {
 }
 
 /// Picker bound to a top-level string config key.
+///
+/// 取值语义与 `NToggle` / `NPicker` 一致：写了就用写的，**没写用内核缺省**
+/// （`KernelDefaults.string`），不能回落 `options.first`——`find-process-mode`
+/// 的界面顺序是 always 在前，而内核缺省是 strict。
 struct PickerRow: View {
     @EnvironmentObject var M: AppModel
     let label: String; let key: String; let options: [(String, String)]; let persistent: Bool
@@ -851,8 +863,9 @@ struct PickerRow: View {
             Spacer()
             DSMenuPicker(selection: Binding<String>(
                 get: {
-                    let val = (M.configs[key] as? String) ?? ""
-                    return options.contains(where: { $0.0 == val }) ? val : (options.first?.0 ?? "")
+                    let raw = (M.configs[key] as? String) ?? KernelDefaults.string(parent: "", key: key) ?? ""
+                    let val = raw.lowercased()
+                    return options.contains(where: { $0.0.lowercased() == val }) ? val : (options.first?.0 ?? "")
                 },
                 set: { v in Task { if persistent { _ = await M.patchPersistent([key: v]) } else { _ = await M.patch([key: v]) } } }
             ), choices: options.map { DSChoice($0.1, $0.0) })
@@ -974,14 +987,27 @@ struct GeoURLRow: View {
     M.configs[parent] as? [String: Any] ?? [:]
 }
 
+/// 嵌套布尔开关（`parent.sub`）。
+///
+/// 取值是「写了就用写的，没写用内核缺省」，缺省值唯一来源是 `KernelDefaults`
+/// （内核 `DefaultRawConfig()` 的语义）。把「没写」显示成「关」会让用户点一次开关、
+/// 写入 true、却发现行为毫无变化，像开关失灵（2026-11-27 嗅探页实测）。
+///
+/// 新增一行开关前先确认该键已在 `KernelDefaults` 登记：`Scripts/run-tests.sh`
+/// 的 `kernel-defaults` 预检会扫这里的调用点，未登记的键直接判 FAIL。
 struct NToggle: View {
     @EnvironmentObject var M: AppModel
     let parent: String; let sub: String; let label: String; let persistent: Bool
-    init(_ label: String, _ parent: String, _ sub: String, persistent: Bool = true) { self.label = label; self.parent = parent; self.sub = sub; self.persistent = persistent }
+    init(_ label: String, _ parent: String, _ sub: String, persistent: Bool = true) {
+        self.label = label; self.parent = parent; self.sub = sub
+        self.persistent = persistent
+    }
     var body: some View {
         HStack {
             Text(label).font(.dsBody); Spacer()
-            let current = (nestedDict(M, parent)[sub] as? Bool) == true
+            let current = NestedBoolSetting.effectiveValue(in: nestedDict(M, parent),
+                                                           key: sub,
+                                                           defaultValue: KernelDefaults.bool(parent: parent, key: sub))
             DSCompactSwitch(isOn: current,
                             isEnabled: !M.engine.isBusy,
                             accessibilityText: label) {
@@ -1010,6 +1036,8 @@ struct NToggle: View {
 
 struct NPicker: View {
     @EnvironmentObject var M: AppModel
+    /// 取值是「写了就用写的，没写用内核缺省」（`KernelDefaults.string`），语义与
+    /// `NToggle` 一致——否则枚举键会被显示成第一个选项。
     let parent: String; let sub: String; let label: String; let options: [(String, String)]; let persistent: Bool
     init(_ label: String, _ parent: String, _ sub: String, _ options: [(String, String)], persistent: Bool = true) {
         self.label = label; self.parent = parent; self.sub = sub; self.options = options; self.persistent = persistent
@@ -1019,7 +1047,12 @@ struct NPicker: View {
             Text(label).font(.dsBody); Spacer()
             DSMenuPicker(selection: Binding<String>(
                 get: {
-                    let val = ((nestedDict(M, parent)[sub] as? String) ?? "").lowercased()
+                    // 「没写这个键」要显示内核实际在用的值，不能回落第一个选项：
+                    // `tun.stack` 缺省是 Mips，回落 gVisor 会让用户以为自己在跑 gVisor。
+                    let raw = (nestedDict(M, parent)[sub] as? String)
+                        ?? KernelDefaults.string(parent: parent, key: sub)
+                        ?? ""
+                    let val = raw.lowercased()
                     return options.first(where: { $0.0.lowercased() == val })?.0 ?? (options.first?.0 ?? "")
                 },
                 set: { v in

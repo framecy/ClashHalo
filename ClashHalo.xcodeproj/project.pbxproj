@@ -54,6 +54,7 @@
 		ATDL1 /* TunnelDNSLedger.swift in Sources */ = {isa = PBXBuildFile; fileRef = BTDL1 /* TunnelDNSLedger.swift */; };
 		ATSR1AAAA0000000000000001 /* TailscaleSubnetRouting.swift in Sources */ = {isa = PBXBuildFile; fileRef = BTSR1AAAA0000000000000001 /* TailscaleSubnetRouting.swift */; };
 		ATDG1AAAA0000000000000001 /* TUNEnableGate.swift in Sources */ = {isa = PBXBuildFile; fileRef = BTDG1AAAA0000000000000001 /* TUNEnableGate.swift */; };
+		AKBD1AAAA0000000000000001 /* KernelDefaults.swift in Sources */ = {isa = PBXBuildFile; fileRef = BKBD1AAAA0000000000000001 /* KernelDefaults.swift */; };
 		ACWA1 /* ConfigWriteAudit.swift in Sources */ = {isa = PBXBuildFile; fileRef = BCWA1 /* ConfigWriteAudit.swift */; };
 		AKMG1 /* KernelMemoryGuard.swift in Sources */ = {isa = PBXBuildFile; fileRef = BKMG1 /* KernelMemoryGuard.swift */; };
 		AKRS1 /* KernelRSS.swift in Sources */ = {isa = PBXBuildFile; fileRef = BKRS1 /* KernelRSS.swift */; };
@@ -141,6 +142,7 @@
 		BTDL1 /* TunnelDNSLedger.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TunnelDNSLedger.swift; sourceTree = "<group>"; };
 		BTSR1AAAA0000000000000001 /* TailscaleSubnetRouting.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TailscaleSubnetRouting.swift; sourceTree = "<group>"; };
 		BTDG1AAAA0000000000000001 /* TUNEnableGate.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TUNEnableGate.swift; sourceTree = "<group>"; };
+		BKBD1AAAA0000000000000001 /* KernelDefaults.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = KernelDefaults.swift; sourceTree = "<group>"; };
 		BCWA1 /* ConfigWriteAudit.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ConfigWriteAudit.swift; sourceTree = "<group>"; };
 		BKMG1 /* KernelMemoryGuard.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = KernelMemoryGuard.swift; sourceTree = "<group>"; };
 		BKRS1 /* KernelRSS.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = KernelRSS.swift; sourceTree = "<group>"; };
@@ -205,6 +207,7 @@
 				BTDL1 /* TunnelDNSLedger.swift */,
 				BTSR1AAAA0000000000000001 /* TailscaleSubnetRouting.swift */,
 				BTDG1AAAA0000000000000001 /* TUNEnableGate.swift */,
+				BKBD1AAAA0000000000000001 /* KernelDefaults.swift */,
 				BCWA1 /* ConfigWriteAudit.swift */,
 				BKMG1 /* KernelMemoryGuard.swift */,
 				BKRS1 /* KernelRSS.swift */,
@@ -428,6 +431,7 @@
 				ATDL1 /* TunnelDNSLedger.swift in Sources */,
 				ATSR1AAAA0000000000000001 /* TailscaleSubnetRouting.swift in Sources */,
 				ATDG1AAAA0000000000000001 /* TUNEnableGate.swift in Sources */,
+				AKBD1AAAA0000000000000001 /* KernelDefaults.swift in Sources */,
 				ACWA1 /* ConfigWriteAudit.swift in Sources */,
 				AKMG1 /* KernelMemoryGuard.swift in Sources */,
 				AKRS1 /* KernelRSS.swift in Sources */,
@@ -472,7 +476,7 @@
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
 				CODE_SIGN_ENTITLEMENTS = ClashHalo.entitlements;
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 154;
+				CURRENT_PROJECT_VERSION = 155;
 				ENABLE_HARDENED_RUNTIME = YES;
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_FILE = Sources/Info.plist;
@@ -504,7 +508,7 @@
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
 				CODE_SIGN_ENTITLEMENTS = ClashHalo.entitlements;
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 154;
+				CURRENT_PROJECT_VERSION = 155;
 				ENABLE_HARDENED_RUNTIME = YES;
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_FILE = Sources/Info.plist;

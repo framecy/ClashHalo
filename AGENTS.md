@@ -2,7 +2,7 @@
 
 本文件给后续 AI 编码代理使用。进入本仓库后，先读本文件，再按需读 `README.md`、`CHANGELOG.md` 和相关源码。
 
-当前主干：`main`，产品版本 **v1.6.0**（`MARKETING_VERSION`，与 `Sources/Info.plist` 的 `CFBundleShortVersionString` 同源），Helper **1.0.35**（`kSharedHelperVersion`，`Helper-Info.plist` 的 `CFBundleVersion` 同值）。当前构建号 **154**（`CURRENT_PROJECT_VERSION`，`make.sh` 每次打包自增）。
+当前主干：`main`，产品版本 **v1.6.0**（`MARKETING_VERSION`，与 `Sources/Info.plist` 的 `CFBundleShortVersionString` 同源），Helper **1.0.35**（`kSharedHelperVersion`，`Helper-Info.plist` 的 `CFBundleVersion` 同值）。当前构建号 **155**（`CURRENT_PROJECT_VERSION`，`make.sh` 每次打包自增）。
 
 ## 项目概览
 
@@ -61,7 +61,7 @@ bash make.sh
 ### 回归测试
 
 ```bash
-bash Scripts/run-tests.sh                # 全部套件（当前 38 套）
+bash Scripts/run-tests.sh                # 全部套件（当前 39 套）
 bash Scripts/run-tests.sh --only tun     # 只跑名字含 tun 的
 bash Scripts/tun-exclusion-test.sh       # L1：排除表多源合并 + 归属记录（--apply 会真实 PATCH 一轮并还原）
 bash Scripts/audit.sh                    # 独立审查：隐私（全历史身份/敏感值/凭据形态）+ 全量回归；--no-tests 秒级只查隐私
@@ -215,6 +215,9 @@ bash Scripts/audit.sh                    # 独立审查：隐私（全历史身�
 - **带初值的表单弹窗必须用 `.sheet(item:)`**：`RuleFormView` 之类把 `@State` 初值写在 `init` 里，而 SwiftUI 只在**视图身份首次出现**时采用初值；用 `.sheet(isPresented:)` 复用同一身份时，第一次若开的是「添加」（空值），之后每次「编辑」都会沿用那次空值——这正是 2026-10-20 规则页「编辑弹窗没带入原匹配内容」的根因。结构体既是弹窗目标就顺手带上 `Identifiable`（每次展示生成新 `UUID()`）。弹窗若要传「打开那一刻的快照」（如 `knownTargets`），放这个目标结构里，别在 content 闭包里现算
 - **`Table` 的单元格与表格本体都要拆出去**：列构造器是一个巨型表达式，连接表加到第 8 列时编译器直接报 `unable to type-check this expression in reasonable time`。做法是每格一个 `@ViewBuilder` 方法、整表一个 `private var connTable: some View`；改表格结构时保持这个形状，别把单元格写回 `TableColumn` 闭包里
 - **可切换的 `Table` 列在这个工程里做不到**：`TableColumnBuilder` 的条件分支（`if`）要 **macOS 14.4+**（`buildIf`），部署目标是 14.0；`TableColumnCustomization` 虽可用，但会在表头右键多出一条控制路径，与自绘开关不同步。要加列就直接加（压窄列宽），不要让「可选列」变成第二份列定义
+- **布尔开关的缺省值只有一个来源：`Sources/Model/KernelDefaults.swift`**。mihomo 的缺省值来自 `config/config.go` 的 `DefaultRawConfig()` 预置结构体 + YAML 逐键覆盖，所以「没写这个键」**不等于 false**：`ipv6`、`tun.auto-route`、`tun.auto-detect-interface`、`sniffer` 的 `force-dns-mapping` / `parse-pure-ip` / `override-destination` 都缺省为开（`sniffer.enable`、`dns.enable`、`dns.ipv6` 缺省为关；「dns 缺省为开」是错的，别再照着改）。旧实现一律 `(dict[key] as? Bool) == true`，于是最小配置 `sniffer: { enable: true }` 显示「三项全关」而内核三项全开，用户点一次开关写入的值与内核在用的值相同、行为毫无变化，像开关失灵（2026-11-27 实测）。`NToggle`（嵌套键）与 `ToggleRow`（顶层键）都走 `NestedBoolSetting.effectiveValue(in:key:defaultValue: KernelDefaults.bool(...))`，**不要**给它们加回 `defaultValue:` 参数或写第二份缺省判断。
+  **枚举选择器同理**：`NPicker`（嵌套）与 `PickerRow`（顶层）取值必须回落 `KernelDefaults.string(...)`，不能回落 `options.first`。三个实修过的坑：`tun.stack` 缺省 `Mips`（界面原来显示第一个选项 `gVisor`，且选项里没有 mips——补了 `("mips","Mips")`，别删）、`dns.enhanced-mode` 缺省 `redir-host`（界面显示 `Fake-IP`；fake-ip 与 redir-host 对「哪些应用能上网」影响完全不同）、`find-process-mode` 缺省 `strict`（界面显示「总是」）。表里的枚举值写成内核 `String()` 形态（`Mips` / `redir-host`），比较时统一 `lowercased()`。
+  新增/改动界面开关时必须先在表里登记：`Scripts/run-tests.sh` 的 `kernel-defaults` 预检会扫 `Sources/UI` 的四类调用点（`NToggle` / `ToggleRow` 查 `bools`，`NPicker` / `PickerRow` 查 `strings`），未登记直接 FAIL（调用要保持单行，分行会让预检看不见）。登记前先去上游 `DefaultRawConfig()` 与 `constant/` 的映射表核实缺省值，别猜。回归套件 `kerneldefaults-tests`（46 断言）
 - pre-commit 会警告 raw `.font(.system(size: N))` 与字体阶梯漂移
 
 ## 版本与发布
