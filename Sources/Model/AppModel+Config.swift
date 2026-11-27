@@ -262,7 +262,7 @@ extension AppModel {
                 noteConfigContentChanged()
                 showToast("已切换配置「\(name)」", kind: .ok)
                 await reconnect()
-                await reapplyTUN(wasOn: wasTunOn)
+                await reapplyTUN(wasOn: wasTunOn, reason: "切换配置")
 
                 // Port-change cascade: if the new profile uses a different
                 // mixed-port and the system proxy is on, re-set it so traffic
@@ -468,7 +468,7 @@ extension AppModel {
                         self.engine.isBusy = false
                         self.tunAutoTeardownInFlight = false
                     }
-                    await self.applyTUNState(false)
+                    await self.applyTUNState(false, reason: "刷新巡检：接口丢失自动关闭")
                     // Fallback: if a mihomo utun residue (198.18 address, flags
                     // down) still lingers after the logical teardown, ask the
                     // privilege Helper to physically neutralize it (ifconfig
@@ -841,7 +841,7 @@ extension AppModel {
         _ = withEngineBusy("正在清空全部配置…") {
             if self.tunOn {
                 self.showToast("正在关闭 TUN…")
-                await self.applyTUNState(false, allowRestartFallback: false)
+                await self.applyTUNState(false, allowRestartFallback: false, reason: "清空全部配置")
             }
             await self.stopEngine()
 
@@ -1346,7 +1346,7 @@ extension AppModel {
         // its own full window before the app gives up a second time.
         resetTunFlapBreaker()
         withEngineBusy(want ? "正在开启 TUN 模式…" : "正在关闭 TUN 模式…") {
-            await self.applyTUNState(want)
+            await self.applyTUNState(want, reason: "用户开关 TUN")
         }
     }
 
@@ -1383,7 +1383,7 @@ extension AppModel {
         if want && !tunOn {
             showToast("正准备环境：网关中枢需要 TUN 模式…")
             withEngineBusy {
-                await self.applyTUNState(true)
+                await self.applyTUNState(true, reason: "开启网关需要 TUN")
                 if self.tunOn {
                     await self.applyGatewayMode(true)
                 } else {
@@ -1488,7 +1488,7 @@ extension AppModel {
             // normalizes the file value. Reconcile from the live config and
             // re-run the normal TUN enable flow if needed.
             if oldTun && !tunOn {
-                await reapplyTUN(wasOn: true)
+                await reapplyTUN(wasOn: true, reason: "应用网关配置")
                 guard tunOn else {
                     if let b = backup {
                         // CFG-8（同类）：回滚保持 0600。
@@ -1846,7 +1846,7 @@ extension AppModel {
     /// 写失败会变成一次断网，所以这里既返回 Bool 也弹提示。
     @discardableResult
     func persistTunStateForReload() -> Bool {
-        let ok = engine.persistTunStateReporting(tunOn, device: pinnedTunDevice)
+        let ok = engine.persistTunStateReporting(tunOn, device: pinnedTunDevice, writer: "persistTunStateForReload")
         if !ok, throttleAllows("tunDevice.persist", interval: 120) {
             logKernel("TUN 设备名写入 config.yaml 失败：重载后内核可能换用别的 utun 名")
             showToast("TUN 设备名未能写入配置，重载后隧道名可能变化", kind: .warn)
@@ -2259,9 +2259,9 @@ extension AppModel {
     /// silently dies. Callers capture `tunOn` *before* the restart (reconnect
     /// resets it) and pass it here; we re-run the full enable flow (root switch +
     /// PATCH + interface pin) only if TUN was on. No-op otherwise.
-    func reapplyTUN(wasOn: Bool) async {
+    func reapplyTUN(wasOn: Bool, reason: String = "内核重启后恢复") async {
         guard wasOn else { return }
-        await applyTUNState(true)
+        await applyTUNState(true, reason: reason)
     }
 
     /// Core TUN enable/disable: root-mode kernel switch (when enabling without an
@@ -2273,13 +2273,33 @@ extension AppModel {
     ///   utun, retry once via the persist-flag + restart path (see the failure
     ///   branch). Recursive retries pass false so a genuinely broken TUN cannot
     ///   loop restarts.
-    func applyTUNState(_ want: Bool, allowRestartFallback: Bool = true) async {
+    /// - Parameter reason: 谁发起的这次切换。只用于日志与幂等闸门，不参与任何
+    ///   时序判断，但**每个调用点都必须写清**：2026-11-27 排查「开启后 21 秒
+    ///   又重建一次」时，全部开启路径都不留来源日志，只能靠逐个排除调用点。
+    func applyTUNState(_ want: Bool, allowRestartFallback: Bool = true, reason: String = "未标注") async {
+        logKernel("TUN 请求：\(want ? "开启" : "关闭")（来源：\(reason)）")
         // Explicit disable is user/system intent — lift the bring-up settle
         // window so the OFF derivation is never blocked. Also cancel any pending
         // data-plane probe / recovery so a late result cannot re-open TUN.
         if !want {
             tunStateSettleUntil = .distantPast
             cancelTUNDataPlaneProbe(resetHealth: true)
+        }
+        // 幂等闸门（2026-11-27）：TUN 已按目标态工作、且刚通过真实公网验收时，
+        // 重复的开启请求只会把整条隧道重建一遍并丢掉全部在途连接。路径变化
+        // （NWPathMonitor）会在 utun 建好后的 configd 重挂风暴里反复触发，
+        // settle 窗覆盖不到的尾巴由这里兜住；窗口内的失败（验收未通过）不会
+        // 更新 lastTunEnableAcceptedAt，所以真故障仍能走完整流程自愈。
+        let now = Date()
+        if TUNEnableGate.shouldSkipDuplicateEnable(
+            want: want,
+            tunOn: tunOn,
+            acceptedAt: lastTunEnableAcceptedAt,
+            now: now,
+            window: Self.kTunRebuildSuppressionWindow
+        ), let acceptedAt = lastTunEnableAcceptedAt {
+            logKernel("忽略重复开启请求（来源：\(reason)，\(TUNEnableGate.skipNote(acceptedAt: acceptedAt, now: now))）")
+            return
         }
         // 记录本次切换是否走了「重启内核」路径：只有它能决定最终提示里该说
         // 「热切换，未断流」还是「经重启重建」。仅影响文案，不参与任何时序判断。
@@ -2387,7 +2407,7 @@ extension AppModel {
                 return
             }
             tunEgressInterface = iface
-            engine.setTopLevelScalars(["interface-name": iface])
+            engine.setTopLevelScalars(["interface-name": iface], writer: "applyTUNState(enable)")
             guard engine.readConfigFile()?["interface-name"] as? String == iface else {
                 showToast("出网网卡配置写入失败，TUN 未启用", kind: .error)
                 logKernel("TUN 中止：interface-name 未能写入 config.yaml")
@@ -2493,8 +2513,8 @@ extension AppModel {
         // stayed stuck on with no way to move it while the core was stopped.
         // Do the local half of the teardown and treat it as done.
         if !want && !reachable {
-            engine.forceTUNDisabled()
-            engine.setTopLevelScalars(["interface-name": ""])
+            engine.forceTUNDisabled(writer: "applyTUNState(disable/unreachable)")
+            engine.setTopLevelScalars(["interface-name": ""], writer: "applyTUNState(disable/unreachable)")
             tunOn = false
             Coexistence.commitProvenance(field: "route-exclude-address", injected: [])
             lastCoexistenceFingerprint = ""
@@ -2554,7 +2574,8 @@ extension AppModel {
         if let iface = tunEgressInterface {
             guard await confirmTUNEgressInterface(iface) else {
                 logKernel("TUN 中止：interface-name 未能回读确认为 \(iface)，关闭隧道回退")
-                await applyTUNState(false, allowRestartFallback: false)
+                await applyTUNState(false, allowRestartFallback: false,
+                                    reason: "\(reason)/出网口绑定未生效回退")
                 showToast("出网网卡绑定未生效，已回退 TUN", kind: .error)
                 return
             }
@@ -2577,7 +2598,7 @@ extension AppModel {
             }
             // Arm the settle window immediately — the path-update storm begins
             // the moment the kernel creates the utun, i.e. right at this PATCH.
-            if want { tunStateSettleUntil = Date().addingTimeInterval(10) }
+            if want { tunStateSettleUntil = Date().addingTimeInterval(Self.kTunBringUpSettleWindow) }
             // refreshConfigs sets tunOn from the *actual* kernel state
             // (enable && runningAsRoot && hasInterface, per B9) — do not blindly
             // set tunOn=want. A user-mode kernel accepts the PATCH (HTTP 200) but
@@ -2631,7 +2652,8 @@ extension AppModel {
                 // behaviour every earlier build had.
                 logKernel("TUN 未出现在固定设备名 \(kPinnedTunDevice) 上，放弃固定名后重试…")
                 disableTunDevicePin()
-                await applyTUNState(want, allowRestartFallback: allowRestartFallback)
+                await applyTUNState(want, allowRestartFallback: allowRestartFallback,
+                                    reason: "\(reason)/放弃固定设备名重试")
                 return
             }
             if want && !tunOn {
@@ -2673,7 +2695,9 @@ extension AppModel {
                         // PATCH success path does, or the imminent NWPathMonitor
                         // storm would hit an expired window and rebuild the
                         // tunnel a second time, dropping every live connection.
-                        tunStateSettleUntil = Date().addingTimeInterval(10)
+                        tunStateSettleUntil = Date().addingTimeInterval(Self.kTunBringUpSettleWindow)
+                        // 同一条开启链的成功点，一并武装幂等闸门。
+                        lastTunEnableAcceptedAt = Date()
                         // Restart path brought the tunnel up outside the PATCH
                         // success latch below — commit the staged fingerprint now
                         // so reconcile does not re-push the same plan, and so a
@@ -2691,7 +2715,8 @@ extension AppModel {
                         // Leave `lastCoexistenceFingerprint` untouched: the staged
                         // value was never committed, so reconcile can still retry
                         // after a later successful enable.
-                        await applyTUNState(false, allowRestartFallback: false)
+                        await applyTUNState(false, allowRestartFallback: false,
+                                            reason: "\(reason)/重启后仍无 utun 回滚")
                         engine.setTunEnabled(false)
                         showToast("TUN 开启失败：可能无管理员权限或路由被其他 VPN 占用冲突", kind: .error)
                         logKernel("TUN 开启失败（含重启重试）：runningAsRoot=\(engine.runningAsRoot) reachable=\(reachable) hasIface=\(await NetScanner.mihomoTunInterface(maxAge: 0) != nil)")
@@ -2755,10 +2780,13 @@ extension AppModel {
                     // 在开启/回退路径上连弹 5~6 条；失败已有下方专门错误提示。
                     guard await verifyTUNPublicEgress() else {
                         logKernel("TUN 开启验收未通过，自动关闭并恢复直连")
-                        await applyTUNState(false, allowRestartFallback: false)
+                        await applyTUNState(false, allowRestartFallback: false,
+                                            reason: "\(reason)/验收未通过回退")
                         showToast("TUN 出网异常，已自动回退并恢复直连", kind: .error, duration: 8)
                         return
                     }
+                    // 真实公网出口已通：武装幂等闸门，挡住路径变化风暴尾巴上的重复开启。
+                    lastTunEnableAcceptedAt = Date()
                     showToast(usedRestartPath ? "TUN 模式已开启（经重启内核重建隧道）"
                                               : "TUN 模式已开启（热切换，未断流）", kind: .ok)
                     // 刚做过真实出口验收：推进巡检豁免窗，5 分钟内的数据面
@@ -2780,7 +2808,7 @@ extension AppModel {
                 if !want {
                     // 关闭已获内核确认后，同步撤销落盘的物理口覆盖，避免下次
                     // 非 TUN 启动仍沿用本次隧道的固定出网口。
-                    engine.setTopLevelScalars(["interface-name": ""])
+                    engine.setTopLevelScalars(["interface-name": ""], writer: "applyTUNState(disable)")
                     // TUN is now off — restore system DNS before anything else.
                     // The TUN fake-ip gateway (198.18.0.0) only answers while
                     // the tunnel is up; a downed utun black-holes all DNS.
@@ -3469,14 +3497,14 @@ extension AppModel {
         var up = await waitForTUNInterface(maxAttempts: 20)
         if !up {
             logKernel("TUN 自愈阶段: utun 未出现，走 applyTUNState 重建")
-            await applyTUNState(true, allowRestartFallback: true)
+            await applyTUNState(true, allowRestartFallback: true, reason: "TUN 自愈重建")
             let ifacePresent = await NetScanner.mihomoTunInterface(maxAge: 0) != nil
             up = tunOn && ifacePresent
         } else {
             // Interface is up from cold start — still re-sync coexistence routes
             // the stop may have left stale, without a second full TUN rebuild.
             tunOn = true
-            tunStateSettleUntil = Date().addingTimeInterval(10)
+            tunStateSettleUntil = Date().addingTimeInterval(Self.kTunBringUpSettleWindow)
             await enableTunnelDNS()
             await reconcileCoexistenceIfChanged()
             // Force a coexistence push even if fingerprint matches the pre-crash
@@ -3545,7 +3573,8 @@ extension AppModel {
     private func fallbackCloseTUNAfterFailedRecovery(reason: String) async {
         logKernel("TUN 自愈回退: \(reason)")
         // applyTUNState(false) also cancels probes / resets health via the OFF path.
-        await applyTUNState(false, allowRestartFallback: false)
+        await applyTUNState(false, allowRestartFallback: false,
+                            reason: "自愈失败关闭（\(reason)）")
         engine.setTunEnabled(false)
         if NetScanner.hasDownedMihomoTun() {
             _ = await XPCManager.shared.callCleanupTUNResidual()

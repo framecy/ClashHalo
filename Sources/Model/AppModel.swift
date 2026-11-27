@@ -513,8 +513,12 @@ let kDirectExcludeAcceptedKey = "tun.directExclude.accepted"
     ///
     /// 取值地图（2026-10-14 审查低级项，记录各档用途；改值需实机回归，
     /// 勿轻动）：
-    /// - 10s：常规 bring-up（PATCH 成功 / restart 回退 / 重建后 utun 已现）
-    ///   ——覆盖 utun 创建 + 路由装载的 NWPathMonitor 风暴；
+    /// - 30s：常规 bring-up（PATCH 成功 / restart 回退 / 重建后 utun 已现）
+    ///   ——覆盖 utun 创建 + 路由装载的 NWPathMonitor 风暴。原值 10s 实测漏过
+    ///   真实风暴：2026-11-27 09:06:03 开启成功，09:06:24（+21s）一次路径变化
+    ///   又把整条隧道重建了一遍（日志无来源标注，靠排除法定位到
+    ///   NWPathMonitor 分支），故上调到 30s 并配套幂等闸门
+    ///   `kTunRebuildSuppressionWindow`；
     /// - 45s：healDetachedTUN 僵尸自愈重启——整内核 restart +
     ///   waitForKernelReady 全程；
     /// - 60s：rebuildTUNDeviceInPlace 就地重建——disable→等待→enable 两段
@@ -525,6 +529,19 @@ let kDirectExcludeAcceptedKey = "tun.directExclude.accepted"
     /// 自身的风暴不得立刻触发下一次自愈）；僵尸补救冷却另成体系（120s
     /// 两次自愈最小间隔 / 1800s 三次无效后的熔断，见 zombieTunCooldownUntil）。
     var tunStateSettleUntil: Date = .distantPast
+    /// 常规 bring-up 的 settle 档位。10s 时漏过一次真实风暴（2026-11-27：
+    /// 09:06:03 开启成功后，09:06:24 的路径变化事件仍重建了整条隧道），
+    /// 30s 覆盖 configd 重挂 utun 的尾巴；实际上限仍是一个
+    /// verifyTUNConfig 周期，真需要重建不会被永久推迟。
+    static let kTunBringUpSettleWindow: TimeInterval = 30
+    /// 重复开启的抑制窗：TUN 正开着、且这么久之内通过过真实公网验收时，
+    /// 再来一次开启请求只会重建隧道并丢掉全部在途连接，直接忽略。
+    /// 内核重启 / 自愈 / 用户开关这些「真需要重建」的路径此刻 tunOn 已为
+    /// false，或距验收已超过本窗，都不会被挡住。
+    static let kTunRebuildSuppressionWindow: TimeInterval = 60
+    /// 最近一次 TUN 开启通过真实公网验收（或经重启确认 utun 已现）的时刻，
+    /// 幂等闸门的唯一依据。
+    var lastTunEnableAcceptedAt: Date?
     /// Circuit breaker for the *interface-missing* auto-teardown.
     ///
     /// Every such teardown drops every live connection, so a TUN that cannot
@@ -1917,7 +1934,7 @@ let kDirectExcludeAcceptedKey = "tun.directExclude.accepted"
                     logKernel("恢复 TUN 模式...")
                     engine.isBusy = true
                     defer { engine.isBusy = false }
-                    await applyTUNState(true)
+                    await applyTUNState(true, reason: "睡眠唤醒恢复")
                 }
             }
             // Sleep/wake can re-mount utun under mihomo the same way a topology
@@ -2054,7 +2071,7 @@ let kDirectExcludeAcceptedKey = "tun.directExclude.accepted"
                         // cadence once the window closes.
                         if (onlineChanged || ifaceMoved) && Date() >= tunStateSettleUntil
                             && !tunFlapAbandoned && !sleeping {
-                            await applyTUNState(true)
+                            await applyTUNState(true, reason: "网络路径变化")
                         } else {
                             // No NIC change, but a peer tunnel may have connected,
                             // disconnected, or had its accepted subnets change —
@@ -2539,7 +2556,7 @@ let kDirectExcludeAcceptedKey = "tun.directExclude.accepted"
             if !noteTunInterfaceTeardown() {
                 showToast("TUN 接口异常，已自动关闭", kind: .warn)
             }
-            await applyTUNState(false)
+            await applyTUNState(false, reason: "30s 巡检：接口丢失自动关闭")
             // Fallback (shared with refreshConfigs B10): physically neutralize a
             // lingering downed mihomo utun via the privilege Helper so its DNS
             // resolver can't keep pinning 198.18.0.1. Gated on hasDownedMihomoTun

@@ -285,13 +285,13 @@ import SystemConfiguration
     /// privilege: the utun device can't be created, traffic is black-holed, and the
     /// kernel is left half-dead. Editing only the `enable:` scalar inside the `tun:`
     /// block keeps the rest of the user's TUN settings (stack/dns-hijack/...) intact.
-    func forceTUNDisabled() { setTunEnabled(false) }
+    func forceTUNDisabled(writer: String = #function) { setTunEnabled(false, writer: writer) }
 
     /// Set `tun.enable` on disk to a specific value (editing only the `enable:`
     /// scalar inside the `tun:` block). Used by `forceTUNDisabled()` at launch, and
     /// to *preserve* the current runtime TUN state across a config reload (a reload
     /// re-reads the file, so without this a reload would drop a running root TUN).
-    func setTunEnabled(_ on: Bool) {
+    func setTunEnabled(_ on: Bool, writer: String = #function) {
         let path = configFilePath
         guard let text = try? String(contentsOfFile: path, encoding: .utf8) else { return }
         var lines = text.components(separatedBy: "\n")
@@ -313,7 +313,7 @@ import SystemConfiguration
             }
         }
         if changed {
-            writeConfig(lines.joined(separator: "\n"), to: path)
+            writeConfig(lines.joined(separator: "\n"), to: path, writer: writer)
         }
     }
 
@@ -358,17 +358,17 @@ import SystemConfiguration
     /// The device is only written when enabling: a disable leaves the key alone
     /// so the pin survives for the next enable (only `disableTunDevicePin`, the
     /// deliberate give-up, clears it).
-    func persistTunState(enabled: Bool, device: String?) {
-        setTunEnabled(enabled)
-        if enabled { _ = setTunDevice(device) }
+    func persistTunState(enabled: Bool, device: String?, writer: String = #function) {
+        setTunEnabled(enabled, writer: writer)
+        if enabled { _ = setTunDevice(device, writer: writer) }
     }
 
     /// 同上，但把 `tun.device` 的写盘结果交给调用方（P1-6）。
     /// 只有 `AppModel.persistTunStateForReload` 需要这个反馈。
     @discardableResult
-    func persistTunStateReporting(_ enabled: Bool, device: String?) -> Bool {
-        setTunEnabled(enabled)
-        return enabled ? setTunDevice(device) : true
+    func persistTunStateReporting(_ enabled: Bool, device: String?, writer: String = #function) -> Bool {
+        setTunEnabled(enabled, writer: writer)
+        return enabled ? setTunDevice(device, writer: writer) : true
     }
 
     /// Write (or clear) `tun.device` on disk so a kernel that starts from the file
@@ -386,7 +386,7 @@ import SystemConfiguration
     /// 改了、实际内核重载后会自己挑一个 utun 名，而健康巡检按 pin 住的旧名字判
     /// “接口丢失”并把整条隧道拆掉。失败必须能上浮到 UI。
     @discardableResult
-    func setTunDevice(_ name: String?) -> Bool {
+    func setTunDevice(_ name: String?, writer: String = #function) -> Bool {
         let path = configFilePath
         guard let text = try? String(contentsOfFile: path, encoding: .utf8) else {
             onLog?("写入 tun.device 失败：无法读取 \(path)（权限或文件不存在）")
@@ -424,7 +424,7 @@ import SystemConfiguration
             changed = true
         }
         if changed {
-            return writeConfig(lines.joined(separator: "\n"), to: path)
+            return writeConfig(lines.joined(separator: "\n"), to: path, writer: writer)
         }
         return true
     }
@@ -492,7 +492,7 @@ import SystemConfiguration
     /// CFG-3：返回写盘是否成功（读失败/写失败都返回 false）。调用方必须把失败
     /// 上浮，否则磁盘满/权限坏时设置页会弹「配置已更新」而磁盘纹丝不动。
     @discardableResult
-    func setTopLevelScalars(_ kv: [String: Any]) -> Bool {
+    func setTopLevelScalars(_ kv: [String: Any], writer: String = #function) -> Bool {
         let path = configFilePath
         guard let text = try? String(contentsOfFile: path, encoding: .utf8) else { return false }
         var lines = text.components(separatedBy: "\n")
@@ -521,7 +521,7 @@ import SystemConfiguration
                 if !found { lines.insert("\(key): \(val)", at: 0) }
             }
         }
-        return writeConfig(lines.joined(separator: "\n"), to: path)
+        return writeConfig(lines.joined(separator: "\n"), to: path, writer: writer)
     }
 
     /// Quote a string scalar when the raw text would not survive a round-trip
@@ -1598,6 +1598,12 @@ import SystemConfiguration
         // kernel-assigned utun while the health check still accepts only the
         // pinned name — see `persistTunState` for the teardown loop that causes.
         let previousTunDevice = tunDevicePin()
+        // 同一个理由也适用于出网口：profile 里没有 `interface-name`，丢掉的后果是
+        // TUN 退回 auto-detect-interface 自己挑网卡——多网卡机器上就是「代理从错误
+        // 的网卡出去」。2026-11-27 实测磁盘上的 interface-name 在一次开启成功后被
+        // 清成 ""，而审计日志只记到 `setTopLevelScalars(_:)` 这一级，定位不到调用点；
+        // 所以这里写盘前抓取、reload 前补回，让 profile 重载不再可能抹掉它。
+        let previousInterfaceName = (readConfigFile()?["interface-name"] as? String) ?? ""
         // CFG-3：写盘失败必须传播。旧实现忽略 writeConfig 的 Bool，磁盘满/权限
         // 坏时照样 reload 旧文件并报「已切换」——假成功。
         guard writeConfig(yaml, to: path) else {
@@ -1615,7 +1621,11 @@ import SystemConfiguration
             // 原样写回，让 reload 在同一接口上带回隧道；内核不可达或 TUN 本来
             // 没开才保持 false——“不让 profile 自动带起 TUN”的原语义不变。
             if await runtimeTunEnabled() {
-                persistTunState(enabled: true, device: previousTunDevice)
+                persistTunState(enabled: true, device: previousTunDevice, writer: "setConfig.reload")
+                if !previousInterfaceName.isEmpty {
+                    setTopLevelScalars(["interface-name": previousInterfaceName],
+                                       writer: "setConfig.preserveEgress")
+                }
             } else {
                 forceTUNDisabled()     // TUN is runtime-only — don't let a profile auto-enable it
             }

@@ -61,7 +61,7 @@ bash make.sh
 ### 回归测试
 
 ```bash
-bash Scripts/run-tests.sh                # 全部套件（当前 37 套）
+bash Scripts/run-tests.sh                # 全部套件（当前 38 套）
 bash Scripts/run-tests.sh --only tun     # 只跑名字含 tun 的
 bash Scripts/tun-exclusion-test.sh       # L1：排除表多源合并 + 归属记录（--apply 会真实 PATCH 一轮并还原）
 bash Scripts/audit.sh                    # 独立审查：隐私（全历史身份/敏感值/凭据形态）+ 全量回归；--no-tests 秒级只查隐私
@@ -185,6 +185,15 @@ bash Scripts/audit.sh                    # 独立审查：隐私（全历史身�
 4. **调度是合并制、禁止 cancel+重建（2026-10-14）**：`scheduleTUNDataPlaneProbe` 对已在排任务取触发时刻 min(既有, now+delay)——高频事件只能拉早探针、永远推不晚（cancel+重建在事件风暴下会把探针饿死且完全静默）；距上次实际执行超过 2×delay 强制立即排程兜底
 5. **`reset()` 只在 `allHealthy`（满窗口全成功）后调用**，别让一次侥幸成功抹掉判定
 6. **自愈是整进程重建**，不是 `PATCH tun off/on`——PATCH 不保证重开失效 fd；二次验收仍失败则关 TUN 回退直连，不动用户原本开启的系统代理
+7. **重复开启闸门与来源标注（2026-11-27）**：`applyTUNState` 的每个调用点都必须传
+   `reason:`（只进日志与闸门，不参与任何时序判断）——2026-11-27 排查「开启后
+   21 秒又整条重建一次」时全部开启路径都不留来源，只能逐个排除调用点。TUN 已开
+   且 `kTunRebuildSuppressionWindow`（60s）内通过过真实公网验收时，重复开启请求
+   由 `TUNEnableGate` 忽略（`tundupgate-tests` 钉住四条边界）；真需要重建的路径
+   （内核重启 / 自愈 / 用户开关）此刻 `tunOn` 已为 false，不受影响。常规 bring-up
+   的 settle 档是 **30s**——原 10s 实测漏过 +21s 的风暴尾巴。
+   同理 `setConfig` 重载必须补回 `interface-name`：profile 不带出网口绑定，
+   丢了就退回 auto-detect，多网卡机器上等于「代理从错误的网卡出去」。
 
 ### 网络拓扑 / 静态路由绕行
 

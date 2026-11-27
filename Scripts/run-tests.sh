@@ -315,6 +315,14 @@ add_suite tailscalesubnet-tests \
   "$ROOT/Sources/Model/TailscaleSubnetRouting.swift" \
   "$ROOT/Tests/TailscaleSubnetRouting/main.swift"
 
+# TUN 重复开启闸门（2026-11-27）：09:06:03 开启成功后，09:06:24 一条路径变化
+# 事件在 settle 窗外又整条重建了隧道，丢掉全部在途连接。闸门的三条边界都必须
+# 钉住：关闭请求永不拦、tunOn 为假（内核重启/自愈）永不拦、没有验收时间戳不拦
+# ——任何一条写错都会让「该重建时不重建」，比风暴更严重。
+add_suite tundupgate-tests \
+  "$ROOT/Sources/Model/TUNEnableGate.swift" \
+  "$ROOT/Tests/TUNEnableGate/main.swift"
+
 # ── 执行 ───────────────────────────────────────────────────────────────
 
 FILTER=""

@@ -1236,7 +1236,7 @@ struct KernelCard: View {
                                 let ready = await M.waitForKernelReady(maxAttempts: 10)
                                 await M.reconnect()
                                 if ready {
-                                    await M.reapplyTUN(wasOn: wasTUN)
+                                    await M.reapplyTUN(wasOn: wasTUN, reason: "重启内核")
                                     if wasProxy {
                                         // Unified restore: port-liveness gate +
                                         // verified write — never an optimistic
@@ -1300,7 +1300,7 @@ struct KernelCard: View {
                                         let ok = await km.activate(tag)
                                         await M.reconnect()
                                         if ok {
-                                            await M.reapplyTUN(wasOn: wasTUN)
+                                            await M.reapplyTUN(wasOn: wasTUN, reason: "切换内核版本")
                                             M.showToast(km.note.isEmpty ? "内核已更新" : km.note, kind: .ok)
                                         } else {
                                             M.showToast(km.note.isEmpty ? "启用 \(tag) 失败" : km.note, kind: .error)
@@ -1382,7 +1382,7 @@ struct KernelCard: View {
                         let ok = await km.activate(tag)
                         await M.reconnect()
                         if ok {
-                            await M.reapplyTUN(wasOn: wasTUN)
+                            await M.reapplyTUN(wasOn: wasTUN, reason: "启用已下载内核")
                             M.showToast("已启用 \(tag)", kind: .ok)
                         } else {
                             M.showToast(km.note.isEmpty ? "启用 \(tag) 失败" : km.note, kind: .error)
