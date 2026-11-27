@@ -27,6 +27,10 @@
 - 配置写盘审计能定位到具体调用点：`setTopLevelScalars`、`setTunEnabled`、
   `setTunDevice`、`persistTunState` 都接受 `writer` 归属，此前只能记到函数名一级。
 
+- **嗅探页文案「修改后请重启核心生效」不准确**：这几个开关走热重载
+  （`PUT /configs?force=true` → `executor.ApplyConfig` → `updateSniffer`），保存即
+  生效，不需要重启内核；已建立的连接也不会被掐断。
+
 ## [1.6.0] - 2026-11-25
 
 ### Removed

@@ -587,7 +587,7 @@ struct SnifferPage: View {
                         NToggle("强制 DNS 映射", "sniffer", "force-dns-mapping")
                         NToggle("解析纯 IP", "sniffer", "parse-pure-ip")
                     }
-                    Text("从 TLS / QUIC / HTTP 握手中提取真实域名用于分流，对走 IP 的连接尤为重要。默认嗅探协议：TLS(443,8443), HTTP(80,8080-8880), QUIC(443,8443)。修改后请重启核心生效。")
+                    Text("从 TLS / QUIC / HTTP 握手中提取真实域名用于分流，对走 IP 的连接尤为重要。默认嗅探协议：TLS(443,8443), HTTP(80,8080-8880), QUIC(443,8443)。保存后立即生效，不需要重启内核：配置走热重载，嗅探器当场换掉，已建立的连接不会被掐断。")
                         .font(.dsBody).foregroundColor(.secondary).padding(.top, DS.Spacing.s)
                 }
                 }
