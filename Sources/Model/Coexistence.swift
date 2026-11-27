@@ -500,26 +500,7 @@ enum Coexistence {
     /// puts it on PATH; a Tailscale that is installed but not running answers
     /// with an error, which lands in the same nil.
     static func tailscaleAdvertisedRoutes() async -> [(cidr: String, peer: String)]? {
-        let candidates = [
-            "/Applications/Tailscale.app/Contents/MacOS/Tailscale",
-            "/usr/local/bin/tailscale",
-            "/opt/homebrew/bin/tailscale"
-        ]
-        guard let cli = candidates.first(where: { FileManager.default.isExecutableFile(atPath: $0) })
-        else { return nil }
-
-        let out: Data? = await Task.detached(priority: .utility) {
-            let p = Process()
-            p.executableURL = URL(fileURLWithPath: cli)
-            p.arguments = ["status", "--json"]
-            let pipe = Pipe(); p.standardOutput = pipe; p.standardError = Pipe()
-            do { try p.run() } catch { return nil }
-            let d = pipe.fileHandleForReading.readDataToEndOfFile()
-            p.waitUntilExit()
-            return p.terminationStatus == 0 ? d : nil
-        }.value
-
-        guard let out,
+        guard let out = await runTailscale(["status", "--json"]),
               let root = try? JSONSerialization.jsonObject(with: out) as? [String: Any],
               let peers = root["Peer"] as? [String: Any] else { return nil }
 
@@ -536,6 +517,54 @@ enum Coexistence {
             }
         }
         return result
+    }
+
+    // MARK: Tailscale subnet-route repair
+
+    /// Whether the local tailscaled accepts subnet routes (`--accept-routes`),
+    /// read from `tailscale debug prefs`' `RouteAll`.
+    ///
+    /// nil = cannot ask (CLI absent, daemon not running, unparsable output) — a
+    /// distinct state from "off", so the UI never offers a repair it cannot
+    /// justify.
+    static func tailscaleAcceptsRoutes() async -> Bool? {
+        guard let out = await runTailscale(["debug", "prefs"]) else { return nil }
+        return TailscaleSubnetRouting.acceptsRoutes(inPrefsJSON: out)
+    }
+
+    /// Turn `--accept-routes` on. Only flips tailscaled's own setting — installing
+    /// the routes is its job, not ours (a locally added route would be overwritten
+    /// the next time it reconciles). Returns true when the CLI accepted the
+    /// change; the table update lands seconds later, so callers rescan.
+    static func setTailscaleAcceptRoutes(_ enabled: Bool) async -> Bool {
+        let out = await runTailscale(["set", enabled ? "--accept-routes" : "--accept-routes=false"])
+        return out != nil
+    }
+
+    /// CLI candidates: App Store/pkg builds ship the binary inside the bundle,
+    /// Homebrew puts it on PATH.
+    private static func tailscaleCLI() -> String? {
+        [
+            "/Applications/Tailscale.app/Contents/MacOS/Tailscale",
+            "/usr/local/bin/tailscale",
+            "/opt/homebrew/bin/tailscale"
+        ].first { FileManager.default.isExecutableFile(atPath: $0) }
+    }
+
+    /// stdout of a successful `tailscale` invocation; nil when the CLI is absent,
+    /// fails to spawn, or exits non-zero.
+    private static func runTailscale(_ arguments: [String]) async -> Data? {
+        guard let cli = tailscaleCLI() else { return nil }
+        return await Task.detached(priority: .utility) {
+            let p = Process()
+            p.executableURL = URL(fileURLWithPath: cli)
+            p.arguments = arguments
+            let pipe = Pipe(); p.standardOutput = pipe; p.standardError = Pipe()
+            do { try p.run() } catch { return nil }
+            let d = pipe.fileHandleForReading.readDataToEndOfFile()
+            p.waitUntilExit()
+            return p.terminationStatus == 0 ? d : nil
+        }.value
     }
 
     // MARK: DNS resolver interface pinning

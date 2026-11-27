@@ -307,6 +307,14 @@ add_suite provideroperation-tests \
   "$ROOT/Sources/Core/Subscription/ProviderOperation.swift" \
   "$ROOT/Tests/ProviderOperation/main.swift"
 
+# Tailscale 子网路由修复判定：① 「问不到 prefs」不得被当成「关着」，否则按钮会
+# 引导用户去开一个可能已经开着的开关；② 已接受但仍缺路由只能等重连，改设置无用。
+# 2026-11-27：--accept-routes=false 让对端广播的 10.20.0.0/24、192.168.30.0/24
+# 从未进入路由表，流量走物理网卡。
+add_suite tailscalesubnet-tests \
+  "$ROOT/Sources/Model/TailscaleSubnetRouting.swift" \
+  "$ROOT/Tests/TailscaleSubnetRouting/main.swift"
+
 # ── 执行 ───────────────────────────────────────────────────────────────
 
 FILTER=""

@@ -161,6 +161,14 @@ struct SdwanPage: View {
     /// 会被互相覆盖——与 DNS 修复的 `repairingDNS` 同一交互形态。
     @State private var repairingRoutes = false
     @State private var subnetGaps: [Coexistence.PeerSubnetGap] = []
+    /// Whether the local tailscaled accepts subnet routes (`tailscale debug
+    /// prefs` → `RouteAll`). nil = cannot ask (CLI absent / daemon down); the
+    /// repair button then stays hidden instead of guessing "off".
+    @State private var tsAcceptsRoutes: Bool? = nil
+    /// Reentry guard for the subnet repair. The click flips one remote pref and
+    /// tailscaled installs the routes asynchronously; a second click mid-wait
+    /// would only queue another `tailscale set` under the same waiter.
+    @State private var repairingSubnets = false
     /// Another tunnel holding the unscoped default route. Reported, never
     /// "repaired" — see `NetScanner.foreignDefaultRouteHolder`.
     @State private var defaultRouteHolder: String? = nil
@@ -176,6 +184,18 @@ struct SdwanPage: View {
     /// `route-exclude-address`, which does nothing for an absent peer route, so
     /// subnet gaps deliberately stay out of this gate.
     private var hasConflicts: Bool { !conflicts.isEmpty || defaultRouteHolder != nil }
+
+    /// What the subnet-gap card can offer. The gaps are Tailscale-only by
+    /// construction, and the only safe repair is flipping tailscaled's own
+    /// `--accept-routes`: installing the prefix ourselves would duplicate
+    /// management of something it owns.
+    private var subnetRepairAction: TailscaleSubnetRouting.Action {
+        // Only a *missing* route can be caused by `--accept-routes` being off. A
+        // prefix that exists but points at the wrong interface is a different
+        // fault, so it must not be offered as "flip this pref".
+        TailscaleSubnetRouting.action(acceptsRoutes: tsAcceptsRoutes,
+                                      gaps: subnetGaps.filter(\.isMissing).count)
+    }
 
     var body: some View {
         VStack(spacing: 0) {
@@ -206,7 +226,8 @@ struct SdwanPage: View {
                                 // No shadowing, but a peer subnet is unreachable
                                 // — the banner must not read "一切正常" for the
                                 // exact fault that used to go unreported.
-                                Text("代理未抢占路由，但有 \(subnetGaps.count) 个对端网段不可达，详见下方。")
+                                Text("代理未抢占路由，但有 \(subnetGaps.count) 个对端网段不可达"
+                                     + (subnetRepairAction == .acceptRoutes ? "，可在下方一键修复。" : "，详见下方。"))
                                     .font(.dsBody).foregroundColor(.secondary)
                             } else {
                                 Text("代理仅注入精确网段，未抢占网络拓扑路由；\(sdwanCount) 个接口路由完整。")
@@ -383,9 +404,27 @@ struct SdwanPage: View {
                                     }
                                     .padding(.vertical, DS.Spacing.xs)
                                 }
-                                Text("路由由对端隧道自行下发，本页只做检测不代为安装——代装会与它的路由管理相互覆盖。"
-                                     + "请检查该隧道是否开启「接受子网路由」，或重连以让它重新下发。")
-                                    .font(.dsBody).foregroundColor(.secondary).padding(.top, DS.Spacing.xs)
+                                switch subnetRepairAction {
+                                case .acceptRoutes:
+                                    HStack(alignment: .top) {
+                                        Text("这些前缀归对端隧道自己下发，本机尚未开启「接受子网路由」，"
+                                             + "所以它们从未进过路由表。开启后由 tailscaled 自行安装，本页不代装。")
+                                            .font(.dsBody).foregroundColor(.secondary)
+                                        Spacer(minLength: DS.Spacing.s)
+                                        Button(repairingSubnets ? "修复中…" : "一键修复") { repairSubnets() }
+                                            .dsButton(.warning)
+                                            .disabled(repairingSubnets)
+                                    }
+                                    .padding(.top, DS.Spacing.xs)
+                                case .waitForRebroadcast:
+                                    Text("已开启「接受子网路由」，但该隧道尚未下发这些路由——"
+                                         + "请重启 Tailscale，或等它重连后再试。")
+                                        .font(.dsBody).foregroundColor(.secondary).padding(.top, DS.Spacing.xs)
+                                case .unavailable:
+                                    Text("路由由对端隧道自行下发，本页只做检测不代为安装——代装会与它的路由管理相互覆盖。"
+                                         + "请检查该隧道是否开启「接受子网路由」，或重连以让它重新下发。")
+                                        .font(.dsBody).foregroundColor(.secondary).padding(.top, DS.Spacing.xs)
+                                }
                             }
                         }
                     }
@@ -494,14 +533,37 @@ struct SdwanPage: View {
             let (routes_, conflicts_) = await (r, c)
             let drift_ = await M.dnsInterfaceDrift()
             let gaps_ = await M.peerSubnetGaps()
+            // Only worth a fork when there is a gap to explain; an empty scan
+            // must not pay for the CLI round-trip on every visit.
+            let accepts_ = gaps_.isEmpty ? nil : await Coexistence.tailscaleAcceptsRoutes()
             let holder_ = await NetScanner.foreignDefaultRouteHolder()
             await MainActor.run {
                 routes = routes_
                 conflicts = conflicts_
                 dnsDrift = drift_
                 subnetGaps = gaps_
+                tsAcceptsRoutes = accepts_
                 defaultRouteHolder = holder_
             }
+        }
+    }
+
+    /// Flip tailscaled's own `--accept-routes`. The route install that follows is
+    /// its work and lands seconds later (measured 1–3 s in the field), so the
+    /// rescan is delayed: an immediate one would report the same gap and make
+    /// the click look like it did nothing.
+    private func repairSubnets() {
+        guard !repairingSubnets else { return }
+        repairingSubnets = true
+        Task {
+            defer { repairingSubnets = false }
+            guard await Coexistence.setTailscaleAcceptRoutes(true) else {
+                M.showToast("开启「接受子网路由」失败，请确认 Tailscale 正在运行", kind: .error)
+                return
+            }
+            M.showToast("已开启「接受子网路由」，等待 Tailscale 下发路由…", kind: .ok)
+            try? await Task.sleep(nanoseconds: 3_000_000_000)
+            rescan()
         }
     }
 

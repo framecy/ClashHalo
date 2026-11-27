@@ -2,7 +2,7 @@
 
 本文件给后续 AI 编码代理使用。进入本仓库后，先读本文件，再按需读 `README.md`、`CHANGELOG.md` 和相关源码。
 
-当前主干：`main`，产品版本 **v1.6.0**（`MARKETING_VERSION`，与 `Sources/Info.plist` 的 `CFBundleShortVersionString` 同源），Helper **1.0.35**（`kSharedHelperVersion`，`Helper-Info.plist` 的 `CFBundleVersion` 同值）。当前构建号 **152**（`CURRENT_PROJECT_VERSION`，`make.sh` 每次打包自增）。
+当前主干：`main`，产品版本 **v1.6.0**（`MARKETING_VERSION`，与 `Sources/Info.plist` 的 `CFBundleShortVersionString` 同源），Helper **1.0.35**（`kSharedHelperVersion`，`Helper-Info.plist` 的 `CFBundleVersion` 同值）。当前构建号 **153**（`CURRENT_PROJECT_VERSION`，`make.sh` 每次打包自增）。
 
 ## 项目概览
 
@@ -61,7 +61,7 @@ bash make.sh
 ### 回归测试
 
 ```bash
-bash Scripts/run-tests.sh                # 全部套件（当前 36 套）
+bash Scripts/run-tests.sh                # 全部套件（当前 37 套）
 bash Scripts/run-tests.sh --only tun     # 只跑名字含 tun 的
 bash Scripts/tun-exclusion-test.sh       # L1：排除表多源合并 + 归属记录（--apply 会真实 PATCH 一轮并还原）
 bash Scripts/audit.sh                    # 独立审查：隐私（全历史身份/敏感值/凭据形态）+ 全量回归；--no-tests 秒级只查隐私
@@ -189,6 +189,8 @@ bash Scripts/audit.sh                    # 独立审查：隐私（全历史身�
 ### 网络拓扑 / 静态路由绕行
 
 系统存在其他非 `proxyTun` 活跃 `utun`（如 Tailscale）时，`refreshConfigs()` 对齐注入状态，经 Helper 执行 `/sbin/route -n add` 静态路由指回原虚拟接口。关闭 TUN 或客户端 invalidated 时，Helper 必须通过 `addedRoutes` 清空注入路由。
+
+**对端 subnet 路由（Tailscale `--accept-routes`）不走这条路**：前缀由对端隧道广播、由 tailscaled 自己安装，本应用 `route add` 会与它的路由管理互相覆盖。网络拓扑页只检测（`Coexistence.tailscaleSubnetGaps`），修复按钮执行 `tailscale set --accept-routes` 后等 tailscaled 下发，判定三态逻辑在 `Sources/Model/TailscaleSubnetRouting.swift`（`tailscalesubnet-tests`）——「问不到 prefs」必须与「关着」分开，否则会引导用户去开一个可能已经开着的开关。
 
 ## UI 约定
 

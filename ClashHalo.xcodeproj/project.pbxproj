@@ -52,6 +52,7 @@
 		AGSC1 /* GettingStartedCard.swift in Sources */ = {isa = PBXBuildFile; fileRef = BGSC1 /* GettingStartedCard.swift */; };
 		ATDA1 /* TUNDNSAddress.swift in Sources */ = {isa = PBXBuildFile; fileRef = BTDA1 /* TUNDNSAddress.swift */; };
 		ATDL1 /* TunnelDNSLedger.swift in Sources */ = {isa = PBXBuildFile; fileRef = BTDL1 /* TunnelDNSLedger.swift */; };
+		ATSR1AAAA0000000000000001 /* TailscaleSubnetRouting.swift in Sources */ = {isa = PBXBuildFile; fileRef = BTSR1AAAA0000000000000001 /* TailscaleSubnetRouting.swift */; };
 		ACWA1 /* ConfigWriteAudit.swift in Sources */ = {isa = PBXBuildFile; fileRef = BCWA1 /* ConfigWriteAudit.swift */; };
 		AKMG1 /* KernelMemoryGuard.swift in Sources */ = {isa = PBXBuildFile; fileRef = BKMG1 /* KernelMemoryGuard.swift */; };
 		AKRS1 /* KernelRSS.swift in Sources */ = {isa = PBXBuildFile; fileRef = BKRS1 /* KernelRSS.swift */; };
@@ -137,6 +138,7 @@
 		BPGB1 /* ProviderGroupBinding.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ProviderGroupBinding.swift; sourceTree = "<group>"; };
 		BTDA1 /* TUNDNSAddress.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TUNDNSAddress.swift; sourceTree = "<group>"; };
 		BTDL1 /* TunnelDNSLedger.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TunnelDNSLedger.swift; sourceTree = "<group>"; };
+		BTSR1AAAA0000000000000001 /* TailscaleSubnetRouting.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TailscaleSubnetRouting.swift; sourceTree = "<group>"; };
 		BCWA1 /* ConfigWriteAudit.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ConfigWriteAudit.swift; sourceTree = "<group>"; };
 		BKMG1 /* KernelMemoryGuard.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = KernelMemoryGuard.swift; sourceTree = "<group>"; };
 		BKRS1 /* KernelRSS.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = KernelRSS.swift; sourceTree = "<group>"; };
@@ -199,6 +201,7 @@
 				BPGB1 /* ProviderGroupBinding.swift */,
 				BTDA1 /* TUNDNSAddress.swift */,
 				BTDL1 /* TunnelDNSLedger.swift */,
+				BTSR1AAAA0000000000000001 /* TailscaleSubnetRouting.swift */,
 				BCWA1 /* ConfigWriteAudit.swift */,
 				BKMG1 /* KernelMemoryGuard.swift */,
 				BKRS1 /* KernelRSS.swift */,
@@ -420,6 +423,7 @@
 				APGB1 /* ProviderGroupBinding.swift in Sources */,
 				ATDA1 /* TUNDNSAddress.swift in Sources */,
 				ATDL1 /* TunnelDNSLedger.swift in Sources */,
+				ATSR1AAAA0000000000000001 /* TailscaleSubnetRouting.swift in Sources */,
 				ACWA1 /* ConfigWriteAudit.swift in Sources */,
 				AKMG1 /* KernelMemoryGuard.swift in Sources */,
 				AKRS1 /* KernelRSS.swift in Sources */,
@@ -464,7 +468,7 @@
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
 				CODE_SIGN_ENTITLEMENTS = ClashHalo.entitlements;
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 152;
+				CURRENT_PROJECT_VERSION = 153;
 				ENABLE_HARDENED_RUNTIME = YES;
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_FILE = Sources/Info.plist;
@@ -496,7 +500,7 @@
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
 				CODE_SIGN_ENTITLEMENTS = ClashHalo.entitlements;
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 152;
+				CURRENT_PROJECT_VERSION = 153;
 				ENABLE_HARDENED_RUNTIME = YES;
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_FILE = Sources/Info.plist;
